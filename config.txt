@@ -8,3 +8,4 @@ paste = key
 ; phrase: 自定义短语, 编码<TAB>文本 (文本可含空格)
 ; phrase = dz	地址: 某某路5号
 ; phrase = em	user@example.com
+starton = 0

@@ -227,6 +227,7 @@ ApplySwap(mb)            # 一次性原子替换全部静态引用，DictsReady=
 - 双拼支持（2026-08-13）：三套方案（小鹤/自然码/微软）音节还原 71 项 + 管线集成 3 项（vsgo→中国、双拼下 vf 面板关闭、ms y;→应）全过；全量回归 147 项 + 长文本 45/45 无回归。
 - 简繁转换 + v 模式（2026-08-13）：ToTrad 单字/整句/开关 9 项、金额大写 11 项（零规则/万亿兆/16 位/超限）、千分位 3 项、AddVMode 4 项、实窗集成 8 项（数字进缓冲、DigitAsCode 三态门控）全过；全量回归 256 项 + 长文本 45/45 无回归。
 - 启动默认关闭选项（2026-08-14）：config `starton = 1/0`，模板/默认值/解析 3 项新增，全量回归 259 项 + 长文本 45/45 无回归。
+- 批量造词（2026-08-14）：CollectWordLines 行过滤/去重、BatchAddWords 批量注入（新增/跳过计数、词典/用户词/排序数组/简拼索引/落盘一次到位）、确认对话框 11 项全过；全量回归 270 项 + 长文本 45/45 无回归。
 
 ## 6. 固化码表（烘焙进内置）
 
@@ -273,6 +274,7 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 ### 7.2 以词定字 / 动态候选 / 通配符 / 反查
 
 - 用户词管理：托盘"用户词表…" → `ManageUserWords`（inDialog 守卫 + IsLocked 临时关闭，同导入流程）→ `UserWordsDialog`（ListView 复选，词/编码两列 + 全选/全不选/删除选中/关闭）；`UserWords` 按词排序后填充。删除：移除选中词 → `SaveUserWords` 重写 userwords.txt → 后台 `BuildDicts`+`ApplySwap` 热重载（`BuildDicts` 内部重新 `LoadUserWords`，字典管线自洽）→ 气泡反馈。
+- 批量造词：托盘"批量造词…" → `BatchMakeWords`：选文件 → `ReadImportText`（UTF-8/GB18030 自动识别）→ `CollectWordLines`（每行 2-8 汉字、去重、计跳过行）→ `ConfirmWordsDialog` 确认 → `BatchAddWords`（**批量优化**：逐词 `CodeFor` 取拼音码注入 `UserWords`/`PyDict`，最后只做一次 `BuildSorted` + 一次 Acro 注入 + 一次 `SaveUserWords`，避免了 AddUserWord 逐词全量排序/落盘的开销）→ 气泡统计。
 - 以词定字：钩子拦截有编码时的裸 `[` `]` → `OnPickChar` → 取候选 1 首/尾字上屏并 `Learn` 记功整词；候选为空时退回中文标点 【 】。
 - 动态候选：`AddDynamic` 精确匹配 `rq`（yyyy-MM-dd / yyyy年M月d日 / yyyy/MM/dd）、`sj`（HH:mm / HH:mm:ss / yyyy-MM-dd HH:mm）、`xq`（星期X / 周X），词频排序后插到最前，不参与学习。
 - 五笔 z 通配符：`AddWubiWildcard` 对 wb 表线性扫描（≈7.5 万码，微秒级），`z` 位匹配任意字母；不设置 `exactWubi`，不会触发四码自动上屏。
