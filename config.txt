@@ -1,0 +1,10 @@
+; WgIme 配置文件 (UTF-8, 与 wgime.bat 同目录)
+; fuzzy: 模糊音对, 逗号分隔; 留空或 none 关闭
+fuzzy = zh-z,ch-c,sh-s,ang-an,eng-en,ing-in,n-l
+; showcode: 候选上显示反查编码 (1/0)
+showcode = 0
+; paste: 上屏方式 key/on/auto/off (key=逐字符Unicode注入, 默认, 不走剪贴板; on=剪贴板粘贴; auto=管理员窗口用剪贴板其余key; off=纯SendKeys按键)
+paste = key
+; phrase: 自定义短语, 编码<TAB>文本 (文本可含空格)
+; phrase = dz	地址: 某某路5号
+; phrase = em	user@example.com
