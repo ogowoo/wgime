@@ -228,6 +228,7 @@ ApplySwap(mb)            # 一次性原子替换全部静态引用，DictsReady=
 - 简繁转换 + v 模式（2026-08-13）：ToTrad 单字/整句/开关 9 项、金额大写 11 项（零规则/万亿兆/16 位/超限）、千分位 3 项、AddVMode 4 项、实窗集成 8 项（数字进缓冲、DigitAsCode 三态门控）全过；全量回归 256 项 + 长文本 45/45 无回归。
 - 启动默认关闭选项（2026-08-14）：config `starton = 1/0`，模板/默认值/解析 3 项新增，全量回归 259 项 + 长文本 45/45 无回归。
 - 批量造词（2026-08-14）：CollectWordLines 行过滤/去重、BatchAddWords 批量注入（新增/跳过计数、词典/用户词/排序数组/简拼索引/落盘一次到位）、确认对话框 11 项全过；全量回归 270 项 + 长文本 45/45 无回归。
+- 快捷键全配置化（2026-08-14）：VkFromName 键名表 12 项、ParseHotkey 组合键解析 6 项、LoadConfig 应用到钩子静态字段 9 项、模板 1 项全过；顺带修正以词定字 `[` 的 vk 常量 bug（原 0x5B 永远取尾字）；全量回归 298 项 + 长文本 45/45 无回归。
 
 ## 6. 固化码表（烘焙进内置）
 
@@ -267,6 +268,7 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 | `paste` | key/on/auto/off | `PasteMode` 3/1/0/2：默认 3（key，逐字符 Unicode 注入）；`on`=剪贴板粘贴（恢复时仅当剪贴板未被用户改动才写回）；`auto`=仅提权窗口走粘贴；`off`=纯 SendKeys。另有按进程覆盖文件 `pastemode.txt`（§3.4） |
 | `shuangpin` | xiaohe/ziranma/ms/none | `Shuangpin` 1/2/3/0：双拼方案，默认 0（关闭） |
 | `starton` | 1/0 | `StartOn`：启动时 `Hook.IsLocked` 初始值（RunApp 中 LoadConfig 之后、窗体创建之前应用），默认 1 |
+| `hotkey_*` / `key_*` | 见使用说明 §9 | 全部快捷键可配置：`KeyBordHook` 静态字段（Mod/Vk 对 + `MatchMods` 严格匹配修饰键），`VkFromName` 键名表、`ParseHotkey` 解析 `ctrl+alt+c` 格式（`none`=禁用，`shift_tap` 哨兵值 0x80000000 表示轻点 Shift）；候选操作键经 `SetKeyConfig`（ref 静态字段）；`LoadConfig` 解析后直接写钩子静态字段，重载配置即时生效 |
 | `phrase` | `码<TAB>文本` | 自定义短语（文本可含空格，与码表空格分隔格式独立存储于 `Phrases` 字典） |
 
 （历史：曾实现候选条跟随光标 `GetGUIThreadInfo`，因在部分环境下异常已按用户要求移除。）

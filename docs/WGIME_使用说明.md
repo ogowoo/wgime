@@ -21,8 +21,8 @@ WgIme 是一个**免安装的单文件悬浮输入法**：支持拼音、五笔�
 | **Ctrl + Alt + C** | 造词（先把 2-8 个汉字复制到剪贴板） |
 | 字母 a-z | 输入编码 |
 | 空格 | 选第 1 个候选 |
-| 数字 1-9 | 选第 N 个候选 |
-| `=` 或 PgDn | 候选下一页 |
+| 数字 1-9 | 选第 N 个候选（固定不可配） |
+| `=` 或 PgDn | 候选下一页（PgUp/PgDn 常驻） |
 | `-` 或 PgUp | 候选上一页 |
 | Backspace | 删除最后一个编码 |
 | Esc | 清空编码 |
@@ -34,6 +34,8 @@ WgIme 是一个**免安装的单文件悬浮输入法**：支持拼音、五笔�
 | **`v` + 数字**（如 `v1234`） | v 模式：人民币大写金额 + 千分位（v 后直接按数字输入） |
 | **Ctrl + Shift + F** | 简体 / 繁体输出切换（候选与上屏都转繁体） |
 | **五笔模式 `z` 通配符** | 记不清的码用 `z` 顶位，如 `yzzz` 列出全部 4 码候选 |
+
+> 以上除数字选候选外的**所有按键都可以在 config.txt 里改**（见 §9），任何一项都可设为 `none` 禁用。
 
 ## 3. 四种模式
 
@@ -153,6 +155,16 @@ WgIme 是一个**免安装的单文件悬浮输入法**：支持拼音、五笔�
 | `shuangpin = xiaohe/ziranma/ms/none` | 双拼方案：小鹤 / 自然码 / 微软（微软的 `ing` 在 `;` 键） | none |
 | `trad = 1/0` | 繁体输出（也可 `Ctrl+Shift+F` 或托盘"简繁输出"临时切换） | 0 |
 | `starton = 1/0` | 启动时输入法默认开/关（`Shift` 轻点随时切换） | 1 |
+| `hotkey_toggle = shift_tap` | 开关输入法；也可写组合键如 `ctrl+space`，`shift_tap`=轻点 Shift，`none`=禁用 | shift_tap |
+| `hotkey_mode = ctrl+grave` | 切换模式（默认 Ctrl+`） | ctrl+grave |
+| `hotkey_makeword = ctrl+alt+c` | 造词 | ctrl+alt+c |
+| `hotkey_trad = ctrl+shift+f` | 简繁输出切换 | ctrl+shift+f |
+| `key_first = space` | 选第 1 候选 | space |
+| `key_pageup` / `key_pagedown` | 翻页（默认 `minus` / `plus`，PgUp/PgDn 常驻） | - / = |
+| `key_back` / `key_cancel` / `key_raw` | 退格 / 清空 / 原码上屏 | backspace / esc / enter |
+| `key_pickfirst` / `key_picklast` | 以词定字首字 / 尾字 | lbracket / rbracket |
+
+组合键写法：`修饰键+主键`（ctrl/alt/shift/win，可多个）。键名：`a-z`、`0-9`、`f1-f12`、`space`、`enter`、`esc`、`backspace`、`tab`、`pgup`、`pgdn`、`left/right/up/down`、`home`、`end`、`grave`（反引号）、`minus`、`plus`、`lbracket`、`rbracket`、`semicolon`、`quote`、`comma`、`period`、`slash`、`backslash`。候选操作键勿用 `a-z`/`0-9`（与编码输入冲突）。
 | `phrase = 编码<TAB>文本` | 自定义短语：输入编码出长文本，文本可含空格，如 `phrase = dz	地址: 某某路5号` | 无 |
 
 - 短语优先：编码命中短语时它排候选第一位，空格直接上屏；
