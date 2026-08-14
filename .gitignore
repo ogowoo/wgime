@@ -1,0 +1,5 @@
+*.bak-*
+db
+ecdict-*.zip
+import_wb.txt.bak-gboard
+wgime - Copy.bat

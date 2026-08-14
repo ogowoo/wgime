@@ -1,0 +1,3 @@
+# wgime.bat MUST stay pure LF / no BOM (see docs/WGIME_技术文档.md §11.2).
+# core.autocrlf would convert LF -> CRLF on checkout, which breaks the embedded C# extractor & rebuild.
+wgime.bat text eol=lf
