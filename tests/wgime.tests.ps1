@@ -140,21 +140,39 @@ try {
     $wb.Dispose()
 }
 
-# --- 8. tray 反查编码 toggle must persist showcode into config.txt (keep comments/other keys) ---
+# --- 8. tray 反查编码/简繁 toggle must persist keys into config.txt (keep comments/other keys) ---
 $tmpCfg = Join-Path $env:TEMP 'wgime_cfg_test'
 New-Item -ItemType Directory -Path $tmpCfg -Force | Out-Null
 try {
     $cfg = Join-Path $tmpCfg 'config.txt'
     [IO.File]::WriteAllText($cfg, "; comment line`nfuzzy = zh-z,ch-c`npaste = key`nstarton = 0`n", (New-Object System.Text.UTF8Encoding($false)))
     [WordBoard]::BatDir = $tmpCfg
-    $scs = [WordBoard].GetMethod('SaveConfigShowCode', [Reflection.BindingFlags]'Static,NonPublic')
-    $scs.Invoke($null, @($true))
+    $sck = [WordBoard].GetMethod('SaveConfigKey', [Reflection.BindingFlags]'Static,NonPublic')
+    $sck.Invoke($null, @('showcode', '1'))
     $t = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
-    T 'SaveConfigShowCode(true) writes showcode = 1' ($t -match 'showcode = 1') ("cfg:`n$t")
-    T 'SaveConfigShowCode keeps other keys/comments' ($t -match 'fuzzy = zh-z,ch-c' -and $t -match '; comment line' -and $t -match 'paste = key' -and $t -match 'starton = 0') ("cfg:`n$t")
-    $scs.Invoke($null, @($false))
+    T 'SaveConfigKey writes showcode = 1' ($t -match 'showcode = 1') ("cfg:`n$t")
+    T 'SaveConfigKey keeps other keys/comments' ($t -match 'fuzzy = zh-z,ch-c' -and $t -match '; comment line' -and $t -match 'paste = key' -and $t -match 'starton = 0') ("cfg:`n$t")
+    $sck.Invoke($null, @('showcode', '0'))
     $t2 = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
-    T 'SaveConfigShowCode(false) flips to showcode = 0 (no duplicates)' (([regex]::Matches($t2, 'showcode = 0')).Count -eq 1 -and ([regex]::Matches($t2, 'showcode')).Count -eq 1) ("cfg:`n$t2")
+    T 'SaveConfigKey flips showcode to 0 (no duplicates)' (([regex]::Matches($t2, 'showcode = 0')).Count -eq 1 -and ([regex]::Matches($t2, 'showcode')).Count -eq 1) ("cfg:`n$t2")
+    $sck.Invoke($null, @('trad', '1'))   # 简繁输出持久化: same helper, different key
+    $t3 = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
+    T 'SaveConfigKey writes trad = 1' ($t3 -match 'trad = 1') ("cfg:`n$t3")
+    T 'SaveConfigKey showcode+trad coexist (no dupes)' (([regex]::Matches($t3, 'showcode')).Count -eq 1 -and ([regex]::Matches($t3, 'trad')).Count -eq 1) ("cfg:`n$t3")
+    # Hook_OnToggleTrad persists too (the real toggle entry point)
+    $htt = [WordBoard].GetMethod('Hook_OnToggleTrad', [Reflection.BindingFlags]'Instance,NonPublic')
+    $wb2 = New-Object WordBoard
+    try {
+        [WordBoard]::Trad = $false
+        $htt.Invoke($wb2, @())
+        $t4 = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
+        T 'Hook_OnToggleTrad writes trad = 1' ($t4 -match 'trad = 1') ("cfg:`n$t4")
+        $htt.Invoke($wb2, @())
+        $t5 = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
+        T 'Hook_OnToggleTrad flips back to trad = 0' ($t5 -match 'trad = 0') ("cfg:`n$t5")
+    } finally {
+        $wb2.Dispose()
+    }
 } finally {
     Remove-Item $tmpCfg -Recurse -Force -ErrorAction SilentlyContinue
 }
