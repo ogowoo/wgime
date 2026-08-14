@@ -54,3 +54,26 @@ wgime.bat
 ```
 
 详见 [docs/WGIME_技术文档.md](docs/WGIME_技术文档.md)。
+
+## 数据来源与许可
+
+本仓库随附的词库与资源数据来源如下，使用前请确认符合各自许可：
+
+| 文件 | 来源 | 说明 |
+|---|---|---|
+| `py.txt` | 内置基础拼音表 + **Gboard 词库**（按词频取前 40 万词） | 拼音扩展词库，`码 词1 词2…` |
+| `import_py.txt` | **Gboard 词库** 150 万词转拼音（与内置一致率 96.7%，异读差异） | 码表导入产物，启动自动叠加 |
+| `import_wb.txt` | **Gboard 词库** 150 万词按 86 组词规则 + 内置双字词投票取码（准确率 100%） | 五笔扩展，启动自动叠加 |
+| `ec.txt` | **ECDICT**（[skywind3000/ECDICT](https://github.com/skywind3000/ECDICT)，340 万词条，MIT 协议），过滤 `^[a-z]{1,32}$` 纯单词 33.4 万条 | 英汉词典模式 |
+| `wgime.bat` 内嵌 emoji | **Microsoft Fluent Emoji 3D**（微软官方开源，MIT 协议，Windows 11 同款风格） | vf 面板彩色 emoji 图片 |
+| `wgime.bat` 内置简繁映射 | **OpenCC** TSCharacters 单字映射（3602 对） | 简繁输出 |
+
+**注意**：
+- Gboard 词库由 Google 提供，转换后的词表仅用于个人输入法使用；如涉及商业分发请自行确认 Gboard 词库的许可条款。
+- ECDICT 为 MIT 协议，本仓库仅使用其纯单词条目。
+- 删除以上任一 txt 词库文件，`wgime.bat` 仍可独立运行（使用内置基础表），只是候选量减少；需要完整词库时再放回同名文件即可。
+
+## License
+
+代码部分（`wgime.bat`、`rebuild.ps1`、`tests/`、`docs/`）遵循 MIT 协议，详情见各文件头注释。随附词库数据的许可见上表。
+
