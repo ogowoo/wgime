@@ -140,6 +140,25 @@ try {
     $wb.Dispose()
 }
 
+# --- 8. tray 反查编码 toggle must persist showcode into config.txt (keep comments/other keys) ---
+$tmpCfg = Join-Path $env:TEMP 'wgime_cfg_test'
+New-Item -ItemType Directory -Path $tmpCfg -Force | Out-Null
+try {
+    $cfg = Join-Path $tmpCfg 'config.txt'
+    [IO.File]::WriteAllText($cfg, "; comment line`nfuzzy = zh-z,ch-c`npaste = key`nstarton = 0`n", (New-Object System.Text.UTF8Encoding($false)))
+    [WordBoard]::BatDir = $tmpCfg
+    $scs = [WordBoard].GetMethod('SaveConfigShowCode', [Reflection.BindingFlags]'Static,NonPublic')
+    $scs.Invoke($null, @($true))
+    $t = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
+    T 'SaveConfigShowCode(true) writes showcode = 1' ($t -match 'showcode = 1') ("cfg:`n$t")
+    T 'SaveConfigShowCode keeps other keys/comments' ($t -match 'fuzzy = zh-z,ch-c' -and $t -match '; comment line' -and $t -match 'paste = key' -and $t -match 'starton = 0') ("cfg:`n$t")
+    $scs.Invoke($null, @($false))
+    $t2 = [IO.File]::ReadAllText($cfg, [Text.Encoding]::UTF8)
+    T 'SaveConfigShowCode(false) flips to showcode = 0 (no duplicates)' (([regex]::Matches($t2, 'showcode = 0')).Count -eq 1 -and ([regex]::Matches($t2, 'showcode')).Count -eq 1) ("cfg:`n$t2")
+} finally {
+    Remove-Item $tmpCfg -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host ""
 Write-Host "== $passed passed, $failed failed ==" -ForegroundColor Cyan
 if ($failed -gt 0) { exit 1 }
