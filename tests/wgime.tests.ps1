@@ -114,6 +114,32 @@ T 'WgLog rotation present (>1MB -> .old)' ($src -match '\$len -gt 1MB')
 T 'ParseDict streaming (StringReader, no Split)' ($src -match 'new StringReader\(text\)')
 T 'CharPy lazy: cache-hit path skips BuildCharPy' ($src -match 'if \(mb != null\) return mb;')
 
+# --- 7. vf panel digit bug: stale v-mode DigitAsCode must be cleared inside the panel ---
+# Real WordBoard instance: simulate typing 'v' (DigitAsCode=true) then 'f' -> ShowCharatar must reset it to false,
+# so the NEXT digit key goes to OnSpaced (pick category) instead of extending the code buffer.
+[WordBoard]::Shuangpin = 0
+[WordBoard]::Hook = New-Object KeyBordHook
+$wb = New-Object WordBoard
+try {
+    $keysF = [WordBoard].GetField('keys', [Reflection.BindingFlags]'Instance,NonPublic')
+    $sc = [WordBoard].GetMethod('ShowCharatar', [Reflection.BindingFlags]'Instance,NonPublic')
+    [KeyBordHook]::DigitAsCode = $true    # leftover from typing 'v'
+    [KeyBordHook]::SemiAsCode = $true     # leftover from mspy shuangpin
+    $keysF.SetValue($wb, 'vf')
+    $sc.Invoke($wb, @())
+    T 'vf panel resets DigitAsCode=false (vf5 bug)' ([KeyBordHook]::DigitAsCode -eq $false) ("DigitAsCode=" + [KeyBordHook]::DigitAsCode)
+    T 'vf panel resets SemiAsCode=false' ([KeyBordHook]::SemiAsCode -eq $false) ("SemiAsCode=" + [KeyBordHook]::SemiAsCode)
+    # picking a category then ShowCharatar keeps showing category contents (symCat stays, cands filled)
+    $symF = [WordBoard].GetField('symCat', [Reflection.BindingFlags]'Instance,NonPublic')
+    $candsF = [WordBoard].GetField('cands', [Reflection.BindingFlags]'Instance,NonPublic')
+    $symF.SetValue($wb, 5)                # emoji category
+    $sc.Invoke($wb, @())
+    $cands = $candsF.GetValue($wb)
+    T 'vf category 5 shows emoji candidates' ($cands.Count -gt 0) ("cands=" + $cands.Count)
+} finally {
+    $wb.Dispose()
+}
+
 Write-Host ""
 Write-Host "== $passed passed, $failed failed ==" -ForegroundColor Cyan
 if ($failed -gt 0) { exit 1 }
