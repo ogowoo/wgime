@@ -1,6 +1,6 @@
 # WgIme 技术文档
 
-> 版本：2026-08-13（含"码表导入/固化/效率扩展"功能）　适用文件：`wgime.bat`（单文件，约 2500 行）
+> 版本：2026-08-16（含"码表导入/固化/效率扩展/应用启动器/内嵌应用/插件系统/首次播种"）　适用文件：`wgime.bat`（单文件）
 
 ## 1. 概述
 
@@ -14,7 +14,10 @@ WgIme 是一个 **单文件悬浮输入法**（覆盖层 IME），支持拼音 /
 | 词典 | 内嵌表（**全单字**：拼音 26,719 字 / 五笔 17,366 字，BMP CJK + 〇 + 扩展A 区基本打尽，单文件即可打出所有有读音的汉字）+ 目录 txt 扩展（词语）+ 导入文件 + 用户词 + 词频记忆 |
 | 缓存 | `%LOCALAPPDATA%\wgime\wgime.mb` 二进制词典缓存（MD5 失效校验） |
 | 码表导入/固化 | 托盘导入常见码表（§5）；一键把合并词库烘焙进内置表（§6），之后可删除 txt 源文件 |
-| 效率扩展 | 以词定字、rq/sj/xq 动态候选、自定义短语、五笔 z 通配符、反查编码、config.txt 配置、剪贴板粘贴上屏（§7） |
+| 效率扩展 | 以词定字、rq/sj/xq 动态候选、自定义短语、五笔 z 通配符、反查编码、config.txt 配置、剪贴板粘贴上屏（§7）、光标跟随/空闲隐藏（§3.2）、Qt 注入修复 keyfix（§3.4） |
+| 应用启动器 | 编码精确匹配 → `▶名称` 候选置顶 → 选中**启动而非上屏**；内置 计算器/工具箱/网络工具/剪贴板历史/便签/颜色拾取/插件管理（§7.3） |
+| 插件系统 | `plugins\*.txt` 纯文本插件（步骤 DSL 或内嵌 C#/WinForms，CodeDom 内存编译），自动注册进启动器（§7.4，规范见 `docs/WGIME_插件规范.md`） |
+| 首次播种 | 首次运行自动生成 tools.txt + plugins 示例与 README（`provisioned.done` 哨兵，§2） |
 | 运行环境 | Windows PowerShell 5.1（.NET Framework 4.x），Win11 实测 |
 
 ## 2. 文件结构与启动链
@@ -33,8 +36,12 @@ wgime.bat
 │    ├─ WgLog 日志函数（追加写 %TEMP%\WgIme_error.log）
 │    ├─ 加载 System.Windows.Forms / System.Drawing
 │    ├─ 三个内嵌 here-string 数据表：$pyData（拼音）、$wbData（五笔）、$ecData（英汉）
+│    │    （**全单字内嵌**：拼音 26,719 字 / 五笔 17,366 字，由根目录 `build-full-singles.ps1`
+│    │      从 py.txt/wb.txt 单字 + tests/pinyin-data.txt（mozillazg Unihan 派生表，声调符号
+│    │      剥离、ü→v）合并生成；每次跑自带时间戳备份，字典缓存经 InputMd5 自动失效重建）
 │    ├─ $cs = @'…'@ ：完整 C# 源码（命名空间外平铺类：KeyBordHook、WordBoard、MbData…）
-│    └─ DLL 加载器（见 2.1）：优先加载预编译 DLL，失败回退内存编译 $cs
+│    ├─ DLL 加载器（见 2.1）：优先加载预编译 DLL，失败回退内存编译 $cs
+│    └─ 首次播种（§7.5）：provisioned.done 哨兵 + 四段内嵌种子文本
 ├─ [末尾]  ###WGIME_DLL### 标记
 └─ [末行]  base64 编码的预编译 DLL（单行，当前约 63 KB）
 ```
@@ -106,7 +113,7 @@ wgime.bat
 2. `AddAcro` 简拼（如 `zg → 中国`）；候选不足 9 个时 `AddFuzzy` 模糊音补全（zh/z、ch/c、sh/s、ang/an、eng/en、ing/in、n/l 单次替换，最多 16 个变体）。
 3. 排序：词频（`Freq`）降序；若本码在 `LastPick` 中有上次选择，直接置顶。
 4. 上限：`CandCap=60`，`PageSize=9`（一页 9 个，1-9 选，Space 选第 1 个）。
-5. 扩展候选（模式 0-2，词频排序之后插入，恒在首位区）：`AddDynamic`（rq/sj/xq → 日期/时间/星期）→ `AddPhrase`（config.txt 短语，含空格文本，最顶）→ 五笔模式含 `z` 时 `AddWubiWildcard`（对 wb 表线性扫描通配匹配）。
+5. 扩展候选（模式 0-2，词频排序之后插入，恒在首位区）：`AddDynamic`（rq/sj/xq → 日期/时间/星期）→ `AddAppCand`（应用启动器：编码精确命中 `Apps` 注册表时插入 `▶名称` 候选，`appSet` 标记——选中时 `LaunchApp` 启动而非上屏、不学习；五笔四码自动上屏有守卫）→ `AddPhrase`（config.txt 短语，含空格文本，最顶）→ 五笔模式含 `z` 时 `AddWubiWildcard`（对 wb 表线性扫描通配匹配）。
 6. 五笔惯例：**纯五笔模式下**，4 码精确命中且无可扩展前缀时自动上屏**首个候选**（无需空格，候选列表不显示；同码多词时可用 Backspace 退回三码查看全部候选）。
 7. 反查编码（`ShowCode`）：候选后附 `(码)` —— 拼音/混合模式取 `RevWb`（词→五笔码反向表，`ApplySwap` 时从 wb 表构建），五笔模式取 `CodeFor`（CharPy 拼接全拼）。
 
@@ -288,6 +295,30 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 - vf 符号面板：`ShowCharatar` 在 `keys=="vf"` 时短路词典管线（与模式、词库无关）；`symCat`（0=根目录，1..5=分类）驱动两级候选。根目录数字选分类、空格忽略；分类内数字/空格选符号上屏（跳过 `Learn`/`RecordCommit`，不污染词频），`=`/`-` 复用现有翻页；退格回根目录、Esc/Enter 关闭、字母键退出面板（`keys` 变长即 `symCat` 复位）；面板内标点/以词定字被守卫，不自动提交"分类名"。符号数据为 `SymCatNames`/`SymCats` 静态数组（5 类 141 符号，含代理对 emoji，经 `FillUnicodeEvents` 上屏）。
 - 候选条 emoji 渲染：GDI+ Label 无字体回退，emoji 最初画成方块。自定义 `BarLabel` 把文本按 run 拆分（`Runs`）：基础 run（微软雅黑）走 GDI+ `DrawString`；emoji/符号 run（U+2190–U+2BFF、代理对、VS16，`EmojiAt` 判定）**优先绘制内嵌彩色 PNG**。背景：逐路径探针实测，GDI（不支持 COLRv1）、GDI+（无彩色字体支持）、RichEdit 2.0/5.0、WPF 软件光栅器在这台 Win11 上全部只画单色轮廓，硬件 D2D 又无法用于 Opacity 分层窗口——**图片是唯一可靠彩色路径**。33 个 emoji 分类符号内嵌 Microsoft Fluent Emoji 3D 图（48px PNG，MIT 协议，微软官方开源、Windows 11 同款风格；base64 存 `EmojiPngs`，`EmojiImage` 惰性解码缓存），按 `Font.GetHeight()+2` 等比缩放绘制；无图片的符号回退 GDI 单色字形。宽度由 `BarWidth` 按 run/字符（图片宽）测量。
 
+### 7.3 应用启动器与内嵌应用
+
+- **注册表**：`Apps: code -> [名称, 命令, 参数]`。内置编码：`jsq`/`calc`（计算器）、`itools`/`tools`（工具箱）、`net`/`wlgj`（网络工具）、`clip`/`jlb`（剪贴板历史）、`bj`/`notes`（便签）、`ys`/`color`（颜色拾取）、`plugins`/`cjgl`（插件管理）。config.txt 可挂外部程序/目录/网址：`app = 码<TAB>名称<TAB>命令[<TAB>参数]`（`UseShellExecute` 打开）。
+- **候选注入**：`AddAppCand` 在编码精确命中时把 `▶名称` 插到候选最顶（双拼下停用，与 rq/sj/xq 同理）；`Hook_OnSpaced` 命中 `appSet` 时走 `LaunchApp` 而非 `Send`，跳过 `Learn`/`RecordCommit`。
+- **命令类型**：`builtin:xxx` → 内嵌窗体；`plugin:<file>` → 步骤 DSL 插件；`codeplugin:<file>` → C# 插件；其余 → `Process.Start`。
+- **内嵌窗体**（全部 TopMost、Esc 关闭、后台线程干活不卡 UI）：
+  - `CalcForm`：递归下降表达式解析（+ - * / % 括号，全角 ×÷（）自适应，整数/双精度格式化）；
+  - `ToolsForm`：tools.txt 驱动的多标签按钮面板 + 日志窗（步骤后台线程逐条执行，confirm 可中止）；
+  - `NetToolsForm`：Ping/Tracert（`System.Net.NetworkInformation.Ping`）/子网计算（`SubnetCalc`：/31、/32、非连续掩码等边界全处理）/端口检测（BeginConnect+超时）/本机信息；日志带时间戳、只增不减、可保存；
+  - `ClipForm`：`AddClipboardFormatListener` + `WM_CLIPBOARDUPDATE` 监听（窗体开着才监听），`ClipPush` 去重置顶、上限 200，点选复制回剪贴板（`selfSet` 防自环）；
+  - `NoteForm`：800ms 防抖自动保存 `%LOCALAPPDATA%\wgime\notes.txt`；
+  - `ColorForm`：取色期间挂临时 `WH_MOUSE_LL` 钩子（左键取色并吞掉这次点击、右键取消），`CopyFromScreen` 取像素，显示 HEX/RGB/HSV 并可复制；
+  - `PluginMgrForm`：插件列表（名称/编码/类型/编译状态/文件）+ 重载/打开目录/编辑/删除（带确认）/新建模板。**有意不进托盘菜单**（工具箱同为启动器唤出）。
+
+### 7.4 工具箱与插件系统（tools.txt / plugins\）
+
+- **tools.txt**：bat 同目录，UTF-8。`[tab 名]` 开标签页、`[按钮名]` 加按钮、其余行为步骤。步骤动词：`msg`/`confirm`/`run`/`shell`/`open`/`kill`/`wait`/`reg-set`/`reg-del`/`file-del`（通配+递归+根目录保护）/`mkdir`；`[shell]...[/shell]`（临时 .cmd，ANSI）与 `[powershell]...[/powershell]`（临时 .ps1，**UTF-8 BOM + 强制 UTF-8 输出**——PS 5.1 无 BOM 按 ANSI 读、重定向时默认 ASCII 会把中文变 `??`，两个坑都已在 `RunScriptBlock` 处理）多行块。解析：`ToolToks`（引号分词）+ `ToolPath`（引号剥离+环境变量展开）+ `ToolRegSplit`（HKCU 等 hive 映射）；执行 `ExecToolStep`（null=成功，`"abort"`=用户取消，其余=错误文本）。
+- **plugins\\*.txt**：头部 `code`/`name`/`desc`（`=`/`:` 均可），之后为步骤区；**`[csharp]` 块则整件变代码插件**：CodeDom 内存编译（引用 System/Forms/Drawing/Core/Data，**C# 5 语法**），契约 = 一个 `public static void Run()`；编译错误缓存，运行时气泡报行号。`Run()` 在 IME UI 线程执行（可直接 `Show()` 窗体；长任务自开线程）。插件最后注册，编码冲突时覆盖内置与 config。
+- 结构要点：`ParseToolSteps` 为步骤/脚本块共用解析器；`PluginActions`（步骤插件）与 `PluginCodeCache`（代码插件）分存；`LoadPlugins` 由 `LoadConfig` 末尾调用（重载配置即时生效）。
+
+### 7.5 首次运行播种
+
+PS 引导层在 `RunApp` 之前内嵌四段 here-string 种子（`$seedTools`/`$seedPluginReadme`/`$seedCleanBin`/`$seedClock`）。哨兵 `%LOCALAPPDATA%\wgime\provisioned.done` 存在则跳过；否则写出缺失的 `tools.txt`、`plugins\README.txt`（精简规范）、`clean-bin.txt`、`clock.txt` 并落哨兵。**绝不覆盖已有文件**；用户删除示例不复活，删哨兵可重播。种子与仓库文件的逐字节一致性由 `tests/seed-sync.tests.ps1`（14 项）守住。
+
 ## 8. 线程模型与并发
 
 | 线程 | 职责 |
@@ -309,6 +340,9 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 | `wgime.bat.bak-yyyyMMdd-HHmmss` | 固化码表前的滚动备份，自动保留最新 7 份 |
 | `py.txt` / `wb.txt` / `ec.txt` | 扩展词典（`码 词 词…`，UTF-8），可选 |
 | `import_py.txt` / `import_wb.txt` / `import_ec.txt` | 码表导入产物，启动自动叠加，删除即撤销导入 |
+| `tools.txt` | 工具箱配置（§7.4），首次运行自动播种 |
+| `plugins\` | 插件目录（§7.4）：`README.txt` + `clean-bin.txt` + `clock.txt` 为播种示例 |
+| `build-full-singles.ps1` | 全单字内嵌表构建脚本（§4.1 注） |
 
 **%LOCALAPPDATA%\wgime\**
 
@@ -318,8 +352,10 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 | `WgIme.<hash>.dll` | 预编译载荷（自动维护，旧版自动清理） |
 | `userdict.txt` / `lastpick.txt` | 词频与每码上次选择 |
 | `userwords.txt` | 用户造词 |
-| `pos.txt` | 候选条位置 |
-| `pastemode.txt` | 按进程上屏方式覆盖（`程序名.exe=clipboard/sendkeys/key`），托盘切换自动维护 |
+| `pos.txt` | 候选条位置（followcaret=1 时仅作兜底） |
+| `pastemode.txt` | 按进程上屏方式覆盖（`程序名.exe=clipboard/sendkeys/key/keyfix/keyplain`），托盘切换自动维护 |
+| `notes.txt` | 便签内容（bj/notes 自动保存） |
+| `provisioned.done` | 首次播种哨兵（存在则跳过播种；删除可重播） |
 | `mb_error.log` | 词典构建异常日志 |
 
 ## 10. 日志与排错
@@ -338,33 +374,34 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 用 **Windows PowerShell 5.1**（勿用 pwsh 7，.NET Core 编出的程序集无法被 5.1 加载）：
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$path = 'C:\Tools\WgIme\wgime.bat'
-$txt  = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
-
-# 1) 提取 $cs here-string 源码（"cs = @'" 之后到首个行首 '@）
-$i     = $txt.IndexOf('cs = @''')
-$start = $txt.IndexOf("`n", $i) + 1
-$end   = $txt.IndexOf("`n'@", $start)
-$cs    = $txt.Substring($start, $end - $start)
-
-# 2) 编译（失败则 bat 未被改动，安全）
-Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing `
-         -OutputAssembly "$env:TEMP\wgime_new.dll" -OutputType Library -ErrorAction Stop
-
-# 3) base64 替换载荷行（文件必须保持 LF 换行、无 BOM、UTF-8）
-$b64   = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:TEMP\wgime_new.dll"))
-$lines = $txt -split "`n"
-$mi    = [Array]::IndexOf($lines, '###WGIME_DLL###')      # 应为倒数第 3 个元素
-if ($mi -lt 0 -or $mi -ne ($lines.Count - 3)) { throw 'marker not at expected position - aborting' }
-$lines[$mi + 1] = "'" + $b64 + "'"    # 单引号包裹：PS 无害语句；加载器用 -replace "'" 去引号
-[IO.File]::WriteAllText($path, [string]::Join("`n", $lines),
-                        (New-Object System.Text.UTF8Encoding($false)))
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 ```
 
-运行时首次启动会按 `MD5(base64)前8位` 生成新 DLL 名并自动清理旧版本。
+脚本解剖（rebuild.ps1）：提取 `$cs` here-string → 编译到 `%TEMP%\wgime_new.dll`（引用 System.Windows.Forms / System.Drawing / UIAutomationClient / UIAutomationTypes / WindowsBase；失败则 bat 不被改动）→ base64 替换 `###WGIME_DLL###` 载荷行（单引号包裹）→ 硬断言无 BOM、纯 LF。运行时首次启动会按 `MD5(base64)前8位` 生成新 DLL 名并自动清理旧版本。
 
-### 11.2 编码与格式约束（踩坑清单）
+**只改数据/引导层不用重建**：内嵌码表用 `build-full-singles.ps1`（全单字合并：内嵌 + py.txt/wb.txt 单字 + Unihan 派生表 tests/pinyin-data.txt 补齐，自带时间戳备份与 LF/BOM 校验）；PS 引导层（含播种种子）改动直接生效。
+
+### 11.2 测试套件清单
+
+全部用 PowerShell 5.1 跑（`powershell.exe -File tests\xxx.ps1`）：
+
+| 文件 | 覆盖 |
+|---|---|
+| `wgime.tests.ps1` | 词典管线/缓存/造词/配置写回等核心夹具（22 项） |
+| `e2e-real-dict.ps1` | 真实码表端到端构建与缓存命中 |
+| `check-payload-consistency.ps1` | 内嵌 DLL 载荷 IL 与 $cs 新编译逐方法一致（防忘重建） |
+| `keyfix-mode-check.ps1` | 标点吞字修复路由（StaleTrigger 表 / EffectiveKeyfix 优先级） |
+| `keyfix-neutral-check.ps1` / `keyfix-neutral-dump.ps1` | X+退格在普通控件自我中和（字节级断言 / 消息流取证） |
+| `wechat-*.ps1` | 真实微信注入复现/方案验证/出厂代码端到端（需要微信开着） |
+| `caret-follow.tests.ps1` / `caret-probe*.ps1` / `caret-wechat-verify.ps1` | 光标跟随三级回退（真实 caret / 微信实测锚点） |
+| `app-launcher.tests.ps1` | 计算器解析器 / Apps 注册表 / 窗体渲染 |
+| `tools.tests.ps1` | tools.txt DSL 解析与执行（含脚本块、注册表回环、根目录守卫） |
+| `plugins-applets.tests.ps1` | 插件系统（DSL + C# 编译 + 覆盖优先级）/ 剪贴板/便签/取色 / 插件管理窗体 |
+| `nettools.tests.ps1` | 子网计算边界 / ping / tracert / 端口检测 / 本机信息 |
+| `dict-coverage.ps1` | 内嵌表单字覆盖率分析（配合 build-full-singles.ps1 验收） |
+| `seed-sync.tests.ps1` | 首次播种种子与仓库文件逐字节一致 + 播种逻辑结构断言 |
+
+### 11.3 编码与格式约束（踩坑清单）
 
 1. **C# 5.0**（CodeDom/csc）：禁 `$"…"` 插值、`?.`、表达式体成员、`nameof`、`using static`。
 2. **文件为纯 LF 换行、无 BOM、UTF-8**——任何编辑工具不得转换行尾或加 BOM（重建脚本会硬断言布局）。
@@ -372,10 +409,12 @@ $lines[$mi + 1] = "'" + $b64 + "'"    # 单引号包裹：PS 无害语句；加�
 4. `###WGIME_DLL###` 全文件只出现一次（加载器代码里拆成两段字符串拼接），勿在别处复制该字样。
 5. SendKeys 输出需经 `Sanitize` 转义；钩子依赖 `LLKHF_INJECTED` 防回环。
 6. 候选词不得含空格（分隔符冲突），导入转换器已自动跳过此类词条。
+7. **PS 5.1 读无 BOM 的 .ps1 按 ANSI 解码**——所有测试/工具脚本必须纯 ASCII，中文一律用码点构造；多行 PS 块的临时 .ps1 由 `RunScriptBlock` 带 BOM 写出。
+8. **PowerShell 反射三坑**：函数返回的集合会被管道拆包（单元素 List 被拆成本体，`.Count` 量出的是元素数——用 `(, $v)` 或强类型变量阻止）；`@()` 里内联 `New-Object` 会包 PSObject 导致反射绑定失败（先赋给强类型变量）；私有嵌套类字段只能走 `GetField(..., NonPublic)` 读，ETS 不暴露。
 
 ## 12. 已知局限
 
-- **SendKeys 上屏**：管理员权限窗口/部分 UWP 应用可能拒绝注入；游戏全屏输入不支持。
+- **注入上屏**：管理员权限窗口/部分 UWP 应用可能拒绝注入；游戏全屏输入不支持。Qt 应用（微信 4.x）的 VK_PACKET 陈旧字符问题已由 keyfix 全局修复（§3.4）；顽固程序可按进程覆盖（pastemode.txt）。
 - 单实例（Mutex `WgImeSingleInstance`）。
 - 码表词条不支持内嵌空格；每码候选上限 60（显示）、每码存储上限 300（导入）。
 - 钩子放行一切含 Ctrl/Alt/Win 的组合键，无法自定义组合快捷键。
