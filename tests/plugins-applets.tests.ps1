@@ -18,6 +18,31 @@ $dll = Join-Path $env:TEMP 'wgime_new.dll'
 if (-not (Test-Path $dll)) { throw "rebuilt DLL not found: $dll (run rebuild.ps1 first)" }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -ReferencedAssemblies System.Drawing,System.Windows.Forms -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Windows.Forms;
+public static class FormShot
+{   // pure C# delegates: PS scriptblocks cannot run on a foreign thread (no runspace there)
+    public static void InvokeSave(Form f, string path)
+    {
+        f.Invoke(new MethodInvoker(delegate {
+            var bmp = new Bitmap(f.Width, f.Height);
+            f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+            bmp.Save(path, ImageFormat.Png);
+        }));
+    }
+    public static void InvokeClose(Form f) { f.Invoke(new MethodInvoker(delegate { f.Close(); })); }
+    public static int TabCount(Form f)
+    {
+        return (int)f.Invoke(new Func<int>(delegate {
+            foreach (Control c in f.Controls) { var tc = c as TabControl; if (tc != null) return tc.TabPages.Count; }
+            return -1;
+        }));
+    }
+}
+'@
 $asm = [Reflection.Assembly]::LoadFile($dll)
 $wbType = $asm.GetType('WordBoard')
 $fl = [Reflection.BindingFlags] 'Static, Public, NonPublic'
@@ -206,6 +231,25 @@ $png = Join-Path $PSScriptRoot 'pluginmgr-form.png'
 $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
 $mgr.Close()
 Check "mgr form rendered"  (Test-Path $png)                                                         "True"
+
+# ---- 5c) clock plugin end-to-end: dedicated thread, 4 tabs, renders ----
+$hostObj = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($wbType)
+$runCodeM = $wbType.GetMethod('RunCodePlugin', $fln)
+$runCodeM.Invoke($hostObj, @('C:\Tools\WgIme\plugins\clock.txt'))
+$clockForm = $null
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 150
+    $clockForm = [System.Windows.Forms.Application]::OpenForms | Where-Object { $_.Text -eq 'WgIme Clock' } | Select-Object -First 1
+    if ($clockForm -ne $null) { break }
+}
+Check "clock plugin form"      ($clockForm -ne $null)                                               "True"
+if ($clockForm -ne $null) {
+    Check "clock has 4 tabs"   ([FormShot]::TabCount($clockForm))                                   "4"
+    $cpng = Join-Path $PSScriptRoot 'clock-form.png'
+    [FormShot]::InvokeSave($clockForm, $cpng)
+    Check "clock rendered"     (Test-Path $cpng)                                                    "True"
+    [FormShot]::InvokeClose($clockForm)
+}
 
 # ---- 6) forms render ----
 function Shot($typeName, $pngName) {
