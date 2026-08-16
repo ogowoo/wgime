@@ -312,7 +312,7 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 ### 7.4 工具箱与插件系统（tools.txt / plugins\）
 
 - **tools.txt**：bat 同目录，UTF-8。`[tab 名]` 开标签页、`[按钮名]` 加按钮、其余行为步骤。步骤动词：`msg`/`confirm`/`run`/`shell`/`open`/`kill`/`wait`/`reg-set`/`reg-del`/`file-del`（通配+递归+根目录保护）/`mkdir`；`[shell]...[/shell]`（临时 .cmd，ANSI）与 `[powershell]...[/powershell]`（临时 .ps1，**UTF-8 BOM + 强制 UTF-8 输出**——PS 5.1 无 BOM 按 ANSI 读、重定向时默认 ASCII 会把中文变 `??`，两个坑都已在 `RunScriptBlock` 处理）多行块。解析：`ToolToks`（引号分词）+ `ToolPath`（引号剥离+环境变量展开）+ `ToolRegSplit`（HKCU 等 hive 映射）；执行 `ExecToolStep`（null=成功，`"abort"`=用户取消，其余=错误文本）。
-- **plugins\\*.txt**：头部 `code`/`name`/`desc`（`=`/`:` 均可），之后为步骤区；**`[csharp]` 块则整件变代码插件**：CodeDom 内存编译（引用 System/Forms/Drawing/Core/Data，**C# 5 语法**），契约 = 一个 `public static void Run()`；编译错误缓存，运行时气泡报行号。`Run()` 在 IME UI 线程执行（可直接 `Show()` 窗体；长任务自开线程）。插件最后注册，编码冲突时覆盖内置与 config。
+- **plugins\\*.txt**：头部 `code`/`name`/`desc`（`=`/`:` 均可），之后为步骤区；**`[csharp]` 块则整件变代码插件**：CodeDom 内存编译（引用 System/Forms/Drawing/Core/Data，**C# 5 语法**），契约 = 一个 `public static void Run()`；编译错误缓存，运行时气泡报行号。`Run()` 在**插件专用 STA 线程**（`WgImePlugins`，隐藏 Control 做 BeginInvoke 封送，`Application.Run()` 自持消息循环）执行——插件可直接 `Show()` 窗体，阻塞只波及插件自己的窗口，不影响输入法。插件最后注册，编码冲突时覆盖内置与 config。
 - 结构要点：`ParseToolSteps` 为步骤/脚本块共用解析器；`PluginActions`（步骤插件）与 `PluginCodeCache`（代码插件）分存；`LoadPlugins` 由 `LoadConfig` 末尾调用（重载配置即时生效）。
 
 ### 7.5 首次运行播种

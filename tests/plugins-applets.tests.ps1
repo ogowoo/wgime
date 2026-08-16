@@ -154,6 +154,32 @@ $pcc[$pcFile].GetType().GetField('Entry', $fln).GetValue($pcc[$pcFile]).Invoke($
 Check "codeplugin end-to-end"  ((Get-Content $marker3 -Raw) -eq 'cs-ok')                                "True"
 Remove-Item $tmp3, $marker3 -Recurse -Force -ErrorAction SilentlyContinue
 
+# ---- 4c) code plugins run on the DEDICATED plugin thread ----
+$tmp4 = [string](Join-Path $env:TEMP ('wgime-cthread-' + [guid]::NewGuid().ToString('N')))
+New-Item -ItemType Directory -Path (Join-Path $tmp4 'plugins') | Out-Null
+$marker4 = Join-Path $env:TEMP ('wgime-cthread-' + [guid]::NewGuid().ToString('N') + '.txt')
+$threadPlugin = @"
+code = cth
+name = thread probe
+
+[csharp]
+using System;
+public class ThreadProbe { public static void Run() { System.IO.File.WriteAllText(@"$($marker4 -replace '\\','\\')", System.Threading.Thread.CurrentThread.Name); } }
+[/csharp]
+"@
+[IO.File]::WriteAllText((Join-Path $tmp4 'plugins\tp.txt'), $threadPlugin, (New-Object System.Text.UTF8Encoding($false)))
+$loadC.Invoke($null, @($tmp4))
+$runCodeM = $wbType.GetMethod('RunCodePlugin', $fln)
+$hostObj = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($wbType)
+[string]$tpFile = Join-Path $tmp4 'plugins\tp.txt'
+$runCodeM.Invoke($hostObj, @($tpFile))
+$ok4 = $false
+for ($i = 0; $i -lt 30; $i++) { if (Test-Path $marker4) { $ok4 = $true; break } Start-Sleep -Milliseconds 100 }
+Check "codeplugin executed"      $ok4                                                          "True"
+Check "runs on WgImePlugins"     ((Get-Content $marker4 -Raw) -eq 'WgImePlugins')                "True"
+Check "not the main thread"      ((Get-Content $marker4 -Raw) -ne ([System.Threading.Thread]::CurrentThread.Name))  "True"
+Remove-Item $tmp4, $marker4 -Recurse -Force -ErrorAction SilentlyContinue
+
 # ---- 5) new builtins ----
 $loadC.Invoke($null, @($tmp))        # dir no longer exists -> defaults only
 $apps = $appsF.GetValue($null)

@@ -79,7 +79,7 @@ public class ClockPlugin
 **契约与规则**：
 
 1. 源码里必须有一个类带 **`public static void Run()`** 入口（第一个匹配的类型生效）。
-2. `Run()` 在 **WgIme 的 UI 线程**上被调用：`new Form().Show()` 直接可用；**长时间任务请自己开线程**，否则会卡住输入法。
+2. `Run()` 在**插件专用 STA 线程**（`WgImePlugins`，独立消息循环）上被调用：`new Form().Show()` 直接可用；**插件阻塞/死循环只会卡住它自己的窗体，不会影响输入法打字**——写长任务是安全的（但插件自己的窗体会失去响应）。
 3. 编译引用：`System` / `System.Windows.Forms` / `System.Drawing` / `System.Core` / `System.Data`（mscorlib 默认）。**C# 5 语法**（.NET 4.x 的 CodeDom：没有字符串插值、out var、?.）。
 4. `[csharp]` 块与步骤 DSL **不混用**：有 csharp 块就是代码插件，步骤区忽略。
 5. 编译错误不会炸宿主：插件照常出现在候选里，选中时气泡报编译错误（含行号）。
