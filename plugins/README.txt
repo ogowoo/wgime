@@ -27,9 +27,10 @@
 
 C# 代码插件 (要窗体就用它):
   [csharp] ... [/csharp]            内嵌 C# 源码, 加载时内存编译, 选中运行
-  契约: 含一个 public static void Run(); 跑在 IME 的 UI 线程, 可直接 new Form().Show()
+  契约: 含一个 public static void Run(); 跑在插件专用线程 (WgImePlugins), 可直接 new Form().Show(),
+        插件阻塞不影响输入法打字
   引用: System / Windows.Forms / Drawing / Core / Data; 注意是 C# 5 语法 (.NET 4.x CodeDom)
-  示例: clock.txt (输入 sz 弹悬浮时钟)
+  示例: clock.txt (输入 sz 弹悬浮时钟/倒计时/秒表)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
 完整规范见仓库 docs\WGIME_插件规范.md。

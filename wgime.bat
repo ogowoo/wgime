@@ -26203,9 +26203,10 @@ $seedPluginReadme = @'
 
 C# 代码插件 (要窗体就用它):
   [csharp] ... [/csharp]            内嵌 C# 源码, 加载时内存编译, 选中运行
-  契约: 含一个 public static void Run(); 跑在 IME 的 UI 线程, 可直接 new Form().Show()
+  契约: 含一个 public static void Run(); 跑在插件专用线程 (WgImePlugins), 可直接 new Form().Show(),
+        插件阻塞不影响输入法打字
   引用: System / Windows.Forms / Drawing / Core / Data; 注意是 C# 5 语法 (.NET 4.x CodeDom)
-  示例: clock.txt (输入 sz 弹悬浮时钟)
+  示例: clock.txt (输入 sz 弹悬浮时钟/倒计时/秒表)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
 完整规范见仓库 docs\WGIME_插件规范.md。
@@ -26234,13 +26235,13 @@ msg 回收站已清空
 
 $seedClock = @'
 ; ============================================================
-;  WgIme C# 插件示例: 悬浮时钟
-;  输入 sz 选 ▶悬浮时钟, 弹出一个置顶小时钟 (Esc 关闭)
+;  WgIme C# 插件示例: 悬浮时钟 + 倒计时 + 秒表
+;  输入 sz 选 ▶悬浮时钟, 弹出置顶窗体 (Esc 关闭)
 ;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
 ; ============================================================
 code = sz
 name = 悬浮时钟
-desc = C# 插件示例: 置顶小时钟
+desc = C# 插件示例: 置顶小时钟/倒计时/秒表
 
 [csharp]
 using System;
@@ -26253,29 +26254,137 @@ public class ClockPlugin
     {
         var f = new Form();
         f.Text = "WgIme Clock";
-        f.FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        f.FormBorderStyle = FormBorderStyle.SizableToolWindow;
         f.TopMost = true;
         f.StartPosition = FormStartPosition.CenterScreen;
-        f.ClientSize = new Size(240, 80);
-        f.BackColor = Color.FromArgb(255, 32, 32, 32);
+        f.ClientSize = new Size(340, 230);
+        f.BackColor = Color.FromArgb(255, 24, 24, 28);
+        f.ForeColor = Color.FromArgb(255, 220, 220, 220);
+        f.Font = new Font("Microsoft YaHei UI", 10F);
         f.KeyPreview = true;
 
-        var lbl = new Label();
-        lbl.Dock = DockStyle.Fill;
-        lbl.TextAlign = ContentAlignment.MiddleCenter;
-        lbl.ForeColor = Color.FromArgb(255, 80, 220, 120);
-        lbl.Font = new Font("Consolas", 24F);
-        f.Controls.Add(lbl);
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        f.Controls.Add(tabs);
 
-        var timer = new Timer();
-        timer.Interval = 1000;
-        timer.Tick += delegate { lbl.Text = DateTime.Now.ToString("HH:mm:ss"); };
-        lbl.Text = DateTime.Now.ToString("HH:mm:ss");
+        // ---------- page 1: clock ----------
+        var pageClock = new TabPage("时钟");
+        pageClock.BackColor = f.BackColor;
+        var lblTime = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = Color.FromArgb(255, 80, 220, 120), Font = new Font("Consolas", 34F, FontStyle.Bold) };
+        var lblDate = new Label { Dock = DockStyle.Bottom, Height = 40, TextAlign = ContentAlignment.TopCenter,
+            ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 11F) };
+        pageClock.Controls.Add(lblTime);
+        pageClock.Controls.Add(lblDate);
+        tabs.TabPages.Add(pageClock);
+
+        // ---------- page 2: countdown ----------
+        var pageCd = new TabPage("倒计时");
+        pageCd.BackColor = f.BackColor;
+        var lblRemain = new Label { Location = new Point(0, 14), Width = 316, Height = 64, TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = Color.FromArgb(255, 255, 180, 60), Font = new Font("Consolas", 30F, FontStyle.Bold), Text = "25:00" };
+        var lblMin = new Label { Text = "分钟:", Location = new Point(26, 96), AutoSize = true };
+        var txtMin = new TextBox { Text = "25", Location = new Point(76, 93), Width = 60, BackColor = Color.FromArgb(255, 45, 45, 52),
+            ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+        var btnCdGo = new Button { Text = "开始", Location = new Point(26, 134), Size = new Size(90, 34) };
+        var btnCdReset = new Button { Text = "重置", Location = new Point(200, 134), Size = new Size(90, 34) };
+        pageCd.Controls.Add(lblRemain); pageCd.Controls.Add(lblMin); pageCd.Controls.Add(txtMin);
+        pageCd.Controls.Add(btnCdGo); pageCd.Controls.Add(btnCdReset);
+        tabs.TabPages.Add(pageCd);
+
+        // countdown state
+        var cdTarget = DateTime.MinValue;       // when it fires
+        var cdRemain = TimeSpan.FromMinutes(25);
+        bool cdRunning = false, cdPaused = false;
+        var cdFlash = 0;
+
+        // ---------- page 3: stopwatch ----------
+        var pageSw = new TabPage("秒表");
+        pageSw.BackColor = f.BackColor;
+        var lblSw = new Label { Location = new Point(0, 14), Width = 316, Height = 64, TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = Color.FromArgb(255, 90, 180, 255), Font = new Font("Consolas", 30F, FontStyle.Bold), Text = "00:00.0" };
+        var btnSwGo = new Button { Text = "开始", Location = new Point(26, 96), Size = new Size(90, 34) };
+        var btnSwReset = new Button { Text = "重置", Location = new Point(200, 96), Size = new Size(90, 34) };
+        pageSw.Controls.Add(lblSw); pageSw.Controls.Add(btnSwGo); pageSw.Controls.Add(btnSwReset);
+        tabs.TabPages.Add(pageSw);
+
+        // stopwatch state
+        var swStart = DateTime.MinValue;
+        var swAcc = TimeSpan.Zero;
+        bool swRunning = false;
+
+        var timer = new Timer { Interval = 100 };
+        timer.Tick += delegate {
+            // clock
+            lblTime.Text = DateTime.Now.ToString("HH:mm:ss");
+            lblDate.Text = DateTime.Now.ToString("yyyy-MM-dd ddd");
+            // countdown
+            if (cdRunning) {
+                var left = cdTarget - DateTime.Now;
+                if (left <= TimeSpan.Zero) {
+                    cdRunning = false; cdRemain = TimeSpan.Zero;
+                    btnCdGo.Text = "开始";
+                    System.Media.SystemSounds.Exclamation.Play();
+                    cdFlash = 12;                                    // flash ~1.2s
+                    f.Activate();
+                } else cdRemain = left;
+            }
+            if (cdFlash > 0) {
+                cdFlash--;
+                lblRemain.ForeColor = (cdFlash % 2 == 0) ? Color.FromArgb(255, 255, 180, 60) : Color.FromArgb(255, 255, 60, 60);
+            }
+            lblRemain.Text = FmtCd(cdRemain);
+            // stopwatch
+            var el = swAcc + (swRunning ? DateTime.Now - swStart : TimeSpan.Zero);
+            lblSw.Text = FmtSw(el);
+        };
         timer.Start();
 
+        btnCdGo.Click += delegate {
+            if (cdRunning) {                                        // pause
+                cdRunning = false; cdPaused = true;
+                btnCdGo.Text = "继续";
+                return;
+            }
+            if (cdPaused) {                                         // resume
+                cdTarget = DateTime.Now + cdRemain;
+                cdRunning = true; cdPaused = false;
+                btnCdGo.Text = "暂停";
+                return;
+            }
+            double m;
+            if (!double.TryParse(txtMin.Text, out m) || m <= 0) m = 25;
+            cdRemain = TimeSpan.FromMinutes(m);
+            cdTarget = DateTime.Now + cdRemain;
+            cdRunning = true; cdPaused = false;
+            btnCdGo.Text = "暂停";
+        };
+        btnCdReset.Click += delegate {
+            cdRunning = false; cdPaused = false; cdFlash = 0;
+            double m;
+            if (!double.TryParse(txtMin.Text, out m) || m <= 0) m = 25;
+            cdRemain = TimeSpan.FromMinutes(m);
+            lblRemain.ForeColor = Color.FromArgb(255, 255, 180, 60);
+            btnCdGo.Text = "开始";
+        };
+        btnSwGo.Click += delegate {
+            if (swRunning) { swAcc += DateTime.Now - swStart; swRunning = false; btnSwGo.Text = "继续"; }
+            else { swStart = DateTime.Now; swRunning = true; btnSwGo.Text = "暂停"; }
+        };
+        btnSwReset.Click += delegate { swAcc = TimeSpan.Zero; swRunning = false; btnSwGo.Text = "开始"; };
+
         f.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) f.Close(); };
-        f.FormClosed += delegate { timer.Stop(); timer.Dispose(); lbl.Dispose(); };
+        f.FormClosed += delegate { timer.Stop(); timer.Dispose(); };
         f.Show();
+    }
+
+    static string FmtCd(TimeSpan t)                      // countdown: h:mm:ss or m:ss
+    {
+        if (t.TotalHours >= 1) return (int)t.TotalHours + ":" + t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00");
+        return t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00");
+    }
+    static string FmtSw(TimeSpan t)                      // stopwatch: mm:ss.t
+    {
+        return t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + (t.Milliseconds / 100);
     }
 }
 [/csharp]
