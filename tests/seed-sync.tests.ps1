@@ -44,6 +44,10 @@ Check "seedClock == clock.txt"    ((Norm $sk) -ceq (Norm ([IO.File]::ReadAllText
 
 $sr = GetHereString 'seedPluginReadme'
 Check "seedPluginReadme exists"   ($sr -ne $null -and $sr.Length -gt 500)
+$readmeRepo = Join-Path $root 'plugins\README.txt'
+if (Test-Path $readmeRepo) {
+    Check "seedPluginReadme == plugins/README.txt" ((Norm $sr) -ceq (Norm ([IO.File]::ReadAllText($readmeRepo, [Text.Encoding]::UTF8))))
+}
 
 # ---- 2) provisioning block ----
 Check "marker guard"        ($bat.Contains('provisioned.done'))
