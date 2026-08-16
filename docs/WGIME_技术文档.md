@@ -284,7 +284,7 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 ### 7.2 以词定字 / 动态候选 / 通配符 / 反查
 
 - 用户词管理：托盘"用户词表…" → `ManageUserWords`（inDialog 守卫 + IsLocked 临时关闭，同导入流程）→ `UserWordsDialog`（ListView 复选，词/编码两列 + 全选/全不选/删除选中/关闭）；`UserWords` 按词排序后填充。删除：移除选中词 → `SaveUserWords` 重写 userwords.txt → 后台 `BuildDicts`+`ApplySwap` 热重载（`BuildDicts` 内部重新 `LoadUserWords`，字典管线自洽）→ 气泡反馈。
-- 批量造词：托盘"批量造词…" → `BatchMakeWords`：选文件 → `ReadImportText`（UTF-8/GB18030 自动识别）→ `CollectWordLines`（每行 2-8 汉字、去重、计跳过行）→ `ConfirmWordsDialog` 确认 → `BatchAddWords`（**批量优化**：逐词 `CodeFor` 取拼音码注入 `UserWords`/`PyDict`，最后只做一次 `BuildSorted` + 一次 Acro 注入 + 一次 `SaveUserWords`，避免了 AddUserWord 逐词全量排序/落盘的开销）→ 气泡统计。
+- 批量造词：托盘"批量造词…" → `BatchMakeWords`：选文件 → `ReadImportText`（UTF-8/GB18030 自动识别）→ `CollectWordLines`（每行 2-8 汉字、去重、计跳过行）→ `ConfirmWordsDialog` 确认 → `BatchAddWords`（**批量优化**：逐词 `CodeFor` 取拼音码注入 `UserWords`/`PyDict`，最后只做一次 `BuildSorted` + 一次 Acro 注入 + 一次 `SaveUserWords`，避免了 AddUserWord 逐词全量排序/落盘的开销）→ 气泡统计。**造词双注册（2026-08-16）**：用户词同时进五笔表——`CharWb`（字→全码，最长码优先，一二级简码不参与）惰性构建、词库交换（`ApplySwap`）时失效重建；`WubiCodeFor` 按 86 组词规则推导（两字各取前两码 / 三字前两字首码+末字前两码 / 四字以上一二三末各取首码）；`userwords.txt` 仍只存拼音码，五笔侧在 `BuildDicts` 的 `MergeUserWordsWb` 里启动时推导（旧文件完全兼容），运行时 `AddUserWord`/`BatchAddWords` 即时双注入并各自一次重排序；缺五笔码的字只进拼音。测试 `tests/wubi-userwords.tests.ps1` 18 项全过。
 - 以词定字：钩子拦截有编码时的裸 `[` `]` → `OnPickChar` → 取候选 1 首/尾字上屏并 `Learn` 记功整词；候选为空时退回中文标点 【 】。
 - 动态候选：`AddDynamic` 精确匹配 `rq`（yyyy-MM-dd / yyyy年M月d日 / yyyy/MM/dd）、`sj`（HH:mm / HH:mm:ss / yyyy-MM-dd HH:mm）、`xq`（星期X / 周X），词频排序后插到最前，不参与学习。
 - 五笔 z 通配符：`AddWubiWildcard` 对 wb 表线性扫描（≈7.5 万码，微秒级），`z` 位匹配任意字母；不设置 `exactWubi`，不会触发四码自动上屏。
