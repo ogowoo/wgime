@@ -12,7 +12,7 @@ $start = $txt.IndexOf("`n", $i) + 1
 $end   = $txt.IndexOf("`n'@", $start)
 $cs    = $txt.Substring($start, $end - $start)
 
-Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing -ErrorAction Stop
+Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing,UIAutomationClient,UIAutomationTypes,WindowsBase -ErrorAction Stop
 $passed = 0; $failed = 0
 function T($name, [bool]$ok, [string]$detail = '') {
     if ($ok) { $script:passed++; Write-Host "PASS  $name" -ForegroundColor Green }

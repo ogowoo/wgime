@@ -1,0 +1,46 @@
+; ============================================================
+;  WgIme C# 插件示例: 悬浮时钟
+;  输入 sz 选 ▶悬浮时钟, 弹出一个置顶小时钟 (Esc 关闭)
+;  规范详见 docs\WGIME_插件规范.md
+; ============================================================
+code = sz
+name = 悬浮时钟
+desc = C# 插件示例: 置顶小时钟
+
+[csharp]
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+
+public class ClockPlugin
+{
+    public static void Run()
+    {
+        var f = new Form();
+        f.Text = "WgIme Clock";
+        f.FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        f.TopMost = true;
+        f.StartPosition = FormStartPosition.CenterScreen;
+        f.ClientSize = new Size(240, 80);
+        f.BackColor = Color.FromArgb(255, 32, 32, 32);
+        f.KeyPreview = true;
+
+        var lbl = new Label();
+        lbl.Dock = DockStyle.Fill;
+        lbl.TextAlign = ContentAlignment.MiddleCenter;
+        lbl.ForeColor = Color.FromArgb(255, 80, 220, 120);
+        lbl.Font = new Font("Consolas", 24F);
+        f.Controls.Add(lbl);
+
+        var timer = new Timer();
+        timer.Interval = 1000;
+        timer.Tick += delegate { lbl.Text = DateTime.Now.ToString("HH:mm:ss"); };
+        lbl.Text = DateTime.Now.ToString("HH:mm:ss");
+        timer.Start();
+
+        f.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) f.Close(); };
+        f.FormClosed += delegate { timer.Stop(); timer.Dispose(); lbl.Dispose(); };
+        f.Show();
+    }
+}
+[/csharp]

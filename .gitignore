@@ -2,4 +2,10 @@
 db
 ecdict-*.zip
 import_wb.txt.bak-gboard
-wgime - Copy.bat
+wgime - Copy*.bat
+
+# test artifacts: screenshots may contain chat-window content; dumps are debug logs
+tests/*.png
+tests/*-dump.txt
+# third-party data, re-downloadable (URL in build-full-singles.ps1 header)
+tests/pinyin-data.txt

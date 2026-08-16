@@ -29,7 +29,7 @@ Write-Output ("cs source: {0} chars" -f $cs.Length)
 # ---- 2) 编译 (失败则 bat 未被改动, 安全) ----
 $outDll = Join-Path $env:TEMP 'wgime_new.dll'
 if (Test-Path $outDll) { Remove-Item $outDll -Force }
-Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing `
+Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing,UIAutomationClient,UIAutomationTypes,WindowsBase `
          -OutputAssembly $outDll -OutputType Library -ErrorAction Stop
 Write-Output "compiled OK -> $outDll"
 

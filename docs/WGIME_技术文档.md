@@ -11,7 +11,7 @@ WgIme 是一个 **单文件悬浮输入法**（覆盖层 IME），支持拼音 /
 |---|---|
 | 载体 | 单个 `wgime.bat`（cmd 引导 + PowerShell 引导 + 内嵌 C# + 内嵌预编译 DLL） |
 | 输入原理 | 全局低级键盘钩子 `WH_KEYBOARD_LL` + `SendKeys` 回发文本 |
-| 词典 | 内嵌基础表 + 目录 txt 扩展 + 导入文件 + 用户词 + 词频记忆 |
+| 词典 | 内嵌表（**全单字**：拼音 26,719 字 / 五笔 17,366 字，BMP CJK + 〇 + 扩展A 区基本打尽，单文件即可打出所有有读音的汉字）+ 目录 txt 扩展（词语）+ 导入文件 + 用户词 + 词频记忆 |
 | 缓存 | `%LOCALAPPDATA%\wgime\wgime.mb` 二进制词典缓存（MD5 失效校验） |
 | 码表导入/固化 | 托盘导入常见码表（§5）；一键把合并词库烘焙进内置表（§6），之后可删除 txt 源文件 |
 | 效率扩展 | 以词定字、rq/sj/xq 动态候选、自定义短语、五笔 z 通配符、反查编码、config.txt 配置、剪贴板粘贴上屏（§7） |
@@ -92,9 +92,9 @@ wgime.bat
 
 ### 3.2 WordBoard —— 候选条 + 托盘
 
-- 无边框半透明置顶窗体（`Opacity=0.88`，`WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST`，不抢焦点），可拖动，位置存 `pos.txt`，宽度随内容自适应。
+- 无边框半透明置顶窗体（`Opacity=0.88`，`WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST`，不抢焦点），可拖动，位置存 `pos.txt`，宽度随内容自适应。**光标跟随**（`followcaret = 1` 默认开，托盘"选项"可切）：每次开始组字（`keys.Length == 1`）时把候选条定位到文本光标处——三级回退取锚点矩形：① UIA `TextPattern` 选区矩形（只接受**细**矩形：宽 >200px 的整行/整段矩形不可信，降级——某些 Chromium 输入框会给宽矩形）；② 原生 caret（`GetGUIThreadInfo` + `ClientToScreen`）——**包括退化 caret**：Qt 的 2×2 caret（微信 `mmui::ChatInputField`）尺寸是假的但**坐标逐像素跟踪真实光标**（实测 +7px/ASCII 字符），只把高度替换成估算行高（22px）；③ UIA 焦点元素矩形 + **文本估算**（真拿不到 caret 时）：用 `TextPattern` 算出光标前字符、按行号×行高 + 行内逐字宽（CJK≈1em、ASCII≈0.56em）估算光标像素位置。超屏自动翻转到光标上方或收边（多显示器按光标所在屏的 WorkingArea）。取不到光标（全屏游戏等）保持原位。**空闲隐藏**（`hideidle = 1` 默认开，托盘"选项"可切）：无编码无候选时 `Visible=false`，候选窗只在组字期间出现。
+- 托盘菜单（分组子菜单，打开时同步勾选状态）：开关 / 模式（混合/拼音/五笔/词典直达）/ 词库（造词 / 批量造词 / 用户词表 / 导入码表 / 固化码表）/ 选项（反查编码 / 简繁输出 / 候选窗跟随光标）/ 这个程序（剪贴板上屏 / 标点吞字修复）/ 工具箱… / 配置（编辑配置 / 重载配置 / 数据目录）/ 退出。
 - 托盘图标：程序内用 GDI+ 绘制的**Win11 超椭圆圆角（半径 14/64px ≈22%）+镂空字**图标（色块铺满画布；`GraphicsPath.AddString` + `CompositingMode.SourceCopy` 把 52px 模式字从色块中抠成透明洞，字与边框留约 2px 间距，透出任务栏背景）；模式字 中/拼/五/译，**开=Win11 强调色块（蓝 #0078D4 / 青 #00B7C3 / 橙 #CA5010 / 紫 #881798），关=浅暖灰色块**。
-- 托盘菜单：开关 / 切换模式 / 造词 / **导入码表…** / **固化码表…** / 反查编码（勾选开关）/ 重载配置 / 退出。
 - 模式机：`mode ∈ {0 混合, 1 拼音, 2 五笔, 3 词典}`，`Ctrl+\`` 循环切换，模式不同时托盘图标与候选条前缀同步变化。
 - `inDialog` 实例标志：模态对话框打开期间，钩子的三个旁路事件（Shift 轻点 / Ctrl+` / Ctrl+Alt+C）被忽略，且 `IsLocked` 被临时关闭，防止选文件时按键污染编码缓冲。
 
@@ -117,7 +117,8 @@ wgime.bat
 - **剪贴板粘贴（`paste=on`，回退通道）**：`PasteCommit` 链式捕获一次原始剪贴板（300ms 窗口内连续上屏只读一次，且原始内容为空/非文本时**永不恢复**）→ `Clipboard.SetText` → `SendInput` 注入 Ctrl+V（`INPUT` 结构体 x64 布局 40 字节）→ **事件同步**（钩子在注入放行分支检测自己注入的 V 键抬起 → `pasteSeen` 事件，泵消息等待 ≤1.5s，加 80ms 余量）→ 代际守卫的单链定时器（过期回调作废）恢复剪贴板。
 - `paste=auto`：仅当前台进程提权且自身未提权时走粘贴（提权检测：`OpenProcess`→`OpenProcessToken`→`GetTokenInformation(TokenElevation)`），否则按 key。
 - `paste=off`：纯 `SendKeys.Send(Sanitize(msg))`（`Sanitize` 转义 `+^%~(){}[]`；钩子忽略 LLKHF_INJECTED 注入键，自注入不回环）。已知局限：目标窗口内有系统输入法时注入 CJK 可能乱码。
-- **按进程覆盖**（`%LOCALAPPDATA%\wgime\pastemode.txt`，`程序名.exe=clipboard|sendkeys|key`，`#` 注释）：`EffectiveMode()` 先查 `AppModes[前台进程名]`（`GetForegroundWindow`→`GetWindowThreadProcessId`→进程名小写），命中则覆盖全局 `PasteMode`。托盘菜单"这个程序改用剪贴板上屏"为**当前前台程序**切换/清除覆盖并即时保存——个别程序不兼容 key 模式时无需动全局配置。
+- **按进程覆盖**（`%LOCALAPPDATA%\wgime\pastemode.txt`，`程序名.exe=clipboard|sendkeys|key|keyfix|keyplain`，`#` 注释）：`EffectiveMode()` 先查 `AppModes[前台进程名]`（`GetForegroundWindow`→`GetWindowThreadProcessId`→进程名小写），命中则覆盖全局 `PasteMode`。托盘菜单"这个程序改用剪贴板上屏"为**当前前台程序**切换/清除覆盖并即时保存——个别程序不兼容 key 模式时无需动全局配置。
+- **Qt 陈旧字符修复（`keyfix`，全局默认开）**：Qt 应用（微信 4.x `Weixin.exe`、Telegram 等）的键盘映射用 `PeekMessage(WM_CHAR, PM_REMOVE)` 认领按键对应的字符消息，而 `VK_PACKET` 注入的字符**只随 WM_CHAR 携带**（WM_KEYDOWN 的 lParam 里没有）；注入全角标点（，。、；：？！《》【】… 实测 U+FF0C/U+3001/U+3002 触发，汉字/ASCII/引号 U+201C/¥/emoji 不触发）后认领关系错位，**下一个注入字符被替换成该标点**（与注入间隔、分批方式无关，恰好消耗一个字符，参见 [tdesktop#26643](https://github.com/telegramdesktop/tdesktop/issues/26643)）。修复：`UnicodeCommitQtFix` 在每个触发字符（`StaleTrigger`：≥U+3000 且非汉字区段）后追加一个 ASCII `X`（吸收陈旧命中，被显示成重复标点）+ `VK_BACK`（删掉它），同一 SendInput 批次、零延时。**免白名单全局启用**（`EffectiveKeyfix`）：X+退格在符合规范的应用里自我中和（已对 Win32 EDIT 控件做字节级断言验证，无残留无丢字），正常程序无感知。逃生通道：全局 `config.txt keyfix=0`；按进程 `pastemode.txt` 里 `程序名.exe=keyplain`（强制关）/`keyfix`（强制开，覆盖全局关）；托盘菜单"这个程序切换标点吞字修复"为当前前台程序钉住与全局默认相反的值。keyfix 路径下目标提权时回退剪贴板（同 auto）。
 
 ### 3.5 学习与造词
 

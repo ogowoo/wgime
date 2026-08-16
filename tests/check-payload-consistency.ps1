@@ -13,7 +13,7 @@ $end = $txt.IndexOf("`n'@", $start)
 $cs = $txt.Substring($start, $end - $start)
 $fresh = Join-Path $env:TEMP 'wgime_fresh.dll'
 if (Test-Path $fresh) { Remove-Item $fresh -Force }
-Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing `
+Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing,UIAutomationClient,UIAutomationTypes,WindowsBase `
          -OutputAssembly $fresh -OutputType Library -ErrorAction Stop
 
 # --- extract payload from bat ---
