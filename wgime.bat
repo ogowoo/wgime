@@ -26078,6 +26078,210 @@ if (-not $wgLoaded) {
 }
 
 WgLog "launching WordBoard"
+
+# ---- first-run seeding: sample tools/plugins for fresh single-file users ----
+# Guarded by %LOCALAPPDATA%\wgime\provisioned.done: runs ONCE. Users may delete the
+# samples permanently; to re-seed, delete the marker. Nothing is ever overwritten.
+$seedTools = @'
+; ============================================================
+;  WgIme 工具箱配置 (UTF-8, 与 wgime.bat 同目录)
+;  唤出: 输入 itools (或 tools) 选 ▶工具箱 (不进托盘菜单)
+;
+;  结构:
+;    [tab 标签页名]        新开一个标签页
+;    [按钮名]              在当前标签页加一个按钮
+;    <步骤行>              按钮点击后从上到下依次执行
+;
+;  步骤动词 (参数支持 "引号" 包裹含空格的项, 路径支持 %环境变量%):
+;    msg 文本                          气泡提示
+;    confirm 文本                      确认框, 选"否"则中止本按钮的后续步骤
+;    run <程序> [参数...]              静默运行并等待结束 (输出与退出码记入日志)
+;    shell <cmd 命令行原文>            cmd /c 单行静默执行并等待
+;    open <目标>                       用系统默认方式打开 (程序/文件夹/网址), 不等待
+;    kill <进程名>                     结束进程 (如 kill Teams)
+;    wait <毫秒>                       等待
+;    reg-set <键> <值名> <类型> <数据> 写注册表; 键以 HKCU/HKLM/HKCR/HKU/HKCC 开头;
+;                                      值名用 - 表示"(默认)"; 类型 string/expand/dword/qword/multi(用|分隔)/binary(十六进制)
+;    reg-del <键> [值名]               给了值名=删该值; 不给=删除整个键(含子键)
+;    file-del <路径>                   删文件/目录 (支持 * ? 通配; 目录递归删除; 拒绝删盘符根目录)
+;    mkdir <路径>                      建目录
+;
+;  多行脚本块 (块内每行【不需要】加动词前缀, 原样保留空行/缩进/注释):
+;    [shell] ... [/shell]              多行 cmd 批处理, 写入临时 .cmd 执行 (ANSI 编码)
+;    [powershell] ... [/powershell]    多行 PowerShell, 写入临时 .ps1 执行 (UTF-8 BOM 保存, 中文安全)
+;                                      ([cmd] / [ps] 为简写)
+;
+;  失败步骤只记日志不中断; confirm 选"否"才中断。改完后托盘"配置 -> 重载配置"即时生效。
+; ============================================================
+
+[tab 办公]
+
+[重置 Teams]
+confirm 这会关闭 Teams 并清空它的缓存目录, 确定吗?
+kill Teams
+wait 1000
+file-del %LOCALAPPDATA%\Microsoft\Teams\Cache
+file-del %LOCALAPPDATA%\Microsoft\Teams\GPUCache
+file-del %LOCALAPPDATA%\Microsoft\Teams\Code Cache
+msg Teams 缓存已清理, 可以重新启动了
+
+[修复 Outlook (重置导航窗格)]
+confirm 将关闭 Outlook 并重置导航窗格配置, 确定吗?
+kill OUTLOOK
+wait 800
+shell outlook.exe /resetnavpane
+
+[tab 系统]
+
+[打开 WgIme 数据目录]
+open %LOCALAPPDATA%\wgime
+
+[清理我的临时文件]
+confirm 将删除 %TEMP% 下的临时文件 (占用中的会自动跳过), 确定吗?
+file-del %TEMP%\*
+msg 临时文件清理完成
+
+[刷新 DNS 缓存]
+shell ipconfig /flushdns
+
+[本机 IPv4 地址]
+[powershell]
+Get-NetIPAddress -AddressFamily IPv4 |
+  Where-Object { $_.PrefixOrigin -ne 'WellKnown' } |
+  Select-Object InterfaceAlias, IPAddress |
+  Out-String | Write-Output
+[/powershell]
+'@
+
+$seedPluginReadme = @'
+============================================================
+ WgIme 插件速览 (plugins\*.txt)
+============================================================
+
+插件 = 纯文本文件, 把一个启动编码绑定到一组动作:
+
+  code = qls            ; 启动编码 (小写 a-z, 必填, 唯一)
+  name = 清空回收站      ; 显示名 (必填)
+  desc = 说明            ; 可选
+
+  <步骤>                 ; 头部之后直到文件末尾都是步骤
+
+用法: 输入编码 -> 候选条出现 ▶<name> -> 空格选中 -> 后台执行, 气泡报结果。
+改完/新增后: 托盘"配置 -> 重载配置"即时生效。
+管理: 输入 plugins (或 cjgl) 打开插件管理窗体 (列表/编辑/删除/新建/重载)。
+
+步骤动词 (与 tools.txt 工具箱完全一致):
+  msg / confirm / run / shell / open / kill / wait
+  reg-set <键> <值名> <类型> <数据>     (HKCU/HKLM/HKCR/HKU/HKCC; string/expand/dword/qword/multi/binary)
+  reg-del <键> [值名]                   (不给值名=删整键)
+  file-del <路径>                       (通配符/递归; 拒绝盘符根目录)
+  mkdir <路径>
+
+多行脚本块 (块内每行不用加前缀):
+  [shell] ... [/shell]              cmd 批处理 (临时 .cmd)
+  [powershell] ... [/powershell]    PowerShell (临时 .ps1, 中文安全)
+
+C# 代码插件 (要窗体就用它):
+  [csharp] ... [/csharp]            内嵌 C# 源码, 加载时内存编译, 选中运行
+  契约: 含一个 public static void Run(); 跑在 IME 的 UI 线程, 可直接 new Form().Show()
+  引用: System / Windows.Forms / Drawing / Core / Data; 注意是 C# 5 语法 (.NET 4.x CodeDom)
+  示例: clock.txt (输入 sz 弹悬浮时钟)
+
+建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
+完整规范见仓库 docs\WGIME_插件规范.md。
+
+(本文件与两个示例插件是首次运行时自动播种的; 删掉不会复活。想重新播种: 删除
+ %LOCALAPPDATA%\wgime\provisioned.done 后重启 wgime.bat。)
+'@
+
+$seedCleanBin = @'
+; ============================================================
+;  WgIme 插件示例: 清空回收站
+;  放在 plugins\ 目录下即自动注册; 输入 qls 选 ▶清空回收站 执行
+;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
+; ============================================================
+code = qls
+name = 清空回收站
+desc = confirm 后调用 PowerShell Clear-RecycleBin
+
+confirm 确定清空回收站吗?
+[powershell]
+Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+Write-Output "recycle bin cleared"
+[/powershell]
+msg 回收站已清空
+'@
+
+$seedClock = @'
+; ============================================================
+;  WgIme C# 插件示例: 悬浮时钟
+;  输入 sz 选 ▶悬浮时钟, 弹出一个置顶小时钟 (Esc 关闭)
+;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
+; ============================================================
+code = sz
+name = 悬浮时钟
+desc = C# 插件示例: 置顶小时钟
+
+[csharp]
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+
+public class ClockPlugin
+{
+    public static void Run()
+    {
+        var f = new Form();
+        f.Text = "WgIme Clock";
+        f.FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        f.TopMost = true;
+        f.StartPosition = FormStartPosition.CenterScreen;
+        f.ClientSize = new Size(240, 80);
+        f.BackColor = Color.FromArgb(255, 32, 32, 32);
+        f.KeyPreview = true;
+
+        var lbl = new Label();
+        lbl.Dock = DockStyle.Fill;
+        lbl.TextAlign = ContentAlignment.MiddleCenter;
+        lbl.ForeColor = Color.FromArgb(255, 80, 220, 120);
+        lbl.Font = new Font("Consolas", 24F);
+        f.Controls.Add(lbl);
+
+        var timer = new Timer();
+        timer.Interval = 1000;
+        timer.Tick += delegate { lbl.Text = DateTime.Now.ToString("HH:mm:ss"); };
+        lbl.Text = DateTime.Now.ToString("HH:mm:ss");
+        timer.Start();
+
+        f.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) f.Close(); };
+        f.FormClosed += delegate { timer.Stop(); timer.Dispose(); lbl.Dispose(); };
+        f.Show();
+    }
+}
+[/csharp]
+'@
+
+try {
+    $seedDir = Join-Path $env:LOCALAPPDATA 'wgime'
+    $seedMark = Join-Path $seedDir 'provisioned.done'
+    if (-not (Test-Path $seedMark)) {
+        $utf8n = New-Object System.Text.UTF8Encoding($false)
+        $toolsPath = Join-Path $env:WGIME_DIR 'tools.txt'
+        if (-not (Test-Path $toolsPath)) { [IO.File]::WriteAllText($toolsPath, $seedTools, $utf8n) }
+        $pdir = Join-Path $env:WGIME_DIR 'plugins'
+        if (-not (Test-Path $pdir)) { [IO.Directory]::CreateDirectory($pdir) | Out-Null }
+        $rf = Join-Path $pdir 'README.txt'
+        if (-not (Test-Path $rf)) { [IO.File]::WriteAllText($rf, $seedPluginReadme, $utf8n) }
+        $cf = Join-Path $pdir 'clean-bin.txt'
+        if (-not (Test-Path $cf)) { [IO.File]::WriteAllText($cf, $seedCleanBin, $utf8n) }
+        $kf = Join-Path $pdir 'clock.txt'
+        if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
+        try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}
+        [IO.File]::WriteAllText($seedMark, (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $utf8n)
+        WgLog "first-run seeding done (tools.txt + plugins samples)"
+    }
+} catch { WgLog ("seeding failed: " + ($_ | Out-String)) }
+
 [WordBoard]::RunApp($pyData, $wbData, $ecData, $env:WGIME_DIR, $env:WGIME_PATH)
 WgLog "WordBoard exited"
 } catch {
