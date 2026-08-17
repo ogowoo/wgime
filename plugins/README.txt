@@ -16,14 +16,17 @@
 
 步骤动词 (与 tools.txt 工具箱完全一致):
   msg / confirm / run / shell / open / kill / wait
+  shellx <cmd 命令行>                     (同 shell 但弹可见控制台, 交互式命令用)
   reg-set <键> <值名> <类型> <数据>     (HKCU/HKLM/HKCR/HKU/HKCC; string/expand/dword/qword/multi/binary)
   reg-del <键> [值名]                   (不给值名=删整键)
-  file-del <路径>                       (通配符/递归; 拒绝盘符根目录)
+  file-del <路径>                       (通配符/递归; 占用/无权限自动跳过; 拒绝盘符根目录)
   mkdir <路径>
 
 多行脚本块 (块内每行不用加前缀):
   [shell] ... [/shell]              cmd 批处理 (临时 .cmd)
   [powershell] ... [/powershell]    PowerShell (临时 .ps1, 中文安全)
+  [shellx] ... [/shellx]            交互式版本: 可见控制台窗口, 可 read/pause, 按键关闭
+  [psx] ... [/psx]
 
 C# 代码插件 (要窗体就用它):
   [csharp] ... [/csharp]            内嵌 C# 源码, 加载时内存编译, 选中运行

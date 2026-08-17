@@ -2,8 +2,8 @@
 #  tools.tests.ps1  -  tests for the config-driven toolbox (tools.txt):
 #   1. ToolToks tokenizer (quotes/whitespace)
 #   2. LoadTools parsing (tabs/buttons/steps structure)
-#   3. ExecToolStep: mkdir / file-del (+root guard) / reg-set / reg-del /
-#      unknown verb / shell exit codes
+#   3. ExecToolStep: mkdir / file-del (+root guard, +locked-file skip) /
+#      reg-set / reg-del / unknown verb / shell exit codes; [shellx]/[psx] block parsing
 #   4. Apps registry has builtin:tools
 #   5. ToolsForm renders (tests\tools-form.png)
 #
@@ -118,6 +118,27 @@ Check "block: verb 2"        ($bs[1][0])                 "psblock"
 Check "block: raw content"   ($braw[0] -replace "`r", "") "echo a`necho b"
 Remove-Item (Join-Path $tmp 'tools.txt') -Force
 
+# ---- 2c) interactive console blocks ([shellx]/[psx] parse, never auto-run) ----
+$sample3 = @"
+[tab T]
+[B1]
+[shellx]
+echo hi
+[/shellx]
+[psx]
+Read-Host x
+[/psx]
+"@
+[IO.File]::WriteAllText((Join-Path $tmp 'tools.txt'), $sample3, (New-Object System.Text.UTF8Encoding($false)))
+$loadT.Invoke($null, @($tmp))
+$tabsX = $tabsF.GetValue($null)
+$bx = ActSteps ((TabActs $tabsX[0])[0])
+Check "blockx: step count"  ($bx.Count)       "2"
+Check "blockx: verb 1"      ($bx[0][0])       "shellblockx"
+Check "blockx: verb 2"      ($bx[1][0])       "psblockx"
+Check "RunVisible exists"   ($wbType.GetMethod('RunVisible', $fl) -ne $null)  "True"
+Remove-Item (Join-Path $tmp 'tools.txt') -Force
+
 # ---- 3) ExecToolStep ----
 $dir = Join-Path $tmp 'sub dir'
 Check "mkdir"          (Exec ('mkdir "' + $dir + '"'))                ""        # null -> $null -> ""
@@ -129,6 +150,24 @@ Check "unknown verb"   ((Exec 'frobnicate x') -match 'unknown verb')  "True"
 Check "wait ok"        (Exec 'wait 1')                                ""
 Check "shell ok"       (Exec 'shell echo wgimetest')                  ""
 Check "shell exit 3"   ((Exec 'shell exit 3') -match 'exit code 3')   "True"
+
+# file-del wildcard: a locked/in-use file must be skipped, not abort the rest
+$delDir = Join-Path $tmp 'deltest'
+New-Item -ItemType Directory -Path $delDir | Out-Null
+$fA = Join-Path $delDir 'a.txt'; $fB = Join-Path $delDir 'b.txt'; $fC = Join-Path $delDir 'c.txt'
+[IO.File]::WriteAllText($fA, 'a'); [IO.File]::WriteAllText($fB, 'b'); [IO.File]::WriteAllText($fC, 'c')
+$lock = [IO.File]::Open($fB, 'Open', 'ReadWrite', 'None')
+$tkDel = Toks ('file-del "' + $delDir + '\*"')
+$restDel = '"' + $delDir + '\*"'                              # must be pre-computed: inline "a"+$x+"b" inside @() binds looser than ','
+[System.Text.StringBuilder]$sbDel = New-Object System.Text.StringBuilder
+$rDel = $execM.Invoke($null, @($tkDel, $restDel, $sbDel, $null))
+$lock.Close(); $lock.Dispose()
+Check "file-del locked: step ok"  ("$rDel")                                ""
+Check "file-del locked: a gone"   (Test-Path $fA)                          "False"
+Check "file-del locked: c gone"   (Test-Path $fC)                          "False"
+Check "file-del locked: b kept"   (Test-Path $fB)                          "True"
+Check "file-del locked: log"      ($sbDel.ToString() -match 'skipped 1')   "True"
+Remove-Item $delDir -Recurse -Force
 
 # multi-line script blocks execute
 $ZW = [string]([char]0x4E2D) + [char]0x6587     # 中文
