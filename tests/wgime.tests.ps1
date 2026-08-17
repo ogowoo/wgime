@@ -140,6 +140,54 @@ try {
     $wb.Dispose()
 }
 
+# --- 7b. v-mode digit routing: multi-digit amounts + bare-v candidate selection ---
+$cFa  = [string][char]0x53D1                 # 发
+$pyV = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+$pyV['a'] = $cA
+$wbV = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+$wbV['a'] = $cA; $wbV['v'] = $cFa
+$mb2 = [Activator]::CreateInstance($mbType, [object[]]@())
+$mb2.Py = $pyV; $mb2.Wb = $wbV; $mb2.Ec = $pyV; $mb2.Ce = $pyV
+$mb2.Pk = [string[]]@('a'); $mb2.Pv = [string[]]@($cA)
+$mb2.Wk = [string[]]@('a', 'v'); $mb2.Wv = [string[]]@($cA, $cFa)
+$mb2.Ek = [string[]]@('a'); $mb2.Ev = [string[]]@($cA)
+$mb2.Acro = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[string]]'
+$as.Invoke($null, @($mb2))
+[WordBoard]::Shuangpin = 0
+$wb2 = New-Object WordBoard
+try {
+    $keysF2 = [WordBoard].GetField('keys', [Reflection.BindingFlags]'Instance,NonPublic')
+    $candsF2 = [WordBoard].GetField('cands', [Reflection.BindingFlags]'Instance,NonPublic')
+    $modeF = [WordBoard].GetField('mode', [Reflection.BindingFlags]'Instance,NonPublic')
+    $sc2 = [WordBoard].GetMethod('ShowCharatar', [Reflection.BindingFlags]'Instance,NonPublic')
+    $spaced = [WordBoard].GetMethod('Hook_OnSpaced', [Reflection.BindingFlags]'Instance,NonPublic')
+    $modeF.SetValue($wb2, 0)                                   # mixed mode
+
+    $keysF2.SetValue($wb2, 'v'); $sc2.Invoke($wb2, @())
+    $cv = $candsF2.GetValue($wb2)
+    T 'bare v: wubi candidate fa present' ($cv.Count -gt 0 -and $cv[0] -eq $cFa) ("cands=" + [string]::Join(',', $cv))
+    T 'bare v with candidates: digits select (DigitAsCode=false)' ([KeyBordHook]::DigitAsCode -eq $false) ("DigitAsCode=" + [KeyBordHook]::DigitAsCode)
+
+    $spaced.Invoke($wb2, @(5))                                 # digit 5 > 1 candidate -> extend the code
+    T 'digit beyond candidate count extends v-code (v5)' ($keysF2.GetValue($wb2) -eq 'v5') ("keys=" + $keysF2.GetValue($wb2))
+    T 'v5: digits keep extending (DigitAsCode=true)' ([KeyBordHook]::DigitAsCode -eq $true) ("DigitAsCode=" + [KeyBordHook]::DigitAsCode)
+    $c5 = $candsF2.GetValue($wb2)
+    T 'v5 shows uppercase amount candidate' ($c5.Count -gt 0 -and $c5[0] -eq ([string][char]0x4F0D + [char]0x5143 + [char]0x6574)) ("cands=" + [string]::Join(',', $c5))
+
+    $keysF2.SetValue($wb2, 'v12'); $sc2.Invoke($wb2, @())      # multi-digit amount stays in extend mode
+    T 'v12: still extending (multi-digit v-mode fixed)' ([KeyBordHook]::DigitAsCode -eq $true) ("DigitAsCode=" + [KeyBordHook]::DigitAsCode)
+
+    $modeF.SetValue($wb2, 1)                                   # pinyin mode: bare v has no candidates
+    $keysF2.SetValue($wb2, 'v'); $sc2.Invoke($wb2, @())
+    T 'bare v, no candidates (pinyin): digits extend (v-mode start)' ([KeyBordHook]::DigitAsCode -eq $true) ("DigitAsCode=" + [KeyBordHook]::DigitAsCode)
+
+    $modeF.SetValue($wb2, 2)                                   # pure wubi mode: v-mode off
+    $sc2.Invoke($wb2, @())
+    T 'wubi mode: v-mode off (DigitAsCode=false)' ([KeyBordHook]::DigitAsCode -eq $false) ("DigitAsCode=" + [KeyBordHook]::DigitAsCode)
+} finally {
+    $wb2.Dispose()
+}
+
 # --- 8. tray 反查编码/简繁 toggle must persist keys into config.txt (keep comments/other keys) ---
 $tmpCfg = Join-Path $env:TEMP 'wgime_cfg_test'
 New-Item -ItemType Directory -Path $tmpCfg -Force | Out-Null
