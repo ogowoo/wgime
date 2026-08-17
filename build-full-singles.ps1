@@ -15,7 +15,8 @@
 #  Multi-char word entries already embedded are preserved.
 #
 #  Safety: timestamped .bak backup first; byte-identical outside the
-#  two here-string blocks; UTF-8 no BOM, LF endings verified after write.
+#  two here-string blocks; UTF-8 no BOM, batch header stays CRLF (cmd.exe
+#  requires it) - verified after write.
 #  The .mb cache auto-invalidates via InputMd5 on next start.
 #
 #  Run:  powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-full-singles.ps1
@@ -202,13 +203,13 @@ $bak = $batPath + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
 Write-Output "backup: $bak"
 [IO.File]::WriteAllText($batPath, $work, (New-Object System.Text.UTF8Encoding($false)))
 
-# ---- verify: LF / no BOM / payload line intact ----
+# ---- verify: no BOM / batch header pure CRLF / payload line intact ----
 $bytes = [IO.File]::ReadAllBytes($batPath)
 if ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) { throw "BOM appeared - abort" }
-$crlf = 0
-for ($k = 1; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and $bytes[$k-1] -eq 0x0D) { $crlf++ } }
-if ($crlf -gt 0) { Write-Warning "$crlf CRLF found" }
 $check = [IO.File]::ReadAllText($batPath, [Text.Encoding]::UTF8)
+$hdr = $check.Substring(0, $check.LastIndexOf('###PWSH###'))
+$loneLf = ([regex]::Matches($hdr, "(?<!`r)`n")).Count
+if ($loneLf -gt 0) { throw "FAIL: $loneLf lone LF in batch header - cmd.exe requires CRLF" }
 if ($check.IndexOf('###WGIME_DLL###') -lt 0) { throw "payload marker lost" }
 Write-Output ("new bat size: " + $bytes.Length + " bytes (was " + $bat.Length + ")")
 Write-Output "DONE - dictionary cache rebuilds automatically on next start (InputMd5 mismatch)"

@@ -245,7 +245,7 @@ ApplySwap(mb)            # 一次性原子替换全部静态引用，DictsReady=
 ### 6.1 机制
 
 - `SerializeDict(d)`：把词典按码排序序列化为 `码 词1 词2…` 行（与 wgime txt 格式一致，空格分隔——单字不打包，与运行时词典值直接对应）。
-- `ReplaceHereString(bat, varName, newBody, out result)`：定位 `$pyData = @'` 等开标记，取其后**首个行首 `'@`** 为结束，整段替换正文。三个 here-string 依次链式替换后整体写回（UTF-8 无 BOM、保持纯 LF）。
+- `ReplaceHereString(bat, varName, newBody, out result)`：定位 `$pyData = @'` 等开标记，取其后**首个行首 `'@`** 为结束，整段替换正文。三个 here-string 依次链式替换后整体写回（UTF-8 无 BOM；替换区外字节不变——批处理头保持 CRLF，被替换的表体为 LF，混合换行对 cmd/PowerShell 均安全）。
 - **here-string 安全性**：生成内容每行都以编码开头（`[a-z][a-z0-9']*`），不可能出现行首 `'@` 提前终止；单引号 here-string 不做插值、不处理转义，词条中的 `$`、反引号、行中 `@'` 均安全。
 - **与缓存的关系**：烘焙不改内存词典（已经是最新合并结果）；下次启动时内嵌表字节变化 → `InputMd5` 失效 → 自动重建 `wgime.mb`（一次性，约 3 秒），之后仍秒开。重复烘焙幂等（已验证字节级一致）。
 
@@ -377,9 +377,9 @@ PS 引导层在 `RunApp` 之前内嵌四段 here-string 种子（`$seedTools`/`$
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 ```
 
-脚本解剖（rebuild.ps1）：提取 `$cs` here-string → 编译到 `%TEMP%\wgime_new.dll`（引用 System.Windows.Forms / System.Drawing / UIAutomationClient / UIAutomationTypes / WindowsBase；失败则 bat 不被改动）→ base64 替换 `###WGIME_DLL###` 载荷行（单引号包裹）→ 硬断言无 BOM、纯 LF。运行时首次启动会按 `MD5(base64)前8位` 生成新 DLL 名并自动清理旧版本。
+脚本解剖（rebuild.ps1）：读取后先归一化为 LF 处理 → 提取 `$cs` here-string → 编译到 `%TEMP%\wgime_new.dll`（引用 System.Windows.Forms / System.Drawing / UIAutomationClient / UIAutomationTypes / WindowsBase；失败则 bat 不被改动）→ base64 替换 `###WGIME_DLL###` 载荷行（单引号包裹）→ 以 CRLF 写回并硬断言无 BOM、无裸 LF（纯 CRLF）。运行时首次启动会按 `MD5(base64)前8位` 生成新 DLL 名并自动清理旧版本。
 
-**只改数据/引导层不用重建**：内嵌码表用 `build-full-singles.ps1`（全单字合并：内嵌 + py.txt/wb.txt 单字 + Unihan 派生表 tests/pinyin-data.txt 补齐，自带时间戳备份与 LF/BOM 校验）；PS 引导层（含播种种子）改动直接生效。
+**只改数据/引导层不用重建**：内嵌码表用 `build-full-singles.ps1`（全单字合并：内嵌 + py.txt/wb.txt 单字 + Unihan 派生表 tests/pinyin-data.txt 补齐，自带时间戳备份与 BOM/批处理头 CRLF 校验）；PS 引导层（含播种种子）改动直接生效。
 
 ### 11.2 测试套件清单
 
@@ -404,7 +404,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 ### 11.3 编码与格式约束（踩坑清单）
 
 1. **C# 5.0**（CodeDom/csc）：禁 `$"…"` 插值、`?.`、表达式体成员、`nameof`、`using static`。
-2. **文件为纯 LF 换行、无 BOM、UTF-8**——任何编辑工具不得转换行尾或加 BOM（重建脚本会硬断言布局）。
+2. **批处理头（`###PWSH###` 之前）必须为 CRLF 换行、无 BOM、UTF-8**——cmd.exe 依赖 CRLF 解析标签/括号块/`exit /b`；纯 LF 会让 cmd 把行切碎并跌进 PowerShell 段（报 `'xxx' is not recognized`）。here-string 数据体可以是 LF（烘焙/播种替换产生混合换行也安全），PowerShell 与 C# 对两种换行都能解析。仓库用 `.gitattributes` 的 `eol=crlf` 强制保证克隆产物可直接运行；rebuild.ps1 写回纯 CRLF 并硬断言。
 3. 新增 C# 代码**不得以行首 `'@` 开头**（会提前终止 here-string）；`'@` 行首仅允许出现在三个数据表与 $cs 的结束行。
 4. `###WGIME_DLL###` 全文件只出现一次（加载器代码里拆成两段字符串拼接），勿在别处复制该字样。
 5. SendKeys 输出需经 `Sanitize` 转义；钩子依赖 `LLKHF_INJECTED` 防回环。

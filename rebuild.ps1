@@ -16,6 +16,8 @@ $ErrorActionPreference = 'Stop'
 $path = Join-Path $PSScriptRoot 'wgime.bat'
 if (-not (Test-Path $path)) { throw "wgime.bat not found next to this script: $path" }
 $txt = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+# 内部统一按 LF 处理 (输入可能是 CRLF 或烘焙产生的混合换行), 写回时再转 CRLF
+$txt = $txt -replace "`r`n", "`n"
 
 # ---- 1) 提取 $cs here-string 源码 ("cs = @'" 之后到首个行首 '@) ----
 $i     = $txt.IndexOf("cs = @'")
@@ -33,7 +35,8 @@ Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.D
          -OutputAssembly $outDll -OutputType Library -ErrorAction Stop
 Write-Output "compiled OK -> $outDll"
 
-# ---- 3) base64 替换载荷行 (文件必须保持 LF 换行、无 BOM、UTF-8) ----
+# ---- 3) base64 替换载荷行 (文件必须保持 CRLF 换行、无 BOM、UTF-8;
+#         cmd.exe 依赖 CRLF 解析批处理头, LF 会导致 'xxx is not recognized' 报错) ----
 $b64   = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
 $lines = $txt -split "`n"
 $mi    = [Array]::IndexOf($lines, '###WGIME_DLL###')      # 应为倒数第 3 个元素
@@ -43,16 +46,16 @@ if ($mi -ne ($lines.Count - 3)) {
 }
 # 载荷行必须单引号包裹 (PS 无害语句); 校验上一行确实是 marker
 $lines[$mi + 1] = "'" + $b64 + "'"
-$outText = [string]::Join("`n", $lines)
+$outText = [string]::Join("`r`n", $lines)
 [IO.File]::WriteAllText($path, $outText, (New-Object System.Text.UTF8Encoding($false)))
 Write-Output ("payload replaced: {0} chars base64 -> {1}" -f $b64.Length, $path)
 
-# ---- 4) 自我校验: LF / 无 BOM ----
+# ---- 4) 自我校验: 无 BOM / 纯 CRLF (不允许裸 LF, cmd 无法正确解析) ----
 $bytes = [IO.File]::ReadAllBytes($path)
 $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
 if ($bom) { throw 'FAIL: file now has a BOM - encoding constraint violated' }
-$crlf = 0
-for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and $k -gt 0 -and $bytes[$k-1] -eq 0x0D) { $crlf++ } }
-if ($crlf -gt 0) { Write-Warning ("WARNING: {0} CRLF line endings detected (should be pure LF)" -f $crlf) }
-Write-Output "file constraints OK (no BOM, LF checked)"
+$loneLf = 0
+for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and ($k -eq 0 -or $bytes[$k-1] -ne 0x0D)) { $loneLf++ } }
+if ($loneLf -gt 0) { throw ("FAIL: {0} lone LF line endings detected (must be pure CRLF, cmd.exe requires it)" -f $loneLf) }
+Write-Output "file constraints OK (no BOM, pure CRLF)"
 Write-Output "DONE - restart wgime.bat to load the new code (new DLL hash name auto-created, old cleaned)"

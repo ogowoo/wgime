@@ -1,3 +1,5 @@
-# wgime.bat MUST stay pure LF / no BOM (see docs/WGIME_技术文档.md §11.2).
-# core.autocrlf would convert LF -> CRLF on checkout, which breaks the embedded C# extractor & rebuild.
-wgime.bat text eol=lf
+# wgime.bat MUST stay pure CRLF / no BOM: cmd.exe relies on CRLF to parse the
+# batch header (labels / parenthesized blocks / exit /b). A pure-LF checkout makes
+# cmd fall through into the PowerShell body with "'xxx' is not recognized" errors
+# and the IME never starts. PowerShell / C# handle CRLF fine (see docs/WGIME_技术文档.md §11.2).
+wgime.bat text eol=crlf

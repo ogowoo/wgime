@@ -8,7 +8,8 @@
 #
 #  Run after editing any of those files, then verify with
 #  tests\seed-sync.tests.ps1. Backs up the bat first (timestamped),
-#  keeps UTF-8 no BOM + pure LF.
+#  keeps UTF-8 no BOM; the batch header must stay CRLF (cmd.exe
+#  requires it), here-string bodies may be LF.
 #
 #  Run:  powershell.exe -NoProfile -ExecutionPolicy Bypass -File sync-seeds.ps1
 # ============================================================
@@ -52,7 +53,8 @@ Write-Output "backup: $bak"
 
 $bytes = [IO.File]::ReadAllBytes($batPath)
 if ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) { throw "BOM appeared - abort" }
-$crlf = 0
-for ($k = 1; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and $bytes[$k-1] -eq 0x0D) { $crlf++ } }
-if ($crlf -gt 0) { Write-Warning "$crlf CRLF found" }
+$check = [IO.File]::ReadAllText($batPath, [Text.Encoding]::UTF8)
+$hdr = $check.Substring(0, $check.LastIndexOf('###PWSH###'))
+$loneLf = ([regex]::Matches($hdr, "(?<!`r)`n")).Count
+if ($loneLf -gt 0) { throw "FAIL: $loneLf lone LF in batch header - cmd.exe requires CRLF" }
 Write-Output "DONE - run tests\seed-sync.tests.ps1 to verify"
