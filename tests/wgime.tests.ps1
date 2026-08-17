@@ -249,6 +249,10 @@ try {
 }
 
 # --- 8. tray 反查编码/简繁 toggle must persist keys into config.txt (keep comments/other keys) ---
+$src2 = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+T 'assoc row: digits pick, space stays a real space (no hijack)' ($src2 -match 'space stays a real space') ""
+T 'assoc row shows after the candidate wipe (BeginAssoc after clear)' ($src2.IndexOf('if (picked != null) BeginAssoc(picked)') -gt 0) ""
+T 'assoc row is marked in the bar' ($src2 -match 'assoc.*marker.*digits pick') ""
 $tmpCfg = Join-Path $env:TEMP 'wgime_cfg_test'
 New-Item -ItemType Directory -Path $tmpCfg -Force | Out-Null
 try {

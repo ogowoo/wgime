@@ -115,7 +115,7 @@ wgime.bat
 4. 上限：`CandCap=60`，`PageSize=9`（一页 9 个，1-9 选，Space 选第 1 个）。
 5. 扩展候选（模式 0-2，词频排序之后插入，恒在首位区）：`AddDynamic`（rq/sj/xq → 日期/时间/星期）→ `AddAppCand`（应用启动器：编码精确命中 `Apps` 注册表时插入 `▶名称` 候选，`appSet` 标记——选中时 `LaunchApp` 启动而非上屏、不学习；五笔四码自动上屏有守卫）→ `AddPhrase`（config.txt 短语，含空格文本，最顶）→ 五笔模式含 `z` 时 `AddWubiWildcard`（对 wb 表线性扫描通配匹配）。
 6. 整句连打（`SentenceOn`，拼音模式任意长度 / 混合模式 >4 位编码）：`BestSentence` 在词典前缀音节格上跑 Viterbi——边 = `PyDict` 命中的前缀码（字或词），每边取 `WordFreq` 权重最高的候选，得分 `Σlog(w+1) − 边数×log(总权重)`（一元句子模型，自动偏好长词/高频词）；全覆盖才出句，句长>1 才插到候选首位（app/短语仍在其上）。词表 = 内嵌 `$pyWords`（6 万词，jieba 词频 × phrase-pinyin-data 拼音，`build-pywords.ps1` 由 vendor 文件生成）+ `$pyWFreq`（词/字权重，进 .mb 缓存）。
-7. 联想（`AssocEnabled`）：`RecordCommit` 处学习个人二元组（≤8 字全 CJK，每键留 12 个），`BeginAssoc` 在上屏后 `ShowAssoc` 展示学会的下一词（keys 为空、HasCode=true 使空格/数字可选，可连续联想）；标点/退格/Esc/回车/新字母立即解散；存 `assoc.txt`（2 万键×8 词）。
+7. 联想（`AssocEnabled`）：`RecordCommit` 处学习个人二元组（≤8 字全 CJK，每键留 12 个），`BeginAssoc` 在上屏并清空候选后 `ShowAssoc` 展示学会的下一词（候选条带 `↪联想` 标记；keys 为空、HasCode=true 使数字可选，可连续联想）；**数字键才选中联想词，空格照常上屏空格**（防劫持）；标点/退格/Esc/回车/新字母立即解散；存 `assoc.txt`（2 万键×8 词）。
 6. 五笔惯例：**纯五笔模式下**，4 码精确命中且无可扩展前缀时自动上屏**首个候选**（无需空格，候选列表不显示；同码多词时可用 Backspace 退回三码查看全部候选）。
 7. 反查编码（`ShowCode`）：候选后附 `(码)` —— 拼音/混合模式取 `RevWb`（词→五笔码反向表，`ApplySwap` 时从 wb 表构建），五笔模式取 `CodeFor`（CharPy 拼接全拼）。
 
