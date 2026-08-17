@@ -41,6 +41,23 @@ public static class FormShot
             return -1;
         }));
     }
+    public static int NamedButtonCount(Form f, string names)   // flat-UI tab strips (no TabControl): count buttons with these texts anywhere in the tree
+    {
+        return (int)f.Invoke(new Func<int>(delegate {
+            int n = 0;
+            var stack = new System.Collections.Generic.List<Control>();
+            Collect(f, stack);
+            foreach (Control c in stack) {
+                var b = c as Button;
+                if (b != null && ("," + names + ",").Contains("," + b.Text + ",")) n++;
+            }
+            return n;
+        }));
+    }
+    static void Collect(Control c, System.Collections.Generic.List<Control> acc)
+    {
+        foreach (Control cc in c.Controls) { acc.Add(cc); Collect(cc, acc); }
+    }
 }
 '@
 $asm = [Reflection.Assembly]::LoadFile($dll)
@@ -244,7 +261,8 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 Check "clock plugin form"      ($clockForm -ne $null)                                               "True"
 if ($clockForm -ne $null) {
-    Check "clock has 4 tabs"   ([FormShot]::TabCount($clockForm))                                   "4"
+    $tabNames = [string][char]0x65F6 + [char]0x949F + ',' + [string][char]0x5012 + [char]0x8BA1 + [char]0x65F6 + ',' + [string][char]0x79D2 + [char]0x8868 + ',' + [string][char]0x756A + [char]0x8304   # clock/countdown/stopwatch/pomodoro
+    Check "clock has 4 tabs"   ([FormShot]::NamedButtonCount($clockForm, $tabNames))                    "4"
     $cpng = Join-Path $PSScriptRoot 'clock-form.png'
     [FormShot]::InvokeSave($clockForm, $cpng)
     Check "clock rendered"     (Test-Path $cpng)                                                    "True"

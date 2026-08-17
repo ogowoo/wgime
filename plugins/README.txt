@@ -33,7 +33,7 @@ C# 代码插件 (要窗体就用它):
   契约: 含一个 public static void Run(); 跑在插件专用线程 (WgImePlugins), 可直接 new Form().Show(),
         插件阻塞不影响输入法打字
   引用: System / Windows.Forms / Drawing / Core / Data; 注意是 C# 5 语法 (.NET 4.x CodeDom)
-  示例: clock.txt (输入 sz 弹悬浮时钟/倒计时/秒表)
+  示例: clock.txt (输入 sz 弹现代风悬浮时钟: 时钟/闹钟/倒计时/秒表计次/番茄统计)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
 完整规范见仓库 docs\WGIME_插件规范.md。
