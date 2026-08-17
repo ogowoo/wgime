@@ -57,7 +57,10 @@ New-Item -ItemType Directory -Path $tmp | Out-Null
 $cfgLines = @(
     'paste = key',
     ('app = np' + "`t" + [char]0x4E8B + [char]0x8BB0 + [char]0x672C + "`t" + 'notepad.exe'),   # ji-shi-ben
-    ('app = bd' + "`t" + 'Search' + "`t" + 'https://www.baidu.com')
+    ('app = bd' + "`t" + 'Search' + "`t" + 'https://www.baidu.com'),
+    'app = mm Mspaint mspaint.exe',                                                             # space-separated (no TABs)
+    ('app = pp Pwsh "C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoProfile'),              # quoted path with spaces + args
+    'app = broken OnlyTwoParts'                                                                 # must be ignored
 )
 [IO.File]::WriteAllText((Join-Path $tmp 'config.txt'), ($cfgLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
 $loadConfig.Invoke($null, @([string]$tmp))
@@ -66,6 +69,9 @@ Check "builtin jsq registered"  ($apps.ContainsKey('jsq') -and $apps['jsq'][1] -
 Check "builtin calc registered" ($apps.ContainsKey('calc'))                                        "True"
 Check "config np registered"    ($apps.ContainsKey('np') -and $apps['np'][1] -eq 'notepad.exe')    "True"
 Check "config bd url"           ($apps.ContainsKey('bd') -and $apps['bd'][1] -eq 'https://www.baidu.com') "True"
+Check "space-separated mm"      ($apps.ContainsKey('mm') -and $apps['mm'][1] -eq 'mspaint.exe' -and $apps['mm'][0] -eq 'Mspaint') "True"
+Check "quoted path + args"      ($apps.ContainsKey('pp') -and $apps['pp'][1] -eq 'C:\Program Files\PowerShell\7\pwsh.exe' -and $apps['pp'][2] -eq '-NoLogo -NoProfile') "True"
+Check "two-part line ignored"   ($apps.ContainsKey('broken'))                                      "False"
 Remove-Item $tmp -Recurse -Force
 
 # ---- 3) CalcForm renders ----

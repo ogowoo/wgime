@@ -297,7 +297,7 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 
 ### 7.3 应用启动器与内嵌应用
 
-- **注册表**：`Apps: code -> [名称, 命令, 参数]`。内置编码：`jsq`/`calc`（计算器）、`itools`/`tools`（工具箱）、`net`/`wlgj`（网络工具）、`clip`/`jlb`（剪贴板历史）、`bj`/`notes`（便签）、`ys`/`color`（颜色拾取）、`plugins`/`cjgl`（插件管理）。config.txt 可挂外部程序/目录/网址：`app = 码<TAB>名称<TAB>命令[<TAB>参数]`（`UseShellExecute` 打开）。
+- **注册表**：`Apps: code -> [名称, 命令, 参数]`。内置编码：`jsq`/`calc`（计算器）、`itools`/`tools`（工具箱）、`net`/`wlgj`（网络工具）、`clip`/`jlb`（剪贴板历史）、`bj`/`notes`（便签）、`ys`/`color`（颜色拾取）、`plugins`/`cjgl`（插件管理）。config.txt 可挂外部程序/目录/网址：`app = 码<TAB>名称<TAB>命令[<TAB>参数]`（TAB 优先；不足 3 段时按空格分隔兜底，含空格的命令用引号；`UseShellExecute` 打开）。
 - **候选注入**：`AddAppCand` 在编码精确命中时把 `▶名称` 插到候选最顶（双拼下停用，与 rq/sj/xq 同理）；`Hook_OnSpaced` 命中 `appSet` 时走 `LaunchApp` 而非 `Send`，跳过 `Learn`/`RecordCommit`。
 - **命令类型**：`builtin:xxx` → 内嵌窗体；`plugin:<file>` → 步骤 DSL 插件；`codeplugin:<file>` → C# 插件；其余 → `Process.Start`。
 - **内嵌窗体**（全部 TopMost、Esc 关闭、后台线程干活不卡 UI）：
