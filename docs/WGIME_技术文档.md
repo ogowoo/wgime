@@ -131,8 +131,8 @@ wgime.bat
 
 | 文件 | 内容 | 保存时机 |
 |---|---|---|
-| `userdict.txt` | `词 频次` | 每累计 10 次学习或退出时 |
-| `lastpick.txt` | `码 上次选的词` | 同上 |
+| `userdict_mix/py/wb.txt` | `词 频次`（按混合/拼音/五笔分桶） | 每累计 50 次学习或 5 秒或退出时 |
+| `lastpick_mix/py/wb.txt` | `码 上次选的词`（同上分桶） | 同上 |
 | `userwords.txt` | `码 词1 词2…`（按码聚合） | 每次造词 |
 | `pos.txt` | 候选条位置 `x,y` | 拖动结束 |
 
@@ -259,7 +259,7 @@ ApplySwap(mb)            # 一次性原子替换全部静态引用，DictsReady=
 4. 可选删除 `py/wb/ec.txt` 与 `import_py/wb/ec.txt` 中对应词库的文件；
 5. 气泡提示统计与备份位置。任一步失败：气泡报错，源文件不动。
 
-- 词频（`userdict.txt`）、上次选择（`lastpick.txt`）、用户词（`userwords.txt`）、候选条位置（`pos.txt`）**不参与固化**，仍为独立学习数据。
+- 词频（`userdict_mix/py/wb.txt`，按模式分桶）、上次选择（`lastpick_mix/py/wb.txt`）、用户词（`userwords.txt`）、候选条位置（`pos.txt`）**不参与固化**，仍为独立学习数据。
 - 已删除的 txt 若日后想恢复：从任一份 `wgime.bat.bak-*` 备份还原，或重新放置同名 txt 文件（内容会再叠加，重复条目自动去重）。
 - 注意：bat 体积会增长到十几 MB，每次启动 PowerShell 需解析更大的脚本文本（略慢数秒，词典本身仍走缓存秒开）。固化写入的是"当时"的合并快照，之后新导入的码表仍通过 import 文件叠加。
 
@@ -350,7 +350,7 @@ PS 引导层在 `RunApp` 之前内嵌四段 here-string 种子（`$seedTools`/`$
 |---|---|
 | `wgime.mb` | 词典二进制缓存（可随时删除，下次启动重建） |
 | `WgIme.<hash>.dll` | 预编译载荷（自动维护，旧版自动清理） |
-| `userdict.txt` / `lastpick.txt` | 词频与每码上次选择 |
+| `userdict_mix/py/wb.txt` / `lastpick_mix/py/wb.txt` | 词频与每码上次选择（按 混合/拼音/五笔 模式分桶；旧 userdict.txt/lastpick.txt 一次性迁移进各桶，不再写入） |
 | `userwords.txt` | 用户造词 |
 | `pos.txt` | 候选条位置（followcaret=1 时仅作兜底） |
 | `pastemode.txt` | 按进程上屏方式覆盖（`程序名.exe=clipboard/sendkeys/key/keyfix/keyplain`），托盘切换自动维护 |

@@ -225,6 +225,51 @@ try {
     Remove-Item $tmpCfg -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- 8b. per-mode frequency buckets: isolation + legacy migration + per-mode persistence ---
+$cFa2   = [string][char]0x53D1   # 发
+$cJian2 = [string][char]0x89C1   # 见
+$freqMF = [WordBoard].GetField('FreqM', [Reflection.BindingFlags]'Static, NonPublic')
+$lpMF   = [WordBoard].GetField('LastPickM', [Reflection.BindingFlags]'Static, NonPublic')
+$learnM = [WordBoard].GetMethod('Learn', [Reflection.BindingFlags]'Static, NonPublic')
+$saveFM = [WordBoard].GetMethod('SaveFreq', [Reflection.BindingFlags]'Static, NonPublic')
+$loadFM = [WordBoard].GetMethod('LoadFreq', [Reflection.BindingFlags]'Static, NonPublic')
+$fArr = [Array]::CreateInstance([System.Collections.Generic.Dictionary[string,int]], 3)
+$lArr = [Array]::CreateInstance([System.Collections.Generic.Dictionary[string,string]], 3)
+for ($i = 0; $i -lt 3; $i++) { $fArr[$i] = New-Object 'System.Collections.Generic.Dictionary[string,int]'; $lArr[$i] = New-Object 'System.Collections.Generic.Dictionary[string,string]' }
+$freqMF.SetValue($null, $fArr); $lpMF.SetValue($null, $lArr)
+[WordBoard]::Freq = New-Object 'System.Collections.Generic.Dictionary[string,int]'
+$tmpF = Join-Path $env:TEMP ('wgime-freq-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpF | Out-Null
+$oldDataDir = [WordBoard]::DataDir
+try {
+    [WordBoard]::DataDir = $tmpF
+    [IO.File]::WriteAllText((Join-Path $tmpF 'userdict.txt'), ($cJian2 + ' 7'), (New-Object System.Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $tmpF 'lastpick.txt'), ('jian ' + $cJian2), (New-Object System.Text.UTF8Encoding($false)))
+    $loadFM.Invoke($null, @())
+    $fm = $freqMF.GetValue($null); $lm = $lpMF.GetValue($null)
+    T 'legacy userdict migrates into all mode buckets' ($fm[0][$cJian2] -eq 7 -and $fm[1][$cJian2] -eq 7 -and $fm[2][$cJian2] -eq 7) ("mix=$($fm[0][$cJian2]) py=$($fm[1][$cJian2]) wb=$($fm[2][$cJian2])")
+    T 'legacy lastpick migrates into all mode buckets' ($lm[0]['jian'] -eq $cJian2 -and $lm[2]['jian'] -eq $cJian2) ("py jian=$($lm[1]['jian'])")
+    T 'combined Freq is the bucket sum' ([WordBoard]::Freq[$cJian2] -eq 21) ("Freq=$([WordBoard]::Freq[$cJian2])")
+
+    $learnM.Invoke($null, @('fa', $cFa2, 1))        # pinyin-mode pick
+    T 'pinyin pick lands in py bucket only' ($fm[1][$cFa2] -eq 1 -and -not $fm[0].ContainsKey($cFa2) -and -not $fm[2].ContainsKey($cFa2)) ("py=$($fm[1][$cFa2]) mix=$($fm[0].ContainsKey($cFa2)) wb=$($fm[2].ContainsKey($cFa2))")
+    T 'pinyin lastpick lands in py bucket only' ($lm[1]['fa'] -eq $cFa2 -and -not $lm[0].ContainsKey('fa') -and -not $lm[2].ContainsKey('fa')) ("py fa=$($lm[1]['fa'])")
+    T 'combined Freq still counts every mode' ([WordBoard]::Freq[$cFa2] -eq 1) ("Freq=$([WordBoard]::Freq[$cFa2])")
+
+    $learnM.Invoke($null, @('xyz', 'ENG', 3))       # translate mode: combined only, no bucket pollution
+    T 'translate pick skips mode buckets' (-not $fm[0].ContainsKey('ENG') -and -not $fm[1].ContainsKey('ENG') -and -not $fm[2].ContainsKey('ENG')) ""
+    T 'translate pick counts in combined Freq' ([WordBoard]::Freq['ENG'] -eq 1) ("Freq=$([WordBoard]::Freq['ENG'])")
+
+    $saveFM.Invoke($null, @())
+    T 'per-mode files written' ((Test-Path (Join-Path $tmpF 'userdict_py.txt')) -and (Test-Path (Join-Path $tmpF 'userdict_wb.txt')) -and (Test-Path (Join-Path $tmpF 'lastpick_mix.txt'))) ""
+    T 'py bucket file has the pinyin pick' (([IO.File]::ReadAllText((Join-Path $tmpF 'userdict_py.txt'), [Text.Encoding]::UTF8)) -match [regex]::Escape($cFa2)) ""
+    T 'mix bucket file has no pinyin pick' (-not (([IO.File]::ReadAllText((Join-Path $tmpF 'userdict_mix.txt'), [Text.Encoding]::UTF8)) -match [regex]::Escape($cFa2))) ""
+    T 'legacy userdict.txt not rewritten' (([IO.File]::ReadAllText((Join-Path $tmpF 'userdict.txt'), [Text.Encoding]::UTF8)).Trim() -eq ($cJian2 + ' 7')) ""
+} finally {
+    [WordBoard]::DataDir = $oldDataDir
+    Remove-Item $tmpF -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host ""
 Write-Host "== $passed passed, $failed failed ==" -ForegroundColor Cyan
 if ($failed -gt 0) { exit 1 }

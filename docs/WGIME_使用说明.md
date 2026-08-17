@@ -202,8 +202,8 @@ WgIme 是一个**免安装的单文件悬浮输入法**：支持拼音、五笔�
 | 文件 | 作用 |
 |---|---|
 | `wgime.mb` | 词典缓存（可删除，自动重建） |
-| `userdict.txt` | 词频学习记录 |
-| `lastpick.txt` | 每个编码上次选中的词 |
+| `userdict_mix/py/wb.txt` | 词频学习记录（按混合/拼音/五笔模式分桶，互不干扰；旧的 userdict.txt 一次性迁移进各桶） |
+| `lastpick_mix/py/wb.txt` | 每个编码上次选中的词（同样按模式分桶） |
 | `userwords.txt` | 用户造词 |
 | `pos.txt` | 候选条位置 |
 | `pastemode.txt` | 按进程上屏方式覆盖（托盘"这个程序改用剪贴板上屏"自动维护） |
@@ -227,7 +227,7 @@ Shift 轻点一下即重新打开；托盘图标灰色=关、彩色=开。
 删除 bat 目录对应的 `import_*.txt`，再通过托盘"导入码表…"任意导入一个文件触发重载，或重启 WgIme。
 
 **Q：如何重置全部学习数据？**
-退出 WgIme，删除 `%LOCALAPPDATA%\wgime\` 下的 `userdict.txt`、`lastpick.txt`、`userwords.txt` 后重启。
+退出 WgIme，删除 `%LOCALAPPDATA%\wgime\` 下的 `userdict_*.txt`、`lastpick_*.txt`、`userwords.txt` 后重启。
 
 **Q：固化后还能删目录里的 txt 码表文件吗？**
 可以——固化已把合并词库写进了 bat 内置表，删除 `py.txt`/`wb.txt`/`ec.txt` 和 `import_*.txt` 不再丢词（下次启动自动重建缓存）。改主意了就从任一份 `wgime.bat.bak-时间戳` 备份还原（自动保留最新 7 份）。
