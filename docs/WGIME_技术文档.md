@@ -379,7 +379,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 
 脚本解剖（rebuild.ps1）：读取后先归一化为 LF 处理 → 提取 `$cs` here-string → 编译到 `%TEMP%\wgime_new.dll`（引用 System.Windows.Forms / System.Drawing / UIAutomationClient / UIAutomationTypes / WindowsBase；失败则 bat 不被改动）→ base64 替换 `###WGIME_DLL###` 载荷行（单引号包裹）→ 以 CRLF 写回并硬断言无 BOM、无裸 LF（纯 CRLF）。运行时首次启动会按 `MD5(base64)前8位` 生成新 DLL 名并自动清理旧版本。
 
-**只改数据/引导层不用重建**：内嵌码表用 `build-full-singles.ps1`（全单字合并：内嵌 + py.txt/wb.txt 单字 + Unihan 派生表 tests/pinyin-data.txt 补齐，自带时间戳备份与 BOM/批处理头 CRLF 校验）；PS 引导层（含播种种子）改动直接生效。
+**只改数据/引导层不用重建**：内嵌码表用 `build-full-singles.ps1`（全单字合并：内嵌 + py.txt/wb.txt 单字 + Unihan 派生表 tests/pinyin-data.txt 补齐，自带时间戳备份与 BOM/批处理头 CRLF 校验）；`sort-by-freq.ps1` 按 tests/charfreq-junda.csv（Jun Da 现代汉语字频表，9899 字）对 pyData/wbData 每行打包单字做稳定重排（表外字保持原相对顺序沉底；逐行校验字符多重集不变；不影响词组与用户词频学习）；PS 引导层（含播种种子）改动直接生效。
 
 ### 11.2 测试套件清单
 
