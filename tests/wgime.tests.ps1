@@ -188,6 +188,66 @@ try {
     $wb2.Dispose()
 }
 
+# --- 7c. sentence lattice (BestSentence) + association bigrams ---
+$cNi = [string][char]0x4F60; $cHao = [string][char]0x597D   # 你 好
+$cShi = [string][char]0x662F; $cJie = [string][char]0x754C  # 是 界
+$cShijie = [string][char]0x4E16 + [char]0x754C              # 世界
+$cRenMin = [string][char]0x4EBA + [char]0x6C11              # 人民
+$bsm = [WordBoard].GetMethod('BestSentence', [Reflection.BindingFlags]'Static,NonPublic')
+$pyF2 = [WordBoard].GetField('PyDict', [Reflection.BindingFlags]'Static,Public,NonPublic')
+$wfF  = [WordBoard].GetField('WordFreq', [Reflection.BindingFlags]'Static,NonPublic')
+$ltF  = [WordBoard].GetField('LogTotalW', [Reflection.BindingFlags]'Static,NonPublic')
+$oldPyD = $pyF2.GetValue($null); $oldWfD = $wfF.GetValue($null); $oldLt = $ltF.GetValue($null)
+$pyS = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+$pyS['ni'] = $cNi; $pyS['hao'] = $cHao; $pyS['shi'] = $cShi; $pyS['jie'] = $cJie
+$pyS['nihao'] = $cNi + $cHao; $pyS['shijie'] = $cShijie
+$wfS = New-Object 'System.Collections.Generic.Dictionary[string,int]'
+$wfS[$cNi] = 1000; $wfS[$cHao] = 900; $wfS[$cShi] = 8000; $wfS[$cJie] = 700
+$wfS[$cNi + $cHao] = 5000; $wfS[$cShijie] = 6000
+$pyF2.SetValue($null, $pyS); $wfF.SetValue($null, $wfS); $ltF.SetValue($null, [Math]::Log(21600))
+try {
+    T 'lattice: nihaoshijie -> full sentence' ($bsm.Invoke($null, @('nihaoshijie')) -eq ($cNi + $cHao + $cShijie)) ("got " + $bsm.Invoke($null, @('nihaoshijie')))
+    T 'lattice: nihao -> word beats char chain' ($bsm.Invoke($null, @('nihao')) -eq ($cNi + $cHao)) ("got " + $bsm.Invoke($null, @('nihao')))
+    T 'lattice: shijie -> word beats chars' ($bsm.Invoke($null, @('shijie')) -eq $cShijie) ("got " + $bsm.Invoke($null, @('shijie')))
+    T 'lattice: no full cover -> null' ($bsm.Invoke($null, @('qqqq')) -eq $null) ""
+    T 'lattice: too short -> null' ($bsm.Invoke($null, @('nih')) -eq $null) ""
+} finally {
+    $pyF2.SetValue($null, $oldPyD); $wfF.SetValue($null, $oldWfD); $ltF.SetValue($null, $oldLt)
+}
+
+# association bigrams: learn + cap + reject non-CJK
+$assocF = [WordBoard].GetField('Assoc', [Reflection.BindingFlags]'Static,NonPublic')
+$laM = [WordBoard].GetMethod('LearnAssoc', [Reflection.BindingFlags]'Static,NonPublic')
+$assocF.SetValue($null, (New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Generic.Dictionary[string,int]]'))
+[WordBoard]::AssocEnabled = $true
+$laM.Invoke($null, @($zg, $cRenMin)); $laM.Invoke($null, @($zg, $cRenMin)); $laM.Invoke($null, @($zg, $cShijie))
+$asc = $assocF.GetValue($null)
+T 'bigram learned with count' ($asc[$zg][$cRenMin] -eq 2) ("count=" + $asc[$zg][$cRenMin])
+T 'second association word learned' ($asc[$zg][$cShijie] -eq 1) ""
+$laM.Invoke($null, @('abc', 'def'))
+T 'non-CJK bigram rejected' (-not $asc.ContainsKey('abc')) ""
+$laM.Invoke($null, @($zg, $zg))
+T 'self bigram rejected' (-not $asc[$zg].ContainsKey($zg)) ""
+
+# ShowAssoc on a real instance: associations fill the candidate bar with keys empty
+$wb3 = New-Object WordBoard
+try {
+    $lcF = [WordBoard].GetField('lastCommitWord', [Reflection.BindingFlags]'Instance,NonPublic')
+    $asF = [WordBoard].GetField('assocShowing', [Reflection.BindingFlags]'Instance,NonPublic')
+    $cdF = [WordBoard].GetField('cands', [Reflection.BindingFlags]'Instance,NonPublic')
+    $saM = [WordBoard].GetMethod('ShowAssoc', [Reflection.BindingFlags]'Instance,NonPublic')
+    [WordBoard].GetField('mode', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($wb3, 0)
+    $lcF.SetValue($wb3, $zg)
+    $saM.Invoke($wb3, @())
+    $cd3 = $cdF.GetValue($wb3)
+    T 'ShowAssoc fills associations' ($asF.GetValue($wb3) -eq $true -and $cd3.Count -eq 2 -and $cd3[0] -eq $cRenMin) ("cands=" + [string]::Join(',', $cd3))
+    T 'ShowAssoc routes digit/space to picker (HasCode=true)' ([WordBoard]::Hook.HasCode -eq $true) ""
+    $lcF.SetValue($wb3, $null); $saM.Invoke($wb3, @())
+    T 'no last word -> assoc row dismissed' ($asF.GetValue($wb3) -eq $false) ""
+} finally {
+    $wb3.Dispose()
+}
+
 # --- 8. tray 反查编码/简繁 toggle must persist keys into config.txt (keep comments/other keys) ---
 $tmpCfg = Join-Path $env:TEMP 'wgime_cfg_test'
 New-Item -ItemType Directory -Path $tmpCfg -Force | Out-Null
