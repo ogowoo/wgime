@@ -144004,18 +144004,18 @@ using System.Collections.Generic;
 
 public class ClockPlugin
 {
-    // ---------- palette (vibrant modern LIGHT: soft lavender-gray, white cards, saturated accents) ----------
-    static Color C_BG      = Color.FromArgb(255, 242, 243, 249);
-    static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);
-    static Color C_SURF2   = Color.FromArgb(255, 232, 234, 243);
-    static Color C_BORDER  = Color.FromArgb(255, 213, 216, 232);
-    static Color C_TEXT    = Color.FromArgb(255, 30, 32, 48);
-    static Color C_SUB     = Color.FromArgb(255, 110, 112, 137);
-    static Color C_ACCENT  = Color.FromArgb(255, 124, 108, 255);   // electric periwinkle
-    static Color C_GREEN   = Color.FromArgb(255, 16, 185, 129);    // emerald
-    static Color C_ORANGE  = Color.FromArgb(255, 245, 158, 11);    // amber
-    static Color C_BLUE    = Color.FromArgb(255, 14, 165, 233);    // sky
-    static Color C_RED     = Color.FromArgb(255, 244, 63, 94);     // rose
+    // ---------- palette (macOS light: pure white, gray titlebar, Apple system colors) ----------
+    static Color C_BG      = Color.FromArgb(255, 255, 255, 255);
+    static Color C_SURFACE = Color.FromArgb(255, 245, 245, 247);   // macOS titlebar gray / cards
+    static Color C_SURF2   = Color.FromArgb(255, 236, 236, 240);   // tracks / wells
+    static Color C_BORDER  = Color.FromArgb(255, 227, 227, 232);   // hairline
+    static Color C_TEXT    = Color.FromArgb(255, 29, 29, 31);      // Apple label
+    static Color C_SUB     = Color.FromArgb(255, 134, 134, 139);   // Apple secondary label
+    static Color C_ACCENT  = Color.FromArgb(255, 0, 122, 255);     // systemBlue
+    static Color C_GREEN   = Color.FromArgb(255, 52, 199, 89);     // systemGreen
+    static Color C_ORANGE  = Color.FromArgb(255, 255, 149, 0);     // systemOrange
+    static Color C_BLUE    = Color.FromArgb(255, 48, 176, 199);    // systemTeal
+    static Color C_RED     = Color.FromArgb(255, 255, 55, 95);     // systemPink
 
     // ---------- persisted settings & stats ----------
     static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
@@ -144112,16 +144112,16 @@ public class ClockPlugin
 
     class FlatBtn : Button
     {
-        public Color Bg = Color.FromArgb(255, 232, 234, 243);
-        public Color BgHover = Color.FromArgb(255, 223, 226, 240);
-        public Color BgDown = Color.FromArgb(255, 210, 214, 232);
-        public Color Fg = Color.FromArgb(255, 30, 32, 48);
+        public Color Bg = Color.FromArgb(255, 239, 239, 242);
+        public Color BgHover = Color.FromArgb(255, 230, 230, 235);
+        public Color BgDown = Color.FromArgb(255, 217, 217, 224);
+        public Color Fg = Color.FromArgb(255, 29, 29, 31);
         public bool AccentLine;                       // tab mode: 3px accent underline when Selected
         public bool Selected;
-        public bool Primary;                          // gradient indigo->violet fill (main actions)
+        public bool Primary;                          // solid systemBlue fill (macOS accent button)
         bool hover, down;
-        static Color PriA  = Color.FromArgb(255, 99, 102, 241);     // indigo-500
-        static Color PriB  = Color.FromArgb(255, 168, 85, 247);     // purple-500
+        static Color PriA  = Color.FromArgb(255, 10, 132, 255);     // #0A84FF
+        static Color PriB  = Color.FromArgb(255, 0, 122, 255);      // #007AFF, near-solid gradient = macOS flat accent
         static Color Lighten(Color c, int d) { return Color.FromArgb(255, Math.Min(255, c.R + d), Math.Min(255, c.G + d), Math.Min(255, c.B + d)); }
         public FlatBtn()
         {
