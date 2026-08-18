@@ -21,6 +21,7 @@ public class ClockPlugin
 {
     // ---------- palette (light blue-gray body + white cards: stands out from white desktop windows) ----------
     static Color C_BG      = Color.FromArgb(255, 232, 237, 245);   // #E8EDF5 light blue-gray
+    static Color C_HEADER  = Color.FromArgb(255, 220, 227, 239);   // deeper tint: title bar stands out from white windows
     static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);   // white title bar / cards
     static Color C_SURF2   = Color.FromArgb(255, 217, 224, 236);   // tracks / wells
     static Color C_BORDER  = Color.FromArgb(255, 195, 204, 221);   // visible hairline
@@ -241,10 +242,10 @@ public class ClockPlugin
         // ---------- title bar ----------
         // explicit bounds, no Dock: dock order depends on z-order and silently scrambled once
         // (title ended up below the tab strip). Fixed-size form => fixed coordinates.
-        var title = new Panel { Location = new Point(0, 0), Size = new Size(400, 38), BackColor = C_SURFACE };
+        var title = new Panel { Location = new Point(0, 0), Size = new Size(400, 38), BackColor = C_HEADER };
         var lblCap = new Label { Text = "悬浮时钟", Font = fontTitle, ForeColor = C_TEXT, AutoSize = true, Location = new Point(30, 9), BackColor = Color.Transparent };
         var btnClose = new FlatBtn { Text = "✕", Font = fontTitle, Size = new Size(34, 26), Location = new Point(356, 6),
-            Bg = C_SURFACE, BgHover = Color.FromArgb(255, 200, 60, 70), BgDown = Color.FromArgb(255, 170, 40, 50) };
+            Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70), BgDown = Color.FromArgb(255, 170, 40, 50) };
         btnClose.Click += delegate { f.Close(); };
         title.Controls.Add(lblCap); title.Controls.Add(btnClose);
         title.Paint += delegate(object s, PaintEventArgs e) {
@@ -472,8 +473,8 @@ public class ClockPlugin
                 using (var br = new SolidBrush(i == 6 ? C_RED : C_SURF2)) { g.FillPath(br, path); }
                 var day = DateTime.Today.AddDays(i - 6);
                 using (var br = new SolidBrush(i == 6 ? C_TEXT : C_SUB))
-                using (var sf = new StringFormat { Alignment = StringAlignment.Center })
-                    g.DrawString("周" + "日一二三四五六"[(int)day.DayOfWeek], fontChart, br, x + bw / 2, 88);
+                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near, FormatFlags = StringFormatFlags.NoWrap })
+                    g.DrawString("周" + "日一二三四五六"[(int)day.DayOfWeek], fontChart, br, new RectangleF(x - 20, 88, bw + 40, 16), sf);   // rect-centered: point-draw ignores Alignment
             }
         };
 
