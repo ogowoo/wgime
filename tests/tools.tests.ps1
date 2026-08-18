@@ -96,6 +96,12 @@ Check "tab2 cols"        ($tabs[1].GetType().GetField('Cols', 'Instance, Public,
 Check "tab1 cols default"  ($tabs[0].GetType().GetField('Cols', 'Instance, Public, NonPublic').GetValue($tabs[0]))   "0"
 Remove-Item (Join-Path $tmp 'tools.txt') -Force
 
+# ---- 2c) confirm extension syntax (source-level: interactive MessageBox cannot be driven here) ----
+$srcC = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\wgime.bat'), [Text.Encoding]::UTF8)
+$WB2 = [string][char]0x6587 + [char]0x672C     # the two CJK chars after "confirm " in the source comment (file must stay ASCII for PS 5.1)
+Check "confirm options"    ($srcC -match ("confirm " + $WB2 + " \[\| title=") -and $srcC -match 'buttons=yesno\|okcancel\|ok' -and $srcC -match 'default=1\|2')   "True"
+Check "confirm ok no-abort" ($srcC -match 'if \(btns == MessageBoxButtons\.OK\) return null;')   "True"
+
 # ---- 2b) multi-line script blocks ----
 $sample2 = @"
 [tab T]
