@@ -19,18 +19,18 @@ using System.Collections.Generic;
 
 public class ClockPlugin
 {
-    // ---------- palette ----------
-    static Color C_BG      = Color.FromArgb(255, 22, 24, 30);
-    static Color C_SURFACE = Color.FromArgb(255, 30, 33, 42);
-    static Color C_SURF2   = Color.FromArgb(255, 38, 42, 54);
-    static Color C_BORDER  = Color.FromArgb(255, 52, 58, 74);
-    static Color C_TEXT    = Color.FromArgb(255, 232, 234, 238);
-    static Color C_SUB     = Color.FromArgb(255, 138, 144, 160);
-    static Color C_ACCENT  = Color.FromArgb(255, 76, 141, 255);
-    static Color C_GREEN   = Color.FromArgb(255, 61, 220, 151);
-    static Color C_ORANGE  = Color.FromArgb(255, 255, 171, 64);
-    static Color C_BLUE    = Color.FromArgb(255, 96, 181, 255);
-    static Color C_RED     = Color.FromArgb(255, 255, 107, 107);
+    // ---------- palette (vibrant modern dark: indigo/violet accent, saturated page colors) ----------
+    static Color C_BG      = Color.FromArgb(255, 14, 14, 22);
+    static Color C_SURFACE = Color.FromArgb(255, 23, 23, 36);
+    static Color C_SURF2   = Color.FromArgb(255, 31, 31, 48);
+    static Color C_BORDER  = Color.FromArgb(255, 46, 46, 69);
+    static Color C_TEXT    = Color.FromArgb(255, 242, 243, 247);
+    static Color C_SUB     = Color.FromArgb(255, 142, 142, 168);
+    static Color C_ACCENT  = Color.FromArgb(255, 124, 108, 255);   // electric periwinkle
+    static Color C_GREEN   = Color.FromArgb(255, 46, 230, 168);    // vivid mint
+    static Color C_ORANGE  = Color.FromArgb(255, 255, 176, 32);    // vivid amber
+    static Color C_BLUE    = Color.FromArgb(255, 76, 201, 255);    // vivid sky
+    static Color C_RED     = Color.FromArgb(255, 255, 92, 138);    // vivid rose
 
     // ---------- persisted settings & stats ----------
     static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
@@ -127,13 +127,17 @@ public class ClockPlugin
 
     class FlatBtn : Button
     {
-        public Color Bg = Color.FromArgb(255, 38, 42, 54);
-        public Color BgHover = Color.FromArgb(255, 48, 53, 68);
-        public Color BgDown = Color.FromArgb(255, 58, 64, 82);
-        public Color Fg = Color.FromArgb(255, 232, 234, 238);
+        public Color Bg = Color.FromArgb(255, 31, 31, 48);
+        public Color BgHover = Color.FromArgb(255, 41, 41, 62);
+        public Color BgDown = Color.FromArgb(255, 51, 51, 76);
+        public Color Fg = Color.FromArgb(255, 242, 243, 247);
         public bool AccentLine;                       // tab mode: 3px accent underline when Selected
         public bool Selected;
+        public bool Primary;                          // gradient indigo->violet fill (main actions)
         bool hover, down;
+        static Color PriA  = Color.FromArgb(255, 99, 102, 241);     // indigo-500
+        static Color PriB  = Color.FromArgb(255, 168, 85, 247);     // purple-500
+        static Color Lighten(Color c, int d) { return Color.FromArgb(255, Math.Min(255, c.R + d), Math.Min(255, c.G + d), Math.Min(255, c.B + d)); }
         public FlatBtn()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
@@ -152,8 +156,15 @@ public class ClockPlugin
             // path are otherwise never painted and show whatever sits underneath (corner notches)
             if (Parent != null) { using (var pb = new SolidBrush(Parent.BackColor)) g.FillRectangle(pb, ClientRectangle); }
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = RoundRect(rect, 7))
-            using (var br = new SolidBrush(down ? BgDown : (hover ? BgHover : Bg))) { g.FillPath(br, path); }
+            using (var path = RoundRect(rect, 7)) {
+                if (Primary) {
+                    int d = down ? -12 : (hover ? 18 : 0);
+                    using (var lb = new LinearGradientBrush(new Rectangle(0, 0, Width, Height), Lighten(PriA, d), Lighten(PriB, d), 25F))
+                        g.FillPath(lb, path);
+                } else {
+                    using (var br = new SolidBrush(down ? BgDown : (hover ? BgHover : Bg))) { g.FillPath(br, path); }
+                }
+            }
             if (AccentLine && Selected) {
                 using (var br = new SolidBrush(C_ACCENT)) g.FillRectangle(br, 12, Height - 4, Width - 24, 3);
             }
@@ -347,8 +358,7 @@ public class ClockPlugin
         var txtRm = new TextBox { Text = reminder, Font = fontBtn, Location = new Point(16, 238), Size = new Size(368, 26),
             BackColor = C_SURF2, ForeColor = C_TEXT, BorderStyle = BorderStyle.FixedSingle };
         txtRm.LostFocus += delegate { reminder = txtRm.Text.Trim(); if (reminder.Length == 0) reminder = "休息一下"; SaveCfg(); };
-        var btnCdGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 276), Size = new Size(180, 36),
-            Bg = C_ACCENT, BgHover = Color.FromArgb(255, 96, 155, 255), BgDown = Color.FromArgb(255, 60, 120, 230) };
+        var btnCdGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 276), Size = new Size(180, 36), Primary = true };
         var btnCdReset = new FlatBtn { Text = "重置", Font = fontBtn, Location = new Point(204, 276), Size = new Size(180, 36), Fg = C_SUB };
         var p1 = pages[1];
         p1.Controls.Add(ringCd);
@@ -396,8 +406,7 @@ public class ClockPlugin
         var laps = new List<TimeSpan>();
 
         var lblSw = MkLabel("00:00.0", fontBig, C_BLUE, 0, 22, 400, 60, ContentAlignment.MiddleCenter);
-        var btnSwGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 96), Size = new Size(118, 36),
-            Bg = C_ACCENT, BgHover = Color.FromArgb(255, 96, 155, 255), BgDown = Color.FromArgb(255, 60, 120, 230) };
+        var btnSwGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 96), Size = new Size(118, 36), Primary = true };
         var btnSwLap = new FlatBtn { Text = "计次", Font = fontBtn, Location = new Point(141, 96), Size = new Size(118, 36), Fg = C_SUB };
         var btnSwReset = new FlatBtn { Text = "重置", Font = fontBtn, Location = new Point(266, 96), Size = new Size(118, 36), Fg = C_SUB };
         var lstLaps = new ListBox { Location = new Point(16, 146), Size = new Size(368, 158),
@@ -430,8 +439,7 @@ public class ClockPlugin
         bool pmRunning = false;
 
         var lblPm = MkLabel("00:00", fontBig, C_RED, 0, 14, 400, 56, ContentAlignment.MiddleCenter);
-        var btnPmGo = new FlatBtn { Text = "开始专注", Font = fontBtn, Location = new Point(16, 78), Size = new Size(118, 34),
-            Bg = C_ACCENT, BgHover = Color.FromArgb(255, 96, 155, 255), BgDown = Color.FromArgb(255, 60, 120, 230) };
+        var btnPmGo = new FlatBtn { Text = "开始专注", Font = fontBtn, Location = new Point(16, 78), Size = new Size(118, 34), Primary = true };
         var lblToday = MkLabel("今日 0 次 / 0分钟", fontBtn, C_TEXT, 146, 84, 240, 22, ContentAlignment.MiddleLeft);
         var lblTotal = MkLabel("总计 0 次 / 0分钟", fontSub, C_SUB, 146, 106, 240, 18, ContentAlignment.MiddleLeft);
         var chart = new DBPanel { Location = new Point(16, 136), Size = new Size(368, 108), BackColor = C_SURFACE };
