@@ -19,13 +19,13 @@ using System.Collections.Generic;
 
 public class ClockPlugin
 {
-    // ---------- palette (macOS light: pure white, gray titlebar, Apple system colors) ----------
-    static Color C_BG      = Color.FromArgb(255, 255, 255, 255);
-    static Color C_SURFACE = Color.FromArgb(255, 245, 245, 247);   // macOS titlebar gray / cards
-    static Color C_SURF2   = Color.FromArgb(255, 236, 236, 240);   // tracks / wells
-    static Color C_BORDER  = Color.FromArgb(255, 227, 227, 232);   // hairline
-    static Color C_TEXT    = Color.FromArgb(255, 29, 29, 31);      // Apple label
-    static Color C_SUB     = Color.FromArgb(255, 134, 134, 139);   // Apple secondary label
+    // ---------- palette (light blue-gray body + white cards: stands out from white desktop windows) ----------
+    static Color C_BG      = Color.FromArgb(255, 232, 237, 245);   // #E8EDF5 light blue-gray
+    static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);   // white title bar / cards
+    static Color C_SURF2   = Color.FromArgb(255, 217, 224, 236);   // tracks / wells
+    static Color C_BORDER  = Color.FromArgb(255, 195, 204, 221);   // visible hairline
+    static Color C_TEXT    = Color.FromArgb(255, 29, 29, 31);
+    static Color C_SUB     = Color.FromArgb(255, 110, 116, 133);
     static Color C_ACCENT  = Color.FromArgb(255, 0, 122, 255);     // systemBlue
     static Color C_GREEN   = Color.FromArgb(255, 52, 199, 89);     // systemGreen
     static Color C_ORANGE  = Color.FromArgb(255, 255, 149, 0);     // systemOrange
@@ -127,9 +127,9 @@ public class ClockPlugin
 
     class FlatBtn : Button
     {
-        public Color Bg = Color.FromArgb(255, 239, 239, 242);
-        public Color BgHover = Color.FromArgb(255, 230, 230, 235);
-        public Color BgDown = Color.FromArgb(255, 217, 217, 224);
+        public Color Bg = Color.FromArgb(255, 255, 255, 255);       // white card button on the blue-gray body
+        public Color BgHover = Color.FromArgb(255, 240, 243, 249);
+        public Color BgDown = Color.FromArgb(255, 226, 232, 242);
         public Color Fg = Color.FromArgb(255, 29, 29, 31);
         public bool AccentLine;                       // tab mode: 3px accent underline when Selected
         public bool Selected;
