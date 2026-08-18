@@ -71,6 +71,7 @@ file-del %LOCALAPPDATA%\X
 [$XIUFU Outlook]
 shell outlook.exe /resetnavpane
 [tab $XITONG]
+[cols 3]
 [$DAKAI$MULU]
 open %WINDIR%
 "@
@@ -91,6 +92,8 @@ Check "btn1 name"        (TabName $b1)             "$CHONGZHI Teams"
 Check "btn1 steps"       ((ActSteps $b1).Count)    "3"
 Check "btn2 steps"       ((ActSteps $b2).Count)    "1"
 Check "tab2 buttons"     ($acts2.Count)            "1"
+Check "tab2 cols"        ($tabs[1].GetType().GetField('Cols', 'Instance, Public, NonPublic').GetValue($tabs[1]))   "3"
+Check "tab1 cols default"  ($tabs[0].GetType().GetField('Cols', 'Instance, Public, NonPublic').GetValue($tabs[0]))   "0"
 Remove-Item (Join-Path $tmp 'tools.txt') -Force
 
 # ---- 2b) multi-line script blocks ----

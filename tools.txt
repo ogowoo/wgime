@@ -4,6 +4,7 @@
 ;
 ;  结构:
 ;    [tab 标签页名]        新开一个标签页
+;    [cols N]              当前标签页按钮按 N 列平铺 (1-6, 默认 2), 多了自动换行
 ;    [按钮名]              在当前标签页加一个按钮
 ;    <步骤行>              按钮点击后从上到下依次执行
 ;
@@ -51,6 +52,7 @@ wait 800
 shell outlook.exe /resetnavpane
 
 [tab 系统]
+[cols 2]
 
 [打开 WgIme 数据目录]
 open %LOCALAPPDATA%\wgime
