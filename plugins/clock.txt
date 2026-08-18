@@ -126,6 +126,36 @@ public class ClockPlugin
 
     class DBPanel : Panel { public DBPanel() { DoubleBuffered = true; } }
 
+    class RoundedEdit : Panel      // rounded text field: native TextBox is always square, so wrap a borderless one
+    {
+        public readonly TextBox Box;
+        public RoundedEdit(int w, int h, Font f)
+        {
+            Size = new Size(w, h);
+            DoubleBuffered = true;
+            BackColor = C_SURFACE;
+            Box = new TextBox { BorderStyle = BorderStyle.None, Font = f, Dock = DockStyle.Fill,
+                BackColor = C_SURFACE, ForeColor = C_TEXT, TextAlign = HorizontalAlignment.Center };
+            Padding = new Padding(9, 4, 9, 3);
+            Controls.Add(Box);
+            Cursor = Cursors.IBeam;
+            Click += delegate { Box.Focus(); };
+            Box.Enter += delegate { Invalidate(); };
+            Box.Leave += delegate { Invalidate(); };
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (Parent != null) { using (var pb = new SolidBrush(Parent.BackColor)) g.FillRectangle(pb, ClientRectangle); }
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = RoundRect(rect, 7))
+            using (var br = new SolidBrush(C_SURFACE)) { g.FillPath(br, path); }
+            using (var path = RoundRect(rect, 7))
+            using (var pen = new Pen(Box.Focused ? C_ACCENT : C_BORDER, Box.Focused ? 2F : 1F)) { g.DrawPath(pen, path); }
+        }
+    }
+
     class FlatBtn : Button
     {
         public Color Bg = Color.FromArgb(255, 255, 255, 255);       // white card button on the blue-gray body
@@ -313,8 +343,8 @@ public class ClockPlugin
             Location = new Point(16, 282), Size = new Size(118, 32), Fg = hourly ? C_GREEN : C_SUB };
         chkHourly.Click += delegate { hourly = !hourly; SaveCfg(); chkHourly.Text = hourly ? "整点报时: 开" : "整点报时: 关"; chkHourly.Fg = hourly ? C_GREEN : C_SUB; chkHourly.Invalidate(); };
         var lblAl = MkLabel("闹钟", fontBtn, C_SUB, 144, 288, 40, 22, ContentAlignment.MiddleLeft);
-        var txtAlarm = new TextBox { Text = alarmTime.Length == 5 ? alarmTime : "07:30", Font = fontBtn,
-            Location = new Point(188, 285), Size = new Size(56, 26), BackColor = C_SURF2, ForeColor = C_TEXT, BorderStyle = BorderStyle.FixedSingle, TextAlign = HorizontalAlignment.Center };
+        var edAlarm = new RoundedEdit(58, 28, fontBtn); edAlarm.Location = new Point(186, 284);
+        var txtAlarm = edAlarm.Box; txtAlarm.Text = alarmTime.Length == 5 ? alarmTime : "07:30";
         var chkAlarm = new FlatBtn { Text = alarmOn ? "开" : "关", Font = fontBtn, Location = new Point(252, 282), Size = new Size(46, 32), Fg = alarmOn ? C_ORANGE : C_SUB };
         chkAlarm.Click += delegate {
             alarmOn = !alarmOn;
@@ -331,7 +361,7 @@ public class ClockPlugin
         var p0 = pages[0];
         p0.Controls.Add(lblTime); p0.Controls.Add(lblDate); p0.Controls.Add(lblDayOf);
         p0.Controls.Add(ringClock);
-        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(txtAlarm); p0.Controls.Add(chkAlarm); p0.Controls.Add(lblAlNote);
+        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(edAlarm); p0.Controls.Add(chkAlarm); p0.Controls.Add(lblAlNote);
 
         // =========================================================
         //  page 1: countdown (ring / presets / custom reminder)
@@ -360,18 +390,18 @@ public class ClockPlugin
             }
         };
 
-        var txtMin = new TextBox { Text = "25", Font = fontBtn, Location = new Point(16, 202), Size = new Size(44, 26),
-            BackColor = C_SURF2, ForeColor = C_TEXT, BorderStyle = BorderStyle.FixedSingle, TextAlign = HorizontalAlignment.Center };
-        var lblMinNote = MkLabel("分", fontBtn, C_SUB, 62, 206, 20, 20, ContentAlignment.MiddleLeft);
-        var txtRm = new TextBox { Text = reminder, Font = fontBtn, Location = new Point(16, 238), Size = new Size(368, 26),
-            BackColor = C_SURF2, ForeColor = C_TEXT, BorderStyle = BorderStyle.FixedSingle };
+        var edMin = new RoundedEdit(46, 28, fontBtn); edMin.Location = new Point(16, 201); edMin.Box.Text = "25";
+        var txtMin = edMin.Box;
+        var lblMinNote = MkLabel("分", fontBtn, C_SUB, 68, 206, 20, 20, ContentAlignment.MiddleLeft);
+        var edRm = new RoundedEdit(368, 28, fontBtn); edRm.Location = new Point(16, 237);
+        var txtRm = edRm.Box; txtRm.TextAlign = HorizontalAlignment.Left; txtRm.Text = reminder;
         txtRm.LostFocus += delegate { reminder = txtRm.Text.Trim(); if (reminder.Length == 0) reminder = "休息一下"; SaveCfg(); };
         var btnCdGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 276), Size = new Size(180, 36), Primary = true };
         var btnCdReset = new FlatBtn { Text = "重置", Font = fontBtn, Location = new Point(204, 276), Size = new Size(180, 36), Fg = C_SUB };
         var p1 = pages[1];
         p1.Controls.Add(ringCd);
-        p1.Controls.Add(txtMin); p1.Controls.Add(lblMinNote);
-        p1.Controls.Add(txtRm); p1.Controls.Add(btnCdGo); p1.Controls.Add(btnCdReset);
+        p1.Controls.Add(edMin); p1.Controls.Add(lblMinNote);
+        p1.Controls.Add(edRm); p1.Controls.Add(btnCdGo); p1.Controls.Add(btnCdReset);
 
         Action<double> CdPreset = delegate(double m) {          // preset chip: set minutes + show it ready (press 开始 to run)
             txtMin.Text = ((int)m).ToString();
