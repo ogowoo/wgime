@@ -266,7 +266,6 @@ public class ClockPlugin
         var lblDate = MkLabel("", F(10.5F, FontStyle.Regular), C_SUB, 0, 78, 400, 22, ContentAlignment.MiddleCenter);
         var lblDayOf = MkLabel("", fontSub, C_SUB, 0, 100, 400, 18, ContentAlignment.MiddleCenter);
         var ringClock = new DBPanel { Location = new Point(130, 126), Size = new Size(140, 140), BackColor = Color.Transparent };
-        var lblSec = MkLabel("0", fontMid, C_TEXT, 130, 176, 140, 40, ContentAlignment.MiddleCenter);
         ringClock.Paint += delegate(object s, PaintEventArgs e) {
             var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
             var r = new Rectangle(8, 8, 124, 124);
@@ -275,6 +274,11 @@ public class ClockPlugin
             double pct = (now.Second * 1000.0 + now.Millisecond) / 60000.0;
             using (var pen = new Pen(C_GREEN, 7)) { pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round;
                 g.DrawArc(pen, r, -90, (float)(360.0 * pct)); }
+            // draw the seconds number inside the ring: a transparent panel paints AFTER sibling labels
+            // (z-order) and would overdraw them on screen, so the text must live in this Paint handler
+            using (var br = new SolidBrush(C_TEXT))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                g.DrawString(now.Second.ToString(), fontMid, br, new RectangleF(0, 0, 140, 140), sf);
         };
 
         var chkHourly = new FlatBtn { Text = hourly ? "整点报时: 开" : "整点报时: 关", Font = fontBtn,
@@ -298,7 +302,7 @@ public class ClockPlugin
         };
         var p0 = pages[0];
         p0.Controls.Add(lblTime); p0.Controls.Add(lblDate); p0.Controls.Add(lblDayOf);
-        p0.Controls.Add(ringClock); p0.Controls.Add(lblSec);
+        p0.Controls.Add(ringClock);
         p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(txtAlarm); p0.Controls.Add(chkAlarm); p0.Controls.Add(lblAlNote);
 
         // =========================================================
@@ -309,10 +313,9 @@ public class ClockPlugin
         var cdTarget = DateTime.MinValue;
         bool cdRunning = false, cdPaused = false;
         int cdFlash = 0;
+        string cdState = "就绪";
 
         var ringCd = new DBPanel { Location = new Point(110, 8), Size = new Size(180, 180), BackColor = Color.Transparent };
-        var lblRemain = MkLabel("25:00", fontMid, C_ORANGE, 110, 62, 180, 40, ContentAlignment.MiddleCenter);
-        var lblCdState = MkLabel("就绪", fontSub, C_SUB, 110, 104, 180, 20, ContentAlignment.MiddleCenter);
         ringCd.Paint += delegate(object s, PaintEventArgs e) {
             var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
             var r = new Rectangle(9, 9, 162, 162);
@@ -320,6 +323,13 @@ public class ClockPlugin
             double pct = cdTotal.TotalSeconds > 0 ? cdRemain.TotalSeconds / cdTotal.TotalSeconds : 0;
             using (var pen = new Pen(cdFlash > 0 && cdFlash % 2 == 1 ? C_RED : C_ORANGE, 9)) { pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round;
                 g.DrawArc(pen, r, -90, (float)(360.0 * pct)); }
+            // countdown digits + state drawn inside the ring Paint (see clock page note about z-order)
+            string main = cdFlash > 0 ? reminder : FmtCd(cdRemain);
+            Color mc = cdFlash > 0 ? (cdFlash % 2 == 1 ? C_RED : C_ORANGE) : C_ORANGE;
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center }) {
+                using (var br = new SolidBrush(mc)) g.DrawString(main, fontMid, br, new RectangleF(0, 50, 180, 44), sf);
+                using (var br = new SolidBrush(C_SUB)) g.DrawString(cdState, fontSub, br, new RectangleF(0, 100, 180, 20), sf);
+            }
         };
 
         var txtMin = new TextBox { Text = "25", Font = fontBtn, Location = new Point(16, 202), Size = new Size(44, 26),
@@ -332,7 +342,7 @@ public class ClockPlugin
             Bg = C_ACCENT, BgHover = Color.FromArgb(255, 96, 155, 255), BgDown = Color.FromArgb(255, 60, 120, 230) };
         var btnCdReset = new FlatBtn { Text = "重置", Font = fontBtn, Location = new Point(204, 276), Size = new Size(180, 36), Fg = C_SUB };
         var p1 = pages[1];
-        p1.Controls.Add(ringCd); p1.Controls.Add(lblRemain); p1.Controls.Add(lblCdState);
+        p1.Controls.Add(ringCd);
         p1.Controls.Add(txtMin); p1.Controls.Add(lblMinNote);
         p1.Controls.Add(txtRm); p1.Controls.Add(btnCdGo); p1.Controls.Add(btnCdReset);
 
@@ -340,7 +350,7 @@ public class ClockPlugin
             txtMin.Text = ((int)m).ToString();
             cdRunning = false; cdPaused = false; cdFlash = 0;
             cdTotal = TimeSpan.FromMinutes(m); cdRemain = cdTotal;
-            btnCdGo.Text = "开始"; lblCdState.Text = "就绪";
+            btnCdGo.Text = "开始"; cdState = "就绪";
         };
         int[] presets = { 5, 10, 15, 25, 45 };
         for (int i = 0; i < presets.Length; i++) {
@@ -351,21 +361,21 @@ public class ClockPlugin
         }
 
         btnCdGo.Click += delegate {
-            if (cdRunning) { cdRunning = false; cdPaused = true; btnCdGo.Text = "继续"; lblCdState.Text = "已暂停"; return; }
-            if (cdPaused) { cdTarget = DateTime.Now + cdRemain; cdRunning = true; cdPaused = false; btnCdGo.Text = "暂停"; lblCdState.Text = "进行中"; return; }
+            if (cdRunning) { cdRunning = false; cdPaused = true; btnCdGo.Text = "继续"; cdState = "已暂停"; return; }
+            if (cdPaused) { cdTarget = DateTime.Now + cdRemain; cdRunning = true; cdPaused = false; btnCdGo.Text = "暂停"; cdState = "进行中"; return; }
             double m;
             if (!double.TryParse(txtMin.Text, out m) || m <= 0) m = 25;
             reminder = txtRm.Text.Trim(); if (reminder.Length == 0) reminder = "休息一下"; SaveCfg();
             cdTotal = TimeSpan.FromMinutes(m); cdRemain = cdTotal;
             cdTarget = DateTime.Now + cdRemain;
-            cdRunning = true; cdPaused = false; btnCdGo.Text = "暂停"; lblCdState.Text = "进行中";
+            cdRunning = true; cdPaused = false; btnCdGo.Text = "暂停"; cdState = "进行中";
         };
         btnCdReset.Click += delegate {
             cdRunning = false; cdPaused = false; cdFlash = 0;
             double m;
             if (!double.TryParse(txtMin.Text, out m) || m <= 0) m = 25;
             cdTotal = TimeSpan.FromMinutes(m); cdRemain = cdTotal;
-            btnCdGo.Text = "开始"; lblCdState.Text = "就绪"; lblRemain.ForeColor = C_ORANGE;
+            btnCdGo.Text = "开始"; cdState = "就绪";
         };
 
         // =========================================================
@@ -491,7 +501,6 @@ public class ClockPlugin
             lblTime.Text = now.ToString("HH:mm:ss");
             lblDate.Text = now.ToString("yyyy年M月d日 ") + WeekCn(now);
             lblDayOf.Text = "今年第 " + now.DayOfYear + " 天 · 第 " + ((now.DayOfYear - 1) / 7 + 1) + " 周";
-            lblSec.Text = now.Second.ToString();
             ringClock.Invalidate();
             if (cdRunning) {
                 var left = cdTarget - now;
@@ -500,18 +509,11 @@ public class ClockPlugin
                     btnCdGo.Text = "开始";
                     System.Media.SystemSounds.Exclamation.Play();
                     cdFlash = 12;
-                    lblCdState.Text = reminder;
+                    cdState = reminder;
                     f.Activate();
                 } else cdRemain = left;
             }
-            if (cdFlash > 0) {
-                cdFlash--;
-                lblRemain.ForeColor = (cdFlash % 2 == 0) ? C_ORANGE : C_RED;
-                lblRemain.Text = reminder;
-            } else if (!cdRunning || cdRemain > TimeSpan.Zero) {
-                lblRemain.Text = FmtCd(cdRemain);
-                if (cdFlash == 0) lblRemain.ForeColor = C_ORANGE;
-            }
+            if (cdFlash > 0) cdFlash--;
             ringCd.Invalidate();
             var el = swAcc + (swRunning ? DateTime.Now - swStart : TimeSpan.Zero);
             lblSw.Text = FmtSw(el);
