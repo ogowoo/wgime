@@ -144161,8 +144161,8 @@ public class ClockPlugin
     }
     static string FmtSw(TimeSpan t)
     {
-        if (t.TotalMinutes >= 60) return ((int)t.TotalMinutes / 60) + ":" + t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + (t.Milliseconds / 100);
-        return t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + (t.Milliseconds / 100);
+        if (t.TotalMinutes >= 60) return ((int)t.TotalMinutes / 60) + ":" + t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + t.Milliseconds.ToString("000");
+        return t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + t.Milliseconds.ToString("000");
     }
     static string FmtMinutes(double min)
     {
@@ -144235,6 +144235,7 @@ public class ClockPlugin
         string[] names = { "时钟", "倒计时", "秒表", "番茄" };
         var tabBtns = new FlatBtn[4];
         var pages = new Panel[4];
+        var timer = new Timer { Interval = 100 };   // declared early: stopwatch handlers speed it up while running
         for (int i = 0; i < 4; i++) {
             var b = new FlatBtn { Text = names[i], Font = fontTab, Size = new Size(88, 28), Location = new Point(14 + i * 94, 6),
                 AccentLine = true, Selected = (i == 0), Fg = C_SUB, Bg = C_BG, BgHover = C_SURF2, BgDown = C_SURF2 };
@@ -144397,15 +144398,15 @@ public class ClockPlugin
             }
         };
         btnSwGo.Click += delegate {
-            if (swRunning) { swAcc += DateTime.Now - swStart; swRunning = false; btnSwGo.Text = "继续"; }
-            else { swStart = DateTime.Now; swRunning = true; btnSwGo.Text = "暂停"; }
+            if (swRunning) { swAcc += DateTime.Now - swStart; swRunning = false; btnSwGo.Text = "继续"; timer.Interval = 100; }
+            else { swStart = DateTime.Now; swRunning = true; btnSwGo.Text = "暂停"; timer.Interval = 30; }   // 30ms tick so the millisecond digits actually move
         };
         btnSwLap.Click += delegate {
             if (!swRunning && swAcc == TimeSpan.Zero) return;
             laps.Add(swAcc + (swRunning ? DateTime.Now - swStart : TimeSpan.Zero));
             RefreshLaps();
         };
-        btnSwReset.Click += delegate { swAcc = TimeSpan.Zero; swRunning = false; btnSwGo.Text = "开始"; laps.Clear(); RefreshLaps(); };
+        btnSwReset.Click += delegate { swAcc = TimeSpan.Zero; swRunning = false; btnSwGo.Text = "开始"; timer.Interval = 100; laps.Clear(); RefreshLaps(); };
 
         // =========================================================
         //  page 3: pomodoro (count-up focus / stats / 7-day chart)
@@ -144488,7 +144489,6 @@ public class ClockPlugin
         };
 
         // ---------- main timer ----------
-        var timer = new Timer { Interval = 100 };
         timer.Tick += delegate {
             var now = DateTime.Now;
             lblTime.Text = now.ToString("HH:mm:ss");
