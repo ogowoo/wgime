@@ -144122,7 +144122,8 @@ public class ClockPlugin
         bool hover, down;
         static Color PriA  = Color.FromArgb(255, 10, 132, 255);     // #0A84FF
         static Color PriB  = Color.FromArgb(255, 0, 122, 255);      // #007AFF, near-solid gradient = macOS flat accent
-        static Color Lighten(Color c, int d) { return Color.FromArgb(255, Math.Min(255, c.R + d), Math.Min(255, c.G + d), Math.Min(255, c.B + d)); }
+        static Color Lighten(Color c, int d) { return Color.FromArgb(255,
+            Math.Max(0, Math.Min(255, c.R + d)), Math.Max(0, Math.Min(255, c.G + d)), Math.Max(0, Math.Min(255, c.B + d))); }
         public FlatBtn()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
