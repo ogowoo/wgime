@@ -144133,6 +144133,9 @@ public class ClockPlugin
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
+            // fill the full rect with the parent's background first: pixels outside the rounded
+            // path are otherwise never painted and show whatever sits underneath (corner notches)
+            if (Parent != null) { using (var pb = new SolidBrush(Parent.BackColor)) g.FillRectangle(pb, ClientRectangle); }
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var path = RoundRect(rect, 7))
             using (var br = new SolidBrush(down ? BgDown : (hover ? BgHover : Bg))) { g.FillPath(br, path); }
