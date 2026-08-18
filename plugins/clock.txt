@@ -190,6 +190,7 @@ public class ClockPlugin
 
         var f = new Form();
         f.Text = "WgIme Clock";                 // window identity (alt-tab / tests); caption is drawn by the custom title bar
+        f.AutoScaleMode = AutoScaleMode.None;   // pixel-designed layout: no font/DPI autoscaling distortion
         f.FormBorderStyle = FormBorderStyle.None;
         f.TopMost = true;
         f.StartPosition = FormStartPosition.CenterScreen;
@@ -198,7 +199,14 @@ public class ClockPlugin
         f.ForeColor = C_TEXT;
         f.KeyPreview = true;
         f.ShowInTaskbar = false;
-        f.HandleCreated += delegate { try { f.Region = new Region(RoundRect(new Rectangle(0, 0, f.Width, f.Height), 14)); } catch {} };
+        EventHandler applyRegion = delegate { try { f.Region = new Region(RoundRect(new Rectangle(0, 0, f.Width, f.Height), 14)); } catch {} };
+        f.HandleCreated += delegate { applyRegion(f, EventArgs.Empty); };
+        f.Resize += delegate { applyRegion(f, EventArgs.Empty); };
+        f.Paint += delegate(object s, PaintEventArgs e) {           // crisp rounded outline: hides the see-through AA halo at the region edge
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = RoundRect(new Rectangle(0, 0, f.Width - 1, f.Height - 1), 14))
+            using (var pen = new Pen(C_BORDER, 1)) { g.DrawPath(pen, path); }
+        };
 
         var fontTitle = F(9.5F, FontStyle.Bold);
         var fontSub = F(8.5F, FontStyle.Regular);
