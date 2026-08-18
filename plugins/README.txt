@@ -28,6 +28,12 @@
   [shellx] ... [/shellx]            交互式版本: 可见控制台窗口, 可 read/pause, 按键关闭
   [psx] ... [/psx]
 
+块注意:
+  1. 块标记各自独占一行; 忘记结束标记会吞掉后面所有内容
+  2. 单行 PowerShell 也用块 (一行也行); 没有单行 ps 动词, shell 里包 powershell -Command 的中文/引号转义容易出错
+  3. [shellx]/[psx] 结束自动停驻按键关闭, 脚本里不要再写 pause (会按两次)
+  4. 排障: x 版控制台直接显示报错; 静默块的输出与退出码收进启动器气泡/日志
+
 C# 代码插件 (要窗体就用它):
   [csharp] ... [/csharp]            内嵌 C# 源码, 加载时内存编译, 选中运行
   契约: 含一个 public static void Run(); 跑在插件专用线程 (WgImePlugins), 可直接 new Form().Show(),
