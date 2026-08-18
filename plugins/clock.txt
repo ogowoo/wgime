@@ -199,13 +199,10 @@ public class ClockPlugin
         f.ForeColor = C_TEXT;
         f.KeyPreview = true;
         f.ShowInTaskbar = false;
-        EventHandler applyRegion = delegate { try { f.Region = new Region(RoundRect(new Rectangle(0, 0, f.Width, f.Height), 14)); } catch {} };
-        f.HandleCreated += delegate { applyRegion(f, EventArgs.Empty); };
-        f.Resize += delegate { applyRegion(f, EventArgs.Empty); };
-        f.Paint += delegate(object s, PaintEventArgs e) {           // crisp rounded outline: hides the see-through AA halo at the region edge
-            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var path = RoundRect(new Rectangle(0, 0, f.Width - 1, f.Height - 1), 14))
-            using (var pen = new Pen(C_BORDER, 1)) { g.DrawPath(pen, path); }
+        // square corners on purpose: a rounded Region makes the corner pixels see-through and whatever
+        // window sits behind bleeds through (green console text etc.). Crisp 1px outline instead.
+        f.Paint += delegate(object s, PaintEventArgs e) {
+            using (var pen = new Pen(C_BORDER, 1)) e.Graphics.DrawRectangle(pen, 0, 0, f.Width - 1, f.Height - 1);
         };
 
         var fontTitle = F(9.5F, FontStyle.Bold);
@@ -216,7 +213,9 @@ public class ClockPlugin
         var fontTab = F(9.5F, FontStyle.Regular);
 
         // ---------- title bar ----------
-        var title = new Panel { Dock = DockStyle.Top, Height = 38, BackColor = C_SURFACE };
+        // explicit bounds, no Dock: dock order depends on z-order and silently scrambled once
+        // (title ended up below the tab strip). Fixed-size form => fixed coordinates.
+        var title = new Panel { Location = new Point(0, 0), Size = new Size(400, 38), BackColor = C_SURFACE };
         var lblCap = new Label { Text = "悬浮时钟", Font = fontTitle, ForeColor = C_TEXT, AutoSize = true, Location = new Point(30, 9), BackColor = Color.Transparent };
         var btnClose = new FlatBtn { Text = "✕", Font = fontTitle, Size = new Size(34, 26), Location = new Point(356, 6),
             Bg = C_SURFACE, BgHover = Color.FromArgb(255, 200, 60, 70), BgDown = Color.FromArgb(255, 170, 40, 50) };
@@ -239,7 +238,7 @@ public class ClockPlugin
         f.Controls.Add(title);
 
         // ---------- tab strip ----------
-        var strip = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = C_BG };
+        var strip = new Panel { Location = new Point(0, 38), Size = new Size(400, 40), BackColor = C_BG };
         string[] names = { "时钟", "倒计时", "秒表", "番茄" };
         var tabBtns = new FlatBtn[4];
         var pages = new Panel[4];
@@ -255,9 +254,8 @@ public class ClockPlugin
         f.Controls.Add(strip);
 
         for (int i = 0; i < 4; i++) {
-            pages[i] = new Panel { Dock = DockStyle.Fill, BackColor = C_BG, Visible = (i == 0), Padding = new Padding(0) };
+            pages[i] = new Panel { Location = new Point(0, 78), Size = new Size(400, 322), BackColor = C_BG, Visible = (i == 0), Padding = new Padding(0) };
             f.Controls.Add(pages[i]);
-            pages[i].BringToFront();
         }
         pages[0].BringToFront();
 
