@@ -144187,10 +144187,15 @@ public class ClockPlugin
         f.ForeColor = C_TEXT;
         f.KeyPreview = true;
         f.ShowInTaskbar = false;
-        // square corners on purpose: a rounded Region makes the corner pixels see-through and whatever
-        // window sits behind bleeds through (green console text etc.). Crisp 1px outline instead.
+        // rounded outer frame: corner pixels outside the Region are see-through (inherent to
+        // rounded windows); the painted 1px outline keeps the edge crisp against any backdrop
+        EventHandler applyRegion = delegate { try { f.Region = new Region(RoundRect(new Rectangle(0, 0, f.Width, f.Height), 12)); } catch {} };
+        f.HandleCreated += delegate { applyRegion(f, EventArgs.Empty); };
+        f.Resize += delegate { applyRegion(f, EventArgs.Empty); };
         f.Paint += delegate(object s, PaintEventArgs e) {
-            using (var pen = new Pen(C_BORDER, 1)) e.Graphics.DrawRectangle(pen, 0, 0, f.Width - 1, f.Height - 1);
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = RoundRect(new Rectangle(0, 0, f.Width - 1, f.Height - 1), 12))
+            using (var pen = new Pen(C_BORDER, 1)) { g.DrawPath(pen, path); }
         };
 
         var fontTitle = F(9.5F, FontStyle.Bold);
