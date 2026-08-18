@@ -19,18 +19,18 @@ using System.Collections.Generic;
 
 public class ClockPlugin
 {
-    // ---------- palette (vibrant modern dark: indigo/violet accent, saturated page colors) ----------
-    static Color C_BG      = Color.FromArgb(255, 14, 14, 22);
-    static Color C_SURFACE = Color.FromArgb(255, 23, 23, 36);
-    static Color C_SURF2   = Color.FromArgb(255, 31, 31, 48);
-    static Color C_BORDER  = Color.FromArgb(255, 46, 46, 69);
-    static Color C_TEXT    = Color.FromArgb(255, 242, 243, 247);
-    static Color C_SUB     = Color.FromArgb(255, 142, 142, 168);
+    // ---------- palette (vibrant modern LIGHT: soft lavender-gray, white cards, saturated accents) ----------
+    static Color C_BG      = Color.FromArgb(255, 242, 243, 249);
+    static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);
+    static Color C_SURF2   = Color.FromArgb(255, 232, 234, 243);
+    static Color C_BORDER  = Color.FromArgb(255, 213, 216, 232);
+    static Color C_TEXT    = Color.FromArgb(255, 30, 32, 48);
+    static Color C_SUB     = Color.FromArgb(255, 110, 112, 137);
     static Color C_ACCENT  = Color.FromArgb(255, 124, 108, 255);   // electric periwinkle
-    static Color C_GREEN   = Color.FromArgb(255, 46, 230, 168);    // vivid mint
-    static Color C_ORANGE  = Color.FromArgb(255, 255, 176, 32);    // vivid amber
-    static Color C_BLUE    = Color.FromArgb(255, 76, 201, 255);    // vivid sky
-    static Color C_RED     = Color.FromArgb(255, 255, 92, 138);    // vivid rose
+    static Color C_GREEN   = Color.FromArgb(255, 16, 185, 129);    // emerald
+    static Color C_ORANGE  = Color.FromArgb(255, 245, 158, 11);    // amber
+    static Color C_BLUE    = Color.FromArgb(255, 14, 165, 233);    // sky
+    static Color C_RED     = Color.FromArgb(255, 244, 63, 94);     // rose
 
     // ---------- persisted settings & stats ----------
     static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
@@ -127,10 +127,10 @@ public class ClockPlugin
 
     class FlatBtn : Button
     {
-        public Color Bg = Color.FromArgb(255, 31, 31, 48);
-        public Color BgHover = Color.FromArgb(255, 41, 41, 62);
-        public Color BgDown = Color.FromArgb(255, 51, 51, 76);
-        public Color Fg = Color.FromArgb(255, 242, 243, 247);
+        public Color Bg = Color.FromArgb(255, 232, 234, 243);
+        public Color BgHover = Color.FromArgb(255, 223, 226, 240);
+        public Color BgDown = Color.FromArgb(255, 210, 214, 232);
+        public Color Fg = Color.FromArgb(255, 30, 32, 48);
         public bool AccentLine;                       // tab mode: 3px accent underline when Selected
         public bool Selected;
         public bool Primary;                          // gradient indigo->violet fill (main actions)
