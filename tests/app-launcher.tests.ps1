@@ -69,6 +69,7 @@ $cfgLines = @(
     ('app = bd' + "`t" + 'Search' + "`t" + 'https://www.baidu.com'),
     'app = mm Mspaint mspaint.exe',                                                             # space-separated (no TABs)
     ('app = pp Pwsh "C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoProfile'),              # quoted path with spaces + args
+    ('app = ev' + "`t" + 'EnvPath' + "`t" + '%WINDIR%\notepad.exe'),                            # env var in command
     'app = broken OnlyTwoParts'                                                                 # must be ignored
 )
 [IO.File]::WriteAllText((Join-Path $tmp 'config.txt'), ($cfgLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
@@ -79,6 +80,9 @@ Check "config bd url"           ($apps.ContainsKey('bd') -and $apps['bd'][1] -eq
 Check "space-separated mm"      ($apps.ContainsKey('mm') -and $apps['mm'][1] -eq 'mspaint.exe' -and $apps['mm'][0] -eq 'Mspaint') "True"
 Check "quoted path + args"      ($apps.ContainsKey('pp') -and $apps['pp'][1] -eq 'C:\Program Files\PowerShell\7\pwsh.exe' -and $apps['pp'][2] -eq '-NoLogo -NoProfile') "True"
 Check "two-part line ignored"   ($apps.ContainsKey('broken'))                                      "False"
+Check "env var expanded"        ($apps.ContainsKey('ev') -and $apps['ev'][1] -like 'C:\*notepad.exe')    "True"
+$srcB = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\wgime.bat'), [Text.Encoding]::UTF8)
+Check "app relative path resolution" ($srcB -match 'IsPathRooted\(target\)')                       "True"
 Remove-Item $tmp -Recurse -Force
 
 # calculator registrations come from the repo plugins\calc.txt (jsq direct, calc = alias)
