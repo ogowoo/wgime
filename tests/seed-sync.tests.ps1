@@ -42,6 +42,10 @@ $sk = GetHereString 'seedClock'
 Check "seedClock exists"          ($sk -ne $null)
 Check "seedClock == clock.txt"    ((Norm $sk) -ceq (Norm ([IO.File]::ReadAllText((Join-Path $root 'plugins\clock.txt'), [Text.Encoding]::UTF8))))
 
+$sj = GetHereString 'seedCalc'
+Check "seedCalc exists"           ($sj -ne $null)
+Check "seedCalc == calc.txt"      ((Norm $sj) -ceq (Norm ([IO.File]::ReadAllText((Join-Path $root 'plugins\calc.txt'), [Text.Encoding]::UTF8))))
+
 $sr = GetHereString 'seedPluginReadme'
 Check "seedPluginReadme exists"   ($sr -ne $null -and $sr.Length -gt 500)
 $readmeRepo = Join-Path $root 'plugins\README.txt'
@@ -55,6 +59,7 @@ Check "writes tools.txt"    ($bat -match 'WGIME_DIR .tools\.txt.')
 Check "writes README"       ($bat.Contains("README.txt"))
 Check "writes clean-bin"    ($bat.Contains("clean-bin.txt"))
 Check "writes clock"        ($bat.Contains("clock.txt"))
+Check "writes calc"         ($bat.Contains("calc.txt"))
 Check "never overwrites"    (($bat -match 'seedMark' ) -and ($bat -split 'Test-Path').Count -ge 5)
 Check "before RunApp"       ($bat.IndexOf('provisioned.done') -lt $bat.IndexOf('[WordBoard]::RunApp'))
 

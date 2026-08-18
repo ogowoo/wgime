@@ -22,7 +22,8 @@ $pairs = @(
     @('seedTools',        'tools.txt'),
     @('seedPluginReadme', 'plugins\README.txt'),
     @('seedCleanBin',     'plugins\clean-bin.txt'),
-    @('seedClock',        'plugins\clock.txt')
+    @('seedClock',        'plugins\clock.txt'),
+    @('seedCalc',         'plugins\calc.txt')
 )
 
 function ReplaceHereString([string]$text, [string]$varName, [string]$newBody) {

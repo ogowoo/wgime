@@ -1,8 +1,8 @@
 # ============================================================
-#  app-launcher.tests.ps1  -  tests for the IME app launcher prototype:
-#   1. CalcForm.Calc expression parser (reflection on the rebuilt DLL)
-#   2. Apps registry: built-in jsq/calc + config.txt "app =" parsing
-#   3. CalcForm renders (DrawToBitmap -> tests\calc-form.png)
+#  app-launcher.tests.ps1  -  tests for the IME app launcher:
+#   1. calculator expression parser (compiles plugins\calc.txt [csharp] block)
+#   2. Apps registry: config.txt "app =" parsing + jsq/calc plugin registration from the repo
+#   3. calc plugin form renders (screen capture -> tests\calc-form.png)
 #
 #  Prereq: rebuild.ps1 has run (%TEMP%\wgime_new.dll is current).
 #  Run:  powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\app-launcher.tests.ps1
@@ -24,10 +24,19 @@ function Check([string]$name, $actual, $expected) {
     else { Write-Output "FAIL  $name (expected [$expected], got [$actual])"; $script:fail++ }
 }
 
-# ---- 1) expression parser ----
-$calcType = $wbType.GetNestedType('CalcForm', 'NonPublic')
-if ($calcType -eq $null) { throw "nested CalcForm not found" }
-$calcM = $calcType.GetMethod('Calc', $fl)
+# ---- 1) expression parser (now lives in the plugins\calc.txt [csharp] plugin) ----
+$calcFile = Join-Path $PSScriptRoot '..\plugins\calc.txt'
+$ctxt = [IO.File]::ReadAllText($calcFile, [Text.Encoding]::UTF8)
+$ci = $ctxt.IndexOf('[csharp]'); $cs0 = $ctxt.IndexOf("`n", $ci) + 1; $ce = $ctxt.IndexOf('[/csharp]', $cs0)
+$csrc = $ctxt.Substring($cs0, $ce - $cs0)
+$ccp = New-Object Microsoft.CSharp.CSharpCodeProvider
+$cpar = New-Object System.CodeDom.Compiler.CompilerParameters
+$cpar.GenerateInMemory = $true
+$cpar.ReferencedAssemblies.AddRange([string[]]@('System.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Core.dll', 'System.Data.dll'))
+$cres = $ccp.CompileAssemblyFromSource($cpar, $csrc)
+if ($cres.Errors.HasErrors) { foreach ($err in $cres.Errors) { Write-Output "COMPILE ERR line $($err.Line): $($err.ErrorText)" }; throw "calc plugin compile failed" }
+$calcM = $cres.CompiledAssembly.GetType('CalcPlugin').GetMethod('Calc')
+$runM  = $cres.CompiledAssembly.GetType('CalcPlugin').GetMethod('Run')
 function Calc([string]$s) { return $calcM.Invoke($null, @($s)) }
 
 Check "1+2*3"      (Calc "1+2*3")     "7"
@@ -65,8 +74,6 @@ $cfgLines = @(
 [IO.File]::WriteAllText((Join-Path $tmp 'config.txt'), ($cfgLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
 $loadConfig.Invoke($null, @([string]$tmp))
 $apps = $appsF.GetValue($null)
-Check "builtin jsq registered"  ($apps.ContainsKey('jsq') -and $apps['jsq'][1] -eq 'builtin:calc')  "True"
-Check "builtin calc registered" ($apps.ContainsKey('calc'))                                        "True"
 Check "config np registered"    ($apps.ContainsKey('np') -and $apps['np'][1] -eq 'notepad.exe')    "True"
 Check "config bd url"           ($apps.ContainsKey('bd') -and $apps['bd'][1] -eq 'https://www.baidu.com') "True"
 Check "space-separated mm"      ($apps.ContainsKey('mm') -and $apps['mm'][1] -eq 'mspaint.exe' -and $apps['mm'][0] -eq 'Mspaint') "True"
@@ -74,17 +81,30 @@ Check "quoted path + args"      ($apps.ContainsKey('pp') -and $apps['pp'][1] -eq
 Check "two-part line ignored"   ($apps.ContainsKey('broken'))                                      "False"
 Remove-Item $tmp -Recurse -Force
 
-# ---- 3) CalcForm renders ----
-$form = [Activator]::CreateInstance($calcType, $true)
-$form.Show()
-[System.Windows.Forms.Application]::DoEvents()
-$bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
-$form.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle(0, 0, $form.Width, $form.Height)))
-$png = Join-Path $PSScriptRoot 'calc-form.png'
-$bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
-$form.Close()
-Check "calc form rendered" (Test-Path $png) "True"
-Write-Output "calc form screenshot: $png"
+# calculator registrations come from the repo plugins\calc.txt (jsq direct, calc = alias)
+$repoDir = [string](Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$loadConfig.Invoke($null, @($repoDir))
+$apps = $appsF.GetValue($null)
+Check "jsq plugin registered"  ($apps.ContainsKey('jsq') -and $apps['jsq'][1].StartsWith('codeplugin:'))   "True"
+Check "calc alias registered"  ($apps.ContainsKey('calc') -and $apps['calc'][1] -eq $apps['jsq'][1])       "True"
+
+# ---- 3) calc plugin form renders ----
+$runM.Invoke($null, @())
+Start-Sleep -Milliseconds 500
+$form = $null
+foreach ($fr in [System.Windows.Forms.Application]::OpenForms) { if ($fr.Text -eq 'WgIme Calc') { $form = $fr; break } }
+Check "calc form opened" ($form -ne $null) "True"
+if ($form -ne $null) {
+    [System.Windows.Forms.Application]::DoEvents()
+    $bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($form.Left, $form.Top, 0, 0, $bmp.Size)
+    $png = Join-Path $PSScriptRoot 'calc-form.png'
+    $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
+    $form.Close()
+    Check "calc form rendered" (Test-Path $png) "True"
+    Write-Output "calc form screenshot: $png"
+}
 
 Write-Output ""
 Write-Output "== $pass passed, $fail failed =="
