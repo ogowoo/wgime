@@ -1,0 +1,81 @@
+# ============================================================
+#  WgTray - PS1 edition (tray-only toolbox, no IME)
+#  Single-file PowerShell: embedded C# source, compiled in memory
+#  at startup. No base64 payload / no self-extract / no bat.
+#
+#  Launch: right-click this file -> "Run with PowerShell"
+#  (works on stock Windows under the default Restricted policy;
+#  the context-menu entry sets a Process-scope bypass). Optionally
+#  sign this file with sign-wgtray.ps1 so it also runs under
+#  AllSigned/RemoteSigned policies and is trusted by AV/SmartScreen.
+#
+#  Errors are logged to %TEMP%\WgTray_error.log
+# ============================================================
+$ErrorActionPreference = 'Stop'
+
+# --- hide the console window (tray app: no visible console) ---
+try {
+    Add-Type -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int n); [System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();' -Name Native -Namespace WgTray -ErrorAction Stop
+    $h = [WgTray.Native]::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [WgTray.Native]::ShowWindow($h, 0) | Out-Null }
+} catch {}
+
+try {
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# ---- embedded C# (tray-only, no IME) ----
+$cs = @'
+C#SOURCE
+'@
+
+Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop
+
+# ---- first-run seeding: sample tools/plugins (guarded, never overwrites) ----
+$seedTools = @'
+SEED_TOOLS
+'@
+$seedPluginReadme = @'
+SEED_README
+'@
+$seedCleanBin = @'
+SEED_CLEANBIN
+'@
+$seedClock = @'
+SEED_CLOCK
+'@
+$seedCalc = @'
+SEED_CALC
+'@
+try {
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    $seedDir = Join-Path $env:LOCALAPPDATA 'wgime'
+    $seedMark = Join-Path $seedDir 'provisioned-tray.done'
+    if (-not (Test-Path $seedMark)) {
+        $utf8n = New-Object System.Text.UTF8Encoding($false)
+        $toolsPath = Join-Path $scriptDir 'tools.txt'
+        if (-not (Test-Path $toolsPath)) { [IO.File]::WriteAllText($toolsPath, $seedTools, $utf8n) }
+        $pdir = Join-Path $scriptDir 'plugins'
+        if (-not (Test-Path $pdir)) { [IO.Directory]::CreateDirectory($pdir) | Out-Null }
+        $rf = Join-Path $pdir 'README.txt'
+        if (-not (Test-Path $rf)) { [IO.File]::WriteAllText($rf, $seedPluginReadme, $utf8n) }
+        $cf = Join-Path $pdir 'clean-bin.txt'
+        if (-not (Test-Path $cf)) { [IO.File]::WriteAllText($cf, $seedCleanBin, $utf8n) }
+        $kf = Join-Path $pdir 'clock.txt'
+        if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
+        $jf = Join-Path $pdir 'calc.txt'
+        if (-not (Test-Path $jf)) { [IO.File]::WriteAllText($jf, $seedCalc, $utf8n) }
+        try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}
+        [IO.File]::WriteAllText($seedMark, (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $utf8n)
+    }
+} catch {}
+
+[TrayApp]::Run((Split-Path -Parent $PSCommandPath), $PSCommandPath)
+} catch {
+    $log = Join-Path $env:TEMP 'WgTray_error.log'
+    try {
+        if (Test-Path $log) { $len = (Get-Item $log).Length; if ($len -gt 1MB) { Move-Item $log ($log + '.old') -Force -ErrorAction SilentlyContinue } }
+        [IO.File]::AppendAllText($log, ("[{0}] {1}`r`n" -f (Get-Date -Format 's'), ($_ | Out-String)), [Text.Encoding]::UTF8)
+    } catch {}
+    try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(($_ | Out-String), 'WgTray Error') | Out-Null } catch {}
+}
