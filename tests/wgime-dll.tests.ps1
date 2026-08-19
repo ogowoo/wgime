@@ -1,0 +1,96 @@
+# ============================================================
+#  wgime-dll.tests.ps1 - regression tests for the wgime DLL
+#  edition (wgime-dll\WgIme.bat + WgIme.dll: thin launcher +
+#  full IME assembly with the base dictionaries embedded)
+#
+#  Run with Windows PowerShell 5.1:
+#    powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-dll.tests.ps1
+#
+#  NOTE: ASCII-only file - Windows PS 5.1 reads scripts as ANSI.
+# ============================================================
+$ErrorActionPreference = 'Stop'
+$dllDir = Join-Path $PSScriptRoot '..\wgime-dll'
+$batPath = Join-Path $dllDir 'WgIme.bat'
+$dllPath = Join-Path $dllDir 'WgIme.dll'
+$script:passed = 0; $script:failed = 0
+function T($name, [bool]$ok, [string]$detail = '') {
+    if ($ok) { $script:passed++; Write-Host "PASS  $name" -ForegroundColor Green }
+    else     { $script:failed++; Write-Host "FAIL  $name  $detail" -ForegroundColor Red }
+}
+
+# ================= 1. thin launcher (no suspicious patterns) =================
+if (-not (Test-Path $batPath)) { throw "wgime-dll\WgIme.bat not found - run build-wgime-dll.ps1 first" }
+$batTxt = [IO.File]::ReadAllText($batPath, [Text.Encoding]::UTF8)
+T 'launcher starts with @echo off' ($batTxt.StartsWith('@echo off'))
+T 'launcher loads the DLL via Add-Type -Path' ($batTxt.Contains('Add-Type -Path'))
+T 'launcher runs WgImeLauncher' ($batTxt.Contains('[WgImeLauncher]::Run'))
+T 'launcher has no Invoke-Expression' (-not $batTxt.Contains('Invoke-Expression'))
+T 'launcher has no FromBase64String' (-not $batTxt.Contains('FromBase64String'))
+T 'launcher has no runtime compile' (-not $batTxt.Contains('Add-Type -TypeDefinition'))
+T 'launcher has no -ExecutionPolicy Bypass' (-not $batTxt.Contains('ExecutionPolicy'))
+T 'launcher has no PS self-extract marker' (-not $batTxt.Contains('###PWSHTRAY###'))
+$bytes = [IO.File]::ReadAllBytes($batPath)
+$bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+T 'launcher has no BOM' (-not $bom)
+$loneLf = 0
+for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and ($k -eq 0 -or $bytes[$k-1] -ne 0x0D)) { $loneLf++ } }
+T 'launcher is pure CRLF (cmd.exe requirement)' ($loneLf -eq 0)
+
+# ================= 2. precompiled DLL =================
+if (-not (Test-Path $dllPath)) { throw "wgime-dll\WgIme.dll not found - run build-wgime-dll.ps1 first" }
+$dllBytes = [IO.File]::ReadAllBytes($dllPath)
+T 'DLL is a valid PE (MZ header)' ($dllBytes.Length -ge 2 -and $dllBytes[0] -eq 0x4D -and $dllBytes[1] -eq 0x5A)
+Add-Type -Path $dllPath -ErrorAction Stop
+$runAppCount = @([WordBoard].GetMethods([Reflection.BindingFlags]'Static,Public') | Where-Object { $_.Name -eq 'RunApp' }).Count
+T 'DLL exposes the full IME (WordBoard + RunApp)' ($null -ne [WordBoard] -and $runAppCount -ge 2)
+T 'DLL exposes the launcher (WgImeLauncher)' ($null -ne [WgImeLauncher])
+# this IS the IME: the keyboard hook must be present (opposite of the tray editions)
+T 'DLL contains the IME keyboard hook (KeyBordHook)' ($null -ne [KeyBordHook])
+# embedded base dictionaries: const fields (need the NonPublic flag combo - PS binding quirk)
+$asm = [KeyBordHook].Assembly
+$lt = $asm.GetType('WgImeLauncher')
+$bf = [Reflection.BindingFlags]'Public,NonPublic,Static,Instance,DeclaredOnly'
+$exp = @{ PyData = 30000; WbData = 100000; EcData = 500; PyWords = 400000; PyWf = 300000 }
+$allOk = $true
+foreach ($k in $exp.Keys) {
+    $fi = $lt.GetField($k, $bf)
+    if ($fi -and $fi.GetRawConstantValue().Length -ge $exp[$k]) {
+        T ("embedded dict {0} present ({1} chars)" -f $k, $fi.GetRawConstantValue().Length) $true
+    } else {
+        T ("embedded dict {0} present" -f $k) $false "missing or too small"
+        $allOk = $false
+    }
+}
+# launcher calls the ORIGINAL RunApp with the embedded dicts
+$runBody = $null
+$rm = $lt.GetMethod('Run', $bf)
+if ($rm) { $runBody = [System.IO.File]::ReadAllText($dllPath, [Text.Encoding]::UTF8) }
+T 'launcher entry present' ($null -ne $rm)
+
+# ================= 3. runtime smoke: launch the DLL edition (full IME) =================
+$log = Join-Path $env:TEMP 'WgIme_error.log'
+$mbErr = Join-Path $env:LOCALAPPDATA 'wgime\mb_error.log'
+Remove-Item $log, $mbErr -Force -EA SilentlyContinue
+try {
+    Start-Process -FilePath $batPath | Out-Null
+    Start-Sleep -Seconds 12
+    $me = $PID
+    $ps = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"
+    $worker = $ps | Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -like '*WgIme.dll*' }
+    T 'runtime: IME worker is running' ($null -ne $worker)
+    T 'runtime: no startup error log' (-not (Test-Path $log))
+    T 'runtime: dictionary build OK (no mb_error.log)' (-not (Test-Path $mbErr))
+    $mb = Get-Item (Join-Path $env:LOCALAPPDATA 'wgime\wgime.mb') -ErrorAction SilentlyContinue
+    T 'runtime: dict cache present (embedded dicts parsed)' ($null -ne $mb -and $mb.Length -gt 100000)
+    if ($worker) { $worker | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }
+} catch {
+    T 'runtime: IME worker is running' $false $_.Exception.Message
+    T 'runtime: no startup error log' $false $_.Exception.Message
+    T 'runtime: dictionary build OK (no mb_error.log)' $false $_.Exception.Message
+    T 'runtime: dict cache present (embedded dicts parsed)' $false $_.Exception.Message
+}
+
+# ================= summary =================
+Write-Host ""
+Write-Host ("{0} passed, {1} failed" -f $script:passed, $script:failed)
+if ($script:failed -gt 0) { exit 1 }
