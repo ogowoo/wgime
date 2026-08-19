@@ -236,6 +236,7 @@ Check "cjgl builtin"     ($apps.ContainsKey('cjgl')    -and $apps['cjgl'][1]    
 
 $mt = $wbType.GetNestedType('PluginMgrForm', 'NonPublic')
 $ctor = $mt.GetConstructors([Reflection.BindingFlags]'Instance, Public, NonPublic')[0]
+$wbType.GetField('BatDir', $fl).SetValue($null, 'C:\Tools\WgIme')        # mgr enumerates BatDir\plugins
 $mgr = $ctor.Invoke(@($null))                    # host not needed for listing
 $mgr.Show()
 [System.Windows.Forms.Application]::DoEvents()
@@ -291,6 +292,33 @@ $wpfErr = "no-cache"
 foreach ($key in $cacheF2.GetValue($null).Keys) { $pc2 = $cacheF2.GetValue($null)[$key]; $wpfErr = $pc2.GetType().GetField('Error', 'Instance, Public, NonPublic').GetValue($pc2) }
 Check "wpf plugin compiles" ($wpfErr -eq $null)                                                          "True"
 Remove-Item $wtmp -Recurse -Force
+
+# ---- 5e) plugin enable/disable (disabled: still parsed+compiled, just not registered) ----
+$wtmp2 = [string](Join-Path $env:TEMP ('wgime-dp-test-' + [guid]::NewGuid().ToString('N')))
+New-Item -ItemType Directory -Path (Join-Path $wtmp2 'plugins') -Force | Out-Null
+$dps = @'
+code = dp
+name = DpTest
+desc = disable test
+
+msg hello
+'@
+$dpFile = Join-Path $wtmp2 'plugins\dp.txt'
+[IO.File]::WriteAllText($dpFile, $dps, (New-Object System.Text.UTF8Encoding($false)))
+$dpField = $wbType.GetField('DisabledPlugins', $fl)
+$piField = $wbType.GetField('PluginInfo', $fl)
+$set = [Activator]::CreateInstance($dpField.FieldType)
+$set.Add('dp.txt') | Out-Null
+$dpField.SetValue($null, $set)
+$loadP.Invoke($null, @($wtmp2))
+$apps = $appsF.GetValue($null)
+Check "disabled plugin not in Apps"  (-not $apps.ContainsKey('dp'))                                        "True"
+Check "disabled plugin still known"  ($piField.GetValue($null).ContainsKey($dpFile))                       "True"
+$set.Remove('dp.txt') | Out-Null
+$loadP.Invoke($null, @($wtmp2))
+$apps = $appsF.GetValue($null)
+Check "re-enabled plugin in Apps"    ($apps.ContainsKey('dp') -and $apps['dp'][1].StartsWith('plugin:'))   "True"
+Remove-Item $wtmp2 -Recurse -Force
 
 # ---- 6) forms render ----
 function Shot($typeName, $pngName) {
