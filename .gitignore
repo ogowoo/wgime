@@ -9,3 +9,5 @@ tests/*.png
 tests/*-dump.txt
 # third-party data, re-downloadable (URL in build-full-singles.ps1 header)
 tests/pinyin-data.txt
+
+plugins/lt.txt
