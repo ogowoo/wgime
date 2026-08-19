@@ -1,4 +1,5 @@
-; WgIme 配置文件 (UTF-8, 与 wgime.bat 同目录)
+; WgIme / WgTray 共用配置文件 (UTF-8, 与 wgime.bat / wgtray.bat 同目录)
+; WgTray 只使用 app= 与 hotkey_* 键; 其余键是输入法专属, WgTray 忽略 (互相兼容)
 ; fuzzy: 模糊音对, 逗号分隔; 留空或 none 关闭
 fuzzy = zh-z,ch-c,sh-s,ang-an,eng-en,ing-in,n-l
 ; showcode: 候选上显示反查编码 (1/0)
@@ -19,4 +20,8 @@ hideidle = 0
 ; app = np	记事本	notepad.exe
 ; app = gy	仓库目录	C:\Tools\WgIme
 ; app = bd	百度	https://www.baidu.com
+; hotkey_*: WgTray 全局快捷键 (格式 ctrl/alt/shift/win + 键, 如 ctrl+alt+t; none 禁用; WgIme 输入法忽略这些键)
+hotkey_toolbox = ctrl+alt+t
+hotkey_plugins = ctrl+alt+p
+hotkey_menu    = ctrl+alt+w
 starton = 0
