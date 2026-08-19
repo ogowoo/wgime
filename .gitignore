@@ -20,3 +20,10 @@ plugins/lt.txt
 # generated per-machine launcher shortcuts (created on first launch)
 /wgime-dll/WgIme.lnk
 /wgtray-dll/WgTray.lnk
+
+# root IME dictionaries: local-only on this branch (wgime-dll\ keeps its own tracked copies)
+/py.txt
+/wb.txt
+/ec.txt
+/import_py.txt
+/import_wb.txt
