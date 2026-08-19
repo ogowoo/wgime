@@ -97,15 +97,15 @@ public static class WgImeLauncher
             string dll = System.Reflection.Assembly.GetExecutingAssembly().Location;
             if (string.IsNullOrEmpty(dll) || !File.Exists(dll)) return;
             byte[] all = File.ReadAllBytes(dll);
-            string s = Encoding.ASCII.GetString(all);
-            const string M0 = "###WGIME_DICT###", M1 = "###WGIME_DICT_END###";
-            int i = s.IndexOf(M0);
+            byte[] m0 = Encoding.ASCII.GetBytes("###WGIME_DICT###");
+            int i = IndexOfBytes(all, m0, 0);
             if (i < 0) return;
-            i += M0.Length;
-            int j = s.IndexOf(M1, i);
+            i += m0.Length;
+            byte[] m1 = Encoding.ASCII.GetBytes("###WGIME_DICT_END###");
+            int j = IndexOfBytes(all, m1, i);
             if (j < 0) return;
-            byte[] blob = Convert.FromBase64String(s.Substring(i, j - i).Trim());
-            using (var ms = new MemoryStream(blob))
+            byte[] blob;
+            using (var ms = new MemoryStream(all, i, j - i, false))
             using (var ds = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionMode.Decompress))
             using (var os = new MemoryStream()) { ds.CopyTo(os); blob = os.ToArray(); }
             using (var ms2 = new MemoryStream(blob))
@@ -127,6 +127,16 @@ public static class WgImeLauncher
         } catch {}
     }
 
+    static int IndexOfBytes(byte[] hay, byte[] needle, int start)
+    {
+        int last = hay.Length - needle.Length;
+        for (int i = start; i <= last; i++) {
+            bool ok = true;
+            for (int k = 0; k < needle.Length; k++) { if (hay[i + k] != needle[k]) { ok = false; break; } }
+            if (ok) return i;
+        }
+        return -1;
+    }
     // First-launch convenience: a launcher shortcut next to the bat. The
     // shortcut targets powershell.exe DIRECTLY (no bat/cmd involved): it
     // loads WgIme.dll and runs - zero console flash, and -Command is not
@@ -377,10 +387,10 @@ if ($entries.Count -gt 0) {
     $cds = New-Object System.IO.Compression.DeflateStream($cms, [System.IO.Compression.CompressionMode]::Compress)
     $cds.Write($blob, 0, $blob.Length); $cds.Dispose()
     $cblob = $cms.ToArray(); $cms.Dispose()
-    $b64 = [Convert]::ToBase64String($cblob)
-    $trailer = "###WGIME_DICT###`r`n" + $b64 + "`r`n###WGIME_DICT_END###`r`n"
-    [IO.File]::AppendAllText($outDll, $trailer, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Output ("extension tables appended to WgIme.dll: {0} merged chars -> {1} bytes compressed trailer" -f $totalRaw, $trailer.Length)
+    $trailer = [Text.Encoding]::ASCII.GetBytes("###WGIME_DICT###") + $cblob + [Text.Encoding]::ASCII.GetBytes("###WGIME_DICT_END###") + [byte]13 + [byte]10
+    $fs = [IO.File]::Open($outDll, [IO.FileMode]::Append)
+    try { $fs.Write($trailer, 0, $trailer.Length) } finally { $fs.Close() }
+    Write-Output ("extension tables appended to WgIme.dll (raw deflate, no base64): {0} merged chars -> {1} bytes trailer" -f $totalRaw, $trailer.Length)
 } else {
     Write-Warning "no extension tables found (wgime-dll or repo root) - DLL will only carry the embedded base"
 }
