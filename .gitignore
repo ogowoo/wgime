@@ -17,5 +17,6 @@ plugins/lt.txt
 # anchored to the repo root only - wgime-dll/WgIme.bat must stay tracked
 /wgime.bat
 
-# generated per-machine launcher shortcut (created on first launch)
+# generated per-machine launcher shortcuts (created on first launch)
 /wgime-dll/WgIme.lnk
+/wgtray-dll/WgTray.lnk

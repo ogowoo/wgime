@@ -89,6 +89,52 @@ try {
     T 'runtime: no FATAL error' $false $_.Exception.Message
 }
 
+# ================= 4. first-launch launcher shortcut + DLL-embedded icon =================
+# deterministic: call EnsureShortcut in a temp folder with a dummy bat
+$tmpLnk = Join-Path $env:TEMP ("wgtray-lnk-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item $tmpLnk -ItemType Directory -Force | Out-Null
+$lnkFile = Join-Path $tmpLnk 'WgTray.lnk'
+$dummyBat = Join-Path $tmpLnk 'WgTray.bat'
+[IO.File]::WriteAllText($dummyBat, "@echo off`r`n", (New-Object System.Text.UTF8Encoding($false)))
+$es = [TrayApp].GetMethod('EnsureShortcut', [Reflection.BindingFlags]'Static,NonPublic')
+$ws = New-Object -ComObject WScript.Shell
+
+# old-format shortcut (targets the .bat) must be upgraded in place
+$oldLnk = $ws.CreateShortcut($lnkFile)
+$oldLnk.TargetPath = $dummyBat
+$oldLnk.Save()
+$es.Invoke($null, [object[]]@([string]$tmpLnk, [string]$dummyBat)) | Out-Null
+$sc = $ws.CreateShortcut($lnkFile)
+T 'first-launch: shortcut targets powershell directly (no bat/cmd)' ($sc.TargetPath -match 'powershell\.exe')
+T 'first-launch: old bat-targeted shortcut upgraded in place' ($sc.TargetPath -notlike '*WgTray.bat')
+$argsStr = [string]$sc.Arguments
+T 'first-launch: arguments load the DLL and run TrayApp' ($argsStr.Contains('Add-Type -Path') -and $argsStr.Contains('[TrayApp]::Run') -and $argsStr.Contains($dummyBat))
+T 'first-launch: hidden window (no console flash)' ($argsStr.Contains('-WindowStyle Hidden'))
+T 'first-launch: working dir is the bat folder' ($sc.WorkingDirectory -eq $tmpLnk)
+T 'first-launch: runs minimized' ($sc.WindowStyle -eq 7)
+# icon comes from the DLL itself (build-time injected resource) - no .ico file
+T 'first-launch: icon points at the DLL (no .ico file)' ($sc.IconLocation -match 'WgTray\.dll,0$' -and $sc.IconLocation -notmatch '\.ico')
+# the DLL carries the embedded icon: blue rounded tile + knocked-out glyph
+Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+$dllIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($dllPath)
+if ($null -ne $dllIcon) {
+    $ib = $dllIcon.ToBitmap()
+    $tilePx = $ib.GetPixel([int]($ib.Width * 0.12), [int]($ib.Height * 0.5))
+    $glyphPx = $ib.GetPixel([int]($ib.Width * 0.5), [int]($ib.Height * 0.5))
+    T 'first-launch: DLL has an embedded icon (blue tile)' ($tilePx.B -gt 100)
+    T 'first-launch: DLL icon glyph is knocked out' ($glyphPx.A -lt 128)
+    $ib.Dispose(); $dllIcon.Dispose()
+} else {
+    T 'first-launch: DLL has an embedded icon (blue tile)' $false
+    T 'first-launch: DLL icon glyph is knocked out' $false
+}
+# idempotency: second call must not overwrite (target is powershell now -> skip)
+$stamp1 = (Get-Item $lnkFile).LastWriteTime
+Start-Sleep -Milliseconds 1100
+$es.Invoke($null, [object[]]@([string]$tmpLnk, [string]$dummyBat)) | Out-Null
+T 'first-launch: second call does not overwrite' ((Get-Item $lnkFile).LastWriteTime -eq $stamp1)
+Remove-Item $tmpLnk -Recurse -Force -EA SilentlyContinue
+
 # ================= summary =================
 Write-Host ""
 Write-Host ("{0} passed, {1} failed" -f $script:passed, $script:failed)
