@@ -41,15 +41,14 @@ public static class FormShot
             return -1;
         }));
     }
-    public static int NamedButtonCount(Form f, string names)   // flat-UI tab strips (no TabControl): count buttons with these texts anywhere in the tree
+    public static int NamedButtonCount(Form f, string names)   // flat-UI tab strips (no TabControl): count controls with these texts anywhere in the tree (custom buttons may be Panel-based)
     {
         return (int)f.Invoke(new Func<int>(delegate {
             int n = 0;
             var stack = new System.Collections.Generic.List<Control>();
             Collect(f, stack);
             foreach (Control c in stack) {
-                var b = c as Button;
-                if (b != null && ("," + names + ",").Contains("," + b.Text + ",")) n++;
+                if (c.Text != null && ("," + names + ",").Contains("," + c.Text + ",")) n++;
             }
             return n;
         }));

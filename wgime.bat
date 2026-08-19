@@ -145230,7 +145230,7 @@ public class ClockPlugin
         }
     }
 
-    class FlatBtn : Button
+    class FlatBtn : Panel    // Panel base: zero native chrome (a Button's themed edge bleeds back over time)
     {
         public Color Bg = Color.FromArgb(255, 255, 255, 255);       // white card button on the blue-gray body
         public Color BgHover = Color.FromArgb(255, 240, 243, 249);
@@ -145246,15 +145246,8 @@ public class ClockPlugin
             Math.Max(0, Math.Min(255, c.R + d)), Math.Max(0, Math.Min(255, c.G + d)), Math.Max(0, Math.Min(255, c.B + d))); }
         public FlatBtn()
         {
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-            FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0;
+            DoubleBuffered = true;
             Cursor = Cursors.Hand;
-        }
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == 0x83) { m.Result = IntPtr.Zero; return; }   // WM_NCCALCSIZE: no non-client area
-            if (m.Msg == 0x85) return;                               // WM_NCPAINT: suppress the native theme edge (visible as a dark top/left line on light themes)
-            base.WndProc(ref m);
         }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
