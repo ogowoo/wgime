@@ -83,7 +83,8 @@ public class ClockPlugin
 
 1. 源码里必须有一个类带 **`public static void Run()`** 入口（第一个匹配的类型生效）。
 2. `Run()` 在**插件专用 STA 线程**（`WgImePlugins`，独立消息循环）上被调用：`new Form().Show()` 直接可用；**插件阻塞/死循环只会卡住它自己的窗体，不会影响输入法打字**——写长任务是安全的（但插件自己的窗体会失去响应）。
-3. 编译引用：`System` / `System.Windows.Forms` / `System.Drawing` / `System.Core` / `System.Data`（mscorlib 默认）。**C# 5 语法**（.NET 4.x 的 CodeDom：没有字符串插值、out var、?.）。
+3. 编译引用：`System` / `System.Windows.Forms` / `System.Drawing` / `System.Core` / `System.Data`（mscorlib 默认）+ **WPF**（`WindowsBase` / `PresentationCore` / `PresentationFramework` / `System.Xaml`，GAC 全路径解析）。**C# 5 语法**（.NET 4.x 的 CodeDom：没有字符串插值、out var、?.）。
+   - **WPF 窗体**：直接 `new System.Windows.Window { ... }.Show()` 即可（纯代码方式，无需 XAML；插件线程的 WinForms 消息泵同时服务 WPF Dispatcher）。
 4. `[csharp]` 块与步骤 DSL **不混用**：有 csharp 块就是代码插件，步骤区忽略。
 5. 编译错误不会炸宿主：插件照常出现在候选里，选中时气泡报编译错误（含行号）。
 6. 示例：`plugins\clock.txt`（输入 `sz` 弹出置顶小时钟）。

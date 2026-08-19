@@ -269,6 +269,30 @@ if ($clockForm -ne $null) {
     [FormShot]::InvokeClose($clockForm)
 }
 
+# ---- 5d) WPF plugin: PresentationFramework refs available to [csharp] plugins ----
+$wtmp = [string](Join-Path $env:TEMP ('wgime-wpf-test-' + [guid]::NewGuid().ToString('N')))
+New-Item -ItemType Directory -Path (Join-Path $wtmp 'plugins') -Force | Out-Null
+$wps = @'
+code = wt
+name = WpfT
+desc = wpf smoke
+
+[csharp]
+using System;
+using System.Windows;
+using System.Windows.Controls;
+public class WpfT { public static void Run() { var w = new Window { Title = "t" }; w.Content = new TextBlock { Text = "x" }; w.Show(); } }
+[/csharp]
+'@
+[IO.File]::WriteAllText((Join-Path $wtmp 'plugins\wt.txt'), $wps, (New-Object System.Text.UTF8Encoding($false)))
+$loadP = $wbType.GetMethod('LoadPlugins', $fl)
+$loadP.Invoke($null, @($wtmp))
+$cacheF2 = $wbType.GetField('PluginCodeCache', $fl)
+$wpfErr = "no-cache"
+foreach ($key in $cacheF2.GetValue($null).Keys) { $pc2 = $cacheF2.GetValue($null)[$key]; $wpfErr = $pc2.GetType().GetField('Error', 'Instance, Public, NonPublic').GetValue($pc2) }
+Check "wpf plugin compiles" ($wpfErr -eq $null)                                                          "True"
+Remove-Item $wtmp -Recurse -Force
+
 # ---- 6) forms render ----
 function Shot($typeName, $pngName) {
     $t = $wbType.GetNestedType($typeName, 'NonPublic')

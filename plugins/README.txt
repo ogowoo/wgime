@@ -38,7 +38,9 @@ C# 代码插件 (要窗体就用它):
   [csharp] ... [/csharp]            内嵌 C# 源码, 加载时内存编译, 选中运行
   契约: 含一个 public static void Run(); 跑在插件专用线程 (WgImePlugins), 可直接 new Form().Show(),
         插件阻塞不影响输入法打字
-  引用: System / Windows.Forms / Drawing / Core / Data; 注意是 C# 5 语法 (.NET 4.x CodeDom)
+  引用: System / Windows.Forms / Drawing / Core / Data + WPF (PresentationCore/PresentationFramework/
+        WindowsBase/System.Xaml —— 可直接 new System.Windows.Window 建 WPF 窗体);
+        注意是 C# 5 语法 (.NET 4.x CodeDom)
   示例: clock.txt (输入 sz 弹现代风悬浮时钟: 时钟/闹钟/倒计时/秒表计次/番茄统计)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
