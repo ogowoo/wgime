@@ -1,0 +1,15 @@
+; ============================================================
+;  WgIme 插件示例: 清空回收站
+;  放在 plugins\ 目录下即自动注册; 输入 qls 选 ▶清空回收站 执行
+;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
+; ============================================================
+code = qls
+name = 清空回收站
+desc = confirm 后调用 PowerShell Clear-RecycleBin
+
+confirm 确定清空回收站吗?
+[powershell]
+Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+Write-Output "recycle bin cleared"
+[/powershell]
+msg 回收站已清空
