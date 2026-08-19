@@ -10,9 +10,10 @@
 
   <步骤>                 ; 头部之后直到文件末尾都是步骤
 
-用法: 输入编码 -> 候选条出现 ▶<name> -> 空格选中 -> 后台执行, 气泡报结果。
+用法 (WgTray): 右键托盘图标 -> 插件 -> 点插件名执行, 后台运行, 气泡报结果。
+       (WgIme):   输入编码 -> 候选条出现 ▶<name> -> 空格选中执行。
 改完/新增后: 托盘"配置 -> 重载配置"即时生效。
-管理: 输入 plugins (或 cjgl) 打开插件管理窗体 (列表/编辑/删除/新建/重载)。
+管理 (WgTray): 托盘 -> 插件 -> 插件管理… (列表/运行/编辑/删除/新建/重载)。
 
 步骤动词 (与 tools.txt 工具箱完全一致):
   msg / confirm / run / shell / open / kill / wait
@@ -47,4 +48,4 @@ C# 代码插件 (要窗体就用它):
 完整规范见仓库 docs\WGIME_插件规范.md; 窗体 UI 风格见 docs\WGIME_插件UI规范.md。
 
 (本文件与两个示例插件是首次运行时自动播种的; 删掉不会复活。想重新播种: 删除
- %LOCALAPPDATA%\wgime\provisioned.done 后重启 wgime.bat。)
+ %LOCALAPPDATA%\wgime\provisioned-tray.done 后重启 wgtray.bat。)

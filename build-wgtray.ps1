@@ -37,7 +37,9 @@ $ErrorActionPreference = 'Stop'
 
 $src = Join-Path $PSScriptRoot 'wgime.bat'
 $out = Join-Path $PSScriptRoot 'wgtray.bat'
-if (-not (Test-Path $src)) { throw "wgime.bat not found next to this script: $src" }
+if (-not (Test-Path $src)) {
+    throw "wgime.bat not found next to this script: $src`nThis is the wgtray distribution branch (no IME files). To rebuild wgtray.bat, run this script from a checkout of the master branch (or copy wgime.bat from master into this folder)."
+}
 $txt = [IO.File]::ReadAllText($src, [Text.Encoding]::UTF8)
 $txt = $txt -replace "`r`n", "`n"          # normalize to LF internally
 
