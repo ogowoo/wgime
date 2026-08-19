@@ -145047,7 +145047,7 @@ C# 代码插件 (要窗体就用它):
   示例: clock.txt (输入 sz 弹现代风悬浮时钟: 时钟/闹钟/倒计时/秒表计次/番茄统计)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
-完整规范见仓库 docs\WGIME_插件规范.md。
+完整规范见仓库 docs\WGIME_插件规范.md; 窗体 UI 风格见 docs\WGIME_插件UI规范.md。
 
 (本文件与两个示例插件是首次运行时自动播种的; 删掉不会复活。想重新播种: 删除
  %LOCALAPPDATA%\wgime\provisioned.done 后重启 wgime.bat。)
