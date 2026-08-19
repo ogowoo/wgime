@@ -36,7 +36,9 @@ param([switch]$NoPayload)
 $ErrorActionPreference = 'Stop'
 
 $src = Join-Path $PSScriptRoot 'wgime.bat'
-$out = Join-Path $PSScriptRoot 'wgtray.bat'
+# default output: wgtray.bat (payload, for ConstrainedLanguage machines) or
+# wgtray-nopayload.bat (-NoPayload, source-only, smaller AV detection surface)
+$out = Join-Path $PSScriptRoot $(if ($NoPayload) { 'wgtray-nopayload.bat' } else { 'wgtray.bat' })
 if (-not (Test-Path $src)) {
     throw "wgime.bat not found next to this script: $src`nThis is the wgtray distribution branch (no IME files). To rebuild wgtray.bat, run this script from a checkout of the master branch (or copy wgime.bat from master into this folder)."
 }
@@ -257,4 +259,4 @@ if ($NoPayload) {
     if ($txtOut.IndexOf('###WGTRAY_DLL###') -lt 0) { throw 'FAIL: payload build missing the payload marker' }
 }
 Write-Output "file constraints OK (no BOM, pure CRLF, markers present)"
-Write-Output "DONE - double-click wgtray.bat to use the tray-only toolbox"
+Write-Output ("DONE - double-click {0} to use the tray-only toolbox" -f (Split-Path $out -Leaf))

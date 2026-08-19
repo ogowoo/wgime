@@ -1,6 +1,15 @@
 # WgTray — 无输入法的托盘工具箱
 
-**免安装的单文件托盘工具** —— 双击 `wgtray.bat` 即运行（任务栏托盘出现"工"字图标）。**没有输入法功能**（无键盘钩子 / 无候选窗 / 无词典数据，带载荷版约 380KB / 无载荷版约 227KB），**只有任务栏托盘菜单**，并完全兼容 WgIme 的 `tools.txt` 工具箱、`plugins\*.txt` 插件与 `config.txt` 应用配置。
+**免安装的单文件托盘工具** —— 双击 `wgtray.bat`（或 `wgtray-nopayload.bat`）即运行（任务栏托盘出现"工"字图标）。**没有输入法功能**（无键盘钩子 / 无候选窗 / 无词典数据），**只有任务栏托盘菜单**，并完全兼容 WgIme 的 `tools.txt` 工具箱、`plugins\*.txt` 插件与 `config.txt` 应用配置。
+
+**两个版本并存，功能完全一致，按环境取舍：**
+
+| 文件 | 说明 | 体积 |
+|---|---|---|
+| `wgtray.bat` | **带预编译 DLL 载荷**（保底版）：启动时加载内嵌 DLL，所有机器可跑（含受限语言模式机器） | ~380KB |
+| `wgtray-nopayload.bat` | **纯源码版**：只有 C# 源码，启动时内存编译，杀软检测面更小 | ~227KB |
+
+取舍详见下文「有载荷 vs 无载荷」。
 
 A single-file, install-free tray-only toolbox for Windows: no IME — just a taskbar tray menu with a config-driven toolbox (tools.txt), a plugin system (plugins\*.txt, DSL or C#), built-in applets and global hotkeys.
 
@@ -35,28 +44,37 @@ config.txt 可改：`hotkey_toolbox = ctrl+alt+t` / `hotkey_plugins = ...` / `ho
 ## 构建与测试（Windows PowerShell 5.1）
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1          # 重新生成 wgtray.bat（带预编译 DLL 载荷）
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1 -NoPayload   # 无载荷版: 只有 C# 源码, 启动时内存编译
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1          # 生成 wgtray.bat（带预编译 DLL 载荷）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1 -NoPayload   # 生成 wgtray-nopayload.bat（纯源码版）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild-tray.ps1          # 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1    # 61 项回归（两版都测）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload-consistency.ps1
 ```
 
-> `wgtray.bat` 由 `build-wgtray.ps1` 从 WgIme 仓库（master 分支）的 `wgime.bat` 内嵌 C# 切分生成——本分支是 wgtray 的分发分支，不含输入法本体/词库/IME 文档。
+> 两个 bat 由 `build-wgtray.ps1` 从 WgIme 仓库（master 分支）的 `wgime.bat` 内嵌 C# 切分生成——本分支是 wgtray 的分发分支，不含输入法本体/词库/IME 文档。重建前需在本地准备 `wgime.bat`（`git checkout master -- wgime.bat`，已加入 .gitignore 不会入库）。
 
-### 关于预编译 DLL 载荷与杀软误报
+## 有载荷 vs 无载荷（取舍分析）
 
-`wgtray.bat` 默认内嵌一个 base64 预编译 DLL（用于受限语言模式机器——AppLocker/WDAC 策略禁止 PowerShell 内存编译时的兜底）。**这种"bat 内嵌 base64 PE + `FromBase64String` 落盘"模式正是恶意软件常用手法，部分启发式/EDR 杀软（如 Windows Defender 的 AMSI 扫描）可能误报**，尤其当脚本未签名、运行在用户可写目录时。
+两个版本功能完全一致（同一套代码、同一套测试），区别只在"程序集怎么来"：
 
-- **想要更低的检测面**：用 `-NoPayload` 构建（约 227KB）——不嵌 DLL、不含 `FromBase64String`，启动时直接内存编译 C# 源码（纯文本，可读）。代价：在受限语言模式机器上无法启动（`Add-Type` 被策略禁止）。
-- 权衡：默认带载荷版保底所有机器（含学校/公司的锁定环境）；无载荷版更适合个人分发。两种版本功能完全一致。
-- 附注：任何 bat+Powershell+内存编译的分发方式本身都会被部分杀软启发式关注，建议从可信位置运行、必要时对脚本做代码签名。
+**`wgtray.bat` 带载荷版（~380KB）**
+- 程序集 = bat 内嵌的 base64 预编译 DLL，启动时解码落盘到 `%LOCALAPPDATA%\wgime\WgTray.*.dll` 后 `Add-Type -Path` 加载
+- 优点：① **所有机器都能启动**——受限语言模式（ConstrainedLanguage，公司/学校 AppLocker/WDAC 锁定机）禁止 PowerShell 内存编译，DLL 加载是唯一可行路径；② 启动更快（加载 ~0.2s vs 每次编译 ~1s）
+- 缺点：① **杀软检测面大**——"bat 内嵌 base64 PE + FromBase64String + WriteAllBytes 落盘"是恶意软件经典模式，启发式/AMSI/EDR 更易误报（未签名脚本 + 用户可写目录尤甚）；② 体积大 ~1.7 倍；③ 内含不可读的二进制块，人工审计/白名单审批不友好
+
+**`wgtray-nopayload.bat` 无载荷版（~227KB）**
+- 程序集 = bat 内嵌的 **C# 源码明文**，启动时 `Add-Type -TypeDefinition` 内存编译
+- 优点：① **检测面小**——没有 PE blob、没有 FromBase64String/WriteAllBytes 链，全文件是纯文本可读源码，杀软/审查者能直接看到全部逻辑；② 体积小；③ 便于 diff/审计/代码签名解释
+- 缺点：① **受限语言模式机器无法启动**（Add-Type 被策略禁止，会给出明确报错）——公司/学校锁定环境基本不可用；② 每次启动多 ~1s 编译时间；③ 仍属"PowerShell 运行时编译代码"，部分严格策略/杀软同样敏感（比 blob 轻，但非零）
+
+**建议**：个人电脑/信任环境 → 无载荷版（误报少、可审查）；要分发给锁定机器或在意启动速度 → 带载荷版。被误报时换另一版对比，可快速定位是"blob 模式"还是"编译模式"触发的。终极方案是编译成签名 exe，但那偏离"单文件免安装 bat"的定位。
 
 ## 文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `wgtray.bat` | 程序本体（自包含；cmd 引导 + PowerShell + 内嵌 C# + 可选预编译 DLL 载荷） |
+| `wgtray.bat` | 程序本体（带预编译 DLL 载荷版，保底所有机器） |
+| `wgtray-nopayload.bat` | 程序本体（纯源码版，启动内存编译，杀软检测面小） |
 | `config.txt` | 用户配置（`app =` 应用条目 + `hotkey_*` 全局快捷键；首次运行自动播种模板） |
 | `tools.txt` | 工具箱配置（`[tab 标签页]` / `[按钮名]` / 步骤行） |
 | `plugins/` | 插件目录（步骤 DSL / C# 插件；规范见 [docs/WGIME_插件规范.md](docs/WGIME_插件规范.md)、UI 风格见 [docs/WGIME_插件UI规范.md](docs/WGIME_插件UI规范.md)） |

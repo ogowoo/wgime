@@ -11,3 +11,7 @@ tests/*-dump.txt
 tests/pinyin-data.txt
 
 plugins/lt.txt
+
+# wgtray distribution branch: wgime.bat is only a LOCAL build source for
+# build-wgtray.ps1 (restore from master with: git checkout master -- wgime.bat)
+wgime.bat

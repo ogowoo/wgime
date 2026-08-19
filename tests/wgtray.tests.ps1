@@ -198,6 +198,55 @@ try {
     T 'runtime: launch' $false $_.Exception.Message
 }
 
+# ================= 10. no-payload variant (wgtray-nopayload.bat) =================
+$npBat = Join-Path $PSScriptRoot '..\wgtray-nopayload.bat'
+if (Test-Path $npBat) {
+    $npTxt = [IO.File]::ReadAllText($npBat, [Text.Encoding]::UTF8)
+    T 'nopayload: file exists and starts with @echo off' ($npTxt.StartsWith('@echo off'))
+    T 'nopayload: no payload marker ###WGTRAY_DLL###' (-not $npTxt.Contains('###WGTRAY_DLL###'))
+    T 'nopayload: no FromBase64String anywhere' (-not $npTxt.Contains('FromBase64String'))
+    T 'nopayload: has cmd marker ###PWSHTRAY###' ($npTxt.Contains('###PWSHTRAY###'))
+    T 'nopayload: has TrayApp launch call' ($npTxt.Contains('[TrayApp]::Run'))
+    # embedded C# must be byte-identical to the payload build's
+    $ciNp = $npTxt.IndexOf("cs = @'")
+    $csNp = $npTxt.Substring($npTxt.IndexOf("`n", $ciNp) + 1, $npTxt.IndexOf("`n'@", $npTxt.IndexOf("`n", $ciNp) + 1) - ($npTxt.IndexOf("`n", $ciNp) + 1))
+    T 'nopayload: embedded C# identical to payload build' ($csNp -eq $cs)
+    # runtime smoke: must use the in-memory compile path (no DLL cache)
+    $log = Join-Path $env:TEMP 'WgTray_error.log'
+    Remove-Item $log -Force -EA SilentlyContinue
+    try {
+        Start-Process -FilePath $npBat | Out-Null
+        Start-Sleep -Seconds 8
+        if (Test-Path $log) {
+            $logTxt = Get-Content $log -Raw -Encoding UTF8
+            T 'nopayload runtime: compiled in memory' ($logTxt.Contains('compiled OK (in-memory fallback)'))
+            T 'nopayload runtime: no DLL payload load' (-not $logTxt.Contains('prebuilt DLL loaded'))
+            T 'nopayload runtime: TrayApp launched' ($logTxt.Contains('launching TrayApp'))
+        } else {
+            T 'nopayload runtime: compiled in memory' $false 'no log'
+            T 'nopayload runtime: no DLL payload load' $false 'no log'
+            T 'nopayload runtime: TrayApp launched' $false 'no log'
+        }
+        try {
+            $ps = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"
+            $worker = $ps | Where-Object { $_.CommandLine -like '*WGTRAY_PATH*' }
+            if ($worker) { $worker | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }
+        } catch {}
+    } catch {
+        T 'nopayload runtime: launch' $false $_.Exception.Message
+    }
+} else {
+    T 'nopayload: file exists and starts with @echo off' $false 'wgtray-nopayload.bat missing (build with -NoPayload)'
+    T 'nopayload: no payload marker ###WGTRAY_DLL###' $false
+    T 'nopayload: no FromBase64String anywhere' $false
+    T 'nopayload: has cmd marker ###PWSHTRAY###' $false
+    T 'nopayload: has TrayApp launch call' $false
+    T 'nopayload: embedded C# identical to payload build' $false
+    T 'nopayload runtime: compiled in memory' $false
+    T 'nopayload runtime: no DLL payload load' $false
+    T 'nopayload runtime: TrayApp launched' $false
+}
+
 # ================= summary =================
 Write-Host ""
 Write-Host ("{0} passed, {1} failed" -f $script:passed, $script:failed)
