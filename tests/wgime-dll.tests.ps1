@@ -90,6 +90,30 @@ try {
     T 'runtime: dict cache present (embedded dicts parsed)' $false $_.Exception.Message
 }
 
+# ================= 4. first-launch launcher shortcut =================
+# deterministic: call EnsureShortcut in a temp folder with a dummy bat
+$tmpLnk = Join-Path $env:TEMP ("wgime-lnk-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item $tmpLnk -ItemType Directory -Force | Out-Null
+$dummyBat = Join-Path $tmpLnk 'WgIme.bat'
+[IO.File]::WriteAllText($dummyBat, "@echo off`r`n", (New-Object System.Text.UTF8Encoding($false)))
+$es = [WgImeLauncher].GetMethod('EnsureShortcut', [Reflection.BindingFlags]'Static,NonPublic')
+$es.Invoke($null, [object[]]@([string]$tmpLnk, [string]$dummyBat)) | Out-Null
+$lnkFile = Join-Path $tmpLnk 'WgIme.lnk'
+T 'first-launch: shortcut created next to the bat' (Test-Path $lnkFile)
+if (Test-Path $lnkFile) {
+    $ws = New-Object -ComObject WScript.Shell
+    $sc = $ws.CreateShortcut($lnkFile)
+    T 'first-launch: shortcut target is the bat' ($sc.TargetPath -eq $dummyBat)
+    T 'first-launch: working dir is the bat folder' ($sc.WorkingDirectory -eq $tmpLnk)
+    T 'first-launch: runs minimized (less console flash)' ($sc.WindowStyle -eq 7)
+    # idempotency: second call must not overwrite (File.Exists guard)
+    $stamp1 = (Get-Item $lnkFile).LastWriteTime
+    Start-Sleep -Milliseconds 1100
+    $es.Invoke($null, [object[]]@([string]$tmpLnk, [string]$dummyBat)) | Out-Null
+    T 'first-launch: second call does not overwrite' ((Get-Item $lnkFile).LastWriteTime -eq $stamp1)
+}
+Remove-Item $tmpLnk -Recurse -Force -EA SilentlyContinue
+
 # ================= summary =================
 Write-Host ""
 Write-Host ("{0} passed, {1} failed" -f $script:passed, $script:failed)

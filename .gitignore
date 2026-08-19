@@ -16,3 +16,6 @@ plugins/lt.txt
 # build-wgtray.ps1 (restore from master with: git checkout master -- wgime.bat)
 # anchored to the repo root only - wgime-dll/WgIme.bat must stay tracked
 /wgime.bat
+
+# generated per-machine launcher shortcut (created on first launch by WgImeLauncher)
+/wgime-dll/WgIme.lnk

@@ -79,7 +79,28 @@ public static class WgImeLauncher
 {
     public static void Run(string dir, string batPath)
     {
+        EnsureShortcut(dir, batPath);            // first launch: create "<bat-name>.lnk" next to the bat
         WordBoard.RunApp(PyData, WbData, EcData, PyWords, PyWf, dir, batPath);
+    }
+
+    // First-launch convenience: a launcher shortcut next to the bat (target is
+    // the absolute bat path, so it is generated per machine - never committed).
+    // Runs minimized (WindowStyle 7) to reduce the console flash.
+    static void EnsureShortcut(string dir, string batPath)
+    {
+        try {
+            string lnk = Path.Combine(dir, Path.GetFileNameWithoutExtension(batPath) + ".lnk");
+            if (File.Exists(lnk)) return;                     // already generated: keep user's edits
+            var type = Type.GetTypeFromProgID("WScript.Shell");
+            var sh = Activator.CreateInstance(type);
+            var s = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { lnk });
+            var st = s.GetType();
+            st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { batPath });
+            st.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dir });
+            st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "WgIme (DLL edition)" });
+            st.InvokeMember("WindowStyle", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { 7 });   // SW_SHOWMINNOACTIVE
+            st.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, s, null);
+        } catch {}
     }
     const string PyData = "$(Esc-CSharp $pyData)";
     const string WbData = "$(Esc-CSharp $wbData)";
