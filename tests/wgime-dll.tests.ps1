@@ -9,7 +9,7 @@
 #  NOTE: ASCII-only file - Windows PS 5.1 reads scripts as ANSI.
 # ============================================================
 $ErrorActionPreference = 'Stop'
-$dllDir = Join-Path $PSScriptRoot '..\wgime-dll'
+$dllDir = Join-Path $PSScriptRoot '..\wg-all'
 $batPath = Join-Path $dllDir 'WgIme.bat'
 $dllPath = Join-Path $dllDir 'WgIme.dll'
 $script:passed = 0; $script:failed = 0

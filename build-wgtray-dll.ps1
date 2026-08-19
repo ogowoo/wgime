@@ -27,7 +27,7 @@ $src = Join-Path $PSScriptRoot 'wgime.bat'
 if (-not (Test-Path $src)) {
     throw "wgime.bat not found next to this script: $src`nRestore it from master: git checkout master -- wgime.bat"
 }
-$outDir = Join-Path $PSScriptRoot 'wgtray-dll'
+$outDir = Join-Path $PSScriptRoot 'wg-all'
 $outBat = Join-Path $outDir 'WgTray.bat'
 $outDll = Join-Path $outDir 'WgTray.dll'
 New-Item $outDir -ItemType Directory -Force | Out-Null

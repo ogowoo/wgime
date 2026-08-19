@@ -9,7 +9,7 @@
 #  NOTE: ASCII-only file - Windows PS 5.1 reads scripts as ANSI.
 # ============================================================
 $ErrorActionPreference = 'Stop'
-$dllDir = Join-Path $PSScriptRoot '..\wgtray-dll'
+$dllDir = Join-Path $PSScriptRoot '..\wg-all'
 $batPath = Join-Path $dllDir 'WgTray.bat'
 $dllPath = Join-Path $dllDir 'WgTray.dll'
 $script:passed = 0; $script:failed = 0
