@@ -1,0 +1,211 @@
+# ============================================================
+#  build-wgtray.ps1 - generate wgtray.bat (tray-only toolbox, NO IME)
+#
+#  wgtray.bat = single-file tray tool:
+#    * no IME (no keyboard hook / no candidate window / no dicts)
+#    * taskbar tray menu only: toolbox (tools.txt) / plugins (plugins\*.txt)
+#      / built-in applets / config.txt apps / config / exit
+#
+#  Steps:
+#    1. extract the embedded C# source ($cs) from wgime.bat
+#    2. slice the reusable code (toolbox engine / ToolsForm / applets /
+#       plugin system) by line ranges, prepend the new TrayApp shell
+#       (wgtray_glue.cs.txt), produce tray_cs.cs
+#    3. compile with Add-Type (Windows PowerShell 5.1 / .NET 4.x)
+#    4. assemble wgtray.bat (cmd bootstrap + PowerShell + embedded C#
+#       + base64 DLL payload); seeds patched via wgtray_seed_patches.txt
+#
+#  After editing the C# embedded in wgtray.bat, run rebuild-tray.ps1
+#  (no re-slicing needed). Requires Windows PowerShell 5.1 (powershell.exe).
+#  File constraints: pure CRLF / no BOM / UTF-8.
+#
+#  NOTE: this script is ASCII-only on purpose (Windows PS 5.1 reads .ps1
+#  as ANSI). All non-ASCII content lives in UTF-8 template files that are
+#  read explicitly: wgtray_glue.cs.txt, wgtray_ps_body.txt,
+#  wgtray_seed_patches.txt.
+# ============================================================
+$ErrorActionPreference = 'Stop'
+
+$src = Join-Path $PSScriptRoot 'wgime.bat'
+$out = Join-Path $PSScriptRoot 'wgtray.bat'
+if (-not (Test-Path $src)) { throw "wgime.bat not found next to this script: $src" }
+$txt = [IO.File]::ReadAllText($src, [Text.Encoding]::UTF8)
+$txt = $txt -replace "`r`n", "`n"          # normalize to LF internally
+
+# ---- 1) extract the embedded C# from wgime.bat ----
+$i     = $txt.IndexOf("cs = @'")
+if ($i -lt 0) { throw "marker 'cs = @''' not found in wgime.bat" }
+$start = $txt.IndexOf("`n", $i) + 1
+$end   = $txt.IndexOf("`n'@", $start)
+$cs    = $txt.Substring($start, $end - $start)
+Write-Output ("wgime C# source: {0} chars" -f $cs.Length)
+$lines = $cs -split "`n"
+
+# ---- 2) reusable slices (1-based line numbers, anchor-line checked) ----
+function Slice([int]$a, [int]$b, [string]$anchor) {
+    if ($a -lt 1 -or $b -gt $lines.Count) { throw "slice $a..$b out of range (max $($lines.Count))" }
+    $first = $lines[$a - 1].TrimStart()
+    if (-not $first.StartsWith($anchor)) { throw "slice $a..$b anchor mismatch: expected '$anchor', got '$first'" }
+    $arr = $lines[($a - 1)..($b - 1)]
+    return [string]::Join("`n", $arr)
+}
+
+$parts = [System.Collections.Generic.List[string]]::new()
+
+# fixed usings (1..11)
+$parts.Add((Slice 1 11 'using'))
+
+# ---- 3) the new TrayApp shell (UTF-8 template, read explicitly) ----
+$gluePath = Join-Path $PSScriptRoot 'wgtray_glue.cs.txt'
+$glue = [IO.File]::ReadAllText($gluePath, [Text.Encoding]::UTF8).Replace("`r`n", "`n")
+if (-not $glue.Contains('public class TrayApp')) { throw "wgtray_glue.cs.txt does not contain the TrayApp class" }
+$parts.Add($glue)
+
+# ---- 4) verbatim reusable slices (only display-name renames) ----
+$sliceDefs = @(
+    @{ A = 1487; B = 1495; Anchor = 'static void FixLegacyConfigIfBroken' },
+    @{ A = 1847; B = 1869; Anchor = 'void LaunchApp(string code)' },
+    @{ A = 1878; B = 1882; Anchor = 'class ToolAction' },
+    @{ A = 1883; B = 2153; Anchor = 'static List<string> ToolToks(string line)' },
+    @{ A = 2155; B = 2495; Anchor = 'class ToolsForm : Form' },
+    @{ A = 2497; B = 2814; Anchor = '// ---------- embedded network tools' },
+    @{ A = 2815; B = 3303; Anchor = 'class NetToolsForm : Form' },
+    @{ A = 3305; B = 3324; Anchor = '// ---------- embedded clipboard history' },
+    @{ A = 3325; B = 3386; Anchor = 'class ClipForm : Form' },
+    @{ A = 3388; B = 3399; Anchor = '// ---------- embedded sticky note' },
+    @{ A = 3400; B = 3744; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
+    @{ A = 3746; B = 3770; Anchor = '// ---------- embedded color picker' },
+    @{ A = 3772; B = 3844; Anchor = 'class ColorForm : Form' },
+    @{ A = 3846; B = 4236; Anchor = '// ---------- plugins: plugins' }
+)
+foreach ($d in $sliceDefs) {
+    $s = Slice $d.A $d.B $d.Anchor
+    # display-name renames: "WgIme" -> "WgTray" in window titles / balloons / dialogs;
+    # the data dir "wgime" and the "WgIme-NetTools" UserAgent stay untouched
+    $s = $s.Replace('"WgImePlugins"', '"WgTrayPlugins"')
+    $s = $s.Replace('"WgIme"', '"WgTray"')
+    $s = $s.Replace('(WgIme)', '(WgTray)')
+    # host class: every reference to WordBoard in the kept code points at TrayApp now
+    $s = $s.Replace('WordBoard', 'TrayApp')
+    # tool/plugin steps: ExecToolStep's Control param was 'this' (WordBoard was a Form) -> Ui()
+    $s = $s.Replace('ExecToolStep(a.Steps[i], isBlock ? a.Raw[i] : ToolRest(a.Raw[i]), sb, this);',
+                    'ExecToolStep(a.Steps[i], isBlock ? a.Raw[i] : ToolRest(a.Raw[i]), sb, Ui());')
+    # RunPlugin: BeginInvoke is a Form method -> marshal via the hidden Ui() control
+    $s = $s.Replace('try { BeginInvoke((Action)delegate { TrayTip(a.Name, msg,',
+                    'try { Ui().BeginInvoke((Action)delegate { TrayTip(a.Name, msg,')
+    $parts.Add($s)
+}
+
+# close the TrayApp class (every slice is a WordBoard member, kept inside TrayApp)
+$parts.Add('}')
+
+# ---- 5) assemble tray_cs.cs (reference artifact) ----
+$csTray = [string]::Join("`n", $parts)
+$csTrayPath = Join-Path $PSScriptRoot 'tray_cs.cs'
+[IO.File]::WriteAllText($csTrayPath, $csTray, (New-Object System.Text.UTF8Encoding($false)))
+Write-Output ("tray_cs.cs written: {0} chars" -f $csTray.Length)
+
+# ---- 6) compile (on failure the bat is left untouched) ----
+$outDll = Join-Path $env:TEMP 'wgtray_new.dll'
+if (Test-Path $outDll) { Remove-Item $outDll -Force }
+Add-Type -TypeDefinition $csTray -ReferencedAssemblies System.Windows.Forms,System.Drawing `
+         -OutputAssembly $outDll -OutputType Library -ErrorAction Stop
+Write-Output ("compiled OK -> {0} ({1} bytes)" -f $outDll, (Get-Item $outDll).Length)
+
+# ---- 7) seeds (extracted from wgime.bat, patched via UTF-8 data file) ----
+function Get-Seed([string]$varName) {
+    $m = "`n`$$varName = @'`n"
+    $p = $txt.IndexOf($m)
+    if ($p -lt 0) { throw "seed $varName not found" }
+    $s = $p + $m.Length
+    $e = $txt.IndexOf("`n'@", $s)
+    if ($e -lt 0) { throw "seed $varName terminator not found" }
+    return $txt.Substring($s, $e - $s)
+}
+$seedTools        = Get-Seed 'seedTools'
+$seedPluginReadme = Get-Seed 'seedPluginReadme'
+$seedCleanBin     = Get-Seed 'seedCleanBin'
+$seedClock        = Get-Seed 'seedClock'
+$seedCalc         = Get-Seed 'seedCalc'
+
+$patchPath = Join-Path $PSScriptRoot 'wgtray_seed_patches.txt'
+foreach ($pl in [IO.File]::ReadAllLines($patchPath, [Text.Encoding]::UTF8)) {
+    if ($pl.Length -eq 0 -or $pl[0] -eq '#') { continue }
+    $f1 = $pl.IndexOf("`t"); if ($f1 -lt 1) { continue }
+    $f2 = $pl.IndexOf("`t", $f1 + 1); if ($f2 -lt 0) { continue }
+    $target = $pl.Substring(0, $f1)
+    $oldTxt = $pl.Substring($f1 + 1, $f2 - $f1 - 1)
+    $newTxt = $pl.Substring($f2 + 1)
+    if ($target -eq 'TOOLS') { $seedTools = $seedTools.Replace($oldTxt, $newTxt) }
+    elseif ($target -eq 'README') { $seedPluginReadme = $seedPluginReadme.Replace($oldTxt, $newTxt) }
+}
+
+# ---- 8) cmd bootstrap head (same self-bootstrap pattern as wgime.bat) ----
+$batHead = @'
+@echo off
+rem ============================================================
+rem  WgTray - tray-only toolbox (NO IME): taskbar tray menu +
+rem  tools.txt toolbox + plugins\*.txt + config.txt apps
+rem  bat bootstrap -> PowerShell -> in-memory C# (or prebuilt DLL)
+rem  Errors are logged to %TEMP%\WgTray_error.log
+rem ============================================================
+set "WGTRAY_PATH=%~f0"
+set "WGTRAY_DIR=%~dp0"
+if /i "%~1"=="_h" goto :main
+rem WGTRAY_DEBUG=1: keep console visible so startup errors can be seen on locked-down machines
+if defined WGTRAY_DEBUG (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '_h'"
+) else (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath '%~f0' -ArgumentList '_h' -WindowStyle Hidden"
+)
+exit /b
+:main
+if defined WGTRAY_DEBUG (
+  powershell.exe -STA -NoProfile -NoLogo -ExecutionPolicy Bypass -Command "try { $s=[IO.File]::ReadAllText($env:WGTRAY_PATH,[Text.Encoding]::UTF8); $i=$s.LastIndexOf('###PWSHTRAY###'); $p=$s.Substring($i+14); Invoke-Expression $p } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgTray_error.log'), ($_ | Out-String)); Write-Host ($_ | Out-String) -ForegroundColor Red; Read-Host 'press ENTER to exit' }"
+) else (
+  powershell.exe -STA -NoProfile -NoLogo -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try { $s=[IO.File]::ReadAllText($env:WGTRAY_PATH,[Text.Encoding]::UTF8); $i=$s.LastIndexOf('###PWSHTRAY###'); $p=$s.Substring($i+14); Invoke-Expression $p } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgTray_error.log'), ($_ | Out-String)); Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(($_ | Out-String),'WgTray Error') | Out-Null }"
+)
+exit /b
+###PWSHTRAY###
+'@
+
+# ---- 9) PowerShell bootstrap body (UTF-8 template with placeholders) ----
+# A separate template file is required: the body itself contains multi-line
+# here-strings ($cs = @' ... '@), which would terminate a nested here-string
+# in this script prematurely.
+$psTplPath = Join-Path $PSScriptRoot 'wgtray_ps_body.txt'
+$psBody = [IO.File]::ReadAllText($psTplPath, [Text.Encoding]::UTF8)
+$psBody = $psBody.Replace("`r`n", "`n")
+
+$psBody = $psBody.Replace('CS_SOURCE', $csTray)
+$psBody = $psBody.Replace('SEED_TOOLS', $seedTools)
+$psBody = $psBody.Replace('SEED_README', $seedPluginReadme)
+$psBody = $psBody.Replace('SEED_CLEANBIN', $seedCleanBin)
+$psBody = $psBody.Replace('SEED_CLOCK', $seedClock)
+$psBody = $psBody.Replace('SEED_CALC', $seedCalc)
+
+# ---- 10) assemble wgtray.bat (CRLF, no BOM) ----
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
+$allLines = @()
+$allLines += ($batHead -split "`n")
+$allLines += ($psBody -split "`n")
+$allLines += '###WGTRAY_DLL###'
+$allLines += "'" + $b64 + "'"
+$allLines += ''
+$outText = [string]::Join("`r`n", $allLines)
+[IO.File]::WriteAllText($out, $outText, (New-Object System.Text.UTF8Encoding($false)))
+Write-Output ("wgtray.bat written: {0} bytes" -f (Get-Item $out).Length)
+
+# ---- 11) self-check: no BOM / pure CRLF / markers present ----
+$bytes = [IO.File]::ReadAllBytes($out)
+$bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+if ($bom) { throw 'FAIL: file now has a BOM - encoding constraint violated' }
+$loneLf = 0
+for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and ($k -eq 0 -or $bytes[$k-1] -ne 0x0D)) { $loneLf++ } }
+if ($loneLf -gt 0) { throw ("FAIL: {0} lone LF line endings detected (must be pure CRLF, cmd.exe requires it)" -f $loneLf) }
+$txtOut = [IO.File]::ReadAllText($out, [Text.Encoding]::UTF8)
+foreach ($m in @('###PWSHTRAY###','###WGTRAY_DLL###','[TrayApp]::Run')) {
+    if ($txtOut.IndexOf($m) -lt 0) { throw "marker not found in output: $m" }
+}
+Write-Output "file constraints OK (no BOM, pure CRLF, markers present)"
+Write-Output "DONE - double-click wgtray.bat to use the tray-only toolbox"

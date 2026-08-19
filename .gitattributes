@@ -3,3 +3,4 @@
 # cmd fall through into the PowerShell body with "'xxx' is not recognized" errors
 # and the IME never starts. PowerShell / C# handle CRLF fine (see docs/WGIME_技术文档.md §11.2).
 wgime.bat text eol=crlf
+wgtray.bat text eol=crlf

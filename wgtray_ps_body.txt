@@ -1,0 +1,107 @@
+# ================= WgTray bootstrap: extract embedded C# / DLL payload =================
+$wgLog = Join-Path $env:TEMP 'WgTray_error.log'
+function WgLog([string]$m) { try {
+    if (Test-Path $wgLog) { $len = (Get-Item $wgLog).Length; if ($len -gt 1MB) { Move-Item $wgLog ($wgLog + '.old') -Force -ErrorAction SilentlyContinue } }
+    [IO.File]::AppendAllText($wgLog, ("[{0}] {1}`r`n" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m), [Text.Encoding]::UTF8)
+} catch {} }
+WgLog "---- WgTray starting ----"
+WgLog ("OS: " + [Environment]::OSVersion.VersionString + " 64bit:" + [Environment]::Is64BitOperatingSystem)
+WgLog ("PS: " + $PSVersionTable.PSVersion.ToString() + " CLR: " + $PSVersionTable.CLRVersion.ToString())
+WgLog ("LanguageMode: " + $ExecutionContext.SessionState.LanguageMode)
+try {
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+WgLog "WinForms assemblies loaded"
+
+# ---- embedded C# (tray-only, no IME) ----
+$cs = @'
+CS_SOURCE
+'@
+
+# ---- load prebuilt DLL from embedded payload, in-memory compile only as fallback ----
+$wgDll = $null
+try {
+    $all = [IO.File]::ReadAllText($env:WGTRAY_PATH, [Text.Encoding]::UTF8)
+    $tag = '###WGTRAY_DLL' + '###'
+    $ts = $all.LastIndexOf($tag)
+    if ($ts -ge 0) {
+        $b64 = (($all.Substring($ts + $tag.Length).Trim()) -replace '\s') -replace "'"
+        $md5 = [Security.Cryptography.MD5]::Create()
+        $h = ([BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($b64)))).Replace('-','').Substring(0,8)
+        $wgDllDir = Join-Path $env:LOCALAPPDATA 'wgime'
+        New-Item $wgDllDir -ItemType Directory -Force | Out-Null
+        $cand = Join-Path $wgDllDir ("WgTray." + $h + ".dll")
+        if (-not (Test-Path $cand)) {
+            [IO.File]::WriteAllBytes($cand, [Convert]::FromBase64String($b64))
+            Get-ChildItem (Join-Path $wgDllDir 'WgTray.*.dll') -EA SilentlyContinue | Where-Object Name -ne (Split-Path $cand -Leaf) | Remove-Item -Force -Confirm:$false -EA SilentlyContinue
+        }
+        $wgDll = $cand
+    }
+} catch { WgLog ("payload extract failed: " + $_.Exception.Message) }
+$wgLoaded = $false
+if ($wgDll) {
+    try { Add-Type -Path $wgDll -ErrorAction Stop; $wgLoaded = $true; WgLog ("prebuilt DLL loaded: " + $wgDll) }
+    catch { WgLog ("DLL load failed: " + ($_ | Out-String)) }
+}
+if (-not $wgLoaded) {
+    try {
+        Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop
+        WgLog "C# compiled OK (in-memory fallback)"
+    } catch {
+        WgLog ("Add-Type FAILED: " + ($_ | Out-String))
+        if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+            WgLog "HINT: PowerShell is in ConstrainedLanguage mode (AppLocker/WDAC policy). In-memory C# compile is blocked by policy - ask admin to allow the wgime DLL folder, or sign the script."
+        }
+        throw
+    }
+}
+
+WgLog "launching TrayApp"
+
+# ---- first-run seeding: sample tools/plugins for fresh users ----
+# Guarded by %LOCALAPPDATA%\wgime\provisioned-tray.done: runs ONCE. Users may delete the
+# samples permanently; to re-seed, delete the marker. Nothing is ever overwritten.
+$seedTools = @'
+SEED_TOOLS
+'@
+$seedPluginReadme = @'
+SEED_README
+'@
+$seedCleanBin = @'
+SEED_CLEANBIN
+'@
+$seedClock = @'
+SEED_CLOCK
+'@
+$seedCalc = @'
+SEED_CALC
+'@
+try {
+    $seedDir = Join-Path $env:LOCALAPPDATA 'wgime'
+    $seedMark = Join-Path $seedDir 'provisioned-tray.done'
+    if (-not (Test-Path $seedMark)) {
+        $utf8n = New-Object System.Text.UTF8Encoding($false)
+        $toolsPath = Join-Path $env:WGTRAY_DIR 'tools.txt'
+        if (-not (Test-Path $toolsPath)) { [IO.File]::WriteAllText($toolsPath, $seedTools, $utf8n) }
+        $pdir = Join-Path $env:WGTRAY_DIR 'plugins'
+        if (-not (Test-Path $pdir)) { [IO.Directory]::CreateDirectory($pdir) | Out-Null }
+        $rf = Join-Path $pdir 'README.txt'
+        if (-not (Test-Path $rf)) { [IO.File]::WriteAllText($rf, $seedPluginReadme, $utf8n) }
+        $cf = Join-Path $pdir 'clean-bin.txt'
+        if (-not (Test-Path $cf)) { [IO.File]::WriteAllText($cf, $seedCleanBin, $utf8n) }
+        $kf = Join-Path $pdir 'clock.txt'
+        if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
+        $jf = Join-Path $pdir 'calc.txt'
+        if (-not (Test-Path $jf)) { [IO.File]::WriteAllText($jf, $seedCalc, $utf8n) }
+        try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}
+        [IO.File]::WriteAllText($seedMark, (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $utf8n)
+        WgLog "first-run seeding done (tools.txt + plugins samples)"
+    }
+} catch { WgLog ("seeding failed: " + ($_ | Out-String)) }
+
+[TrayApp]::Run($env:WGTRAY_DIR, $env:WGTRAY_PATH)
+WgLog "TrayApp exited"
+} catch {
+    WgLog ("FATAL: " + ($_ | Out-String))
+    throw
+}

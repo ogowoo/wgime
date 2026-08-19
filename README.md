@@ -24,26 +24,56 @@ A single-file, install-free overlay IME for Windows: pinyin / wubi / mixed / EN-
 3. `Shift` 轻点开关输入法，`` Ctrl+` `` 切换模式
 4. 详细说明见 [docs/WGIME_使用说明.md](docs/WGIME_使用说明.md)
 
+## WgTray — 无输入法的托盘工具箱
+
+`wgtray.bat` 是 WgIme 的**托盘版**：**没有输入法功能**（无键盘钩子 / 无候选窗 / 无词典数据，体积约 360KB，仅为 WgIme 的 1/10），**只有任务栏托盘菜单**，并完全兼容 WgIme 的 `tools.txt` 工具箱、`plugins\*.txt` 插件、`config.txt` 应用配置：
+
+- 双击 `wgtray.bat` 即运行（托盘出现"工"字图标）
+- 托盘菜单：
+  - **工具箱…** —— `tools.txt` 驱动的多标签工具窗体（与 WgIme 输入 `itools` 唤出的是同一个，改 tools.txt 重载即生效）
+  - **插件** —— `plugins\*.txt` 里启用的插件（步骤 DSL 与 `[csharp]` 代码插件都支持，点插件名即执行）+ 插件管理（列表/启用禁用/编辑/删除/新建）
+  - **内置工具** —— 计算器（plugins\calc.txt）/ 网络工具（ping/tracert/DNS/HTTP/端口/子网计算）/ 剪贴板历史 / 便签 / 颜色拾取
+  - **应用 (config.txt)** —— config.txt 里 `app = 编码 名称 命令` 的条目
+  - **配置** —— 编辑 config.txt / 重载配置 / 数据目录
+- 与 WgIme **共用** `%LOCALAPPDATA%\wgime` 数据目录（插件禁用记录、便签、颜色设置等互通），两者可同时运行互不干扰
+- 首次运行自动播种 `tools.txt` 与 `plugins\` 示例（标记 `provisioned-tray.done`，不覆盖已有文件）
+
+**构建与测试**（Windows PowerShell 5.1）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1     # 从 wgime.bat 重新生成 wgtray.bat
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild-tray.ps1     # 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload-consistency.ps1
+```
+
+> 构建输入：`wgtray_glue.cs.txt`（TrayApp 托盘壳）、`wgtray_ps_body.txt`（PowerShell 引导段）、`wgtray_seed_patches.txt`（示例文案补丁）——三者均为 UTF-8 模板，构建脚本按 UTF-8 显式读取（脚本本身保持 ASCII，兼容 Windows PS 5.1 的 ANSI 解析）。
+
 ## 文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `wgime.bat` | 程序本体（自包含） |
-| `config.txt` | 用户配置（模糊音/短语/上屏方式/快捷键） |
+| `wgime.bat` | 输入法程序本体（自包含） |
+| `wgtray.bat` | **托盘版工具箱**（无输入法，自包含，见上节） |
+| `config.txt` | 用户配置（模糊音/短语/上屏方式/快捷键；WgTray 只使用其中的 `app =` 条目） |
 | `py.txt` / `wb.txt` / `ec.txt` | 扩展词典（`码 词1 词2…`，UTF-8，可选） |
 | `import_py.txt` / `import_wb.txt` | 码表导入产物（Gboard 词库转换） |
-| `tools.txt` | 工具箱配置（首次运行自动播种示例） |
+| `tools.txt` | 工具箱配置（WgIme 与 WgTray 共用，首次运行自动播种示例） |
 | `plugins/` | 插件目录（步骤 DSL / C# 插件；播种含 README 规范与示例） |
 | `build-full-singles.ps1` | 重建全单字内嵌码表（数据源见下表） |
-| `rebuild.ps1` | 修改内嵌 C# 后重建 DLL 载荷（必须用 Windows PowerShell 5.1） |
-| `tests/` | 回归测试（核心夹具 + 真实词库 e2e + 载荷一致性 + 真实微信注入 + 光标/插件/工具箱/网络工具等） |
+| `rebuild.ps1` | 修改 wgime.bat 内嵌 C# 后重建 DLL 载荷（必须用 Windows PowerShell 5.1） |
+| `build-wgtray.ps1` | 从 wgime.bat 生成 wgtray.bat（切分复用 + 编译 + 组包） |
+| `rebuild-tray.ps1` | 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷（Windows PowerShell 5.1） |
+| `wgtray_glue.cs.txt` / `wgtray_ps_body.txt` / `wgtray_seed_patches.txt` | wgtray.bat 构建模板（UTF-8） |
+| `tests/` | 回归测试（核心夹具 + 真实词库 e2e + 载荷一致性 + 真实微信注入 + 光标/插件/工具箱/网络工具 + **WgTray 托盘版 40 项**） |
 | `docs/` | 使用说明 + 技术文档 + 插件规范 + TSF 评估 |
 
 ## 开发
 
-- 修改内嵌 C# 后必须运行 `rebuild.ps1`（Windows PowerShell 5.1），否则运行时仍是旧代码
-- 运行测试：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime.tests.ps1`
-- 文件约束：纯 LF / 无 BOM / UTF-8（详见技术文档 §11.2）
+- 修改 wgime.bat 内嵌 C# 后必须运行 `rebuild.ps1`（Windows PowerShell 5.1），否则运行时仍是旧代码
+- 修改 wgtray.bat 内嵌 C# 后运行 `rebuild-tray.ps1`；改动托盘壳/引导段后运行 `build-wgtray.ps1` 整体重建
+- 运行测试：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime.tests.ps1`；托盘版：`tests\wgtray.tests.ps1` + `tests\check-tray-payload-consistency.ps1`
+- 文件约束：纯 CRLF / 无 BOM / UTF-8（.ps1 脚本保持 ASCII 或带 BOM，详见各文件头注释）
 
 ## 系统要求
 
