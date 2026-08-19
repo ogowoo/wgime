@@ -25,13 +25,13 @@
     无 base64 PE 载荷 / 无 FromBase64String / 无 Invoke-Expression /
     无运行时编译 / 无 -ExecutionPolicy Bypass (-Command 不受策略门控,
     默认 Restricted 策略的电脑也能双击运行)。
-  * 基础词库 (拼音单字 2.7 万 / 五笔单字 1.7 万 / 拼音词语表 /
-    词频权重 / 英汉表, 共约 1.3MB) 编进 WgIme.dll —— 删掉 txt 文件
-    照样能打字 (与原版内嵌表内容逐字节相同, 词典缓存 wgime.mb 通用)。
-  * 扩展码表已随附: py.txt / wb.txt / ec.txt / import_py.txt /
-    import_wb.txt (与原版同目录文件逐字节相同, 启动自动叠加;
-    ec.txt 提供完整英汉词典模式)。删除它们不影响基础打字, 只是
-    词语/英汉候选减少。
+  * 基础词库 + 全部扩展码表 (py.txt / wb.txt / ec.txt / import_*.txt,
+    共约 3000 万字符) 已**合并编入 WgIme.dll** (压缩 trailer, 启动时
+    解压合并, 与"带 txt 文件"的词典逐字等价, 词典缓存 wgime.mb 通用)。
+    **文件夹不需要任何 txt 码表文件**; 以后想加新码表, 仍可把同名
+    txt 放到本文件夹, 会按原逻辑叠加。
+  * 重建含扩展码表的 DLL 需要码表源: 构建脚本优先读 wgime-dll\ 内的
+    py.txt 等, 其次读仓库根目录的本地副本 (均不存在时仅编入内置基础表)。
   * 用户数据目录 %LOCALAPPDATA%\wgime 照旧 (词频/用户词/便签/颜色等,
     启动时自动创建; 与 wgtray 各版共用, 与原 wgime.bat 也共用)。
 

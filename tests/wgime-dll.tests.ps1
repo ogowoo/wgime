@@ -67,13 +67,26 @@ $rm = $lt.GetMethod('Run', $bf)
 if ($rm) { $runBody = [System.IO.File]::ReadAllText($dllPath, [Text.Encoding]::UTF8) }
 T 'launcher entry present' ($null -ne $rm)
 
+# ================= 2b. full extension tables in the trailer (no txt files needed) =================
+$dllText = [System.IO.File]::ReadAllText($dllPath, [Text.Encoding]::ASCII)
+T 'trailer: full tables appended to the DLL' ($dllText.Contains('###WGIME_DICT###') -and $dllText.Contains('###WGIME_DICT_END###'))
+$ex = [WgImeLauncher].GetMethod('ExtractDicts', [Reflection.BindingFlags]'Static,NonPublic')
+$ea = [object[]]@([string]'', [string]'', [string]'', [string]'', [string]'')
+$ex.Invoke($null, $ea) | Out-Null
+T 'trailer: merged pinyin table loaded' ($ea[0].Length -gt 1000000) ("py=$($ea[0].Length)")
+T 'trailer: merged wubi table loaded' ($ea[1].Length -gt 1000000) ("wb=$($ea[1].Length)")
+T 'trailer: merged EN-CN table loaded' ($ea[2].Length -gt 1000000) ("ec=$($ea[2].Length)")
+T 'trailer: pyWords merged into py (pw empty)' ($ea[3].Length -eq 0)
+T 'trailer: pack-safe flag set (single words not split)' ([WordBoard]::EmbeddedMerged)
+
 # ================= 3. runtime smoke: launch the DLL edition (full IME) =================
 $log = Join-Path $env:TEMP 'WgIme_error.log'
 $mbErr = Join-Path $env:LOCALAPPDATA 'wgime\mb_error.log'
-Remove-Item $log, $mbErr -Force -EA SilentlyContinue
+$mbCache = Join-Path $env:LOCALAPPDATA 'wgime\wgime.mb'
+Remove-Item $log, $mbErr, $mbCache -Force -EA SilentlyContinue   # force a genuine rebuild from the trailer
 try {
     Start-Process -FilePath $batPath | Out-Null
-    Start-Sleep -Seconds 12
+    Start-Sleep -Seconds 35
     $me = $PID
     $ps = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"
     $worker = $ps | Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -like '*WgIme.dll*' }
@@ -82,12 +95,16 @@ try {
     T 'runtime: dictionary build OK (no mb_error.log)' (-not (Test-Path $mbErr))
     $mb = Get-Item (Join-Path $env:LOCALAPPDATA 'wgime\wgime.mb') -ErrorAction SilentlyContinue
     T 'runtime: dict cache present (embedded dicts parsed)' ($null -ne $mb -and $mb.Length -gt 100000)
+    # the full merged cache (~39MB, not the 1.4MB base-only) proves the trailer tables
+    # loaded AND the pack-safe flag worked (single words intact)
+    T 'runtime: FULL merged cache built (trailer tables, not base-only)' ($null -ne $mb -and $mb.Length -gt 30MB)
     if ($worker) { $worker | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }
 } catch {
     T 'runtime: IME worker is running' $false $_.Exception.Message
     T 'runtime: no startup error log' $false $_.Exception.Message
     T 'runtime: dictionary build OK (no mb_error.log)' $false $_.Exception.Message
     T 'runtime: dict cache present (embedded dicts parsed)' $false $_.Exception.Message
+    T 'runtime: FULL merged cache built (trailer tables, not base-only)' $false $_.Exception.Message
 }
 
 # ================= 4. first-launch launcher shortcut =================

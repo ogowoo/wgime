@@ -80,7 +80,51 @@ public static class WgImeLauncher
     public static void Run(string dir, string batPath)
     {
         EnsureShortcut(dir, batPath);            // first launch: create "<bat-name>.lnk" next to the bat
-        WordBoard.RunApp(PyData, WbData, EcData, PyWords, PyWf, dir, batPath);
+        string py, wb, ec, pw, wf;
+        ExtractDicts(out py, out wb, out ec, out pw, out wf);   // trailer extensions merged over the embedded base
+        WordBoard.RunApp(py, wb, ec, pw, wf, dir, batPath);
+    }
+
+    // The full extension tables (py.txt / wb.txt / ec.txt / import_*.txt, ~57MB)
+    // are stored deflate-compressed in a base64 trailer appended to this DLL at
+    // build time (the PE loader ignores trailing data). ExtractDicts decompresses
+    // them and merges them over the embedded base tables, so the folder needs no
+    // txt files at all. Falls back to the embedded base if the trailer is absent.
+    static void ExtractDicts(out string py, out string wb, out string ec, out string pw, out string wf)
+    {
+        py = PyData; wb = WbData; ec = EcData; pw = PyWords; wf = PyWf;
+        try {
+            string dll = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            if (string.IsNullOrEmpty(dll) || !File.Exists(dll)) return;
+            byte[] all = File.ReadAllBytes(dll);
+            string s = Encoding.ASCII.GetString(all);
+            const string M0 = "###WGIME_DICT###", M1 = "###WGIME_DICT_END###";
+            int i = s.IndexOf(M0);
+            if (i < 0) return;
+            i += M0.Length;
+            int j = s.IndexOf(M1, i);
+            if (j < 0) return;
+            byte[] blob = Convert.FromBase64String(s.Substring(i, j - i).Trim());
+            using (var ms = new MemoryStream(blob))
+            using (var ds = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionMode.Decompress))
+            using (var os = new MemoryStream()) { ds.CopyTo(os); blob = os.ToArray(); }
+            using (var ms2 = new MemoryStream(blob))
+            using (var br = new BinaryReader(ms2)) {
+                if (new string(br.ReadChars(4)) != "WGD1") return;
+                int n = br.ReadInt32();
+                for (int k = 0; k < n; k++) {
+                    string name = Encoding.ASCII.GetString(br.ReadBytes(br.ReadByte()));
+                    int len = br.ReadInt32();
+                    byte[] comp = br.ReadBytes(len);
+                    string text = Encoding.UTF8.GetString(comp);   // entry data is raw UTF-8 (only the whole blob is compressed)
+                    if (name == "py") py = text;        // build-time pre-merged FULL table (base + py.txt + pyWords + import)
+                    else if (name == "wb") wb = text;   // base + wb.txt + import_wb
+                    else if (name == "ec") ec = text;   // base + ec.txt
+                }
+                pw = "";                                // pyWords already merged into py at build time
+                WordBoard.EmbeddedMerged = true;        // embedded tables are fully merged: skip pack-splitting
+            }
+        } catch {}
     }
 
     // First-launch convenience: a launcher shortcut next to the bat. The
@@ -128,6 +172,19 @@ public static class WgImeLauncher
 "@
 
 $csFull = $cs + "`n" + $launcher
+
+# ---- 2b) pack-safe merged tables: when the trailer supplies FULLY merged tables,
+#         the embedded parse must not pack-split single words (e.g. "zg <word>" must
+#         stay one word). Minimal WordBoard injection: one static flag + one
+#         call-site change; default false keeps the base-only behavior identical,
+#         and wgime.bat (master) is untouched.
+$fieldNeedle = '    static Dictionary<string,string> ParseDict(string text, string file, bool packText)'
+if (-not $csFull.Contains($fieldNeedle)) { throw 'ParseDict hook not found' }
+$csFull = $csFull.Replace($fieldNeedle, '    public static bool EmbeddedMerged;   // set by WgImeLauncher when the trailer carries fully merged tables' + "`n" + $fieldNeedle)
+$packNeedle = 'AddDictLine(d, raw, packText);'
+if (-not $csFull.Contains($packNeedle)) { throw 'ParseDict pack hook not found' }
+$csFull = $csFull.Replace($packNeedle, 'AddDictLine(d, raw, packText && !EmbeddedMerged);')
+Write-Output "pack-safe merge injection OK (EmbeddedMerged flag)"
 
 # ---- 3) compile (same referenced assemblies as rebuild.ps1: the IME C#
 #         uses UIAutomation / WindowsBase for caret-follow) ----
@@ -210,6 +267,123 @@ $c2 = $chkBmp.GetPixel([int]($chkBmp.Width * 0.5), [int]($chkBmp.Height * 0.5)) 
 $chkBmp.Dispose(); $chkIcon.Dispose()
 if (-not ($c1.B -gt 100 -and $c2.A -lt 128)) { throw ('icon verification failed: unexpected pixels R{0},{1},{2} / A{3}' -f $c1.R, $c1.G, $c1.B, $c2.A) }
 Write-Output "icon verified (blue tile + knocked-out glyph)"
+
+# ---- 6c) append the FULL extension tables as a compressed trailer ----
+# py.txt / wb.txt / ec.txt / import_*.txt are merged over the embedded base
+# tables with EXACTLY the semantics BuildDicts uses (base+file parse with
+# replace, then overlay with append+dedup), compressed with deflate and
+# appended to WgIme.dll as base64 between two markers. The PE loader ignores
+# trailing data; WgImeLauncher.ExtractDicts decompresses them at startup, so
+# the distributed folder needs no txt files at all.
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Text;
+public static class DictMerge {
+    public static string Merge(string baseText, bool packBase, string fileText, string overlay, string overlay2) {
+        var d = new Dictionary<string,string>();
+        AddLines(d, baseText, packBase);
+        AddLines(d, fileText, false);
+        Overlay(d, overlay);
+        Overlay(d, overlay2);
+        var sb = new StringBuilder();
+        foreach (var kv in d) { sb.Append(kv.Key).Append(' ').Append(kv.Value).Append('\n'); }
+        return sb.ToString();
+    }
+    static void AddLines(Dictionary<string,string> d, string text, bool pack) {
+        if (string.IsNullOrEmpty(text)) return;
+        foreach (string raw in text.Split('\n')) {
+            string t = raw.Trim();
+            if (t.Length < 3) continue;
+            int sp = t.IndexOf(' ');
+            if (sp < 1) continue;
+            string k = t.Substring(0, sp).Trim().ToLower();
+            string v = t.Substring(sp + 1).Trim();
+            if (k.Length == 0 || v.Length == 0) continue;
+            if (pack && v.IndexOf(' ') < 0) {
+                var arr = new List<string>();
+                foreach (char c in v) arr.Add(c.ToString());
+                v = string.Join(" ", arr);
+            }
+            d[k] = v;
+        }
+    }
+    static void Overlay(Dictionary<string,string> d, string text) {
+        if (string.IsNullOrEmpty(text)) return;
+        foreach (string raw in text.Split('\n')) {
+            string t = raw.Trim();
+            if (t.Length < 3) continue;
+            int sp = t.IndexOf(' ');
+            if (sp < 1) continue;
+            string k = t.Substring(0, sp).Trim().ToLower();
+            string v = t.Substring(sp + 1).Trim();
+            if (k.Length == 0 || v.Length == 0) continue;
+            string cur;
+            if (d.TryGetValue(k, out cur)) {
+                foreach (string w in v.Split(' ')) {
+                    if (w.Length == 0) continue;
+                    if ((" " + cur + " ").Contains(" " + w + " ")) continue;
+                    cur = cur + " " + w;
+                }
+                d[k] = cur;
+            } else d[k] = v;
+        }
+    }
+}
+'@
+
+function Get-ExtFile([string]$name) {
+    $fp = Join-Path $outDir $name
+    if (-not (Test-Path $fp)) { $fp = Join-Path $PSScriptRoot $name }   # fallback: repo root (local copies)
+    if (Test-Path $fp) { return [IO.File]::ReadAllText($fp, [Text.Encoding]::UTF8) }
+    return $null
+}
+$pyTxt = Get-ExtFile 'py.txt'
+$impPy = Get-ExtFile 'import_py.txt'
+$wbTxt = Get-ExtFile 'wb.txt'
+$impWb = Get-ExtFile 'import_wb.txt'
+$ecTxt = Get-ExtFile 'ec.txt'
+
+$entries = New-Object System.Collections.Generic.List[object]
+$totalRaw = 0
+if ($pyTxt) {
+    $raw = [DictMerge]::Merge($pyData, $true, $pyTxt, $pyWords, $(if ($impPy) { $impPy } else { '' }))
+    $entries.Add(@{ Name = 'py'; Data = [Text.Encoding]::UTF8.GetBytes($raw) }); $totalRaw += $raw.Length
+    Write-Output ("  dict py merged: base+py.txt+pyWords+import_py -> {0} chars" -f $raw.Length)
+}
+if ($wbTxt) {
+    $raw = [DictMerge]::Merge($wbData, $true, $wbTxt, '', $(if ($impWb) { $impWb } else { '' }))
+    $entries.Add(@{ Name = 'wb'; Data = [Text.Encoding]::UTF8.GetBytes($raw) }); $totalRaw += $raw.Length
+    Write-Output ("  dict wb merged: base+wb.txt+import_wb -> {0} chars" -f $raw.Length)
+}
+if ($ecTxt) {
+    $raw = [DictMerge]::Merge($ecData, $false, $ecTxt, '', '')
+    $entries.Add(@{ Name = 'ec'; Data = [Text.Encoding]::UTF8.GetBytes($raw) }); $totalRaw += $raw.Length
+    Write-Output ("  dict ec merged: base+ec.txt -> {0} chars" -f $raw.Length)
+}
+if ($entries.Count -gt 0) {
+    $bms = New-Object System.IO.MemoryStream
+    $bw = New-Object System.IO.BinaryWriter($bms)
+    $bw.Write([Text.Encoding]::ASCII.GetBytes('WGD1'))
+    $bw.Write([int32]$entries.Count)
+    foreach ($e in $entries) {
+        $nb = [Text.Encoding]::ASCII.GetBytes($e.Name)
+        $bw.Write([byte]$nb.Length); $bw.Write($nb)
+        $bw.Write([int32]$e.Data.Length); $bw.Write($e.Data)
+    }
+    $blob = $bms.ToArray(); $bw.Dispose(); $bms.Dispose()
+    # compress the blob before base64 (further shrinks the trailer)
+    $cms = New-Object System.IO.MemoryStream
+    $cds = New-Object System.IO.Compression.DeflateStream($cms, [System.IO.Compression.CompressionMode]::Compress)
+    $cds.Write($blob, 0, $blob.Length); $cds.Dispose()
+    $cblob = $cms.ToArray(); $cms.Dispose()
+    $b64 = [Convert]::ToBase64String($cblob)
+    $trailer = "###WGIME_DICT###`r`n" + $b64 + "`r`n###WGIME_DICT_END###`r`n"
+    [IO.File]::AppendAllText($outDll, $trailer, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Output ("extension tables appended to WgIme.dll: {0} merged chars -> {1} bytes compressed trailer" -f $totalRaw, $trailer.Length)
+} else {
+    Write-Warning "no extension tables found (wgime-dll or repo root) - DLL will only carry the embedded base"
+}
 
 # ---- 4) thin launcher bat (CRLF, no BOM; -STA for WinForms/clipboard/hooks;
 #         -Command is not ExecutionPolicy-gated, so no Bypass needed) ----
