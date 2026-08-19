@@ -83,22 +83,39 @@ public static class WgImeLauncher
         WordBoard.RunApp(PyData, WbData, EcData, PyWords, PyWf, dir, batPath);
     }
 
-    // First-launch convenience: a launcher shortcut next to the bat (target is
-    // the absolute bat path, so it is generated per machine - never committed).
-    // Runs minimized (WindowStyle 7) to reduce the console flash.
+    // First-launch convenience: a launcher shortcut next to the bat. The
+    // shortcut targets powershell.exe DIRECTLY (no bat/cmd involved): it
+    // loads WgIme.dll and runs - zero console flash, and -Command is not
+    // ExecutionPolicy-gated, so it works under the default Restricted policy.
+    // Generated per machine (absolute paths) - never committed. An existing
+    // old-format shortcut (targeting the .bat) is upgraded in place.
     static void EnsureShortcut(string dir, string batPath)
     {
         try {
             string lnk = Path.Combine(dir, Path.GetFileNameWithoutExtension(batPath) + ".lnk");
-            if (File.Exists(lnk)) return;                     // already generated: keep user's edits
+            bool needCreate = !File.Exists(lnk);
+            if (!needCreate) {
+                try {
+                    var ws0 = Type.GetTypeFromProgID("WScript.Shell");
+                    var sh0 = Activator.CreateInstance(ws0);
+                    var ex0 = ws0.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh0, new object[] { lnk });
+                    string tgt = (string)ex0.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, ex0, null);
+                    needCreate = string.IsNullOrEmpty(tgt) || tgt.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);   // old format -> upgrade
+                } catch { needCreate = false; }
+            }
+            if (!needCreate) return;
+            string dll = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            string args = "-NoProfile -NoLogo -STA -WindowStyle Hidden -Command \"try { Add-Type -AssemblyName System.Windows.Forms; Add-Type -Path '" + dll + "'; [WgImeLauncher]::Run('" + dir + "', '" + batPath + "') } catch { [IO.File]::WriteAllText((Join-Path `$env:TEMP 'WgIme_error.log'), (`$_ | Out-String)); [System.Windows.Forms.MessageBox]::Show((`$_ | Out-String),'WgIme Error') | Out-Null }\"";
             var type = Type.GetTypeFromProgID("WScript.Shell");
             var sh = Activator.CreateInstance(type);
             var s = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { lnk });
             var st = s.GetType();
-            st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { batPath });
+            st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "powershell.exe" });
+            st.InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { args });
             st.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dir });
             st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "WgIme (DLL edition)" });
-            st.InvokeMember("WindowStyle", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { 7 });   // SW_SHOWMINNOACTIVE
+            st.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dll + ",0" });   // icon lives IN the assembly (build-time injected)
+            st.InvokeMember("WindowStyle", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { 7 });
             st.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, s, null);
         } catch {}
     }
@@ -117,6 +134,82 @@ $csFull = $cs + "`n" + $launcher
 Add-Type -TypeDefinition $csFull -ReferencedAssemblies System.Windows.Forms,System.Drawing,UIAutomationClient,UIAutomationTypes,WindowsBase `
          -OutputAssembly $outDll -OutputType Library -ErrorAction Stop
 Write-Output ("WgIme.dll written: {0} bytes" -f (Get-Item $outDll).Length)
+
+# ---- 3b) embed a launcher icon INTO the DLL (no .ico file at runtime) ----
+# Draw a 256px rounded blue tile with a knocked-out U+4E2D, wrap it as a
+# PNG-in-ICO, then inject RT_ICON + RT_GROUP_ICON resources with
+# UpdateResource. The shortcut points at "WgIme.dll,0" and Explorer shows
+# the icon on the DLL itself.
+Add-Type -AssemblyName System.Drawing
+$S = 256
+$bmp = New-Object System.Drawing.Bitmap($S, $S)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+$g.Clear([System.Drawing.Color]::Transparent)
+$rad = [float]($S * 14 / 64); $d = $rad * 2
+$tile = New-Object System.Drawing.Drawing2D.GraphicsPath
+$tile.AddArc(0, 0, $d, $d, 180, 90)
+$tile.AddArc($S - $d, 0, $d, $d, 270, 90)
+$tile.AddArc($S - $d, $S - $d, $d, $d, 0, 90)
+$tile.AddArc(0, $S - $d, $d, $d, 90, 90)
+$tile.CloseFigure()
+$br = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 120, 212))
+$g.FillPath($br, $tile)
+$gp = New-Object System.Drawing.Drawing2D.GraphicsPath
+$f = New-Object System.Drawing.Font('Microsoft YaHei UI', [single]($S * 52 / 64), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+$sf = New-Object System.Drawing.StringFormat
+$sf.Alignment = [System.Drawing.StringAlignment]::Center
+$sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+$gp.AddString([string][char]0x4E2D, $f.FontFamily, [int][System.Drawing.FontStyle]::Regular, [single]($S * 52 / 64), (New-Object System.Drawing.RectangleF(0, 0, $S, $S)), $sf)
+$g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+$tb = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Transparent)
+$g.FillPath($tb, $gp)
+$ms = New-Object System.IO.MemoryStream
+$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+$png = $ms.ToArray()
+$g.Dispose(); $bmp.Dispose(); $tile.Dispose(); $gp.Dispose(); $br.Dispose(); $tb.Dispose(); $f.Dispose(); $sf.Dispose(); $ms.Dispose()
+
+# PNG-in-ICO container (256px, 32bpp)
+$icoMs = New-Object System.IO.MemoryStream
+$w = New-Object System.IO.BinaryWriter($icoMs)
+$w.Write([int16]0); $w.Write([int16]1); $w.Write([int16]1)
+$w.Write([byte]0); $w.Write([byte]0); $w.Write([byte]0); $w.Write([byte]0)
+$w.Write([int16]1); $w.Write([int16]32)
+$w.Write([int32]$png.Length)
+$w.Write([int32]22)
+$w.Write($png)
+$icoBytes = $icoMs.ToArray()
+$w.Dispose(); $icoMs.Dispose()
+
+# GRPICONDIR + one GRPICONDIRENTRY (resource id 1)
+$gms = New-Object System.IO.MemoryStream
+$gw = New-Object System.IO.BinaryWriter($gms)
+$gw.Write([int16]0); $gw.Write([int16]1); $gw.Write([int16]1)
+$gw.Write([byte]0); $gw.Write([byte]0); $gw.Write([byte]0); $gw.Write([byte]0)
+$gw.Write([int16]1); $gw.Write([int16]32)
+$gw.Write([int32]$png.Length)
+$gw.Write([int16]1)
+$groupBytes = $gms.ToArray()
+$gw.Dispose(); $gms.Dispose()
+
+# inject RT_ICON (3) + RT_GROUP_ICON (14) via UpdateResource
+Add-Type -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr BeginUpdateResource(string pFileName, bool bDeleteExistingResources); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage, byte[] lpData, uint cbData); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard);' -Name W -Namespace Wg
+$hRes = [Wg.W]::BeginUpdateResource($outDll, $false)
+if ($hRes -eq [IntPtr]::Zero) { throw 'BeginUpdateResource failed - icon not embedded' }
+$ok1 = [Wg.W]::UpdateResource($hRes, [IntPtr]3, [IntPtr]1, 0, $png, [uint32]$png.Length)        # RT_ICON
+$ok2 = [Wg.W]::UpdateResource($hRes, [IntPtr]14, [IntPtr]1, 0, $groupBytes, [uint32]$groupBytes.Length)  # RT_GROUP_ICON
+$ok3 = [Wg.W]::EndUpdateResource($hRes, $false)
+if (-not ($ok1 -and $ok2 -and $ok3)) { throw 'icon resource injection failed' }
+Write-Output ("icon embedded into WgIme.dll (256px PNG-in-ICO, {0} bytes)" -f $png.Length)
+# verify: the DLL now exposes an icon with a blue tile
+$chkIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($outDll)
+if ($null -eq $chkIcon) { throw 'icon verification failed: ExtractAssociatedIcon returned null' }
+$chkBmp = $chkIcon.ToBitmap()
+$c1 = $chkBmp.GetPixel([int]($chkBmp.Width * 0.12), [int]($chkBmp.Height * 0.5))   # left of the glyph, inside the tile: blue
+$c2 = $chkBmp.GetPixel([int]($chkBmp.Width * 0.5), [int]($chkBmp.Height * 0.5))    # center of the glyph: transparent
+$chkBmp.Dispose(); $chkIcon.Dispose()
+if (-not ($c1.B -gt 100 -and $c2.A -lt 128)) { throw ('icon verification failed: unexpected pixels R{0},{1},{2} / A{3}' -f $c1.R, $c1.G, $c1.B, $c2.A) }
+Write-Output "icon verified (blue tile + knocked-out glyph)"
 
 # ---- 4) thin launcher bat (CRLF, no BOM; -STA for WinForms/clipboard/hooks;
 #         -Command is not ExecutionPolicy-gated, so no Bypass needed) ----
