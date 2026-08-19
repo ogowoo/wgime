@@ -49,6 +49,10 @@ T 'has TrayApp class' ($cs.Contains('public class TrayApp'))
 T 'has tray Run entry point' ($cs.Contains('public static void Run(string dir, string batPath)'))
 T 'has plugin loader' ($cs.Contains('static void LoadPlugins'))
 T 'has toolbox loader (tools.txt)' ($cs.Contains('static void LoadTools'))
+T 'has plugin manager Run button (launcher extension)' ($cs.Contains('66, delegate { RunSel(); });'))
+T 'has plugin manager RunSel method' ($cs.Contains('void RunSel()'))
+T 'has global hotkey host (RegisterHotKey, not a hook)' ($cs.Contains('class HotKeyHost') -and $cs.Contains('RegisterHotKey'))
+T 'has autostart shortcut support' ($cs.Contains('void SetAutoStart(bool on)'))
 
 # ================= 3. embedded C# compiles =================
 Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing -ErrorAction Stop
@@ -124,6 +128,43 @@ $entryF = $pc.GetType().GetField('Entry', [Reflection.BindingFlags]'Instance,Non
 T 'C# plugin compiles and finds Run()' ($errF.GetValue($pc) -eq $null -and $null -ne $entryF.GetValue($pc))
 $pc2 = $cp.Invoke($null, [object[]]@([string]'broken syntax ###'))
 T 'C# plugin compile error surfaces' ($null -ne $errF.GetValue($pc2))
+
+# ================= 8b. global hotkey parsing =================
+$ph = [TrayApp].GetMethod('ParseHotkey', [Reflection.BindingFlags]'Static,NonPublic')
+function Invoke-HotkeyParse([string]$spec) {
+    $a = [object[]]@([string]$spec, [uint32]0, [uint32]0)
+    $ok = $ph.Invoke($null, $a)
+    return @{ Ok = $ok; Mod = [uint32]$a[1]; Vk = [uint32]$a[2] }
+}
+$r = Invoke-HotkeyParse 'ctrl+alt+t'
+T 'hotkey ctrl+alt+t -> mod 3, vk T' ($r.Ok -and $r.Mod -eq 3 -and $r.Vk -eq 0x54) ("mod=$($r.Mod) vk=$($r.Vk)")
+$r = Invoke-HotkeyParse 'none'
+T 'hotkey none -> rejected (disabled)' (-not $r.Ok)
+$r = Invoke-HotkeyParse 'ctrl+space'
+T 'hotkey ctrl+space -> vk space' ($r.Ok -and $r.Mod -eq 2 -and $r.Vk -eq 0x20) ("mod=$($r.Mod) vk=$($r.Vk)")
+$r = Invoke-HotkeyParse 'shift+f5'
+T 'hotkey shift+f5 -> vk F5' ($r.Ok -and $r.Mod -eq 4 -and $r.Vk -eq 0x74) ("mod=$($r.Mod) vk=$($r.Vk)")
+$r = Invoke-HotkeyParse 'alt'
+T 'hotkey without a key -> rejected' (-not $r.Ok -and $r.Vk -eq 0)
+
+# hotkey config keys parsed by LoadConfig (defaults + overrides)
+$hkDir = Join-Path $env:TEMP ("wgtray-hotkeys-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item $hkDir -ItemType Directory -Force | Out-Null
+[IO.File]::WriteAllText((Join-Path $hkDir 'config.txt'), "hotkey_toolbox = none`r`nhotkey_menu = ctrl+shift+m`r`n", $utf8n)
+$hkData = Join-Path $env:TEMP ("wgtray-hkdata-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item $hkData -ItemType Directory -Force | Out-Null
+[TrayApp].GetField('DataDir', [Reflection.BindingFlags]'Static,Public').SetValue($null, $hkData)
+$lc.Invoke($null, [object[]]@([string]$hkDir)) | Out-Null
+$tb = [TrayApp].GetField('HotToolboxMod', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+$tv = [TrayApp].GetField('HotToolboxVk', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+T 'hotkey_toolbox = none disables it' ($tb -eq 0 -and $tv -eq 0)
+$mm = [TrayApp].GetField('HotMenuMod', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+$mv = [TrayApp].GetField('HotMenuVk', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+T 'hotkey_menu = ctrl+shift+m applied' ($mm -eq 6 -and $mv -eq 0x4D) ("mod=$mm vk=$mv")
+$pm = [TrayApp].GetField('HotPluginsMod', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+$pv = [TrayApp].GetField('HotPluginsVk', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+T 'hotkey_plugins default ctrl+alt+p kept' ($pm -eq 3 -and $pv -eq 0x50) ("mod=$pm vk=$pv")
+Remove-Item $hkDir, $hkData -Recurse -Force -EA SilentlyContinue
 
 # ================= 9. runtime smoke: launch the bat =================
 $log = Join-Path $env:TEMP 'WgTray_error.log'

@@ -45,7 +45,9 @@ Write-Output "compiled OK -> $outDll"
 $b64   = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
 $lines = $txt -split "`n"
 $mi    = [Array]::IndexOf($lines, '###WGTRAY_DLL###')
-if ($mi -lt 0) { throw 'marker ###WGTRAY_DLL### not found - aborting' }
+if ($mi -lt 0) {
+    throw 'marker ###WGTRAY_DLL### not found - this wgtray.bat was built with -NoPayload (no prebuilt DLL). Run build-wgtray.ps1 instead to regenerate the whole file.'
+}
 if ($mi -ne ($lines.Count - 3)) {
     Write-Warning ("marker at index {0}, expected {1} - still replacing by marker position" -f $mi, ($lines.Count - 3))
 }

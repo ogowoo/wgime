@@ -31,23 +31,36 @@ A single-file, install-free overlay IME for Windows: pinyin / wubi / mixed / EN-
 - 双击 `wgtray.bat` 即运行（托盘出现"工"字图标）
 - 托盘菜单：
   - **工具箱…** —— `tools.txt` 驱动的多标签工具窗体（与 WgIme 输入 `itools` 唤出的是同一个，改 tools.txt 重载即生效）
-  - **插件** —— `plugins\*.txt` 里启用的插件（步骤 DSL 与 `[csharp]` 代码插件都支持，点插件名即执行）+ 插件管理（列表/启用禁用/编辑/删除/新建）
+  - **插件** —— `plugins\*.txt` 里启用的插件（步骤 DSL 与 `[csharp]` 代码插件都支持，点插件名即执行）+ **插件管理**（新增**运行**按钮——wgtray 没有输入法，管理器就是插件的启动入口；另有列表/启用禁用/编辑/删除/新建）
   - **内置工具** —— 计算器（plugins\calc.txt）/ 网络工具（ping/tracert/DNS/HTTP/端口/子网计算）/ 剪贴板历史 / 便签 / 颜色拾取
   - **应用 (config.txt)** —— config.txt 里 `app = 编码 名称 命令` 的条目
-  - **配置** —— 编辑 config.txt / 重载配置 / 数据目录
+  - **配置** —— 编辑 config.txt / 重载配置 / **开机自启**（勾选即创建/移除 Startup 快捷方式）/ 数据目录
+  - **全局快捷键** —— 显示当前绑定，config.txt 的 `hotkey_*` 键可改（`none` 禁用）
+- **全局快捷键**（RegisterHotKey，无需键盘钩子）：
+  - `Ctrl+Alt+T` 打开工具箱；`Ctrl+Alt+P` 打开插件管理；`Ctrl+Alt+W` 在光标处显示托盘菜单
+  - 在 config.txt 修改：`hotkey_toolbox = ctrl+alt+t` / `hotkey_plugins = ...` / `hotkey_menu = ...`（格式 `ctrl/alt/shift/win + 键`，如 `ctrl+shift+m`；`none` 禁用）
 - 与 WgIme **共用** `%LOCALAPPDATA%\wgime` 数据目录（插件禁用记录、便签、颜色设置等互通），两者可同时运行互不干扰
 - 首次运行自动播种 `tools.txt` 与 `plugins\` 示例（标记 `provisioned-tray.done`，不覆盖已有文件）
 
 **构建与测试**（Windows PowerShell 5.1）：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1     # 从 wgime.bat 重新生成 wgtray.bat
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild-tray.ps1     # 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1          # 从 wgime.bat 重新生成 wgtray.bat（带预编译 DLL 载荷）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1 -NoPayload   # 无载荷版: 只有 C# 源码, 启动时内存编译
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild-tray.ps1          # 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload-consistency.ps1
 ```
 
-> 构建输入：`wgtray_glue.cs.txt`（TrayApp 托盘壳）、`wgtray_ps_body.txt`（PowerShell 引导段）、`wgtray_seed_patches.txt`（示例文案补丁）——三者均为 UTF-8 模板，构建脚本按 UTF-8 显式读取（脚本本身保持 ASCII，兼容 Windows PS 5.1 的 ANSI 解析）。
+> 构建输入：`wgtray_glue.cs.txt`（TrayApp 托盘壳 + 插件管理器）、`wgtray_ps_body.txt`（PowerShell 引导段）、`wgtray_seed_patches.txt`（示例文案补丁）——三者均为 UTF-8 模板，构建脚本按 UTF-8 显式读取（脚本本身保持 ASCII，兼容 Windows PS 5.1 的 ANSI 解析）。
+
+### 关于预编译 DLL 载荷与杀软误报
+
+`wgtray.bat` 默认内嵌一个 base64 预编译 DLL（约 380KB，用于受限语言模式机器——AppLocker/WDAC 策略禁止 PowerShell 内存编译时的兜底）。**这种"bat 内嵌 base64 PE + `FromBase64String` 落盘"模式正是恶意软件常用手法，部分启发式/EDR 杀软（如 Windows Defender 的 AMSI 扫描）可能误报**，尤其当脚本未签名、运行在用户可写目录时。
+
+- **想要更低的检测面**：用 `-NoPayload` 构建（约 227KB）——不嵌 DLL、不含 `FromBase64String`，启动时直接内存编译 C# 源码（纯文本，可读）。代价：在受限语言模式机器上无法启动（`Add-Type` 被策略禁止）。
+- 权衡：默认带载荷版保底所有机器（含学校/公司的锁定环境）；无载荷版更适合个人分发。两种版本功能完全一致。
+- 附注：`wgime.bat`（输入法本体）与 `wgtray.bat` 同架构，同样存在上述模式；任何 bat+Powershell+内存编译的分发方式本身都会被部分杀软启发式关注，建议从可信位置运行、必要时对脚本做代码签名。
 
 ## 文件说明
 
@@ -55,7 +68,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 |---|---|
 | `wgime.bat` | 输入法程序本体（自包含） |
 | `wgtray.bat` | **托盘版工具箱**（无输入法，自包含，见上节） |
-| `config.txt` | 用户配置（模糊音/短语/上屏方式/快捷键；WgTray 只使用其中的 `app =` 条目） |
+| `config.txt` | 用户配置（模糊音/短语/上屏方式/快捷键；WgTray 使用其中的 `app =` 条目与 `hotkey_*` 全局快捷键） |
 | `py.txt` / `wb.txt` / `ec.txt` | 扩展词典（`码 词1 词2…`，UTF-8，可选） |
 | `import_py.txt` / `import_wb.txt` | 码表导入产物（Gboard 词库转换） |
 | `tools.txt` | 工具箱配置（WgIme 与 WgTray 共用，首次运行自动播种示例） |
@@ -65,7 +78,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 | `build-wgtray.ps1` | 从 wgime.bat 生成 wgtray.bat（切分复用 + 编译 + 组包） |
 | `rebuild-tray.ps1` | 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷（Windows PowerShell 5.1） |
 | `wgtray_glue.cs.txt` / `wgtray_ps_body.txt` / `wgtray_seed_patches.txt` | wgtray.bat 构建模板（UTF-8） |
-| `tests/` | 回归测试（核心夹具 + 真实词库 e2e + 载荷一致性 + 真实微信注入 + 光标/插件/工具箱/网络工具 + **WgTray 托盘版 40 项**） |
+| `tests/` | 回归测试（核心夹具 + 真实词库 e2e + 载荷一致性 + 真实微信注入 + 光标/插件/工具箱/网络工具 + **WgTray 托盘版 52 项**） |
 | `docs/` | 使用说明 + 技术文档 + 插件规范 + TSF 评估 |
 
 ## 开发

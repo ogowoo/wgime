@@ -46,18 +46,163 @@ public class TrayApp
 
     // ---------- 托盘菜单 ----------
     ContextMenuStrip menu;
-    ToolStripMenuItem miApps, miPlugins;                            // 动态子菜单 (config 应用 / 插件), 重载配置时重建
+    ToolStripMenuItem miApps, miPlugins, miAuto;                    // 动态子菜单 (config 应用 / 插件) + 开机自启勾选项
+    ToolStripMenuItem[] hotItems = new ToolStripMenuItem[3];        // 全局快捷键信息行 (只读)
     NotifyIcon tray;
+    HotKeyHost hkHost;                                              // 全局快捷键宿主窗口
+
+    static uint HotToolboxMod, HotToolboxVk;                        // config.txt hotkey_toolbox (0,0 = 禁用)
+    static uint HotPluginsMod, HotPluginsVk;                        // hotkey_plugins
+    static uint HotMenuMod, HotMenuVk;                              // hotkey_menu (在光标处显示托盘菜单)
 
     static void TrayTip(string title, string text, ToolTipIcon icon) { try { trayRef.ShowBalloonTip(2600, title, text, icon); } catch {} }
 
     // 隐藏的 UI 线程控件: 工具步骤/插件的 confirm 弹窗通过它 Invoke 回 UI 线程
-    // (TrayApp 不是 Form, 不像原 WordBoard 能直接传 this)
-    static Control uiInvoker;
+    // (TrayApp 不是 Form, 不像原 WordBoard 能直接传 this); 同时兼任全局快捷键宿主
+    // (RegisterHotKey 需要窗口句柄接收 WM_HOTKEY)
+    static HotKeyHost uiInvoker;
     static Control Ui()
     {
-        try { if (uiInvoker == null || uiInvoker.IsDisposed) { uiInvoker = new Control(); IntPtr h = uiInvoker.Handle; } } catch {}
+        try { if (uiInvoker == null || uiInvoker.IsDisposed) { uiInvoker = new HotKeyHost(); IntPtr h = uiInvoker.Handle; } } catch {}
         return uiInvoker;
+    }
+
+    class HotKeyHost : Control
+    {
+        public Action<int> OnHotKey;
+        readonly Dictionary<int, bool> reg = new Dictionary<int, bool>();
+        [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+        [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+        public void Reg(int id, uint mod, uint vk)
+        {
+            if (!IsHandleCreated) return;
+            bool ok = false;
+            try { ok = RegisterHotKey(Handle, id, mod, vk); } catch {}
+            reg[id] = ok;
+        }
+        public void Unreg(int id)
+        {
+            if (IsHandleCreated && reg.ContainsKey(id) && reg[id]) { try { UnregisterHotKey(Handle, id); } catch {} reg[id] = false; }
+        }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0312 && OnHotKey != null) {              // WM_HOTKEY
+                OnHotKey(m.WParam.ToInt32());
+            }
+            base.WndProc(ref m);
+        }
+    }
+
+    // ---------- 全局快捷键: config.txt 的 hotkey_* 键, 格式 ctrl+alt+t (none/off/空 = 禁用) ----------
+    static bool ParseHotkey(string spec, out uint mod, out uint vk)
+    {
+        mod = 0; vk = 0;
+        if (string.IsNullOrWhiteSpace(spec)) return false;
+        string[] parts = spec.ToLower().Split('+');
+        string key = parts[parts.Length - 1].Trim();
+        for (int i = 0; i < parts.Length - 1; i++) {
+            string m = parts[i].Trim();
+            if (m == "ctrl" || m == "control") mod |= 0x2;
+            else if (m == "alt") mod |= 0x1;
+            else if (m == "shift") mod |= 0x4;
+            else if (m == "win" || m == "cmd" || m == "meta") mod |= 0x8;
+            else return false;
+        }
+        if (key.Length == 1 && key[0] >= 'a' && key[0] <= 'z') vk = (uint)(key[0] - 'a' + 0x41);
+        else if (key.Length == 1 && key[0] >= '0' && key[0] <= '9') vk = (uint)(key[0] - '0' + 0x30);
+        else {
+            string[] names = { "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12" };
+            int fi = Array.IndexOf(names, key);
+            if (fi >= 0) vk = (uint)(0x70 + fi);
+            else switch (key) {
+                case "space": vk = 0x20; break;
+                case "enter": vk = 0x0D; break;
+                case "esc": vk = 0x1B; break;
+                case "backspace": vk = 0x08; break;
+                case "tab": vk = 0x09; break;
+                case "grave": vk = 0xC0; break;
+                case "minus": vk = 0xBD; break;
+                case "plus": vk = 0xBB; break;
+                case "lbracket": vk = 0xDB; break;
+                case "rbracket": vk = 0xDD; break;
+                case "semicolon": vk = 0xBA; break;
+                case "quote": vk = 0xDE; break;
+                case "comma": vk = 0xBC; break;
+                case "period": vk = 0xBE; break;
+                case "slash": vk = 0xBF; break;
+                case "backslash": vk = 0xDC; break;
+                case "pgup": vk = 0x21; break;
+                case "pgdn": vk = 0x22; break;
+                case "home": vk = 0x24; break;
+                case "end": vk = 0x23; break;
+                case "left": vk = 0x25; break;
+                case "right": vk = 0x27; break;
+                case "up": vk = 0x26; break;
+                case "down": vk = 0x28; break;
+                default: return false;
+            }
+        }
+        return mod != 0;                                            // RegisterHotKey 要求至少一个修饰键
+    }
+    static string HotkeyText(uint mod, uint vk)
+    {
+        if (mod == 0 && vk == 0) return L("(未设置)", "(none)");
+        var sb = new StringBuilder();
+        if ((mod & 0x2) != 0) sb.Append("Ctrl+");
+        if ((mod & 0x1) != 0) sb.Append("Alt+");
+        if ((mod & 0x4) != 0) sb.Append("Shift+");
+        if ((mod & 0x8) != 0) sb.Append("Win+");
+        if (vk >= 0x41 && vk <= 0x5A) sb.Append((char)('a' + vk - 0x41));
+        else if (vk >= 0x30 && vk <= 0x39) sb.Append((char)('0' + vk - 0x30));
+        else if (vk >= 0x70 && vk <= 0x7B) sb.Append('F').Append(vk - 0x70 + 1);
+        else {
+            string[] n2 = { "Space", "Enter", "Esc", "Backspace", "Tab", "`", "-", "=", "[", "]", ";", "'", ",", ".", "/", "\\", "PgUp", "PgDn", "Home", "End", "Left", "Right", "Up", "Down" };
+            uint[] v2 = { 0x20, 0x0D, 0x1B, 0x08, 0x09, 0xC0, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA, 0xDE, 0xBC, 0xBE, 0xBF, 0xDC, 0x21, 0x22, 0x24, 0x23, 0x25, 0x27, 0x26, 0x28 };
+            int ix = Array.IndexOf(v2, vk);
+            sb.Append(ix >= 0 ? n2[ix] : "0x" + vk.ToString("X"));
+        }
+        return sb.ToString();
+    }
+    void ApplyHotkeys()
+    {
+        if (hkHost == null) { hkHost = (HotKeyHost)Ui(); if (hkHost != null) hkHost.OnHotKey = HandleHotKey; }
+        if (hkHost == null || !hkHost.IsHandleCreated) return;
+        hkHost.Unreg(1); hkHost.Unreg(2); hkHost.Unreg(3);
+        if (HotToolboxMod != 0 || HotToolboxVk != 0) hkHost.Reg(1, HotToolboxMod, HotToolboxVk);
+        if (HotPluginsMod != 0 || HotPluginsVk != 0) hkHost.Reg(2, HotPluginsMod, HotPluginsVk);
+        if (HotMenuMod != 0 || HotMenuVk != 0) hkHost.Reg(3, HotMenuMod, HotMenuVk);
+    }
+    void HandleHotKey(int id)
+    {
+        try {
+            if (id == 1) LaunchApp("itools");
+            else if (id == 2) LaunchApp("plugins");
+            else if (id == 3) { if (menu != null) menu.Show(Cursor.Position); }
+        } catch {}
+    }
+
+    // ---------- 开机自启 (Startup 文件夹快捷方式) ----------
+    static string StartupLinkPath() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "WgTray.lnk"); }
+    static bool IsAutoStart() { try { return File.Exists(StartupLinkPath()); } catch { return false; } }
+    static void SetAutoStart(bool on)
+    {
+        string p = StartupLinkPath();
+        try {
+            if (!on) {
+                if (File.Exists(p)) File.Delete(p);
+                TrayTip(L("开机自启", "Startup"), L("已关闭", "off"), ToolTipIcon.Info);
+                return;
+            }
+            var type = Type.GetTypeFromProgID("WScript.Shell");
+            var sh = Activator.CreateInstance(type);
+            var lnk = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { p });
+            var lt = lnk.GetType();
+            lt.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { BatPath });
+            lt.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { BatDir });
+            lt.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { "WgTray" });
+            lt.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, lnk, null);
+            TrayTip(L("开机自启", "Startup"), L("已开启 (Startup\\WgTray.lnk)", "on (Startup\\WgTray.lnk)"), ToolTipIcon.Info);
+        } catch (Exception ex) { TrayTip(L("开机自启失败", "Startup failed"), ex.Message, ToolTipIcon.Error); }
     }
 
     // ---------- 应用注册表: 内置 + config.txt 的 app= + 插件 (编码 -> [名称, 命令, 参数]) ----------
@@ -71,6 +216,10 @@ public class TrayApp
              + "; app = np\t记事本\tnotepad.exe\r\n"
              + "; app = gy\t仓库目录\tC:\\Tools\\WgIme\r\n"
              + "; app = bd\t百度\thttps://www.baidu.com\r\n"
+             + "; 全局快捷键 (格式: ctrl/alt/shift/win 组合, 如 ctrl+alt+t; none/off 禁用):\r\n"
+             + "; hotkey_toolbox = ctrl+alt+t   打开工具箱\r\n"
+             + "; hotkey_plugins = ctrl+alt+p   打开插件管理\r\n"
+             + "; hotkey_menu    = ctrl+alt+w   在光标处显示托盘菜单\r\n"
              + "; (WgIme 的 fuzzy/paste/keyfix 等输入法配置本工具不使用, 留着不影响)\r\n";
     }
 
@@ -89,6 +238,9 @@ public class TrayApp
         Apps["color"]   = new string[] { L("颜色拾取", "Color picker"), "builtin:color", "" };
         Apps["plugins"] = new string[] { L("插件管理", "Plugin manager"), "builtin:pluginmgr", "" };
         Apps["cjgl"]    = new string[] { L("插件管理", "Plugin manager"), "builtin:pluginmgr", "" };
+        ParseHotkey("ctrl+alt+t", out HotToolboxMod, out HotToolboxVk);
+        ParseHotkey("ctrl+alt+p", out HotPluginsMod, out HotPluginsVk);
+        ParseHotkey("ctrl+alt+w", out HotMenuMod, out HotMenuVk);
         try {
             string f = Path.Combine(dir, "config.txt");
             FixLegacyConfigIfBroken(f);
@@ -113,6 +265,9 @@ public class TrayApp
                         if (acode.Length > 0) Apps[acode] = new string[] { aname.Trim(), Environment.ExpandEnvironmentVariables(acmd.Trim()), Environment.ExpandEnvironmentVariables(aargs.Trim()) };
                     }
                 }
+                else if (k == "hotkey_toolbox") { if (!ParseHotkey(v, out HotToolboxMod, out HotToolboxVk)) { HotToolboxMod = 0; HotToolboxVk = 0; } }
+                else if (k == "hotkey_plugins") { if (!ParseHotkey(v, out HotPluginsMod, out HotPluginsVk)) { HotPluginsMod = 0; HotPluginsVk = 0; } }
+                else if (k == "hotkey_menu") { if (!ParseHotkey(v, out HotMenuMod, out HotMenuVk)) { HotMenuMod = 0; HotMenuVk = 0; } }
                 // 其它键 (fuzzy/paste/keyfix/...) 是输入法专属: 本工具忽略, 不报错 (配置完全兼容)
             }
         } catch {}
@@ -128,7 +283,9 @@ public class TrayApp
         LoadTools(BatDir);
         string f = Path.Combine(BatDir, "config.txt");
         if (!File.Exists(f)) { try { File.WriteAllText(f, DefaultConfigText(), new UTF8Encoding(false)); } catch {} }
+        ApplyHotkeys();
         RebuildTrayMenu();
+        RefreshMenuChecks();
     }
 
     void OpenConfigFile() { try { Process.Start(new ProcessStartInfo { FileName = Path.Combine(BatDir, "config.txt"), UseShellExecute = true }); } catch {} }
@@ -158,13 +315,37 @@ public class TrayApp
         var mCfg = new ToolStripMenuItem(L("配置", "Config"));
         mCfg.DropDownItems.Add(L("编辑配置 (config.txt)…", "Edit config (config.txt)…"), null, delegate { OpenConfigFile(); });
         mCfg.DropDownItems.Add(L("重载配置", "Reload config"), null, delegate { ReloadConfig(); });
+        mCfg.DropDownItems.Add(new ToolStripSeparator());
+        miAuto = new ToolStripMenuItem(L("开机自启", "Start with Windows"));
+        miAuto.Click += delegate { SetAutoStart(!IsAutoStart()); RefreshMenuChecks(); };
+        mCfg.DropDownItems.Add(miAuto);
         mCfg.DropDownItems.Add(L("数据目录…", "Data folder…"), null, delegate { OpenDataDir(); });
         menu.Items.Add(mCfg);
 
+        var mHot = new ToolStripMenuItem(L("全局快捷键", "Global hotkeys"));
+        for (int i = 0; i < 3; i++) { hotItems[i] = new ToolStripMenuItem(); hotItems[i].Enabled = false; mHot.DropDownItems.Add(hotItems[i]); }
+        mHot.DropDownItems.Add(new ToolStripSeparator());
+        var mHotHint = new ToolStripMenuItem(L("在 config.txt 的 hotkey_* 键修改 (none 禁用)", "edit hotkey_* keys in config.txt (none to disable)"));
+        mHotHint.Enabled = false;
+        mHot.DropDownItems.Add(mHotHint);
+        menu.Items.Add(mHot);
+
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L("退出", "Exit"), null, delegate { Application.Exit(); });
+        menu.Opening += delegate { RefreshMenuChecks(); };
         tray.ContextMenuStrip = menu;
         RebuildTrayMenu();
+        RefreshMenuChecks();
+    }
+
+    void RefreshMenuChecks()                                        // 菜单弹出时同步: 开机自启勾选 + 快捷键显示
+    {
+        if (miAuto != null) miAuto.Checked = IsAutoStart();
+        if (hotItems != null && hotItems.Length == 3 && hotItems[0] != null) {   // BuildMenu 之前 hotItems 是空位
+            hotItems[0].Text = L("打开工具箱", "Open toolbox") + ":  " + HotkeyText(HotToolboxMod, HotToolboxVk);
+            hotItems[1].Text = L("插件管理", "Plugin manager") + ":  " + HotkeyText(HotPluginsMod, HotPluginsVk);
+            hotItems[2].Text = L("显示托盘菜单", "Show tray menu") + ":  " + HotkeyText(HotMenuMod, HotMenuVk);
+        }
     }
 
     void RebuildTrayMenu()                                          // 插件 / 应用子菜单随配置重载重建
@@ -218,7 +399,198 @@ public class TrayApp
             trayRef = app.tray;
             app.ReloadConfig();
             app.BuildMenu();
-            Application.ApplicationExit += delegate { app.tray.Visible = false; };
+            Application.ApplicationExit += delegate {
+                app.tray.Visible = false;
+                if (app.hkHost != null) { app.hkHost.Unreg(1); app.hkHost.Unreg(2); app.hkHost.Unreg(3); }
+            };
             Application.Run();
+        }
+    }
+
+    // ---------- 插件管理 (builtin:pluginmgr) ----------
+    // 由 wgime.bat 内嵌 C# 的 PluginMgrForm 移植: 宿主改 TrayApp, 新增"运行"按钮
+    // (wgtray 没有输入法, 无法靠输入编码启动插件, 管理器直接提供启动入口)
+    class PluginMgrForm : Form
+    {
+        readonly TrayApp host;
+        readonly ListView list;
+
+        public PluginMgrForm(TrayApp host)
+        {
+            this.host = host;
+            Text = L("插件管理  (WgTray)", "Plugin Manager  (WgTray)");
+            FormBorderStyle = FormBorderStyle.None;
+            AutoScaleMode = AutoScaleMode.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            TopMost = true;
+            KeyPreview = true;
+            ClientSize = new Size(640, 420);
+            BackColor = ToolsForm.TC_BG;
+            EventHandler rg = delegate { try { ToolsForm.TSetWindowRgn(Handle, ToolsForm.TCreateRoundRectRgn(0, 0, Width + 1, Height + 1, 20, 20), true); } catch {} };
+            HandleCreated += delegate { rg(this, EventArgs.Empty); };
+            Resize += delegate { rg(this, EventArgs.Empty); };
+            Paint += delegate(object s, PaintEventArgs e) {
+                var g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var path = ToolsForm.TRound(new Rectangle(1, 1, Width - 3, Height - 3), 9))
+                using (var pen = new Pen(ToolsForm.TC_BORDER, 1)) { g.DrawPath(pen, path); }
+            };
+
+            var header = new Panel { Location = new Point(0, 0), Size = new Size(640, 38), BackColor = ToolsForm.TC_HEADER };
+            var cap = new Label { Text = L("插件管理", "Plugin Manager"), AutoSize = true, Location = new Point(14, 9),
+                Font = ToolsForm.TF(10F, FontStyle.Bold), ForeColor = ToolsForm.TC_TEXT, BackColor = Color.Transparent };
+            var close = new Label { Text = "✕", Size = new Size(30, 26), Location = new Point(602, 6), TextAlign = ContentAlignment.MiddleCenter,
+                Font = ToolsForm.TF(10F, FontStyle.Regular), ForeColor = ToolsForm.TC_TEXT, BackColor = Color.Transparent, Cursor = Cursors.Hand };
+            close.MouseEnter += delegate { close.BackColor = Color.FromArgb(255, 232, 17, 35); close.ForeColor = Color.White; };
+            close.MouseLeave += delegate { close.BackColor = Color.Transparent; close.ForeColor = ToolsForm.TC_TEXT; };
+            close.Click += delegate { Close(); };
+            header.Controls.Add(cap); header.Controls.Add(close);
+            header.Paint += delegate(object s, PaintEventArgs e) {
+                using (var pen = new Pen(ToolsForm.TC_BORDER)) e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1);
+            };
+            MouseEventHandler drag = delegate(object s, MouseEventArgs e) {
+                if (e.Button != MouseButtons.Left) return;
+                try { ToolsForm.TReleaseCapture(); ToolsForm.TSendMessage(Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } catch {}
+            };
+            header.MouseDown += drag; cap.MouseDown += drag;
+            Controls.Add(header);
+
+            var bar = new Panel { Location = new Point(0, 38), Size = new Size(640, 44), BackColor = ToolsForm.TC_BG };
+            Controls.Add(bar);
+            int x = 12;
+            Action<string, int, EventHandler> add = delegate(string cap2, int w, EventHandler h) {
+                var b = new ToolsForm.TBtn { Text = cap2, Font = ToolsForm.TF(9F, FontStyle.Regular), Location = new Point(x, 8), Size = new Size(w, 28) };
+                b.Click += h;
+                bar.Controls.Add(b);
+                x += w + 8;
+            };
+            add(L("运行", "Run"), 66, delegate { RunSel(); });
+            add(L("重载", "Reload"), 66, delegate { host.ReloadConfig(); RefreshList(); });
+            add(L("启用/禁用", "On/Off"), 96, delegate { ToggleSel(); });
+            add(L("打开目录", "Open folder"), 104, delegate { OpenDir(); });
+            add(L("编辑", "Edit"), 66, delegate { EditSel(); });
+            add(L("删除…", "Delete…"), 80, delegate { DelSel(); });
+            add(L("新建模板…", "New…"), 96, delegate { NewPlugin(); });
+
+            // list in a white rounded card (borderless ListView keeps native column/selection behavior)
+            var card = new Panel { Location = new Point(12, 90), Size = new Size(616, 318), BackColor = ToolsForm.TC_SURFACE, Padding = new Padding(8) };
+            card.Paint += delegate(object s, PaintEventArgs e) {
+                var g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var path = ToolsForm.TRound(new Rectangle(0, 0, card.Width - 1, card.Height - 1), 8))
+                using (var pen = new Pen(ToolsForm.TC_BORDER, 1)) { g.DrawPath(pen, path); }
+            };
+            list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, MultiSelect = false, HideSelection = false,
+                BorderStyle = BorderStyle.None, BackColor = ToolsForm.TC_SURFACE, ForeColor = ToolsForm.TC_TEXT, Font = ToolsForm.TF(9F, FontStyle.Regular) };
+            list.Columns.Add(L("名称", "Name"), 128);
+            list.Columns.Add(L("编码", "Code"), 66);
+            list.Columns.Add(L("类型", "Type"), 46);
+            list.Columns.Add(L("启停", "State"), 58);
+            list.Columns.Add(L("状态", "Status"), 108);
+            list.Columns.Add(L("文件", "File"), 180);
+            card.Controls.Add(list);
+            Controls.Add(card);
+            list.DoubleClick += delegate { EditSel(); };
+            KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) Close(); };
+            RefreshList();
+        }
+
+        string PluginDir() { return Path.Combine(BatDir, "plugins"); }
+
+        void RefreshList()
+        {
+            list.BeginUpdate();
+            list.Items.Clear();
+            try {
+                string pd = PluginDir();
+                if (Directory.Exists(pd)) {
+                    foreach (string f in Directory.GetFiles(pd, "*.txt")) {
+                        string fn = Path.GetFileName(f);
+                        if (fn.Equals("README.txt", StringComparison.OrdinalIgnoreCase)) continue;
+                        string[] info;
+                        if (PluginInfo == null || !PluginInfo.TryGetValue(f, out info)) continue;      // header parse failed: not a plugin
+                        bool disabled = DisabledPlugins.Contains(fn.ToLower());
+                        bool isCode = PluginCodeCache != null && PluginCodeCache.ContainsKey(f);
+                        string status;
+                        if (isCode) {
+                            var pc = PluginCodeCache[f];
+                            status = pc.Error != null ? L("编译失败", "compile error") : L("正常", "OK");
+                        } else {
+                            ToolAction a;
+                            status = (PluginActions != null && PluginActions.TryGetValue(f, out a))
+                                ? L("正常", "OK") + " (" + a.Steps.Count + L(" 步", " steps") + ")"
+                                : L("解析失败", "parse error");
+                        }
+                        var it = new ListViewItem(info[1]);
+                        it.SubItems.Add(info[0]);
+                        it.SubItems.Add(isCode ? "C#" : L("步骤", "DSL"));
+                        it.SubItems.Add(disabled ? L("已禁用", "disabled") : L("启用", "enabled"));
+                        it.SubItems.Add(status);
+                        it.SubItems.Add(fn);
+                        it.Tag = f;
+                        if (disabled) it.ForeColor = Color.Gray;
+                        list.Items.Add(it);
+                    }
+                }
+            } catch {}
+            list.EndUpdate();
+        }
+
+        void RunSel()                                                // 运行选中的插件 (DSL 步骤 或 C# 代码插件)
+        {
+            string f = SelFile();
+            if (f == null) { MessageBox.Show(this, L("请先选中一个插件", "Select a plugin first"), "WgTray"); return; }
+            bool isCode = PluginCodeCache != null && PluginCodeCache.ContainsKey(f);
+            if (isCode) host.RunCodePlugin(f); else host.RunPlugin(f);
+        }
+
+        void ToggleSel()
+        {
+            string f = SelFile();
+            if (f == null) return;
+            SetPluginDisabled(f, !DisabledPlugins.Contains(Path.GetFileName(f).ToLower()));
+            host.ReloadConfig();
+            RefreshList();
+        }
+
+        string SelFile()
+        {
+            if (list.SelectedItems.Count == 0) return null;
+            return (string)list.SelectedItems[0].Tag;
+        }
+        void OpenDir()
+        {
+            try {
+                Directory.CreateDirectory(PluginDir());
+                Process.Start(new ProcessStartInfo { FileName = PluginDir(), UseShellExecute = true });
+            } catch {}
+        }
+        void EditSel()
+        {
+            string f = SelFile();
+            if (f == null) return;
+            try { Process.Start(new ProcessStartInfo { FileName = f, UseShellExecute = true }); } catch {}
+        }
+        void DelSel()
+        {
+            string f = SelFile();
+            if (f == null) return;
+            if (MessageBox.Show(this, L("删除插件文件 ", "Delete plugin file ") + Path.GetFileName(f) + "?", "WgTray",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            try { File.Delete(f); } catch {}
+            host.ReloadConfig();
+            RefreshList();
+        }
+        void NewPlugin()
+        {
+            try {
+                Directory.CreateDirectory(PluginDir());
+                string f = Path.Combine(PluginDir(), "new-" + DateTime.Now.ToString("HHmmss") + ".txt");
+                File.WriteAllText(f,
+                    "; WgTray plugin (spec: docs/WGIME_插件规范.md)\r\n" +
+                    "code = mycode\r\n" +
+                    "name = 我的插件\r\n" +
+                    "desc = \r\n\r\n" +
+                    "msg hello from my plugin\r\n", new UTF8Encoding(false));
+                Process.Start(new ProcessStartInfo { FileName = f, UseShellExecute = true });
+            } catch {}
         }
     }

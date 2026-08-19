@@ -19,30 +19,9 @@ CS_SOURCE
 '@
 
 # ---- load prebuilt DLL from embedded payload, in-memory compile only as fallback ----
-$wgDll = $null
-try {
-    $all = [IO.File]::ReadAllText($env:WGTRAY_PATH, [Text.Encoding]::UTF8)
-    $tag = '###WGTRAY_DLL' + '###'
-    $ts = $all.LastIndexOf($tag)
-    if ($ts -ge 0) {
-        $b64 = (($all.Substring($ts + $tag.Length).Trim()) -replace '\s') -replace "'"
-        $md5 = [Security.Cryptography.MD5]::Create()
-        $h = ([BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($b64)))).Replace('-','').Substring(0,8)
-        $wgDllDir = Join-Path $env:LOCALAPPDATA 'wgime'
-        New-Item $wgDllDir -ItemType Directory -Force | Out-Null
-        $cand = Join-Path $wgDllDir ("WgTray." + $h + ".dll")
-        if (-not (Test-Path $cand)) {
-            [IO.File]::WriteAllBytes($cand, [Convert]::FromBase64String($b64))
-            Get-ChildItem (Join-Path $wgDllDir 'WgTray.*.dll') -EA SilentlyContinue | Where-Object Name -ne (Split-Path $cand -Leaf) | Remove-Item -Force -Confirm:$false -EA SilentlyContinue
-        }
-        $wgDll = $cand
-    }
-} catch { WgLog ("payload extract failed: " + $_.Exception.Message) }
-$wgLoaded = $false
-if ($wgDll) {
-    try { Add-Type -Path $wgDll -ErrorAction Stop; $wgLoaded = $true; WgLog ("prebuilt DLL loaded: " + $wgDll) }
-    catch { WgLog ("DLL load failed: " + ($_ | Out-String)) }
-}
+# The loader block below is replaced wholesale by build-wgtray.ps1:
+# default = full prebuilt-DLL loader; -NoPayload build = just "$wgLoaded = $false"
+PAYLOAD_LOADER
 if (-not $wgLoaded) {
     try {
         Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop

@@ -23,7 +23,16 @@
 #  as ANSI). All non-ASCII content lives in UTF-8 template files that are
 #  read explicitly: wgtray_glue.cs.txt, wgtray_ps_body.txt,
 #  wgtray_seed_patches.txt.
+#
+#  -NoPayload: build wgtray.bat WITHOUT the base64 prebuilt DLL payload.
+#  The bat then only carries the C# source and compiles it in memory at
+#  startup (requires FullLanguage PowerShell; on ConstrainedLanguage
+#  machines AppLocker/WDAC blocks Add-Type and the tool will not start).
+#  Trade-off: a no-payload bat has a smaller detection surface for
+#  heuristic AV/EDR (no FromBase64String + PE blob), at the cost of no
+#  support on locked-down machines. Default build keeps the payload.
 # ============================================================
+param([switch]$NoPayload)
 $ErrorActionPreference = 'Stop'
 
 $src = Join-Path $PSScriptRoot 'wgime.bat'
@@ -76,7 +85,7 @@ $sliceDefs = @(
     @{ A = 3400; B = 3744; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
     @{ A = 3746; B = 3770; Anchor = '// ---------- embedded color picker' },
     @{ A = 3772; B = 3844; Anchor = 'class ColorForm : Form' },
-    @{ A = 3846; B = 4236; Anchor = '// ---------- plugins: plugins' }
+    @{ A = 3846; B = 4060; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
 )
 foreach ($d in $sliceDefs) {
     $s = Slice $d.A $d.B $d.Anchor
@@ -177,6 +186,36 @@ $psTplPath = Join-Path $PSScriptRoot 'wgtray_ps_body.txt'
 $psBody = [IO.File]::ReadAllText($psTplPath, [Text.Encoding]::UTF8)
 $psBody = $psBody.Replace("`r`n", "`n")
 
+# PAYLOAD_LOADER: default = full prebuilt-DLL loader; -NoPayload = skip straight to in-memory compile
+$payloadLoader = @'
+$wgDll = $null
+try {
+    $all = [IO.File]::ReadAllText($env:WGTRAY_PATH, [Text.Encoding]::UTF8)
+    $tag = '###WGTRAY_DLL' + '###'
+    $ts = $all.LastIndexOf($tag)
+    if ($ts -ge 0) {
+        $b64 = (($all.Substring($ts + $tag.Length).Trim()) -replace '\s') -replace "'"
+        $md5 = [Security.Cryptography.MD5]::Create()
+        $h = ([BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($b64)))).Replace('-','').Substring(0,8)
+        $wgDllDir = Join-Path $env:LOCALAPPDATA 'wgime'
+        New-Item $wgDllDir -ItemType Directory -Force | Out-Null
+        $cand = Join-Path $wgDllDir ("WgTray." + $h + ".dll")
+        if (-not (Test-Path $cand)) {
+            [IO.File]::WriteAllBytes($cand, [Convert]::FromBase64String($b64))
+            Get-ChildItem (Join-Path $wgDllDir 'WgTray.*.dll') -EA SilentlyContinue | Where-Object Name -ne (Split-Path $cand -Leaf) | Remove-Item -Force -Confirm:$false -EA SilentlyContinue
+        }
+        $wgDll = $cand
+    }
+} catch { WgLog ("payload extract failed: " + $_.Exception.Message) }
+$wgLoaded = $false
+if ($wgDll) {
+    try { Add-Type -Path $wgDll -ErrorAction Stop; $wgLoaded = $true; WgLog ("prebuilt DLL loaded: " + $wgDll) }
+    catch { WgLog ("DLL load failed: " + ($_ | Out-String)) }
+}
+'@
+if ($NoPayload) { $psBody = $psBody.Replace('PAYLOAD_LOADER', '$wgLoaded = $false') }
+else            { $psBody = $psBody.Replace('PAYLOAD_LOADER', $payloadLoader) }
+
 $psBody = $psBody.Replace('CS_SOURCE', $csTray)
 $psBody = $psBody.Replace('SEED_TOOLS', $seedTools)
 $psBody = $psBody.Replace('SEED_README', $seedPluginReadme)
@@ -185,16 +224,18 @@ $psBody = $psBody.Replace('SEED_CLOCK', $seedClock)
 $psBody = $psBody.Replace('SEED_CALC', $seedCalc)
 
 # ---- 10) assemble wgtray.bat (CRLF, no BOM) ----
-$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
 $allLines = @()
 $allLines += ($batHead -split "`n")
 $allLines += ($psBody -split "`n")
-$allLines += '###WGTRAY_DLL###'
-$allLines += "'" + $b64 + "'"
+if (-not $NoPayload) {
+    $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
+    $allLines += '###WGTRAY_DLL###'
+    $allLines += "'" + $b64 + "'"
+}
 $allLines += ''
 $outText = [string]::Join("`r`n", $allLines)
 [IO.File]::WriteAllText($out, $outText, (New-Object System.Text.UTF8Encoding($false)))
-Write-Output ("wgtray.bat written: {0} bytes" -f (Get-Item $out).Length)
+Write-Output ("wgtray.bat written: {0} bytes{1}" -f (Get-Item $out).Length, $(if ($NoPayload) { ' (no payload - in-memory compile only)' } else { '' }))
 
 # ---- 11) self-check: no BOM / pure CRLF / markers present ----
 $bytes = [IO.File]::ReadAllBytes($out)
@@ -204,8 +245,14 @@ $loneLf = 0
 for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and ($k -eq 0 -or $bytes[$k-1] -ne 0x0D)) { $loneLf++ } }
 if ($loneLf -gt 0) { throw ("FAIL: {0} lone LF line endings detected (must be pure CRLF, cmd.exe requires it)" -f $loneLf) }
 $txtOut = [IO.File]::ReadAllText($out, [Text.Encoding]::UTF8)
-foreach ($m in @('###PWSHTRAY###','###WGTRAY_DLL###','[TrayApp]::Run')) {
+foreach ($m in @('###PWSHTRAY###','[TrayApp]::Run')) {
     if ($txtOut.IndexOf($m) -lt 0) { throw "marker not found in output: $m" }
+}
+if ($NoPayload) {
+    if ($txtOut.IndexOf('###WGTRAY_DLL###') -ge 0) { throw 'FAIL: -NoPayload build still contains the payload marker' }
+    if ($txtOut.IndexOf('FromBase64String') -ge 0) { throw 'FAIL: -NoPayload build still contains FromBase64String' }
+} else {
+    if ($txtOut.IndexOf('###WGTRAY_DLL###') -lt 0) { throw 'FAIL: payload build missing the payload marker' }
 }
 Write-Output "file constraints OK (no BOM, pure CRLF, markers present)"
 Write-Output "DONE - double-click wgtray.bat to use the tray-only toolbox"
