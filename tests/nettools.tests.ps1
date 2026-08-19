@@ -65,6 +65,24 @@ Check "bad ip throws"        $threw                                             
 $threw = $false; try { $subnetM.Invoke($null, @('10.0.0.1', '255.255.0.255')) | Out-Null } catch { $threw = $true }
 Check "non-contiguous mask"  $threw                                               "True"
 
+# ---- 1b) SubnetSplit / RangeToCidr / IpType / MaskTable ----
+$splitM = $wbType.GetMethod('SubnetSplit', $fl)
+$rangeM = $wbType.GetMethod('RangeToCidr', $fl)
+$typeM  = $wbType.GetMethod('IpType', $fl)
+$tableM = $wbType.GetMethod('MaskTable', $fl)
+$sp = ($splitM.Invoke($null, @('192.168.1.0', '24', 4))) -join "`n"
+Check "split /24 into 4 -> /26"  ($sp -match '/26' -and $sp -match '192\.168\.1\.192/26')     "True"
+Check "split hosts 62"           ($sp -match '\(62\)')                                        "True"
+$rc = ($rangeM.Invoke($null, @('192.168.1.10', '192.168.1.99'))) -join "`n"
+Check "range -> 192.168.1.10/31" ($rc -match '192\.168\.1\.10/31')                            "True"
+Check "range -> 192.168.1.96/30" ($rc -match '192\.168\.1\.96/30')                            "True"
+Check "range minimal blocks"     (($rangeM.Invoke($null, @('192.168.1.10', '192.168.1.99'))).Count)  "6"
+Check "ip type private"    ([string]$typeM.Invoke($null, @([UInt32]3232235776)) -match 'private')    "True"
+Check "ip type loopback"   ([string]$typeM.Invoke($null, @([UInt32]2130706433)) -match 'loopback')   "True"
+Check "ip type public"     ([string]$typeM.Invoke($null, @([UInt32]134744072)) -match 'public')      "True"
+$tbl = ($tableM.Invoke($null, @())) -join "`n"
+Check "mask table /24"     ($tbl -match '/24' -and $tbl -match '255\.255\.255\.0')                   "True"
+
 # ---- 2) Ping ----
 $pr = $pingM.Invoke($null, @('127.0.0.1', 2000))
 Check "ping localhost"       ([string]$pr -match 'reply from')                    "True"
