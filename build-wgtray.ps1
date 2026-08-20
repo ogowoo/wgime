@@ -220,27 +220,27 @@ if ($RemoveTask) {
     else { Write-Host 'WgTray autostart task not found' }
     exit 0
 }
-# Hide this script's console window if one is visible (e.g. right-click
-# "Run with PowerShell" / bare -File launch). GetConsoleWindow() returns
-# the console attached to THIS process (MainWindowHandle is useless here:
-# on Win10+ the console belongs to conhost, so it is always 0).
-# ShowWindow has a documented quirk: the FIRST call ignores nCmdShow and
-# uses the launcher's STARTUPINFO.wShowWindow instead (right-click "Run
-# with PowerShell" uses SW_SHOWMINIMIZED, so the first SW_HIDE ends up
-# MINIMIZING the window). Calling ShowWindow(SW_HIDE) TWICE defeats this:
-# the first call is hijacked, the second really hides. SetWindowPos with
-# SWP_HIDEWINDOW (0x0087) has no first-call quirk either - belt and
-# braces. When already hidden (scheduled task / install.bat) all calls
-# are harmless no-ops.
-try {
-    Add-Type -Name WgHide -Namespace Wg -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);' -ErrorAction Stop
-    $hw = [Wg.WgHide]::GetConsoleWindow()
-    if ($hw -ne [IntPtr]::Zero) {
-        [Wg.WgHide]::ShowWindow($hw, 0) | Out-Null
-        [Wg.WgHide]::ShowWindow($hw, 0) | Out-Null
-        [Wg.WgHide]::SetWindowPos($hw, [IntPtr]::Zero, 0, 0, 0, 0, 0x0087) | Out-Null   # SWP_HIDEWINDOW
-    }
-} catch {}
+# If this script's console is VISIBLE (right-click "Run with PowerShell",
+# bare -File from a terminal), relaunch ourselves with a hidden console
+# and exit - the visible window never stays around. When already started
+# hidden (scheduled task / install.bat) IsWindowVisible is False and this
+# whole block is skipped, so no extra process is spawned. The child is
+# launched with -WindowStyle Hidden (its console is born hidden), and the
+# WGHIDE env var guards against any recursion.
+if ($env:WGHIDE -ne '1') {
+    try {
+        Add-Type -Name WgHide -Namespace Wg -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);' -ErrorAction Stop
+        $hw = [Wg.WgHide]::GetConsoleWindow()
+        if ($hw -ne [IntPtr]::Zero -and [Wg.WgHide]::IsWindowVisible($hw)) {
+            $env:WGHIDE = '1'
+            Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoLogo','-STA','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"') -WindowStyle Hidden | Out-Null
+            [Wg.WgHide]::ShowWindow($hw, 0) | Out-Null
+            [Wg.WgHide]::ShowWindow($hw, 0) | Out-Null
+            [Wg.WgHide]::SetWindowPos($hw, [IntPtr]::Zero, 0, 0, 0, 0, 0x0087) | Out-Null
+            exit
+        }
+    } catch {}
+}
 '@
 
 # ---- 9) PowerShell bootstrap body (UTF-8 template with placeholders) ----
