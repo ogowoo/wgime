@@ -23,9 +23,13 @@ param([switch]$NoPayload)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
-# ---- 1) build the DLL edition first (dicts/icon/emoji/trailer) ----
-& (Join-Path $root 'build-wgime-dll.ps1')
-$dllPath = Join-Path $root 'wg-all\WgIme.dll'
+# ---- 1) build the DLL edition first (dicts/icon/emoji/trailer).
+#         Build it into a temp dir so the wg-all distribution folder
+#         keeps only the ps1 editions (no WgIme.bat / WgIme.dll). ----
+$tmpOut = Join-Path $env:TEMP ("wgime-ps1-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item $tmpOut -ItemType Directory -Force | Out-Null
+& (Join-Path $root 'build-wgime-dll.ps1') -OutDir $tmpOut
+$dllPath = Join-Path $tmpOut 'WgIme.dll'
 if (-not (Test-Path $dllPath)) { throw "WgIme.dll not produced: $dllPath" }
 
 # ---- 2) payload loader (runtime: read self -> extract DLL -> Add-Type) ----
@@ -134,4 +138,7 @@ if ($NoPayload) {
 }
 if (-not $txtOut.Contains('[WgImeLauncher]::Run')) { throw 'FAIL: missing launcher entry' }
 Write-Output "checks OK (UTF-8 BOM, markers present)"
+# the wg-all distribution folder ships only the ps1 editions - the
+# DLL/bat intermediates live in the temp build dir, now removed
+Remove-Item $tmpOut -Recurse -Force -EA SilentlyContinue
 Write-Output "DONE - WgIme.ps1 ready (run with -Install for logon autostart)"
