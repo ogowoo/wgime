@@ -137,6 +137,37 @@ try {
 }
 Remove-Item $tcDll, $tcDir -Recurse -Force -EA SilentlyContinue
 
+# ================= 7. tray menu: 开机自启 (scheduled task) toggle =================
+# The tray menu must carry a miAuto item wired to SetAutoStartTask, and
+# IsAutoStartTask must probe the WgIme scheduled task (schtasks /Query).
+$auDll = Join-Path $env:TEMP 'wgime_autostart_test.dll'
+[IO.File]::WriteAllBytes($auDll, $bytes)   # $bytes: payload DLL bytes from section 6
+try {
+    Add-Type -Path $auDll -ErrorAction Stop
+    $auWb = [WordBoard]
+    $auFlags = [Reflection.BindingFlags]'Instance,Static,NonPublic,Public,DeclaredOnly'
+    $auF = $auWb.GetField('miAuto', $auFlags)
+    T 'tray: miAuto menu item field exists' ($null -ne $auF) ('type=' + $(if ($auF) { $auF.FieldType.Name } else { 'none' }))
+    $auSet = $auWb.GetMethod('SetAutoStartTask', $auFlags)
+    $auIs = $auWb.GetMethod('IsAutoStartTask', $auFlags)
+    T 'tray: SetAutoStartTask method exists' ($null -ne $auSet)
+    T 'tray: IsAutoStartTask method exists' ($null -ne $auIs)
+    # IsAutoStartTask must return a bool and not throw (schtasks /Query may be
+    # denied in a sandbox; a false/true answer is fine, an exception is not)
+    $auErr = $null
+    $auVal = $null
+    try {
+        $auVal = $auIs.Invoke($null, $null)
+    } catch { $auErr = $_.Exception.Message }
+    T 'tray: IsAutoStartTask runs without throwing' ($null -eq $auErr -and $auVal -is [bool]) ("err=$auErr val=$auVal")
+} catch {
+    T 'tray: miAuto menu item field exists' $false $_.Exception.Message
+    T 'tray: SetAutoStartTask method exists' $false $_.Exception.Message
+    T 'tray: IsAutoStartTask method exists' $false $_.Exception.Message
+    T 'tray: IsAutoStartTask runs without throwing' $false $_.Exception.Message
+}
+Remove-Item $auDll -Force -EA SilentlyContinue
+
 # ================= summary =================
 Write-Host ""
 Write-Host ("{0} passed, {1} failed" -f $script:passed, $script:failed)
