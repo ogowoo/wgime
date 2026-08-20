@@ -220,6 +220,15 @@ if ($RemoveTask) {
     else { Write-Host 'WgTray autostart task not found' }
     exit 0
 }
+# Hide this script's console window if one is visible (e.g. right-click
+# "Run with PowerShell" / bare -File launch). When started hidden already
+# (scheduled task / install.bat) MainWindowHandle is zero and nothing
+# happens. This keeps the launch command line free of -WindowStyle too.
+try {
+    Add-Type -Name WgHide -Namespace Wg -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -ErrorAction Stop
+    $wh = (Get-Process -Id $PID).MainWindowHandle
+    if ($wh -ne [IntPtr]::Zero) { [Wg.WgHide]::ShowWindow($wh, 0) | Out-Null }
+} catch {}
 '@
 
 # ---- 9) PowerShell bootstrap body (UTF-8 template with placeholders) ----
