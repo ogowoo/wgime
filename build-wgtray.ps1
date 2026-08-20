@@ -338,4 +338,10 @@ if ($NoPayload) {
     if ($txtOut.IndexOf('###WGTRAY_DLL###') -lt 0) { throw 'FAIL: payload build missing the payload marker' }
 }
 Write-Output "file constraints OK"
+# ps1 editions also refresh the wg-all distribution folder (keeps it in sync)
+if (-not $Bat) {
+    $wgAllOut = Join-Path $PSScriptRoot 'wg-all\WgTray.ps1'
+    [IO.File]::WriteAllText($wgAllOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
+    Write-Output ("wg-all\WgTray.ps1 refreshed: {0} bytes" -f (Get-Item $wgAllOut).Length)
+}
 Write-Output ("DONE - {0} is ready (double-click the shortcut / run with -Install for autostart)" -f (Split-Path $out -Leaf))
