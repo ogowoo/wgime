@@ -9,9 +9,9 @@ paste = key
 ; keyfix: 标点吞字修复 (1/0, 默认1; Qt应用如微信4.x全角标点后吞下一字符的修复; 正常程序无感知)
 keyfix = 1
 ; followcaret: 候选窗跟随光标 (1/0, 默认1; 0=固定位置可拖动)
-followcaret = 0
+followcaret = 1
 ; hideidle: 空闲时隐藏候选窗 (1/0, 默认1; 只在组字时显示; 0=常驻)
-hideidle = 0
+hideidle = 1
 ; phrase: 自定义短语, 编码<TAB>文本 (文本可含空格)
 ; phrase = dz	地址: 某某路5号
 ; phrase = em	user@example.com

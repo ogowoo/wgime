@@ -70,6 +70,7 @@ shell outlook.exe /resetnavpane
 open %LOCALAPPDATA%\wgime
 
 [清理我的临时文件]
+code = qlj
 confirm 将删除 %TEMP% 下的临时文件 (占用中的会自动跳过), 确定吗?
 file-del %TEMP%\*
 msg 临时文件清理完成
