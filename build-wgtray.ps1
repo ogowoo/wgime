@@ -223,13 +223,20 @@ if ($RemoveTask) {
 # Hide this script's console window if one is visible (e.g. right-click
 # "Run with PowerShell" / bare -File launch). GetConsoleWindow() returns
 # the console attached to THIS process (MainWindowHandle is useless here:
-# on Win10+ the console belongs to conhost, so it is always 0). When the
-# console is already hidden (scheduled task / install.bat) ShowWindow
-# returns False and nothing changes.
+# on Win10+ the console belongs to conhost, so it is always 0).
+# ShowWindow is NOT enough on its own: its FIRST call is ignored and
+# replaced by the STARTUPINFO wShowWindow of the launching app (right-click
+# "Run with PowerShell" uses SW_SHOWMINIMIZED -> window ends up minimized,
+# not hidden). SetWindowPos(SWP_HIDEWINDOW) has no such first-call quirk
+# and always hides. When the console is already hidden (scheduled task /
+# install.bat) both calls are harmless no-ops.
 try {
-    Add-Type -Name WgHide -Namespace Wg -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -ErrorAction Stop
+    Add-Type -Name WgHide -Namespace Wg -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);' -ErrorAction Stop
     $hw = [Wg.WgHide]::GetConsoleWindow()
-    if ($hw -ne [IntPtr]::Zero) { [Wg.WgHide]::ShowWindow($hw, 0) | Out-Null }
+    if ($hw -ne [IntPtr]::Zero) {
+        [Wg.WgHide]::ShowWindow($hw, 0) | Out-Null
+        [Wg.WgHide]::SetWindowPos($hw, [IntPtr]::Zero, 0, 0, 0, 0, 0x0087) | Out-Null   # SWP_HIDEWINDOW
+    }
 } catch {}
 '@
 
