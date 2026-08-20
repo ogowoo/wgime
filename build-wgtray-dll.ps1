@@ -162,46 +162,18 @@ $parts.Add($seedBlock)
 
 # ---- 4b) first-launch launcher shortcut (DLL edition only, injected here so the
 #         shared TrayApp glue and the bat/ps1 editions stay untouched) ----
+# Shared template wgime_shortcut.cs.txt: content-checked (rebuilt when it
+# points at a different machine's DLL), IShellLink primary + WScript.Shell
+# fallback, path-escaped, failure-logged to %TEMP%.
+$shortcutCs = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'wgime_shortcut.cs.txt'), [Text.Encoding]::UTF8)
+$shortcutCs = $shortcutCs.Replace('__ENTRY__', '[TrayApp]').Replace('__DESC__', 'WgTray (DLL edition)').Replace('__ERRLOG__', 'WgTray_error.log')
+if ($shortcutCs.Contains('__ENTRY__') -or $shortcutCs.Contains('__DESC__') -or $shortcutCs.Contains('__ERRLOG__')) { throw 'shortcut template placeholders not replaced' }
 $shortcutBlock = @"
 
         // ---------- first-launch launcher shortcut (DLL edition) ----------
-        // A WgTray.lnk next to the bat, targeting powershell.exe DIRECTLY
-        // (no bat/cmd involved): loads WgTray.dll and runs - zero console
-        // flash; -Command is not ExecutionPolicy-gated (works under the
-        // default Restricted policy). The icon comes from the DLL's embedded
-        // resource (build-time injected). Generated per machine (absolute
-        // paths) - never committed. An old-format shortcut (targeting the
-        // .bat) is upgraded in place.
-        static void EnsureShortcut(string dir, string batPath)
-        {
-            try {
-                string lnk = Path.Combine(dir, Path.GetFileNameWithoutExtension(batPath) + ".lnk");
-                bool needCreate = !File.Exists(lnk);
-                if (!needCreate) {
-                    try {
-                        var ws0 = Type.GetTypeFromProgID("WScript.Shell");
-                        var sh0 = Activator.CreateInstance(ws0);
-                        var ex0 = ws0.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh0, new object[] { lnk });
-                        string tgt = (string)ex0.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, ex0, null);
-                        needCreate = string.IsNullOrEmpty(tgt) || tgt.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
-                    } catch { needCreate = false; }
-                }
-                if (!needCreate) return;
-                string dll = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                string args = "-NoProfile -NoLogo -STA -WindowStyle Hidden -Command \"try { Add-Type -AssemblyName System.Windows.Forms; Add-Type -Path '" + dll + "'; [TrayApp]::Run('" + dir + "', '" + batPath + "') } catch { [IO.File]::WriteAllText((Join-Path `$env:TEMP 'WgTray_error.log'), (`$_ | Out-String)); [System.Windows.Forms.MessageBox]::Show((`$_ | Out-String),'WgTray Error') | Out-Null }\"";
-                var type = Type.GetTypeFromProgID("WScript.Shell");
-                var sh = Activator.CreateInstance(type);
-                var s = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { lnk });
-                var st = s.GetType();
-                st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "powershell.exe" });
-                st.InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { args });
-                st.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dir });
-                st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "WgTray (DLL edition)" });
-                st.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dll + ",0" });
-                st.InvokeMember("WindowStyle", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { 7 });
-                st.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, s, null);
-            } catch {}
-        }
+        // Shared template wgime_shortcut.cs.txt (content-checked, IShellLink
+        // primary, WScript.Shell fallback, path-escaped, failure-logged).
+$shortcutCs
 "@
 $parts.Add($shortcutBlock)
 $parts.Add('}')

@@ -130,6 +130,13 @@ function Esc-CSharp([string]$s) {      # text -> C# string literal body
 
 # ---- 2) additive launcher class: supplies the embedded dicts, calls the
 #         ORIGINAL WordBoard.RunApp signature (WordBoard untouched) ----
+# The launcher shortcut lives in a shared template (wgime_shortcut.cs.txt,
+# used by both DLL editions): content-checked (rebuilt when it points at a
+# different machine's DLL), IShellLink primary + WScript.Shell fallback,
+# path-escaped, failure-logged to %TEMP%.
+$shortcutCs = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'wgime_shortcut.cs.txt'), [Text.Encoding]::UTF8)
+$shortcutCs = $shortcutCs.Replace('__ENTRY__', '[WgImeLauncher]').Replace('__DESC__', 'WgIme (DLL edition)').Replace('__ERRLOG__', 'WgIme_error.log')
+if ($shortcutCs.Contains('__ENTRY__') -or $shortcutCs.Contains('__DESC__') -or $shortcutCs.Contains('__ERRLOG__')) { throw 'shortcut template placeholders not replaced' }
 $launcher = @"
 
 // WgImeLauncher - entry for the DLL edition (thin bat loads this assembly)
@@ -195,42 +202,10 @@ public static class WgImeLauncher
         }
         return -1;
     }
-    // First-launch convenience: a launcher shortcut next to the bat. The
-    // shortcut targets powershell.exe DIRECTLY (no bat/cmd involved): it
-    // loads WgIme.dll and runs - zero console flash, and -Command is not
-    // ExecutionPolicy-gated, so it works under the default Restricted policy.
-    // Generated per machine (absolute paths) - never committed. An existing
-    // old-format shortcut (targeting the .bat) is upgraded in place.
-    static void EnsureShortcut(string dir, string batPath)
-    {
-        try {
-            string lnk = Path.Combine(dir, Path.GetFileNameWithoutExtension(batPath) + ".lnk");
-            bool needCreate = !File.Exists(lnk);
-            if (!needCreate) {
-                try {
-                    var ws0 = Type.GetTypeFromProgID("WScript.Shell");
-                    var sh0 = Activator.CreateInstance(ws0);
-                    var ex0 = ws0.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh0, new object[] { lnk });
-                    string tgt = (string)ex0.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, ex0, null);
-                    needCreate = string.IsNullOrEmpty(tgt) || tgt.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);   // old format -> upgrade
-                } catch { needCreate = false; }
-            }
-            if (!needCreate) return;
-            string dll = System.Reflection.Assembly.GetExecutingAssembly().Location;
-            string args = "-NoProfile -NoLogo -STA -WindowStyle Hidden -Command \"try { Add-Type -AssemblyName System.Windows.Forms; Add-Type -Path '" + dll + "'; [WgImeLauncher]::Run('" + dir + "', '" + batPath + "') } catch { [IO.File]::WriteAllText((Join-Path `$env:TEMP 'WgIme_error.log'), (`$_ | Out-String)); [System.Windows.Forms.MessageBox]::Show((`$_ | Out-String),'WgIme Error') | Out-Null }\"";
-            var type = Type.GetTypeFromProgID("WScript.Shell");
-            var sh = Activator.CreateInstance(type);
-            var s = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { lnk });
-            var st = s.GetType();
-            st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "powershell.exe" });
-            st.InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { args });
-            st.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dir });
-            st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { "WgIme (DLL edition)" });
-            st.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { dll + ",0" });   // icon lives IN the assembly (build-time injected)
-            st.InvokeMember("WindowStyle", System.Reflection.BindingFlags.SetProperty, null, s, new object[] { 7 });
-            st.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, s, null);
-        } catch {}
-    }
+    // First-launch convenience: a launcher shortcut next to the bat. See the
+    // shared template (wgime_shortcut.cs.txt) for the full implementation -
+    // content-checked, IShellLink primary, WScript.Shell fallback.
+    $shortcutCs
     const string PyData = "$(Esc-CSharp $pyData)";
     const string WbData = "$(Esc-CSharp $wbData)";
     const string EcData = "$(Esc-CSharp $ecData)";
@@ -239,9 +214,7 @@ public static class WgImeLauncher
 }
 "@
 
-$csFull = $cs + "`n" + $launcher
-
-# ---- 2b) pack-safe merged tables: when the trailer supplies FULLY merged tables,
+$csFull = $cs + "`n" + $launcher# ---- 2b) pack-safe merged tables: when the trailer supplies FULLY merged tables,
 #         the embedded parse must not pack-split single words (e.g. "zg <word>" must
 #         stay one word). Minimal WordBoard injection: one static flag + one
 #         call-site change; default false keeps the base-only behavior identical,
