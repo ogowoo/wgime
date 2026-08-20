@@ -79,6 +79,29 @@ T 'trailer: merged EN-CN table loaded' ($ea[2].Length -gt 1000000) ("ec=$($ea[2]
 T 'trailer: pyWords merged into py (pw empty)' ($ea[3].Length -eq 0)
 T 'trailer: pack-safe flag set (single words not split)' ([WordBoard]::EmbeddedMerged)
 
+# ================= 2c. emoji PNGs are Win32 resources - the DLL carries NO base64 =================
+# The original wgime C# embeds the 33 emoji PNGs as base64 strings decoded with
+# Convert.FromBase64String. The DLL build strips that array and injects the PNGs
+# as RT_RCDATA resources (ids 101..133), so the binary must be base64-free.
+$dllAscii = [System.IO.File]::ReadAllText($dllPath, [Text.Encoding]::ASCII)
+T 'emoji: DLL has no Convert.FromBase64String' (-not $dllAscii.Contains('FromBase64String'))
+T 'emoji: DLL has no EmojiPngs base64 array' (-not $dllAscii.Contains('EmojiPngs'))
+T 'emoji: no embedded base64 PNG blob (iVBOR head)' (-not $dllAscii.Contains('iVBORw0KGgo'))
+# runtime: EmojiImage (private static) must produce a real bitmap from the resources
+$wb = [WordBoard]
+$nbf = [Reflection.BindingFlags]'Static,NonPublic'
+$charsFi = $wb.GetField('EmojiChars', $nbf)
+$imgMi = $wb.GetMethod('EmojiImage', $nbf)
+$emojiOk = 0; $emojiFail = 0
+if ($charsFi -and $imgMi) {
+    $chars = $charsFi.GetValue($null)
+    for ($i = 0; $i -lt [Math]::Min(6, $chars.Length); $i++) {
+        $bmp = $imgMi.Invoke($null, [object[]]@([string]$chars[$i]))
+        if ($null -ne $bmp -and $bmp.Width -gt 0 -and $bmp.Height -gt 0) { $emojiOk++; $bmp.Dispose() } else { $emojiFail++ }
+    }
+}
+T 'emoji: EmojiImage decodes PNGs from resources at runtime' ($emojiOk -gt 0 -and $emojiFail -eq 0) ("ok=$emojiOk fail=$emojiFail")
+
 # ================= 3. runtime smoke: launch the DLL edition (full IME) =================
 $log = Join-Path $env:TEMP 'WgIme_error.log'
 $mbErr = Join-Path $env:LOCALAPPDATA 'wgime\mb_error.log'

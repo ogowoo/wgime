@@ -63,6 +63,64 @@ $pyWords = Get-HereString 'pyWords'    # pinyin word table
 $pyWFreq = Get-HereString 'pyWFreq'    # word/char corpus weights
 Write-Output ("dicts: pyData={0} wbData={1} ecData={2} pyWords={3} pyWFreq={4}" -f $pyData.Length, $wbData.Length, $ecData.Length, $pyWords.Length, $pyWFreq.Length)
 
+# ---- 1b) emoji PNGs: strip the base64 array from the C# and replace it
+#         with a Win32 resource reader. The 33 PNGs are decoded at build
+#         time and injected as RT_RCDATA resources (ids 101..133), so the
+#         compiled assembly carries NO base64 strings and NO
+#         Convert.FromBase64String call. wgime.bat (master) is untouched;
+#         only this DLL build strips the array. ----
+$emojiNeedle = 'static readonly string[] EmojiPngs = new string[] {'
+$ep = $cs.IndexOf($emojiNeedle)
+if ($ep -lt 0) { throw 'EmojiPngs declaration not found in wgime C#' }
+$ee = $cs.IndexOf('};', $ep)
+if ($ee -lt 0) { throw 'EmojiPngs terminator not found' }
+$emojiBlock = $cs.Substring($ep, $ee - $ep + 2)
+$emojiToks = [regex]::Matches($emojiBlock, '"([A-Za-z0-9+/=]+)"')
+if ($emojiToks.Count -eq 0) { throw 'no base64 literals found in EmojiPngs' }
+$script:emojiPngs = New-Object System.Collections.Generic.List[byte[]]
+foreach ($t in $emojiToks) { $script:emojiPngs.Add([Convert]::FromBase64String($t.Groups[1].Value)) }
+$emojiBytes = 0; foreach ($p in $script:emojiPngs) { $emojiBytes += $p.Length }
+Write-Output ("emoji: {0} PNGs extracted from C# ({1} bytes raw) - base64 array removed" -f $script:emojiPngs.Count, $emojiBytes)
+$emojiLoader = @'
+    // Emoji PNGs are build-time-injected Win32 RT_RCDATA resources
+    // (ids 101..133). No base64 strings in this assembly; EmojiImage
+    // reads them on first use. wgime.bat (master) keeps its original
+    // base64 array - only the DLL build strips it.
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindResource(IntPtr hModule, IntPtr lpName, IntPtr lpType);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr LoadResource(IntPtr hModule, IntPtr hResInfo);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr LockResource(IntPtr hResData);
+    [DllImport("kernel32.dll")]
+    static extern uint SizeofResource(IntPtr hModule, IntPtr hResInfo);
+    static byte[] EmojiResource(int index)
+    {
+        try {
+            IntPtr h = Marshal.GetHINSTANCE(typeof(BarLabel).Module);   // this DLL's HMODULE
+            if (h == (IntPtr)(-1)) return new byte[0];
+            IntPtr res = FindResource(h, (IntPtr)(101 + index), (IntPtr)10);   // RT_RCDATA
+            if (res == IntPtr.Zero) return new byte[0];
+            IntPtr data = LoadResource(h, res);
+            if (data == IntPtr.Zero) return new byte[0];
+            IntPtr p = LockResource(data);
+            if (p == IntPtr.Zero) return new byte[0];
+            uint n = SizeofResource(h, res);
+            byte[] b = new byte[n];
+            Marshal.Copy(p, b, 0, (int)n);
+            return b;
+        } catch { return new byte[0]; }
+    }
+'@
+$cs = $cs.Substring(0, $ep) + $emojiLoader + $cs.Substring($ee + 2)
+$loopNeedle = 'for (int i = 0; i < EmojiChars.Length && i < EmojiPngs.Length; i++) {'
+if (-not $cs.Contains($loopNeedle)) { throw 'EmojiImage loop hook not found' }
+$cs = $cs.Replace($loopNeedle, 'for (int i = 0; i < EmojiChars.Length; i++) {')
+$decodeNeedle = 'Convert.FromBase64String(EmojiPngs[i])'
+if (-not $cs.Contains($decodeNeedle)) { throw 'EmojiImage decode hook not found' }
+$cs = $cs.Replace($decodeNeedle, 'EmojiResource(i)')
+Write-Output "EmojiImage now reads Win32 resources (no base64 in the DLL build)"
+
 function Esc-CSharp([string]$s) {      # text -> C# string literal body
     $s = $s.Replace('\', '\\').Replace('"', '\"')
     $s = $s.Replace("`r", '')
@@ -259,15 +317,20 @@ $gw.Write([int16]1)
 $groupBytes = $gms.ToArray()
 $gw.Dispose(); $gms.Dispose()
 
-# inject RT_ICON (3) + RT_GROUP_ICON (14) via UpdateResource
+# inject RT_ICON (3) + RT_GROUP_ICON (14) + emoji PNGs (RT_RCDATA=10, ids 101..) via UpdateResource
 Add-Type -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr BeginUpdateResource(string pFileName, bool bDeleteExistingResources); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage, byte[] lpData, uint cbData); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard);' -Name W -Namespace Wg
 $hRes = [Wg.W]::BeginUpdateResource($outDll, $false)
 if ($hRes -eq [IntPtr]::Zero) { throw 'BeginUpdateResource failed - icon not embedded' }
 $ok1 = [Wg.W]::UpdateResource($hRes, [IntPtr]3, [IntPtr]1, 0, $png, [uint32]$png.Length)        # RT_ICON
 $ok2 = [Wg.W]::UpdateResource($hRes, [IntPtr]14, [IntPtr]1, 0, $groupBytes, [uint32]$groupBytes.Length)  # RT_GROUP_ICON
+$okEmoji = $true
+for ($k = 0; $k -lt $script:emojiPngs.Count; $k++) {
+    $okEmoji = $okEmoji -and [Wg.W]::UpdateResource($hRes, [IntPtr]10, [IntPtr](101 + $k), 0, $script:emojiPngs[$k], [uint32]$script:emojiPngs[$k].Length)
+}
 $ok3 = [Wg.W]::EndUpdateResource($hRes, $false)
 if (-not ($ok1 -and $ok2 -and $ok3)) { throw 'icon resource injection failed' }
-Write-Output ("icon embedded into WgIme.dll (256px PNG-in-ICO, {0} bytes)" -f $png.Length)
+if (-not $okEmoji) { throw 'emoji resource injection failed' }
+Write-Output ("icon embedded into WgIme.dll (256px PNG-in-ICO, {0} bytes); emoji resources: {1}" -f $png.Length, $script:emojiPngs.Count)
 # verify: the DLL now exposes an icon with a blue tile
 $chkIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($outDll)
 if ($null -eq $chkIcon) { throw 'icon verification failed: ExtractAssociatedIcon returned null' }
@@ -446,5 +509,11 @@ for ($k = 0; $k -lt $batBytes.Length; $k++) { if ($batBytes[$k] -eq 0x0A -and ($
 if ($loneLf -gt 0) { throw "FAIL: WgIme.bat has $loneLf lone LF line endings" }
 $dllBytes = [IO.File]::ReadAllBytes($outDll)
 if ($dllBytes.Length -lt 2 -or $dllBytes[0] -ne 0x4D -or $dllBytes[1] -ne 0x5A) { throw 'FAIL: WgIme.dll is not a valid PE' }
-Write-Output "checks OK (launcher clean, DLL is a valid PE)"
+# the whole assembly must be base64-free: the only former user was the emoji
+# panel (EmojiImage), now reading Win32 resources; the dict trailer is raw deflate
+$dllAscii = [Text.Encoding]::ASCII.GetString($dllBytes)
+foreach ($bad in @('FromBase64String', 'EmojiPngs')) {
+    if ($dllAscii.Contains($bad)) { throw "FAIL: WgIme.dll must not contain '$bad' (emoji should use resources now)" }
+}
+Write-Output "checks OK (launcher clean, DLL is a valid PE, no base64 anywhere)"
 Write-Output ("DONE - copy the wgime-dll folder anywhere and double-click WgIme.bat (keep WgIme.dll next to it)")
