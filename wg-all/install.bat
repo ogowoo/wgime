@@ -1,12 +1,14 @@
 @echo off
 rem ============================================================
 rem  install.bat - Wg one-shot launcher (fake installer)
-rem  WgTray is the single-file ps1 payload edition (embedded DLL,
-rem  no separate dll file); WgIme is the DLL edition. This bat is
-rem  the single entry point; first run auto-creates the launcher
-rem  shortcuts (WgIme.lnk / WgTray.lnk) next to this folder.
-rem  For autostart at logon, run:  WgTray.ps1 -Install
-rem  (registers a scheduled task; remove with WgTray.ps1 -RemoveTask)
+rem  Both editions are single-file ps1 payload editions (embedded
+rem  base64 DLL, extracted at runtime; no separate dll files):
+rem    WgIme.ps1   full IME (pinyin/wubi/mixed/EN-CN)
+rem    WgTray.ps1  tray toolbox (tools.txt / plugins / config apps)
+rem  This bat is the single entry point.
+rem  For autostart at logon, run once:
+rem    WgIme.ps1 -Install    /    WgTray.ps1 -Install
+rem  (registers a scheduled task; remove with -RemoveTask)
 rem
 rem  Usage:
 rem    install.bat          start ALL (IME + tray toolbox)
@@ -22,12 +24,12 @@ if /i "%MODE%"=="ime" goto :ime
 if /i "%MODE%"=="tray" goto :tray
 :all
 echo  [Wg] starting IME + tray toolbox ...
-start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -Command "try { Add-Type -AssemblyName System.Windows.Forms; Add-Type -Path (Join-Path $env:WG_DIR 'WgIme.dll'); [WgImeLauncher]::Run($env:WG_DIR, (Join-Path $env:WG_DIR 'WgIme.bat')) } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgIme_error.log'), ($_ | Out-String)) }"
+start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgIme.ps1')
 start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgTray.ps1')
 goto :done
 :ime
 echo  [Wg] starting IME ...
-start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -Command "try { Add-Type -AssemblyName System.Windows.Forms; Add-Type -Path (Join-Path $env:WG_DIR 'WgIme.dll'); [WgImeLauncher]::Run($env:WG_DIR, (Join-Path $env:WG_DIR 'WgIme.bat')) } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgIme_error.log'), ($_ | Out-String)) }"
+start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgIme.ps1')
 goto :done
 :tray
 echo  [Wg] starting tray toolbox ...
@@ -35,8 +37,8 @@ start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPo
 :done
 echo.
 echo  [Wg] done - tray icons: WgIme (IME) / WgTray (toolbox)
-echo  WgTray autostart at logon: run "WgTray.ps1 -Install" once
-echo  (scheduled task; remove with WgTray.ps1 -RemoveTask)
+echo  autostart at logon: run "WgIme.ps1 -Install" and/or "WgTray.ps1 -Install" once
+echo  (scheduled tasks; remove with -RemoveTask)
 echo  press any key to close this window ...
 pause >nul
 exit /b

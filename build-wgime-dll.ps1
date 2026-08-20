@@ -130,13 +130,6 @@ function Esc-CSharp([string]$s) {      # text -> C# string literal body
 
 # ---- 2) additive launcher class: supplies the embedded dicts, calls the
 #         ORIGINAL WordBoard.RunApp signature (WordBoard untouched) ----
-# The launcher shortcut lives in a shared template (wgime_shortcut.cs.txt,
-# used by both DLL editions): content-checked (rebuilt when it points at a
-# different machine's DLL), IShellLink primary + WScript.Shell fallback,
-# path-escaped, failure-logged to %TEMP%.
-$shortcutCs = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'wgime_shortcut.cs.txt'), [Text.Encoding]::UTF8)
-$shortcutCs = $shortcutCs.Replace('__ENTRY__', '[WgImeLauncher]').Replace('__DESC__', 'WgIme (DLL edition)').Replace('__ERRLOG__', 'WgIme_error.log')
-if ($shortcutCs.Contains('__ENTRY__') -or $shortcutCs.Contains('__DESC__') -or $shortcutCs.Contains('__ERRLOG__')) { throw 'shortcut template placeholders not replaced' }
 $launcher = @"
 
 // WgImeLauncher - entry for the DLL edition (thin bat loads this assembly)
@@ -144,7 +137,6 @@ public static class WgImeLauncher
 {
     public static void Run(string dir, string batPath)
     {
-        EnsureShortcut(dir, batPath);            // first launch: create "<bat-name>.lnk" next to the bat
         string py, wb, ec, pw, wf;
         ExtractDicts(out py, out wb, out ec, out pw, out wf);   // trailer extensions merged over the embedded base
         WordBoard.RunApp(py, wb, ec, pw, wf, dir, batPath);
@@ -202,10 +194,6 @@ public static class WgImeLauncher
         }
         return -1;
     }
-    // First-launch convenience: a launcher shortcut next to the bat. See the
-    // shared template (wgime_shortcut.cs.txt) for the full implementation -
-    // content-checked, IShellLink primary, WScript.Shell fallback.
-    $shortcutCs
     const string PyData = "$(Esc-CSharp $pyData)";
     const string WbData = "$(Esc-CSharp $wbData)";
     const string EcData = "$(Esc-CSharp $ecData)";

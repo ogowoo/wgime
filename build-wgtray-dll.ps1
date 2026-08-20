@@ -159,30 +159,13 @@ $seedBlock = @"
         }
 "@
 $parts.Add($seedBlock)
-
-# ---- 4b) first-launch launcher shortcut (DLL edition only, injected here so the
-#         shared TrayApp glue and the bat/ps1 editions stay untouched) ----
-# Shared template wgime_shortcut.cs.txt: content-checked (rebuilt when it
-# points at a different machine's DLL), IShellLink primary + WScript.Shell
-# fallback, path-escaped, failure-logged to %TEMP%.
-$shortcutCs = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'wgime_shortcut.cs.txt'), [Text.Encoding]::UTF8)
-$shortcutCs = $shortcutCs.Replace('__ENTRY__', '[TrayApp]').Replace('__DESC__', 'WgTray (DLL edition)').Replace('__ERRLOG__', 'WgTray_error.log')
-if ($shortcutCs.Contains('__ENTRY__') -or $shortcutCs.Contains('__DESC__') -or $shortcutCs.Contains('__ERRLOG__')) { throw 'shortcut template placeholders not replaced' }
-$shortcutBlock = @"
-
-        // ---------- first-launch launcher shortcut (DLL edition) ----------
-        // Shared template wgime_shortcut.cs.txt (content-checked, IShellLink
-        // primary, WScript.Shell fallback, path-escaped, failure-logged).
-$shortcutCs
-"@
-$parts.Add($shortcutBlock)
 $parts.Add('}')
 
-# ---- 5) assemble the tray C# and inject the SeedSamples + shortcut calls into Run ----
+# ---- 5) assemble the tray C# and inject the SeedSamples call into Run ----
 $csTray = [string]::Join("`n", $parts)
 $needle = 'BatDir = dir; BatPath = batPath;'
 if (-not $csTray.Contains($needle)) { throw 'Run() seed hook not found' }
-$csTray = $csTray.Replace($needle, $needle + ' SeedSamples(); EnsureShortcut(dir, batPath);')
+$csTray = $csTray.Replace($needle, $needle + ' SeedSamples();')
 
 # ---- 6) compile to wgtray-dll/WgTray.dll ----
 Add-Type -TypeDefinition $csTray -ReferencedAssemblies System.Windows.Forms,System.Drawing `
