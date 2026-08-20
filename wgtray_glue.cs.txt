@@ -181,27 +181,31 @@ public class TrayApp
         } catch {}
     }
 
-    // ---------- 开机自启 (Startup 文件夹快捷方式) ----------
-    static string StartupLinkPath() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "WgTray.lnk"); }
-    static bool IsAutoStart() { try { return File.Exists(StartupLinkPath()); } catch { return false; } }
+    // ---------- 开机自启 (计划任务, schtasks ONLOGON; 不再用 Startup 快捷方式) ----------
+    static bool IsAutoStart()
+    {
+        try {
+            var p = Process.Start(new ProcessStartInfo("schtasks.exe", "/Query /TN WgTray") {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true });
+            p.WaitForExit();
+            return p.ExitCode == 0;
+        } catch { return false; }
+    }
     static void SetAutoStart(bool on)
     {
-        string p = StartupLinkPath();
         try {
             if (!on) {
-                if (File.Exists(p)) File.Delete(p);
-                TrayTip(L("开机自启", "Startup"), L("已关闭", "off"), ToolTipIcon.Info);
+                Process.Start(new ProcessStartInfo("schtasks.exe", "/Delete /F /TN WgTray") {
+                    UseShellExecute = false, CreateNoWindow = true }).WaitForExit();
+                TrayTip(L("开机自启", "Startup"), L("已关闭 (计划任务)", "off (task)"), ToolTipIcon.Info);
                 return;
             }
-            var type = Type.GetTypeFromProgID("WScript.Shell");
-            var sh = Activator.CreateInstance(type);
-            var lnk = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { p });
-            var lt = lnk.GetType();
-            lt.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { BatPath });
-            lt.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { BatDir });
-            lt.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { "WgTray" });
-            lt.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, lnk, null);
-            TrayTip(L("开机自启", "Startup"), L("已开启 (Startup\\WgTray.lnk)", "on (Startup\\WgTray.lnk)"), ToolTipIcon.Info);
+            // /TR 值: "powershell.exe ... -File "C:\...\WgTray.ps1"" (内层引号反斜杠转义, 与 build 脚本一致)
+            string inner = "powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + BatPath + "\"";
+            string tr = "\"" + inner.Replace("\"", "\\\"") + "\"";
+            Process.Start(new ProcessStartInfo("schtasks.exe", "/Create /F /TN WgTray /SC ONLOGON /TR " + tr) {
+                UseShellExecute = false, CreateNoWindow = true }).WaitForExit();
+            TrayTip(L("开机自启", "Startup"), L("已开启 (计划任务, 登录时启动)", "on (task, at logon)"), ToolTipIcon.Info);
         } catch (Exception ex) { TrayTip(L("开机自启失败", "Startup failed"), ex.Message, ToolTipIcon.Error); }
     }
 

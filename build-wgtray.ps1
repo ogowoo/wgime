@@ -1,10 +1,20 @@
 # ============================================================
-#  build-wgtray.ps1 - generate wgtray.bat (tray-only toolbox, NO IME)
+#  build-wgtray.ps1 - generate the WgTray distribution file
 #
-#  wgtray.bat = single-file tray tool:
+#  Default output: WgTray.ps1 (single-file tray tool, payload edition)
 #    * no IME (no keyboard hook / no candidate window / no dicts)
 #    * taskbar tray menu only: toolbox (tools.txt) / plugins (plugins\*.txt)
 #      / built-in applets / config.txt apps / config / exit
+#    * ps1 bootstrap -> load the embedded base64 prebuilt DLL payload
+#      (###WGTRAY_DLL### trailer), in-memory C# compile only as fallback
+#    * UTF-8 BOM (seed texts contain Chinese; PS 5.1 needs the BOM)
+#    * params: -Install registers a logon autostart scheduled task,
+#      -RemoveTask deletes it
+#
+#  -Bat:        also/only write the legacy wgtray.bat (cmd bootstrap +
+#               ###PWSHTRAY### self-read; CRLF no-BOM like the old build)
+#  -NoPayload:  skip the base64 DLL trailer (in-memory compile only;
+#               requires FullLanguage PowerShell at runtime)
 #
 #  Steps:
 #    1. extract the embedded C# source ($cs) from wgime.bat
@@ -12,33 +22,28 @@
 #       plugin system) by line ranges, prepend the new TrayApp shell
 #       (wgtray_glue.cs.txt), produce tray_cs.cs
 #    3. compile with Add-Type (Windows PowerShell 5.1 / .NET 4.x)
-#    4. assemble wgtray.bat (cmd bootstrap + PowerShell + embedded C#
-#       + base64 DLL payload); seeds patched via wgtray_seed_patches.txt
+#    4. assemble WgTray.ps1 (PS head + embedded C# + base64 DLL payload);
+#       seeds patched via wgtray_seed_patches.txt
 #
-#  After editing the C# embedded in wgtray.bat, run rebuild-tray.ps1
+#  After editing the C# embedded in the output, run rebuild-tray.ps1
 #  (no re-slicing needed). Requires Windows PowerShell 5.1 (powershell.exe).
-#  File constraints: pure CRLF / no BOM / UTF-8.
 #
 #  NOTE: this script is ASCII-only on purpose (Windows PS 5.1 reads .ps1
 #  as ANSI). All non-ASCII content lives in UTF-8 template files that are
 #  read explicitly: wgtray_glue.cs.txt, wgtray_ps_body.txt,
 #  wgtray_seed_patches.txt.
-#
-#  -NoPayload: build wgtray.bat WITHOUT the base64 prebuilt DLL payload.
-#  The bat then only carries the C# source and compiles it in memory at
-#  startup (requires FullLanguage PowerShell; on ConstrainedLanguage
-#  machines AppLocker/WDAC blocks Add-Type and the tool will not start).
-#  Trade-off: a no-payload bat has a smaller detection surface for
-#  heuristic AV/EDR (no FromBase64String + PE blob), at the cost of no
-#  support on locked-down machines. Default build keeps the payload.
 # ============================================================
-param([switch]$NoPayload)
+param([switch]$NoPayload, [switch]$Bat)
 $ErrorActionPreference = 'Stop'
 
 $src = Join-Path $PSScriptRoot 'wgime.bat'
-# default output: wgtray.bat (payload, for ConstrainedLanguage machines) or
-# wgtray-nopayload.bat (-NoPayload, source-only, smaller AV detection surface)
-$out = Join-Path $PSScriptRoot $(if ($NoPayload) { 'wgtray-nopayload.bat' } else { 'wgtray.bat' })
+# default output: WgTray.ps1 (payload) / WgTray-nopayload.ps1 (-NoPayload)
+# -Bat: legacy wgtray.bat / wgtray-nopayload.bat (cmd bootstrap, CRLF no-BOM)
+if ($Bat) {
+    $out = Join-Path $PSScriptRoot $(if ($NoPayload) { 'wgtray-nopayload.bat' } else { 'wgtray.bat' })
+} else {
+    $out = Join-Path $PSScriptRoot $(if ($NoPayload) { 'WgTray-nopayload.ps1' } else { 'WgTray.ps1' })
+}
 if (-not (Test-Path $src)) {
     throw "wgime.bat not found next to this script: $src`nThis is the wgtray distribution branch (no IME files). To rebuild wgtray.bat, run this script from a checkout of the master branch (or copy wgime.bat from master into this folder)."
 }
@@ -153,7 +158,7 @@ foreach ($pl in [IO.File]::ReadAllLines($patchPath, [Text.Encoding]::UTF8)) {
     elseif ($target -eq 'README') { $seedPluginReadme = $seedPluginReadme.Replace($oldTxt, $newTxt) }
 }
 
-# ---- 8) cmd bootstrap head (same self-bootstrap pattern as wgime.bat) ----
+# ---- 8) head: cmd bootstrap (bat edition) or PS head (ps1 edition) ----
 $batHead = @'
 @echo off
 rem ============================================================
@@ -180,6 +185,41 @@ if defined WGTRAY_DEBUG (
 )
 exit /b
 ###PWSHTRAY###
+'@
+
+# ps1 head: direct PS bootstrap - the file IS the PowerShell script, so no
+# cmd layer and no self-read/Invoke-Expression. Command line stays clean:
+#   powershell -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File WgTray.ps1
+# -Install registers a logon scheduled task (schtasks ONLOGON -> this ps1).
+$ps1Head = @'
+# ============================================================
+#  WgTray - tray-only toolbox (NO IME): taskbar tray menu +
+#  tools.txt toolbox + plugins\*.txt + config.txt apps
+#  ps1 bootstrap -> load embedded prebuilt DLL payload
+#  Errors are logged to %TEMP%\WgTray_error.log
+#  Usage:
+#    powershell -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File WgTray.ps1
+#    powershell ... -File WgTray.ps1 -Install       # + register logon autostart task
+#    powershell ... -File WgTray.ps1 -RemoveTask    # - delete the autostart task
+# ============================================================
+param([switch]$Install, [switch]$RemoveTask)
+$env:WGTRAY_PATH = $PSCommandPath
+$env:WGTRAY_DIR = $PSScriptRoot + '\'
+$env:WGTRAY_AUTOSTART = ''
+if ($Install) {
+    $inner = 'powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
+    $tr = '"' + $inner.Replace('"', '\"') + '"'
+    & schtasks.exe /Create /F /TN WgTray /SC ONLOGON /TR $tr 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host 'WgTray autostart task registered (logon)' }
+    else { Write-Host 'WgTray autostart task registration failed (try as admin)' }
+    $env:WGTRAY_AUTOSTART = '1'
+}
+if ($RemoveTask) {
+    & schtasks.exe /Delete /F /TN WgTray 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host 'WgTray autostart task removed' }
+    else { Write-Host 'WgTray autostart task not found' }
+    exit 0
+}
 '@
 
 # ---- 9) PowerShell bootstrap body (UTF-8 template with placeholders) ----
@@ -227,9 +267,13 @@ $psBody = $psBody.Replace('SEED_CLEANBIN', $seedCleanBin)
 $psBody = $psBody.Replace('SEED_CLOCK', $seedClock)
 $psBody = $psBody.Replace('SEED_CALC', $seedCalc)
 
-# ---- 10) assemble wgtray.bat (CRLF, no BOM) ----
+# ---- 10) assemble the output file ----
 $allLines = @()
-$allLines += ($batHead -split "`n")
+if ($Bat) {
+    $allLines += ($batHead -split "`n")
+} else {
+    $allLines += ($ps1Head -split "`n")
+}
 $allLines += ($psBody -split "`n")
 if (-not $NoPayload) {
     $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
@@ -237,20 +281,34 @@ if (-not $NoPayload) {
     $allLines += "'" + $b64 + "'"
 }
 $allLines += ''
-$outText = [string]::Join("`r`n", $allLines)
-[IO.File]::WriteAllText($out, $outText, (New-Object System.Text.UTF8Encoding($false)))
-Write-Output ("wgtray.bat written: {0} bytes{1}" -f (Get-Item $out).Length, $(if ($NoPayload) { ' (no payload - in-memory compile only)' } else { '' }))
+$outText = [string]::Join("`n", $allLines)
+if ($Bat) {
+    # bat: pure CRLF, no BOM (cmd.exe requirement)
+    $outText = $outText -replace "`n", "`r`n"
+    [IO.File]::WriteAllText($out, $outText, (New-Object System.Text.UTF8Encoding($false)))
+} else {
+    # ps1: UTF-8 BOM (seed texts contain Chinese; PS 5.1 needs the BOM to read UTF-8)
+    [IO.File]::WriteAllText($out, $outText, (New-Object System.Text.UTF8Encoding($true)))
+}
+Write-Output ("{0} written: {1} bytes{2}" -f (Split-Path $out -Leaf), (Get-Item $out).Length, $(if ($NoPayload) { ' (no payload - in-memory compile only)' } else { '' }))
 
-# ---- 11) self-check: no BOM / pure CRLF / markers present ----
+# ---- 11) self-check ----
 $bytes = [IO.File]::ReadAllBytes($out)
 $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-if ($bom) { throw 'FAIL: file now has a BOM - encoding constraint violated' }
-$loneLf = 0
-for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and ($k -eq 0 -or $bytes[$k-1] -ne 0x0D)) { $loneLf++ } }
-if ($loneLf -gt 0) { throw ("FAIL: {0} lone LF line endings detected (must be pure CRLF, cmd.exe requires it)" -f $loneLf) }
+if ($Bat) {
+    if ($bom) { throw 'FAIL: bat output has a BOM - encoding constraint violated' }
+    $loneLf = 0
+    for ($k = 0; $k -lt $bytes.Length; $k++) { if ($bytes[$k] -eq 0x0A -and ($k -eq 0 -or $bytes[$k-1] -ne 0x0D)) { $loneLf++ } }
+    if ($loneLf -gt 0) { throw ("FAIL: {0} lone LF line endings detected (must be pure CRLF, cmd.exe requires it)" -f $loneLf) }
+} else {
+    if (-not $bom) { throw 'FAIL: ps1 output has no UTF-8 BOM (PS 5.1 would read Chinese seeds as ANSI)' }
+}
 $txtOut = [IO.File]::ReadAllText($out, [Text.Encoding]::UTF8)
-foreach ($m in @('###PWSHTRAY###','[TrayApp]::Run')) {
+foreach ($m in @('$env:WGTRAY_PATH', '[TrayApp]::Run')) {
     if ($txtOut.IndexOf($m) -lt 0) { throw "marker not found in output: $m" }
+}
+if ($Bat) {
+    if ($txtOut.IndexOf('###PWSHTRAY###') -lt 0) { throw 'FAIL: bat output missing ###PWSHTRAY###' }
 }
 if ($NoPayload) {
     if ($txtOut.IndexOf('###WGTRAY_DLL###') -ge 0) { throw 'FAIL: -NoPayload build still contains the payload marker' }
@@ -258,5 +316,5 @@ if ($NoPayload) {
 } else {
     if ($txtOut.IndexOf('###WGTRAY_DLL###') -lt 0) { throw 'FAIL: payload build missing the payload marker' }
 }
-Write-Output "file constraints OK (no BOM, pure CRLF, markers present)"
-Write-Output ("DONE - double-click {0} to use the tray-only toolbox" -f (Split-Path $out -Leaf))
+Write-Output "file constraints OK"
+Write-Output ("DONE - {0} is ready (double-click the shortcut / run with -Install for autostart)" -f (Split-Path $out -Leaf))
