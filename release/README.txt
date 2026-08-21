@@ -30,10 +30,9 @@
   config.txt    共用配置 (WgIme 输入法键 + WgTray 的 app=/hotkey_*)
   tools.txt     工具箱配置 ([tab 标签页] / [按钮名] / code = xxx 启动编码 / 步骤行)
   plugins\      插件目录 (步骤 DSL / C# 插件)
+  docs\         文档: 使用说明 / 技术文档 / 插件规范 / 插件 UI 规范
   README.txt    本文档
 
 首次运行自动播种 tools.txt / plugins\ / config.txt 示例 (不覆盖已有文件)。
 数据目录 %LOCALAPPDATA%\wgime (删除即恢复初始状态)。
-
-详细说明见仓库 docs\ (使用说明 / 技术文档 / 插件规范 / 插件 UI 规范)。
 ============================================================
