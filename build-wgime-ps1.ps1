@@ -137,6 +137,10 @@ Write-Output ("WgIme.ps1 written: {0} bytes" -f (Get-Item $out).Length)
 $wgAllOut = Join-Path $root 'wg-all\WgIme.ps1'
 [IO.File]::WriteAllText($wgAllOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
 Write-Output ("wg-all\WgIme.ps1 written: {0} bytes" -f (Get-Item $wgAllOut).Length)
+# and the release folder (pure deliverables, no build/test files)
+$relOut = Join-Path $root 'release\WgIme.ps1'
+[IO.File]::WriteAllText($relOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
+Write-Output ("release\WgIme.ps1 written: {0} bytes" -f (Get-Item $relOut).Length)
 
 # ---- 5) self-check ----
 $bytes = [IO.File]::ReadAllBytes($out)

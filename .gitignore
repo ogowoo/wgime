@@ -16,12 +16,4 @@ plugins/lt.txt
 /wg-all/WgIme.lnk
 /wg-all/WgTray.lnk
 
-# root IME dictionaries: local build sources only (all tables live inside
-# WgIme.ps1 / wgime.bat; not distributed as txt on this branch)
-/py.txt
-/wb.txt
-/ec.txt
-/import_py.txt
-/import_wb.txt
-
 /tray_cs.cs

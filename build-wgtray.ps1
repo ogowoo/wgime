@@ -349,5 +349,14 @@ if (-not $Bat) {
     $wgAllOut = Join-Path $PSScriptRoot 'wg-all\WgTray.ps1'
     [IO.File]::WriteAllText($wgAllOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
     Write-Output ("wg-all\WgTray.ps1 refreshed: {0} bytes" -f (Get-Item $wgAllOut).Length)
+    $relOut = Join-Path $PSScriptRoot 'release\WgTray.ps1'
+    [IO.File]::WriteAllText($relOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
+    Write-Output ("release\WgTray.ps1 refreshed: {0} bytes" -f (Get-Item $relOut).Length)
+}
+# -Bat editions also refresh the release folder (pure deliverables)
+if ($Bat) {
+    $relBat = Join-Path $PSScriptRoot ('release\' + (Split-Path $out -Leaf))
+    [IO.File]::WriteAllText($relBat, $outText, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Output ("release\{0} refreshed: {1} bytes" -f (Split-Path $out -Leaf), (Get-Item $relBat).Length)
 }
 Write-Output ("DONE - {0} is ready (double-click the shortcut / run with -Install for autostart)" -f (Split-Path $out -Leaf))

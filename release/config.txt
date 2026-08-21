@@ -1,0 +1,31 @@
+; WgIme / WgTray 共用配置文件 (UTF-8, 与 wgime.bat / wgtray.bat 同目录)
+; WgTray 只使用 app= 与 hotkey_* 键; 其余键是输入法专属, WgTray 忽略 (互相兼容)
+; fuzzy: 模糊音对, 逗号分隔; 留空或 none 关闭
+fuzzy = zh-z,ch-c,sh-s,ang-an,eng-en,ing-in,n-l
+; showcode: 候选上显示反查编码 (1/0)
+showcode = 1
+; paste: 上屏方式 key/on/auto/off (key=逐字符Unicode注入, 默认, 不走剪贴板; on=剪贴板粘贴; auto=管理员窗口用剪贴板其余key; off=纯SendKeys按键)
+paste = key
+; keyfix: 标点吞字修复 (1/0, 默认1; Qt应用如微信4.x全角标点后吞下一字符的修复; 正常程序无感知)
+keyfix = 1
+; followcaret: 候选窗跟随光标 (1/0, 默认1; 0=固定位置可拖动)
+followcaret = 1
+; hideidle: 空闲时隐藏候选窗 (1/0, 默认1; 只在组字时显示; 0=常驻)
+hideidle = 1
+; phrase: 自定义短语, 编码<TAB>文本 (文本可含空格)
+; phrase = dz	地址: 某某路5号
+; phrase = em	user@example.com
+; app: 输入法启动器, 编码<TAB>名称<TAB>命令[<TAB>参数] (分隔符也接受空格, 含空格的命令用引号包住;
+;      相对路径按 wgime.bat 所在目录解析, 支持 %环境变量%; 编码输全后候选条出现 ▶名称, 选中即启动)
+; app = np	记事本	notepad.exe
+; app = gy	仓库目录	C:\Tools\WgIme
+; app = bd	百度	https://www.baidu.com
+; 也可以跑 cmd 命令 (命令=cmd, 参数=整条 /c 命令行; &/||/&&/% 由 cmd 解析, 参数含空格用引号包住):
+; app = ct	清理临时	cmd	/c del /q "%TEMP%\*"
+; app = cc	清理并统计	cmd	/c (del /q "%TEMP%\*" & echo done)
+; 注意: 想删除目录/处理占用文件, 用 tools.txt 的 file-del 动词更安全 (自动跳过占用, 不中断, 记日志)
+; hotkey_*: WgTray 全局快捷键 (格式 ctrl/alt/shift/win + 键, 如 ctrl+alt+t; none 禁用; WgIme 输入法忽略这些键)
+hotkey_toolbox = ctrl+alt+t
+hotkey_plugins = ctrl+alt+p
+hotkey_menu    = ctrl+alt+w
+starton = 0
