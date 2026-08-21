@@ -12,16 +12,12 @@ tests/pinyin-data.txt
 
 plugins/lt.txt
 
-# wgtray distribution branch: wgime.bat is only a LOCAL build source for
-# build-wgtray.ps1 (restore from master with: git checkout master -- wgime.bat)
-# anchored to the repo root only - wgime-dll/WgIme.bat must stay tracked
-/wgime.bat
-
-# generated per-machine launcher shortcuts (created on first launch)
+# generated per-machine launcher shortcuts (should not exist anymore, safety)
 /wg-all/WgIme.lnk
 /wg-all/WgTray.lnk
 
-# root IME dictionaries: local-only on this branch (all tables live inside WgIme.dll)
+# root IME dictionaries: local build sources only (all tables live inside
+# WgIme.ps1 / wgime.bat; not distributed as txt on this branch)
 /py.txt
 /wb.txt
 /ec.txt
