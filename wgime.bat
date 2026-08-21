@@ -139911,9 +139911,6 @@ public class WordBoard : Form
 
         miOnOff = new ToolStripMenuItem(L("开关  (Shift 轻点)", "On/Off  (Shift tap)"), null, delegate { Toggle(); });
         menu.Items.Add(miOnOff);
-        miAuto = new ToolStripMenuItem(L("开机自启 (计划任务)", "Start with Windows (scheduled task)"));
-        miAuto.Click += delegate { SetAutoStartTask(!IsAutoStartTask()); RefreshMenuChecks(); };
-        menu.Items.Add(miAuto);
 
         var mMode = new ToolStripMenuItem(L("模式  (Ctrl+` 循环)", "Mode  (Ctrl+` cycles)"));
         miModes = new ToolStripMenuItem[4];
@@ -139947,6 +139944,10 @@ public class WordBoard : Form
         miHideIdle = new ToolStripMenuItem(L("空闲时隐藏候选窗", "Hide candidate board while idle"));
         miHideIdle.Click += delegate { HideIdle = !HideIdle; SaveConfigKey("hideidle", HideIdle ? "1" : "0"); RefreshLabel(); };
         mOpt.DropDownItems.Add(miHideIdle);
+        mOpt.DropDownItems.Add(new ToolStripSeparator());
+        miAuto = new ToolStripMenuItem(L("开机自启 (计划任务)", "Start with Windows (scheduled task)"));
+        miAuto.Click += delegate { SetAutoStartTask(!IsAutoStartTask()); RefreshMenuChecks(); };
+        mOpt.DropDownItems.Add(miAuto);
         menu.Items.Add(mOpt);
 
         var mApp = new ToolStripMenuItem(L("这个程序", "This app"));
