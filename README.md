@@ -57,6 +57,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1 -Install
 4. 改完 tools.txt / plugins / config.txt 后：托盘菜单 **配置 → 重载配置** 即时生效
 5. 数据目录 `%LOCALAPPDATA%\wgime`（插件禁用记录、便签、颜色设置等；删除即恢复初始状态）
 
+> 详细说明见 [docs/WGIME_使用说明.md](docs/WGIME_使用说明.md)（快捷键总表 / 四种模式 / 造词 / 码表导入 / 固化）、[docs/WGIME_技术文档.md](docs/WGIME_技术文档.md)（架构 / 启动链 / 载荷机制）。
+
 ## 构建与测试（Windows PowerShell 5.1）
 
 ```powershell
@@ -116,7 +118,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 | `vt-scan.ps1` | VirusTotal 一键扫描脚本（wg-all 分发文件） |
 | `tests/` | 回归测试（wgime-ps1 / wgtray-ps1 / wgtray 两版 / 载荷一致性） |
 | `wg-all/` | 合并分发目录（install.bat + 双 ps1 版 + 配置/插件/README） |
-| `docs/` | 插件规范与 UI 规范 |
+| `docs/` | 文档目录：使用说明 / 技术文档 / 插件规范 / 插件 UI 规范 / TSF 评估 |
 
 ## 开发
 
