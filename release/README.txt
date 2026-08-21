@@ -19,11 +19,11 @@
 
   * 输入法: 双击 wgime.bat; 或 powershell -File WgIme.ps1
   * 托盘:   双击 wgtray.bat / wgtray-nopayload.bat; 或 powershell -File WgTray.ps1
-  * 开机自启 (计划任务 schtasks ONLOGON), 各运行一次:
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1 -Install
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1 -Install
-    取消自启: 相应 ps1 加 -RemoveTask
-    托盘菜单 "选项 -> 开机自启" 开关也走同一计划任务
+  * 开机自启: 程序不自带自启注册 (无 -Install / 无计划任务 / 菜单无
+    "开机自启"项); 需要自启时由你自己的工具 (任务计划/启动文件夹)
+    挂上启动命令即可:
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1
 
 文件说明:
 

@@ -8,8 +8,8 @@
 #    * ps1 bootstrap -> load the embedded base64 prebuilt DLL payload
 #      (###WGTRAY_DLL### trailer), in-memory C# compile only as fallback
 #    * UTF-8 BOM (seed texts contain Chinese; PS 5.1 needs the BOM)
-#    * params: -Install registers a logon autostart scheduled task,
-#      -RemoveTask deletes it
+#    * no scheduled-task autostart (no -Install/-RemoveTask; no tray
+#      autostart menu item - autostart is up to the user's own tools)
 #
 #  -Bat:        also/only write the legacy wgtray.bat (cmd bootstrap +
 #               ###PWSHTRAY### self-read; CRLF no-BOM like the old build)
@@ -84,20 +84,20 @@ $parts.Add($glue)
 
 # ---- 4) verbatim reusable slices (only display-name renames) ----
 $sliceDefs = @(
-    @{ A = 1491; B = 1499; Anchor = 'static void FixLegacyConfigIfBroken' },
-    @{ A = 1851; B = 1906; Anchor = 'void LaunchApp(string code)' },
-    @{ A = 1915; B = 1920; Anchor = 'class ToolAction' },
-    @{ A = 1921; B = 2206; Anchor = 'static List<string> ToolToks(string line)' },
-    @{ A = 2208; B = 2548; Anchor = 'class ToolsForm : Form' },
-    @{ A = 2550; B = 2867; Anchor = '// ---------- embedded network tools' },
-    @{ A = 2868; B = 3356; Anchor = 'class NetToolsForm : Form' },
-    @{ A = 3358; B = 3377; Anchor = '// ---------- embedded clipboard history' },
-    @{ A = 3378; B = 3439; Anchor = 'class ClipForm : Form' },
-    @{ A = 3441; B = 3452; Anchor = '// ---------- embedded sticky note' },
-    @{ A = 3453; B = 3797; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
-    @{ A = 3799; B = 3823; Anchor = '// ---------- embedded color picker' },
-    @{ A = 3825; B = 3897; Anchor = 'class ColorForm : Form' },
-    @{ A = 3899; B = 4113; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
+    @{ A = 1487; B = 1495; Anchor = 'static void FixLegacyConfigIfBroken' },
+    @{ A = 1847; B = 1902; Anchor = 'void LaunchApp(string code)' },
+    @{ A = 1911; B = 1916; Anchor = 'class ToolAction' },
+    @{ A = 1917; B = 2202; Anchor = 'static List<string> ToolToks(string line)' },
+    @{ A = 2204; B = 2544; Anchor = 'class ToolsForm : Form' },
+    @{ A = 2546; B = 2863; Anchor = '// ---------- embedded network tools' },
+    @{ A = 2864; B = 3352; Anchor = 'class NetToolsForm : Form' },
+    @{ A = 3354; B = 3373; Anchor = '// ---------- embedded clipboard history' },
+    @{ A = 3374; B = 3435; Anchor = 'class ClipForm : Form' },
+    @{ A = 3437; B = 3448; Anchor = '// ---------- embedded sticky note' },
+    @{ A = 3449; B = 3793; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
+    @{ A = 3795; B = 3819; Anchor = '// ---------- embedded color picker' },
+    @{ A = 3821; B = 3893; Anchor = 'class ColorForm : Form' },
+    @{ A = 3895; B = 4109; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
 )
 foreach ($d in $sliceDefs) {
     $s = Slice $d.A $d.B $d.Anchor
@@ -196,7 +196,6 @@ exit /b
 # ps1 head: direct PS bootstrap - the file IS the PowerShell script, so no
 # cmd layer and no self-read/Invoke-Expression. Command line stays clean:
 #   powershell -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File WgTray.ps1
-# -Install registers a logon scheduled task (schtasks ONLOGON -> this ps1).
 $ps1Head = @'
 # ============================================================
 #  WgTray - tray-only toolbox (NO IME): taskbar tray menu +
@@ -205,27 +204,9 @@ $ps1Head = @'
 #  Errors are logged to %TEMP%\WgTray_error.log
 #  Usage:
 #    powershell -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File WgTray.ps1
-#    powershell ... -File WgTray.ps1 -Install       # + register logon autostart task
-#    powershell ... -File WgTray.ps1 -RemoveTask    # - delete the autostart task
 # ============================================================
-param([switch]$Install, [switch]$RemoveTask)
 $env:WGTRAY_PATH = $PSCommandPath
 $env:WGTRAY_DIR = $PSScriptRoot + '\'
-$env:WGTRAY_AUTOSTART = ''
-if ($Install) {
-    $inner = 'powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
-    $tr = '"' + $inner.Replace('"', '\"') + '"'
-    & schtasks.exe /Create /F /TN WgTray /SC ONLOGON /TR $tr 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'WgTray autostart task registered (logon)' }
-    else { Write-Host 'WgTray autostart task registration failed (try as admin)' }
-    $env:WGTRAY_AUTOSTART = '1'
-}
-if ($RemoveTask) {
-    & schtasks.exe /Delete /F /TN WgTray 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'WgTray autostart task removed' }
-    else { Write-Host 'WgTray autostart task not found' }
-    exit 0
-}
 # If this script's console is VISIBLE (right-click "Run with PowerShell",
 # bare -File from a terminal), relaunch ourselves with a hidden console
 # and exit - the visible window never stays around. When already started
@@ -359,4 +340,4 @@ if ($Bat) {
     [IO.File]::WriteAllText($relBat, $outText, (New-Object System.Text.UTF8Encoding($false)))
     Write-Output ("release\{0} refreshed: {1} bytes" -f (Split-Path $out -Leaf), (Get-Item $relBat).Length)
 }
-Write-Output ("DONE - {0} is ready (double-click the shortcut / run with -Install for autostart)" -f (Split-Path $out -Leaf))
+Write-Output ("DONE - {0} is ready" -f (Split-Path $out -Leaf))

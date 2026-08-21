@@ -1,7 +1,7 @@
 # ============================================================
 #  wgtray-ps1.tests.ps1 - regression tests for the WgTray ps1
 #  payload edition (single-file WgTray.ps1: PS bootstrap + embedded
-#  base64 prebuilt DLL trailer; autostart via scheduled task)
+#  base64 prebuilt DLL trailer; no scheduled-task autostart)
 #
 #  Run with Windows PowerShell 5.1:
 #    powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray-ps1.tests.ps1
@@ -28,42 +28,16 @@ T 'ps1 embeds the C# fallback source' ($txt.Contains("cs = @'"))
 T 'ps1 launches TrayApp' ($txt.Contains('[TrayApp]::Run'))
 T 'ps1 no cmd self-extract marker (###PWSHTRAY###)' (-not $txt.Contains('###PWSHTRAY###'))
 # launch command line stays clean: just -File WgTray.ps1, no Add-Type in it
-T 'ps1 head registers the scheduled task via schtasks' ($txt.Contains('/TN WgTray /SC ONLOGON'))
-T 'ps1 has -RemoveTask support' ($txt.Contains('-RemoveTask'))
+T 'ps1 has NO scheduled-task autostart (no -Install / no schtasks / no tray item)' ((-not $txt.Contains('/SC ONLOGON')) -and (-not $txt.Contains('-RemoveTask')) -and (-not $txt.Contains('SetAutoStart')) -and (-not $txt.Contains('IsAutoStart')))
 
 # ================= 2. parse check =================
 $tokens = $null; $errors = $null
 [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors) | Out-Null
 T 'ps1 parses without syntax errors' ($errors.Count -eq 0) (($errors | ForEach-Object { $_.Message }) -join '; ')
 
-# ================= 3. scheduled-task autostart (-Install / -RemoveTask) =================
-# Note: schtasks /Create needs an interactive session; in a sandboxed/
-# headless runner it fails with Access denied. Detect that and SKIP the
-# task assertions (the ps1 still runs fine either way).
-$taskWritable = $true
-& cmd /c "schtasks.exe /Create /F /TN WgTrayProbe /SC ONLOGON /TR ""cmd /c exit"" 2>nul" | Out-Null
-if ($LASTEXITCODE -ne 0) { $taskWritable = $false }
-& cmd /c "schtasks.exe /Delete /F /TN WgTrayProbe 2>nul" | Out-Null
-& cmd /c "schtasks.exe /Delete /F /TN WgTray 2>nul" | Out-Null
-if ($taskWritable) {
-$ins = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$ps1Path,'-Install' -PassThru
-Start-Sleep -Seconds 10
-$q = & cmd /c "schtasks.exe /Query /TN WgTray /FO LIST /V 2>nul" | Out-String
-T 'install: task registered' ($q -match 'WgTray')
-$tr = ($q -split "`r?`n") | Where-Object { $_ -match '^Task To Run' } | Select-Object -First 1
-T 'install: task runs powershell -File ps1 (no Add-Type in cmd)' ($tr -match 'powershell\.exe.*-File.*WgTray\.ps1' -and $tr -notmatch 'Add-Type')
-T 'install: task triggers at logon' ($q -match 'At logon time')
-# -Install also launches the tray (install-and-run); stop the worker
-$wIns = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*WgTray.ps1*' -and $_.CommandLine -like '*-Install*' }
-if ($wIns) { $wIns | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }
-$ps2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$ps1Path,'-RemoveTask' -PassThru -Wait
-T 'remove: -RemoveTask exits cleanly' ($ps2.ExitCode -eq 0)
-$q2 = & cmd /c "schtasks.exe /Query /TN WgTray 2>nul" | Out-String
-T 'remove: task removed' ($q2 -notmatch 'WgTray')
-} else {
-    Write-Host "SKIP  scheduled-task assertions (schtasks not writable in this session)"
-    $script:passed += 5   # count the skipped ones as passed to keep the suite green
-}
+# ================= 3. (removed) scheduled-task autostart - no longer shipped =================
+# ps1 editions no longer register any scheduled task / autostart; the
+# "no -Install / no schtasks / no SetAutoStart" assertion above covers it.
 
 # ================= 4. runtime smoke: launch, payload DLL extracted, tray worker up =================
 $errLog = Join-Path $env:TEMP 'WgTray_error.log'

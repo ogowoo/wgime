@@ -1,27 +1,27 @@
-@echo off
-rem ============================================================
-rem  WgTray - tray-only toolbox (NO IME): taskbar tray menu +
-rem  tools.txt toolbox + plugins\*.txt + config.txt apps
-rem  bat bootstrap -> PowerShell -> in-memory C# (or prebuilt DLL)
-rem  Errors are logged to %TEMP%\WgTray_error.log
-rem ============================================================
-set "WGTRAY_PATH=%~f0"
-set "WGTRAY_DIR=%~dp0"
-if /i "%~1"=="_h" goto :main
-rem WGTRAY_DEBUG=1: keep console visible so startup errors can be seen on locked-down machines
-if defined WGTRAY_DEBUG (
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '_h'"
-) else (
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath '%~f0' -ArgumentList '_h' -WindowStyle Hidden"
-)
-exit /b
-:main
-if defined WGTRAY_DEBUG (
-  powershell.exe -STA -NoProfile -NoLogo -ExecutionPolicy Bypass -Command "try { $s=[IO.File]::ReadAllText($env:WGTRAY_PATH,[Text.Encoding]::UTF8); $i=$s.LastIndexOf('###PWSHTRAY###'); $p=$s.Substring($i+14); Invoke-Expression $p } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgTray_error.log'), ($_ | Out-String)); Write-Host ($_ | Out-String) -ForegroundColor Red; Read-Host 'press ENTER to exit' }"
-) else (
-  powershell.exe -STA -NoProfile -NoLogo -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try { $s=[IO.File]::ReadAllText($env:WGTRAY_PATH,[Text.Encoding]::UTF8); $i=$s.LastIndexOf('###PWSHTRAY###'); $p=$s.Substring($i+14); Invoke-Expression $p } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgTray_error.log'), ($_ | Out-String)); Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(($_ | Out-String),'WgTray Error') | Out-Null }"
-)
-exit /b
+@echo off
+rem ============================================================
+rem  WgTray - tray-only toolbox (NO IME): taskbar tray menu +
+rem  tools.txt toolbox + plugins\*.txt + config.txt apps
+rem  bat bootstrap -> PowerShell -> in-memory C# (or prebuilt DLL)
+rem  Errors are logged to %TEMP%\WgTray_error.log
+rem ============================================================
+set "WGTRAY_PATH=%~f0"
+set "WGTRAY_DIR=%~dp0"
+if /i "%~1"=="_h" goto :main
+rem WGTRAY_DEBUG=1: keep console visible so startup errors can be seen on locked-down machines
+if defined WGTRAY_DEBUG (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '_h'"
+) else (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath '%~f0' -ArgumentList '_h' -WindowStyle Hidden"
+)
+exit /b
+:main
+if defined WGTRAY_DEBUG (
+  powershell.exe -STA -NoProfile -NoLogo -ExecutionPolicy Bypass -Command "try { $s=[IO.File]::ReadAllText($env:WGTRAY_PATH,[Text.Encoding]::UTF8); $i=$s.LastIndexOf('###PWSHTRAY###'); $p=$s.Substring($i+14); Invoke-Expression $p } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgTray_error.log'), ($_ | Out-String)); Write-Host ($_ | Out-String) -ForegroundColor Red; Read-Host 'press ENTER to exit' }"
+) else (
+  powershell.exe -STA -NoProfile -NoLogo -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try { $s=[IO.File]::ReadAllText($env:WGTRAY_PATH,[Text.Encoding]::UTF8); $i=$s.LastIndexOf('###PWSHTRAY###'); $p=$s.Substring($i+14); Invoke-Expression $p } catch { [IO.File]::WriteAllText((Join-Path $env:TEMP 'WgTray_error.log'), ($_ | Out-String)); Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(($_ | Out-String),'WgTray Error') | Out-Null }"
+)
+exit /b
 ###PWSHTRAY###
 # ================= WgTray bootstrap: extract embedded C# / DLL payload =================
 $wgLog = Join-Path $env:TEMP 'WgTray_error.log'
@@ -99,7 +99,7 @@ public class TrayApp
 
     // ---------- 托盘菜单 ----------
     ContextMenuStrip menu;
-    ToolStripMenuItem miApps, miPlugins, miAuto;                    // 动态子菜单 (config 应用 / 插件) + 开机自启勾选项
+    ToolStripMenuItem miApps, miPlugins;                    // 动态子菜单 (config 应用 / 插件)
     ToolStripMenuItem[] hotItems = new ToolStripMenuItem[3];        // 全局快捷键信息行 (只读)
     NotifyIcon tray;
     HotKeyHost hkHost;                                              // 全局快捷键宿主窗口
@@ -234,34 +234,6 @@ public class TrayApp
         } catch {}
     }
 
-    // ---------- 开机自启 (计划任务, schtasks ONLOGON; 不再用 Startup 快捷方式) ----------
-    static bool IsAutoStart()
-    {
-        try {
-            var p = Process.Start(new ProcessStartInfo("schtasks.exe", "/Query /TN WgTray") {
-                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true });
-            p.WaitForExit();
-            return p.ExitCode == 0;
-        } catch { return false; }
-    }
-    static void SetAutoStart(bool on)
-    {
-        try {
-            if (!on) {
-                Process.Start(new ProcessStartInfo("schtasks.exe", "/Delete /F /TN WgTray") {
-                    UseShellExecute = false, CreateNoWindow = true }).WaitForExit();
-                TrayTip(L("开机自启", "Startup"), L("已关闭 (计划任务)", "off (task)"), ToolTipIcon.Info);
-                return;
-            }
-            // /TR 值: "powershell.exe ... -File "C:\...\WgTray.ps1"" (内层引号反斜杠转义, 与 build 脚本一致)
-            string inner = "powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + BatPath + "\"";
-            string tr = "\"" + inner.Replace("\"", "\\\"") + "\"";
-            Process.Start(new ProcessStartInfo("schtasks.exe", "/Create /F /TN WgTray /SC ONLOGON /TR " + tr) {
-                UseShellExecute = false, CreateNoWindow = true }).WaitForExit();
-            TrayTip(L("开机自启", "Startup"), L("已开启 (计划任务, 登录时启动)", "on (task, at logon)"), ToolTipIcon.Info);
-        } catch (Exception ex) { TrayTip(L("开机自启失败", "Startup failed"), ex.Message, ToolTipIcon.Error); }
-    }
-
     // ---------- 应用注册表: 内置 + config.txt 的 app= + 插件 (编码 -> [名称, 命令, 参数]) ----------
     static Dictionary<string,string[]> Apps;
 
@@ -372,10 +344,6 @@ public class TrayApp
         var mCfg = new ToolStripMenuItem(L("配置", "Config"));
         mCfg.DropDownItems.Add(L("编辑配置 (config.txt)…", "Edit config (config.txt)…"), null, delegate { OpenConfigFile(); });
         mCfg.DropDownItems.Add(L("重载配置", "Reload config"), null, delegate { ReloadConfig(); });
-        mCfg.DropDownItems.Add(new ToolStripSeparator());
-        miAuto = new ToolStripMenuItem(L("开机自启", "Start with Windows"));
-        miAuto.Click += delegate { SetAutoStart(!IsAutoStart()); RefreshMenuChecks(); };
-        mCfg.DropDownItems.Add(miAuto);
         mCfg.DropDownItems.Add(L("数据目录…", "Data folder…"), null, delegate { OpenDataDir(); });
         menu.Items.Add(mCfg);
 
@@ -397,7 +365,6 @@ public class TrayApp
 
     void RefreshMenuChecks()                                        // 菜单弹出时同步: 开机自启勾选 + 快捷键显示
     {
-        if (miAuto != null) miAuto.Checked = IsAutoStart();
         if (hotItems != null && hotItems.Length == 3 && hotItems[0] != null) {   // BuildMenu 之前 hotItems 是空位
             hotItems[0].Text = L("打开工具箱", "Open toolbox") + ":  " + HotkeyText(HotToolboxMod, HotToolboxVk);
             hotItems[1].Text = L("插件管理", "Plugin manager") + ":  " + HotkeyText(HotPluginsMod, HotPluginsVk);

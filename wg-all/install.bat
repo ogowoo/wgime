@@ -6,9 +6,11 @@ rem  base64 DLL, extracted at runtime; no separate dll files):
 rem    WgIme.ps1   full IME (pinyin/wubi/mixed/EN-CN)
 rem    WgTray.ps1  tray toolbox (tools.txt / plugins / config apps)
 rem  This bat is the single entry point.
-rem  For autostart at logon, run once:
-rem    WgIme.ps1 -Install    /    WgTray.ps1 -Install
-rem  (registers a scheduled task; remove with -RemoveTask)
+rem  Autostart is NOT built in (no -Install / no scheduled task / no
+rem  tray item): if you want launch-at-logon, add one of these commands
+rem  to your own task scheduler / startup folder:
+rem    powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1
+rem    powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1
 rem
 rem  Usage:
 rem    install.bat          start ALL (IME + tray toolbox)
@@ -37,8 +39,7 @@ start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPo
 :done
 echo.
 echo  [Wg] done - tray icons: WgIme (IME) / WgTray (toolbox)
-echo  autostart at logon: run "WgIme.ps1 -Install" and/or "WgTray.ps1 -Install" once
-echo  (scheduled tasks; remove with -RemoveTask)
+echo  autostart is not built in - use your own task scheduler if needed
 echo  press any key to close this window ...
 pause >nul
 exit /b

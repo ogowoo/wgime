@@ -2,15 +2,14 @@
 #  build-wgime-ps1.ps1 - generate WgIme.ps1 (single-file payload edition)
 #
 #  WgIme.ps1 = full IME as ONE file:
-#    * PS head (no cmd layer, no self-extract) with -Install/-RemoveTask
-#      scheduled-task autostart (same pattern as WgTray.ps1)
+#    * PS head (no cmd layer, no self-extract, no scheduled-task autostart)
 #    * embedded base64 WgIme.dll payload trailer (###WGIME_DLL###);
 #      at runtime extracted to %LOCALAPPDATA%\wgime\WgIme.<md5>.dll
 #      and Add-Type -Path'd, then [WgImeLauncher]::Run(dir, ps1)
 #    * launch command line stays clean: ... -File WgIme.ps1
 #      (no Add-Type/.dll/::Run plaintext -> EDR command-line rules
-#      cannot match; no launcher shortcut is generated - autostart
-#      and manual start both go through the ps1)
+#      cannot match; no launcher shortcut is generated - manual start
+#      goes through the ps1; autostart is up to the user's own tools)
 #    * UTF-8 BOM (PS 5.1 needs it)
 #
 #  This script first runs build-wgime-dll.ps1 to (re)compile the DLL
@@ -77,29 +76,14 @@ $head = @'
 #  Errors are logged to %TEMP%\WgIme_error.log
 #  Usage:
 #    powershell -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File WgIme.ps1
-#    powershell ... -File WgIme.ps1 -Install       # + register logon autostart task
-#    powershell ... -File WgIme.ps1 -RemoveTask    # - delete the autostart task
 # ============================================================
-param([switch]$Install, [switch]$RemoveTask)
 $env:WGIME_PATH = $PSCommandPath
 $env:WGIME_DIR = $PSScriptRoot + '\'
-if ($Install) {
-    $inner = 'powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
-    $tr = '"' + $inner.Replace('"', '\"') + '"'
-    & schtasks.exe /Create /F /TN WgIme /SC ONLOGON /TR $tr 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'WgIme autostart task registered (logon)' }
-    else { Write-Host 'WgIme autostart task registration failed (try as admin)' }
-}
-if ($RemoveTask) {
-    & schtasks.exe /Delete /F /TN WgIme 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'WgIme autostart task removed' }
-    else { Write-Host 'WgIme autostart task not found' }
-    exit 0
-}
 # If this script's console is VISIBLE (right-click "Run with PowerShell",
 # bare -File from a terminal), relaunch ourselves with a hidden console
 # and exit - the visible window never stays around. When already started
-# hidden (scheduled task / install.bat) IsWindowVisible is False and this
+# hidden (install.bat / a task scheduler / any -WindowStyle Hidden launch)
+# IsWindowVisible is False and this
 # whole block is skipped, so no extra process is spawned. The child is
 # launched with -WindowStyle Hidden (its console is born hidden), and the
 # WGHIDE env var guards against any recursion.
@@ -157,4 +141,4 @@ Write-Output "checks OK (UTF-8 BOM, markers present)"
 # the wg-all distribution folder ships only the ps1 editions - the
 # DLL/bat intermediates live in the temp build dir, now removed
 Remove-Item $tmpOut -Recurse -Force -EA SilentlyContinue
-Write-Output "DONE - WgIme.ps1 ready (run with -Install for logon autostart)"
+Write-Output "DONE - WgIme.ps1 ready"

@@ -139944,10 +139944,6 @@ public class WordBoard : Form
         miHideIdle = new ToolStripMenuItem(L("空闲时隐藏候选窗", "Hide candidate board while idle"));
         miHideIdle.Click += delegate { HideIdle = !HideIdle; SaveConfigKey("hideidle", HideIdle ? "1" : "0"); RefreshLabel(); };
         mOpt.DropDownItems.Add(miHideIdle);
-        mOpt.DropDownItems.Add(new ToolStripSeparator());
-        miAuto = new ToolStripMenuItem(L("开机自启 (计划任务)", "Start with Windows (scheduled task)"));
-        miAuto.Click += delegate { SetAutoStartTask(!IsAutoStartTask()); RefreshMenuChecks(); };
-        mOpt.DropDownItems.Add(miAuto);
         menu.Items.Add(mOpt);
 
         var mApp = new ToolStripMenuItem(L("这个程序", "This app"));
@@ -140053,7 +140049,6 @@ public class WordBoard : Form
         miTrad.Checked = Trad;
         miFollow.Checked = FollowCaret;
         miHideIdle.Checked = HideIdle;
-        if (miAuto != null) miAuto.Checked = IsAutoStartTask();
         string app = ForegroundProcessName();
         int cur;
         miAppPaste.Checked = AppModes != null && AppModes.TryGetValue(app, out cur) && cur == 1;
@@ -141292,7 +141287,7 @@ public class WordBoard : Form
     }
 
     // ---------- tray menu ----------
-    ToolStripMenuItem miOnOff, miCode, miTrad, miAppPaste, miAppKeyfix, miFollow, miHideIdle, miAuto;   // tray menu items with live checkmarks
+    ToolStripMenuItem miOnOff, miCode, miTrad, miAppPaste, miAppKeyfix, miFollow, miHideIdle;   // tray menu items with live checkmarks
     ToolStripMenuItem[] miModes;
 
     // (the mini calculator moved out to the plugins\calc.txt [csharp] plugin; codes jsq/calc)
@@ -143887,41 +143882,6 @@ public class WordBoard : Form
         return 1;
     }
     void TrayTip(string title, string text, ToolTipIcon icon) { try { tray.ShowBalloonTip(2600, title, text, icon); } catch {} }
-
-    // ---------- 开机自启 (计划任务 schtasks ONLOGON, 与 ps1 -Install 同款) ----------
-    static bool IsAutoStartTask()
-    {
-        try {
-            var psi = new ProcessStartInfo("schtasks.exe", "/Query /TN WgIme") {
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            using (var p = Process.Start(psi)) { p.WaitForExit(6000); return p.ExitCode == 0; }
-        } catch { return false; }
-    }
-    void SetAutoStartTask(bool on)
-    {
-        try {
-            if (!on) {
-                var psi = new ProcessStartInfo("schtasks.exe", "/Delete /F /TN WgIme") {
-                    UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardOutput = true, RedirectStandardError = true
-                };
-                using (var p = Process.Start(psi)) { p.WaitForExit(6000); }
-                TrayTip(L("开机自启", "Startup"), L("已关闭 (计划任务)", "off (scheduled task)"), ToolTipIcon.Info);
-                return;
-            }
-            string inner = "powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + BatPath + "\"";
-            string tr = "\"" + inner.Replace("\"", "\\\"") + "\"";
-            var psi2 = new ProcessStartInfo("schtasks.exe", "/Create /F /TN WgIme /SC ONLOGON /TR " + tr) {
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            using (var p = Process.Start(psi2)) { p.WaitForExit(6000); }
-            if (IsAutoStartTask()) TrayTip(L("开机自启", "Startup"), L("已开启 (计划任务)", "on (scheduled task)"), ToolTipIcon.Info);
-            else TrayTip(L("开机自启", "Startup"), L("计划任务注册失败, 请以管理员身份运行", "task registration failed, run as admin"), ToolTipIcon.Error);
-        } catch (Exception ex) { TrayTip(L("开机自启", "Startup"), ex.Message, ToolTipIcon.Error); }
-    }
 
     class ImportDialog : Form
     {

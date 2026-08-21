@@ -52,7 +52,7 @@ T 'has toolbox loader (tools.txt)' ($cs.Contains('static void LoadTools'))
 T 'has plugin manager Run button (launcher extension)' ($cs.Contains('66, delegate { RunSel(); });'))
 T 'has plugin manager RunSel method' ($cs.Contains('void RunSel()'))
 T 'has global hotkey host (RegisterHotKey, not a hook)' ($cs.Contains('class HotKeyHost') -and $cs.Contains('RegisterHotKey'))
-T 'has autostart shortcut support' ($cs.Contains('void SetAutoStart(bool on)'))
+T 'no autostart code (no SetAutoStart / no schtasks / no miAuto)' ((-not $cs.Contains('void SetAutoStart(bool on)')) -and (-not $cs.Contains('schtasks')) -and (-not $cs.Contains('miAuto')))
 
 # ================= 3. embedded C# compiles =================
 Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing -ErrorAction Stop

@@ -35,19 +35,19 @@ A single-file, install-free overlay IME (pinyin / wubi / mixed / EN-CN dictionar
 - **插件** —— `plugins\*.txt` 里启用的插件（步骤 DSL 与 `[csharp]` 代码插件都支持）+ **插件管理**（运行/列表/启用禁用/编辑/删除/新建模板/打开目录）
 - **内置工具** —— 计算器（plugins\calc.txt）/ 网络工具（ping/tracert/DNS/HTTP/端口/子网计算）/ 剪贴板历史 / 便签 / 颜色拾取
 - **应用 (config.txt)** —— `app = 编码 名称 命令` 条目
-- **配置** —— 编辑 config.txt / 重载配置 / **开机自启**（计划任务 schtasks ONLOGON）/ 数据目录
+- **配置** —— 编辑 config.txt / 重载配置 / 数据目录
 - **全局快捷键** —— `Ctrl+Alt+T` 工具箱 / `Ctrl+Alt+P` 插件管理 / `Ctrl+Alt+W` 光标处菜单，config.txt 的 `hotkey_*` 键可改（`none` 禁用）
 
-## 开机自启（计划任务，非 Startup 快捷方式）
+## 开机自启
 
-各运行一次注册登录时启动的计划任务（schtasks ONLOGON）：
+程序**不自带**计划任务注册（无 `-Install` / `-RemoveTask`，托盘菜单也没有"开机自启"项）——自动启动由你自己的工具负责（如任务计划程序、启动文件夹、组策略），把启动命令加进去即可：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1 -Install
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1 -Install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1      # 输入法
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1     # 托盘工具箱
 ```
 
-取消自启：相应 ps1 加 `-RemoveTask`。托盘菜单「开机自启」开关也走同一计划任务（WgIme 菜单：顶部勾选项；WgTray 菜单：配置 → 开机自启）。
+> 这样做的原因：不写计划任务、不在程序里调用 schtasks，减少安全软件（EDR/杀软）对"隐藏 PowerShell 自启动"行为模式的告警面；需要自启的用户自己挂任务。
 
 ## 快速开始
 
@@ -91,9 +91,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 **ps1 版**
 - 程序集 = ps1 内嵌的 base64 预编译 DLL，运行时解出到 `%LOCALAPPDATA%\wgime\*.dll` 加载
 - 优点：启动命令行只有 `powershell -File xxx.ps1`，没有 `Add-Type`/`.dll`/`::Run` 明文——规避 EDR 对"隐藏 PowerShell 加载 DLL"的命令行告警（Cisco 等安全软件环境下更安静）
-- 缺点：需要 PowerShell 调用方式启动（双击默认用 notepad 打开，需右键"使用 PowerShell 运行"或走计划任务/install.bat）
+- 缺点：需要 PowerShell 调用方式启动（双击默认用 notepad 打开，需右键"使用 PowerShell 运行"或由自己的启动工具拉起）
 
-**建议**：要双击即用 → bat 版；在意安全软件命令行告警（如公司机）→ ps1 版 + 计划任务自启。
+**建议**：要双击即用 → bat 版；在意安全软件命令行告警（如公司机）→ ps1 版（程序不自带自启注册，自启用你自己的任务计划/启动文件夹）。
 
 ## 分发（wg-all/）
 

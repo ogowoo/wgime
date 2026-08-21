@@ -1,8 +1,8 @@
 # ============================================================
 #  wgime-ps1.tests.ps1 - regression tests for the WgIme ps1
 #  payload edition (single-file WgIme.ps1: PS head + embedded base64
-#  prebuilt DLL trailer ###WGIME_DLL###; autostart via scheduled task;
-#  NO launcher shortcut - start via the ps1 or the scheduled task)
+#  prebuilt DLL trailer ###WGIME_DLL###; no scheduled-task autostart;
+#  NO launcher shortcut - manual start via the ps1)
 #
 #  Run with Windows PowerShell 5.1:
 #    powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1
@@ -27,8 +27,7 @@ $txt = [IO.File]::ReadAllText($ps1Path, [Text.Encoding]::UTF8)
 T 'ps1 is self-contained: payload trailer present' ($txt.Contains('###WGIME_DLL###'))
 T 'ps1 launches WgImeLauncher' ($txt.Contains('[WgImeLauncher]::Run'))
 T 'ps1 no cmd self-extract marker (###PWSHTRAY###)' (-not $txt.Contains('###PWSHTRAY###'))
-T 'ps1 head registers the scheduled task via schtasks' ($txt.Contains('/TN WgIme /SC ONLOGON'))
-T 'ps1 has -RemoveTask support' ($txt.Contains('-RemoveTask'))
+T 'ps1 has NO scheduled-task autostart (no -Install / no schtasks / no tray item)' ((-not $txt.Contains('/SC ONLOGON')) -and (-not $txt.Contains('-RemoveTask')) -and (-not $txt.Contains('SetAutoStartTask')))
 T 'ps1 has NO shortcut code (no IShellLink / no CreateShortcut)' ((-not $txt.Contains('IShellLink')) -and (-not $txt.Contains('CreateShortcut')))
 
 # ================= 2. parse check =================
@@ -36,34 +35,10 @@ $tokens = $null; $errors = $null
 [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors) | Out-Null
 T 'ps1 parses without syntax errors' ($errors.Count -eq 0) (($errors | ForEach-Object { $_.Message }) -join '; ')
 
-# ================= 3. scheduled-task autostart (-Install / -RemoveTask) =================
-# Note: schtasks /Create needs an interactive session; in a sandboxed/
-# headless runner it fails with Access denied. Detect that and SKIP the
-# task assertions (the ps1 still runs fine either way).
-$taskWritable = $true
-& cmd /c "schtasks.exe /Create /F /TN WgImeProbe /SC ONLOGON /TR ""cmd /c exit"" 2>nul" | Out-Null
-if ($LASTEXITCODE -ne 0) { $taskWritable = $false }
-& cmd /c "schtasks.exe /Delete /F /TN WgImeProbe 2>nul" | Out-Null
-& cmd /c "schtasks.exe /Delete /F /TN WgIme 2>nul" | Out-Null
-if ($taskWritable) {
-    $ins = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$ps1Path,'-Install' -PassThru
-    Start-Sleep -Seconds 10
-    $q = & cmd /c "schtasks.exe /Query /TN WgIme /FO LIST /V 2>nul" | Out-String
-    T 'install: task registered' ($q -match 'WgIme')
-    $tr = ($q -split "`r?`n") | Where-Object { $_ -match '^Task To Run' } | Select-Object -First 1
-    T 'install: task runs powershell -File ps1 (no Add-Type in cmd)' ($tr -match 'powershell\.exe.*-File.*WgIme\.ps1' -and $tr -notmatch 'Add-Type')
-    T 'install: task triggers at logon' ($q -match 'At logon time')
-    # -Install also launches the IME (install-and-run); stop the worker
-    $wIns = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*WgIme.ps1*' -and $_.CommandLine -like '*-Install*' }
-    if ($wIns) { $wIns | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }
-    $ps2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$ps1Path,'-RemoveTask' -PassThru -Wait
-    T 'remove: -RemoveTask exits cleanly' ($ps2.ExitCode -eq 0)
-    $q2 = & cmd /c "schtasks.exe /Query /TN WgIme 2>nul" | Out-String
-    T 'remove: task removed' ($q2 -notmatch 'WgIme')
-} else {
-    Write-Host "SKIP  scheduled-task assertions (schtasks not writable in this session)"
-    $script:passed += 5   # count the skipped ones as passed to keep the suite green
-}
+# ================= 3. (removed) scheduled-task autostart - no longer shipped =================
+# ps1 editions no longer register any scheduled task / autostart; the
+# "no -Install / no schtasks" assertion above covers the head, and the
+# "no tray autostart item" reflection checks below cover the C# payload.
 
 # ================= 4. runtime smoke: launch, payload DLL extracted, IME worker up =================
 $errLog = Join-Path $env:TEMP 'WgIme_error.log'
@@ -137,34 +112,23 @@ try {
 }
 Remove-Item $tcDll, $tcDir -Recurse -Force -EA SilentlyContinue
 
-# ================= 7. tray menu: 开机自启 (scheduled task) toggle =================
-# The tray menu must carry a miAuto item wired to SetAutoStartTask, and
-# IsAutoStartTask must probe the WgIme scheduled task (schtasks /Query).
+# ================= 7. no autostart in the tray menu / C# payload =================
+# The autostart feature was removed: no miAuto field, no SetAutoStartTask /
+# IsAutoStartTask methods, no schtasks references anywhere in the payload.
 $auDll = Join-Path $env:TEMP 'wgime_autostart_test.dll'
 [IO.File]::WriteAllBytes($auDll, $bytes)   # $bytes: payload DLL bytes from section 6
+$auHasAuto = $false
 try {
     Add-Type -Path $auDll -ErrorAction Stop
     $auWb = [WordBoard]
     $auFlags = [Reflection.BindingFlags]'Instance,Static,NonPublic,Public,DeclaredOnly'
     $auF = $auWb.GetField('miAuto', $auFlags)
-    T 'tray: miAuto menu item field exists' ($null -ne $auF) ('type=' + $(if ($auF) { $auF.FieldType.Name } else { 'none' }))
     $auSet = $auWb.GetMethod('SetAutoStartTask', $auFlags)
     $auIs = $auWb.GetMethod('IsAutoStartTask', $auFlags)
-    T 'tray: SetAutoStartTask method exists' ($null -ne $auSet)
-    T 'tray: IsAutoStartTask method exists' ($null -ne $auIs)
-    # IsAutoStartTask must return a bool and not throw (schtasks /Query may be
-    # denied in a sandbox; a false/true answer is fine, an exception is not)
-    $auErr = $null
-    $auVal = $null
-    try {
-        $auVal = $auIs.Invoke($null, $null)
-    } catch { $auErr = $_.Exception.Message }
-    T 'tray: IsAutoStartTask runs without throwing' ($null -eq $auErr -and $auVal -is [bool]) ("err=$auErr val=$auVal")
+    $auHasAuto = ($null -ne $auF) -or ($null -ne $auSet) -or ($null -ne $auIs)
+    T 'tray: no autostart menu field / methods in payload' (-not $auHasAuto) ("miAuto=$($null -ne $auF) Set=$($null -ne $auSet) Is=$($null -ne $auIs)")
 } catch {
-    T 'tray: miAuto menu item field exists' $false $_.Exception.Message
-    T 'tray: SetAutoStartTask method exists' $false $_.Exception.Message
-    T 'tray: IsAutoStartTask method exists' $false $_.Exception.Message
-    T 'tray: IsAutoStartTask runs without throwing' $false $_.Exception.Message
+    T 'tray: no autostart menu field / methods in payload' $false $_.Exception.Message
 }
 Remove-Item $auDll -Force -EA SilentlyContinue
 

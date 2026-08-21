@@ -18,12 +18,10 @@
   * 双击 install.bat  -> 启动 输入法 + 托盘工具箱 (默认)
   * install.bat ime   -> 只启动输入法
   * install.bat tray  -> 只启动托盘工具箱
-  * 开机自启 (计划任务, 非 Startup 快捷方式), 各运行一次:
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1 -Install
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1 -Install
-    注册登录时启动的计划任务 (schtasks ONLOGON);
-    取消自启:  相应 ps1 加 -RemoveTask
-    托盘菜单"配置 -> 开机自启"开关也走同一计划任务
+  * 开机自启: 程序不自带自启注册 (无 -Install / 无计划任务 / 托盘菜单
+    无"开机自启"项); 需要自启时由你自己的工具挂任务, 启动命令:
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1
 
 文件说明:
 
@@ -36,8 +34,8 @@
 为什么是 ps1 载荷版: 启动命令行只有
   powershell ... -File WgIme.ps1 / WgTray.ps1
 没有任何 Add-Type/.dll/::Run 明文, 规避 EDR 对"隐藏 PowerShell 加载
-DLL"行为模式的命令行告警。不生成启动快捷方式 - 启动一律走 ps1
-(install.bat / 计划任务 / 手动 -File)。
+DLL"行为模式的命令行告警。不生成启动快捷方式, 不自带自启注册 -
+启动一律走 ps1 (install.bat / 你自己的自启工具 / 手动 -File)。
 
 重建 (需要 Windows PowerShell 5.1 与 wgime.bat 源码):
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgime-ps1.ps1
