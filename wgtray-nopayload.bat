@@ -234,27 +234,31 @@ public class TrayApp
         } catch {}
     }
 
-    // ---------- 开机自启 (Startup 文件夹快捷方式) ----------
-    static string StartupLinkPath() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "WgTray.lnk"); }
-    static bool IsAutoStart() { try { return File.Exists(StartupLinkPath()); } catch { return false; } }
+    // ---------- 开机自启 (计划任务, schtasks ONLOGON; 不再用 Startup 快捷方式) ----------
+    static bool IsAutoStart()
+    {
+        try {
+            var p = Process.Start(new ProcessStartInfo("schtasks.exe", "/Query /TN WgTray") {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true });
+            p.WaitForExit();
+            return p.ExitCode == 0;
+        } catch { return false; }
+    }
     static void SetAutoStart(bool on)
     {
-        string p = StartupLinkPath();
         try {
             if (!on) {
-                if (File.Exists(p)) File.Delete(p);
-                TrayTip(L("开机自启", "Startup"), L("已关闭", "off"), ToolTipIcon.Info);
+                Process.Start(new ProcessStartInfo("schtasks.exe", "/Delete /F /TN WgTray") {
+                    UseShellExecute = false, CreateNoWindow = true }).WaitForExit();
+                TrayTip(L("开机自启", "Startup"), L("已关闭 (计划任务)", "off (task)"), ToolTipIcon.Info);
                 return;
             }
-            var type = Type.GetTypeFromProgID("WScript.Shell");
-            var sh = Activator.CreateInstance(type);
-            var lnk = type.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { p });
-            var lt = lnk.GetType();
-            lt.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { BatPath });
-            lt.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { BatDir });
-            lt.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, lnk, new object[] { "WgTray" });
-            lt.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, lnk, null);
-            TrayTip(L("开机自启", "Startup"), L("已开启 (Startup\\WgTray.lnk)", "on (Startup\\WgTray.lnk)"), ToolTipIcon.Info);
+            // /TR 值: "powershell.exe ... -File "C:\...\WgTray.ps1"" (内层引号反斜杠转义, 与 build 脚本一致)
+            string inner = "powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + BatPath + "\"";
+            string tr = "\"" + inner.Replace("\"", "\\\"") + "\"";
+            Process.Start(new ProcessStartInfo("schtasks.exe", "/Create /F /TN WgTray /SC ONLOGON /TR " + tr) {
+                UseShellExecute = false, CreateNoWindow = true }).WaitForExit();
+            TrayTip(L("开机自启", "Startup"), L("已开启 (计划任务, 登录时启动)", "on (task, at logon)"), ToolTipIcon.Info);
         } catch (Exception ex) { TrayTip(L("开机自启失败", "Startup failed"), ex.Message, ToolTipIcon.Error); }
     }
 
@@ -669,6 +673,7 @@ public class TrayApp
             if (a[1] == "builtin:color") { ShowColor(); return; }
             if (a[1].StartsWith("plugin:")) { RunPlugin(a[1].Substring(7)); return; }
             if (a[1].StartsWith("codeplugin:")) { RunCodePlugin(a[1].Substring(11)); return; }
+            if (a[1].StartsWith("tool:")) { RunToolCode(a[1].Substring(5)); return; }
             if (a[1] == "builtin:pluginmgr") { ShowPluginMgr(); return; }
             string target = a[1];
             // relative paths (those containing a path separator) resolve against the bat's folder, not the
@@ -680,7 +685,40 @@ public class TrayApp
             Process.Start(psi);
         } catch (Exception ex) { TrayTip(L("启动失败", "Launch failed"), a[0] + ": " + ex.Message, ToolTipIcon.Error); }
     }
-    class ToolAction { internal string Name; internal List<string[]> Steps = new List<string[]>(); internal List<string> Raw = new List<string>(); }
+    // run a tools.txt action by its input-method code (mirrors the toolbox button click runner)
+    void RunToolCode(string code)
+    {
+        ToolAction a = null;
+        if (ToolTabs != null) {
+            foreach (var t in ToolTabs) {
+                if (t == null) continue;
+                foreach (var x in t.Actions) {
+                    if (x != null && x.Code == code) { a = x; break; }
+                }
+                if (a != null) break;
+            }
+        }
+        if (a == null) { TrayTip(L("\u5DE5\u5177", "Tool"), "no tool action for code: " + code, ToolTipIcon.Warning); return; }
+        var t2 = new System.Threading.Thread((System.Threading.ThreadStart)delegate {
+            int errs = 0; bool aborted = false;
+            var lines = new System.Collections.Generic.List<string>();
+            for (int k = 0; k < a.Steps.Count; k++) {
+                bool isBlock = a.Steps[k].Length == 1 && (a.Steps[k][0] == "shellblock" || a.Steps[k][0] == "psblock" || a.Steps[k][0] == "shellblockx" || a.Steps[k][0] == "psblockx");
+                var sb = new StringBuilder();
+                string r = ExecToolStep(a.Steps[k], isBlock ? a.Raw[k] : ToolRest(a.Raw[k]), sb, Ui());
+                if (sb.Length > 0) lines.Add(sb.ToString().Trim());
+                if (r == "abort") { aborted = true; break; }
+                if (r != null) { errs++; }
+            }
+            string tail = aborted ? L("\u5DF2\u53D6\u6D88", "-- aborted --") : (errs == 0 ? L("\u5B8C\u6210", "-- done --") : L("\u5B8C\u6210, ", "-- done, ") + errs + L(" \u4E2A\u6B65\u9AA4\u5931\u8D25 --", " step(s) failed --"));
+            string body = lines.Count > 0 ? string.Join(" | ", lines) : tail;
+            try { if (trayRef != null) trayRef.ShowBalloonTip(2600, a.Name, body, ToolTipIcon.Info); } catch {}
+        });
+        t2.IsBackground = true;
+        t2.Start();
+    }
+    class ToolAction { internal string Name; internal string Code;   // optional "code = xyz" under the button -> input-method trigger
+    internal List<string[]> Steps = new List<string[]>(); internal List<string> Raw = new List<string>(); }
     class ToolTab { internal string Name; internal List<ToolAction> Actions = new List<ToolAction>(); internal int Cols; }   // Cols: tile columns from [cols N], 0 = default 2
     static List<ToolTab> ToolTabs;
     Form toolsForm;
@@ -748,11 +786,26 @@ public class TrayApp
                     tab.Actions.Add(act);
                     continue;
                 }
-                if (act == null) continue;                                   // steps before any button: ignore
+                if (act != null && t.StartsWith("code")) {                        // "code = xyz": input-method code for this button (not a step)
+                    var ctoks = ToolToks(t);
+                    if (ctoks.Count >= 3 && ctoks[2].Length > 0) act.Code = ctoks[2].ToLower();
+                    continue;
+                }                if (act == null) continue;                                   // steps before any button: ignore
                 var toks = ToolToks(t);
                 if (toks.Count > 0) { act.Steps.Add(toks.ToArray()); act.Raw.Add(t); }
             }
-        } catch {}
+            // tool-action codes -> app launcher (overrides app= with the same code; picking the
+            // "\u5DE5\u5177:\u540D\u79F0" candidate runs the action exactly like clicking its button)
+            if (Apps == null) Apps = new Dictionary<string,string[]>();
+            if (tabs != null) {
+                foreach (var tabx in tabs) {
+                    if (tabx == null) continue;
+                    foreach (var actx in tabx.Actions) {
+                        if (actx == null || string.IsNullOrEmpty(actx.Code)) continue;
+                        Apps[actx.Code] = new string[] { "\u5DE5\u5177:" + actx.Name, "tool:" + actx.Code, "" };
+                    }
+                }
+            }        } catch {}
     }
 
     static string ToolRest(string rawLine)               // the raw remainder after the verb (msg/confirm/shell keep original spacing)
@@ -2890,6 +2943,9 @@ $seedTools = @'
 ;    [tab 标签页名]        新开一个标签页
 ;    [cols N]              当前标签页按钮按 N 列平铺 (1-6, 默认 2), 多了自动换行
 ;    [按钮名]              在当前标签页加一个按钮
+;    code = xxx            按钮名下可加一行启动编码 (WgIme 输入法版专用):
+;                          输入 xxx 后候选条出现 ▶工具:按钮名, 选中即执行 (同点击);
+;                          编码与 app= 冲突时 tools 的优先; WgTray 托盘版不适用
 ;    <步骤行>              按钮点击后从上到下依次执行
 ;
 ;  步骤动词 (参数支持 "引号" 包裹含空格的项, 路径支持 %环境变量%):

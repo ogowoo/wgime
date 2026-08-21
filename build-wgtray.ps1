@@ -60,6 +60,9 @@ Write-Output ("wgime C# source: {0} chars" -f $cs.Length)
 $lines = $cs -split "`n"
 
 # ---- 2) reusable slices (1-based line numbers, anchor-line checked) ----
+# NOTE: line numbers are relative to the C# here-string extracted from
+# wgime.bat (see step 1). If wgime.bat's C# gains/loses lines, update the
+# A/B numbers below (the Anchor check will fail loudly and name the slice).
 function Slice([int]$a, [int]$b, [string]$anchor) {
     if ($a -lt 1 -or $b -gt $lines.Count) { throw "slice $a..$b out of range (max $($lines.Count))" }
     $first = $lines[$a - 1].TrimStart()
@@ -81,20 +84,20 @@ $parts.Add($glue)
 
 # ---- 4) verbatim reusable slices (only display-name renames) ----
 $sliceDefs = @(
-    @{ A = 1487; B = 1495; Anchor = 'static void FixLegacyConfigIfBroken' },
-    @{ A = 1847; B = 1869; Anchor = 'void LaunchApp(string code)' },
-    @{ A = 1878; B = 1882; Anchor = 'class ToolAction' },
-    @{ A = 1883; B = 2153; Anchor = 'static List<string> ToolToks(string line)' },
-    @{ A = 2155; B = 2495; Anchor = 'class ToolsForm : Form' },
-    @{ A = 2497; B = 2814; Anchor = '// ---------- embedded network tools' },
-    @{ A = 2815; B = 3303; Anchor = 'class NetToolsForm : Form' },
-    @{ A = 3305; B = 3324; Anchor = '// ---------- embedded clipboard history' },
-    @{ A = 3325; B = 3386; Anchor = 'class ClipForm : Form' },
-    @{ A = 3388; B = 3399; Anchor = '// ---------- embedded sticky note' },
-    @{ A = 3400; B = 3744; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
-    @{ A = 3746; B = 3770; Anchor = '// ---------- embedded color picker' },
-    @{ A = 3772; B = 3844; Anchor = 'class ColorForm : Form' },
-    @{ A = 3846; B = 4060; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
+    @{ A = 1491; B = 1499; Anchor = 'static void FixLegacyConfigIfBroken' },
+    @{ A = 1851; B = 1906; Anchor = 'void LaunchApp(string code)' },
+    @{ A = 1915; B = 1920; Anchor = 'class ToolAction' },
+    @{ A = 1921; B = 2206; Anchor = 'static List<string> ToolToks(string line)' },
+    @{ A = 2208; B = 2548; Anchor = 'class ToolsForm : Form' },
+    @{ A = 2550; B = 2867; Anchor = '// ---------- embedded network tools' },
+    @{ A = 2868; B = 3356; Anchor = 'class NetToolsForm : Form' },
+    @{ A = 3358; B = 3377; Anchor = '// ---------- embedded clipboard history' },
+    @{ A = 3378; B = 3439; Anchor = 'class ClipForm : Form' },
+    @{ A = 3441; B = 3452; Anchor = '// ---------- embedded sticky note' },
+    @{ A = 3453; B = 3797; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
+    @{ A = 3799; B = 3823; Anchor = '// ---------- embedded color picker' },
+    @{ A = 3825; B = 3897; Anchor = 'class ColorForm : Form' },
+    @{ A = 3899; B = 4113; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
 )
 foreach ($d in $sliceDefs) {
     $s = Slice $d.A $d.B $d.Anchor
@@ -108,6 +111,9 @@ foreach ($d in $sliceDefs) {
     # tool/plugin steps: ExecToolStep's Control param was 'this' (WordBoard was a Form) -> Ui()
     $s = $s.Replace('ExecToolStep(a.Steps[i], isBlock ? a.Raw[i] : ToolRest(a.Raw[i]), sb, this);',
                     'ExecToolStep(a.Steps[i], isBlock ? a.Raw[i] : ToolRest(a.Raw[i]), sb, Ui());')
+    # RunToolCode (tools.txt button code runner): same 'this' -> Ui() swap
+    $s = $s.Replace('ExecToolStep(a.Steps[k], isBlock ? a.Raw[k] : ToolRest(a.Raw[k]), sb, this);',
+                    'ExecToolStep(a.Steps[k], isBlock ? a.Raw[k] : ToolRest(a.Raw[k]), sb, Ui());')
     # RunPlugin: BeginInvoke is a Form method -> marshal via the hidden Ui() control
     $s = $s.Replace('try { BeginInvoke((Action)delegate { TrayTip(a.Name, msg,',
                     'try { Ui().BeginInvoke((Action)delegate { TrayTip(a.Name, msg,')
