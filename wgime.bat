@@ -144502,12 +144502,22 @@ public class WordBoard : Form
                 string py = CodeFor(w);
                 return string.IsNullOrEmpty(py) ? null : py;
             }
-            if (RevWb != null) {                   // pinyin/mixed: show wubi code
+            if (RevWb == null) EnsureRevWb();   // lazy: reverse-wubi map is only needed for showcode hints
+            if (RevWb != null) {
                 string cd;
                 return RevWb.TryGetValue(w, out cd) ? cd : null;
             }
         } catch {}
         return null;
+    }
+    static readonly object RevWbLock = new object();
+    static void EnsureRevWb()   // word -> wubi code, built once on first use (not at startup)
+    {
+        if (RevWb != null) return;
+        lock (RevWbLock) {
+            if (RevWb != null) return;
+            try { RevWb = BuildRevWb(WbDict); } catch {}
+        }
     }
 
     // ---------- elevation helpers for paste fallback ----------
@@ -144792,16 +144802,42 @@ public class WordBoard : Form
     static void WriteStr(BinaryWriter w, string s) { var b = Encoding.UTF8.GetBytes(s); w.Write((ushort)b.Length); w.Write(b); }
     static string ReadStr(BinaryReader r) { return Encoding.UTF8.GetString(r.ReadBytes(r.ReadUInt16())); }
 
-    static void WriteTable(BinaryWriter w, string[] ks, string[] vs)
+    // bulk table: [count][dataLen][data: all key/value UTF8 bytes concatenated][offsets: (count*2+1) ints]
+    // one big read on load instead of 2N tiny ReadBytes -> much faster cache load
+    static void WriteTableBulk(BinaryWriter w, string[] ks, string[] vs)
     {
         w.Write(ks.Length);
-        for (int i = 0; i < ks.Length; i++) { WriteStr(w, ks[i]); WriteStr(w, vs[i]); }
+        using (var ms = new MemoryStream()) {
+            using (var bw = new BinaryWriter(ms)) {
+                var offs = new int[ks.Length * 2 + 1];
+                int pos = 0;
+                for (int i = 0; i < ks.Length; i++) {
+                    byte[] kb = Encoding.UTF8.GetBytes(ks[i]); byte[] vb = Encoding.UTF8.GetBytes(vs[i]);
+                    offs[i * 2] = pos; bw.Write(kb); pos += kb.Length;
+                    offs[i * 2 + 1] = pos; bw.Write(vb); pos += vb.Length;
+                }
+                offs[ks.Length * 2] = pos;
+                byte[] data = ms.ToArray();
+                w.Write(data.Length);
+                w.Write(data);
+                for (int i = 0; i < offs.Length; i++) w.Write(offs[i]);
+            }
+        }
     }
-
-    static void ReadTable(BinaryReader r, out string[] ks, out string[] vs)
+    static void ReadTableBulk(BinaryReader r, out string[] ks, out string[] vs)
     {
-        int n = r.ReadInt32(); ks = new string[n]; vs = new string[n];
-        for (int i = 0; i < n; i++) { ks[i] = ReadStr(r); vs[i] = ReadStr(r); }
+        int n = r.ReadInt32();
+        int dataLen = r.ReadInt32();
+        byte[] data = r.ReadBytes(dataLen);
+        var offs = new int[n * 2 + 1];
+        for (int i = 0; i < offs.Length; i++) offs[i] = r.ReadInt32();
+        ks = new string[n]; vs = new string[n];
+        var enc = Encoding.UTF8;
+        for (int i = 0; i < n; i++) {
+            int k0 = offs[i * 2], k1 = offs[i * 2 + 1], v1 = offs[i * 2 + 2];
+            ks[i] = enc.GetString(data, k0, k1 - k0);
+            vs[i] = enc.GetString(data, k1, v1 - k1);
+        }
     }
 
     static Dictionary<string,string> ToMap(string[] ks, string[] vs)
@@ -144833,17 +144869,17 @@ public class WordBoard : Form
         try {
             using (var fs = new FileStream(path, FileMode.Create)) {
                 var head = new BinaryWriter(fs);
-                head.Write(new byte[] { (byte)'W', (byte)'G', (byte)'M', (byte)'B', (byte)'2' });
+                head.Write(new byte[] { (byte)'W', (byte)'G', (byte)'M', (byte)'B', (byte)'3' });
                 head.Write(md5);
                 head.Flush();
                 using (var ds = new System.IO.Compression.DeflateStream(fs, System.IO.Compression.CompressionMode.Compress, true))
                 using (var w = new BinaryWriter(ds)) {
-                    WriteTable(w, mb.Pk, mb.Pv);
-                    WriteTable(w, mb.Wk, mb.Wv);
-                    WriteTable(w, mb.Ek, mb.Ev);
+                    WriteTableBulk(w, mb.Pk, mb.Pv);
+                    WriteTableBulk(w, mb.Wk, mb.Wv);
+                    WriteTableBulk(w, mb.Ek, mb.Ev);
                     var ck = mb.Ce.Keys.ToArray(); var cv = mb.Ce.Values.ToArray();
                     Array.Sort(ck, cv, StringComparer.Ordinal);
-                    WriteTable(w, ck, cv);
+                    WriteTableBulk(w, ck, cv);
                     w.Write(mb.Acro.Count);
                     foreach (var kv in mb.Acro) { WriteStr(w, kv.Key); WriteStr(w, string.Join(" ", kv.Value)); }
                     w.Write(mb.WfK.Length);
@@ -144859,22 +144895,30 @@ public class WordBoard : Form
             using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) {
                 var r0 = new BinaryReader(fs);
                 var magic = r0.ReadBytes(5);
-                if (magic.Length < 5 || magic[0] != 'W' || magic[1] != 'G' || magic[2] != 'M' || magic[3] != 'B' || magic[4] != '2') return null;
+                if (magic.Length < 5 || magic[0] != 'W' || magic[1] != 'G' || magic[2] != 'M' || magic[3] != 'B' || magic[4] != '3') return null;
                 var md5 = r0.ReadBytes(16);
                 if (md5.Length < 16) return null;
                 for (int i = 0; i < 16; i++) if (md5[i] != wantMd5[i]) return null;   // sources changed -> rebuild
                 var d = new MbData();
                 using (var ds = new System.IO.Compression.DeflateStream(fs, System.IO.Compression.CompressionMode.Decompress, true))
                 using (var r = new BinaryReader(ds)) {
-                    ReadTable(r, out d.Pk, out d.Pv); d.Py = ToMap(d.Pk, d.Pv);
-                    ReadTable(r, out d.Wk, out d.Wv); d.Wb = ToMap(d.Wk, d.Wv);
-                    ReadTable(r, out d.Ek, out d.Ev); d.Ec = ToMap(d.Ek, d.Ev);
-                    string[] ck, cv; ReadTable(r, out ck, out cv); d.Ce = ToMap(ck, cv);
+                    ReadTableBulk(r, out d.Pk, out d.Pv);
+                    ReadTableBulk(r, out d.Wk, out d.Wv);
+                    ReadTableBulk(r, out d.Ek, out d.Ev);
+                    string[] ck, cv; ReadTableBulk(r, out ck, out cv);
                     int ac = r.ReadInt32();
                     d.Acro = new Dictionary<string,List<string>>(ac);
                     for (int i = 0; i < ac; i++) { string k = ReadStr(r); d.Acro[k] = new List<string>(ReadStr(r).Split(' ')); }
                     int wn = r.ReadInt32(); d.WfK = new string[wn]; d.WfV = new int[wn];
                     for (int i = 0; i < wn; i++) { d.WfK[i] = ReadStr(r); d.WfV[i] = r.ReadInt32(); }
+                    // ToMap (hash insert) is the heavy part - run the 4 maps in parallel
+                    var maps = new Dictionary<string,string>[4];
+                    System.Threading.Tasks.Parallel.Invoke(
+                        delegate { maps[0] = ToMap(d.Pk, d.Pv); },
+                        delegate { maps[1] = ToMap(d.Wk, d.Wv); },
+                        delegate { maps[2] = ToMap(d.Ek, d.Ev); },
+                        delegate { maps[3] = ToMap(ck, cv); });
+                    d.Py = maps[0]; d.Wb = maps[1]; d.Ec = maps[2]; d.Ce = maps[3];
                 }
                 return d;
             }
@@ -144964,11 +145008,15 @@ public class WordBoard : Form
         if (mb.WfK != null) for (int i = 0; i < mb.WfK.Length; i++) { WordFreq[mb.WfK[i]] = mb.WfV[i]; wtot += mb.WfV[i]; }
         LogTotalW = Math.Log(Math.Max(wtot, 1000));
         if (Freq != null && Freq.Count > 0 && Acro != null)   // 简拼候选按词频降序 (stable), so zg -> 中国 before rare words
-            foreach (string k in Acro.Keys.ToArray())
-                if (Acro[k].Count > 1)
-                    Acro[k] = Acro[k].OrderByDescending(delegate(string w) { int n; return Freq.TryGetValue(w, out n) ? n : 0; }).ToList();
-        RevWb = BuildRevWb(mb.Wb);
-        CharWb = null;                                        // char->wubi cache follows the swapped dict (lazy rebuild)
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate {   // background: 16万条排序不阻塞启动
+                try {
+                    foreach (string k in Acro.Keys.ToArray())
+                        if (Acro[k].Count > 1)
+                            Acro[k] = Acro[k].OrderByDescending(delegate(string w) { int n; return Freq.TryGetValue(w, out n) ? n : 0; }).ToList();
+                } catch {}
+            });
+        RevWb = null;                                     // lazy: built on first showcode hint (EnsureRevWb)
+        CharWb = null;                                    // char->wubi cache follows the swapped dict (lazy rebuild)
         DictsReady = true;
     }
 
