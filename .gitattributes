@@ -2,7 +2,8 @@
 # batch header (labels / parenthesized blocks / exit /b). A pure-LF checkout makes
 # cmd fall through into the PowerShell body with "'xxx' is not recognized" errors
 # and the IME never starts. PowerShell / C# handle CRLF fine.
-# Stored as-is (CRLF in the blob): `-text` disables git's line-ending conversion
-# (with core.autocrlf=true, `text eol=crlf` would corrupt the CRLF pairs).
-wgime.bat -text
-wgtray.bat -text
+# eol=crlf: stored as LF in the blob, checked out as CRLF on every platform.
+# (core.autocrlf is false in this repo so git does the conversion purely via
+# this attribute - no stray-CR corruption.)
+wgime.bat text eol=crlf
+wgtray.bat text eol=crlf
