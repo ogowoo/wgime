@@ -3066,6 +3066,12 @@ $seedClock = @'
 ;  设置与统计存 %LOCALAPPDATA%\wgime\clock.cfg / pomodoro.txt (格式兼容旧版)
 ;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
 ; ============================================================
+;  WgIme C# 插件: 悬浮时钟 (现代重制版)
+;  输入 sz 选 ▶悬浮时钟, 弹出置顶无边框窗体 (Esc / ✕ 关闭, 拖标题栏移动)
+;  时钟(秒环/闹钟/整点报时) + 倒计时(圆环/预设/自定义提醒) + 秒表(计次) + 番茄(统计/7日图)
+;  设置与统计存 %LOCALAPPDATA%\wgime\clock.cfg / pomodoro.txt (格式兼容旧版)
+;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
+; ============================================================
 code = sz
 name = 悬浮时钟
 desc = 现代风时钟: 秒环/闹钟/整点报时/倒计时圆环/预设/秒表计次/番茄统计与7日图
@@ -3101,12 +3107,29 @@ public class ClockPlugin
 
     static bool hourly = true;
     static string reminder = "休息一下, 喝点水";
+    class AlarmItem {
+        public string Time = "07:30";
+        public string Name = "闹钟";
+        public bool Enabled = true;
+        public string Repeat = "每天";
+        public string Mode = "popup";    // popup=居中弹窗  full=全屏强制休息  tray=托盘气泡
+        public AlarmItem() {}
+        public AlarmItem(string time, string name, bool enabled) { Time = time; Name = name; Enabled = enabled; Repeat = "每天"; }
+        public AlarmItem(string time, string name, bool enabled, string repeat) { Time = time; Name = name; Enabled = enabled; Repeat = repeat; }
+    }
+    static List<AlarmItem> alarms = new List<AlarmItem>();
+    static System.Threading.SynchronizationContext uiContext;
+    static readonly object alarmLock = new object();
+    static List<System.Threading.Timer> snoozeTimers = new List<System.Threading.Timer>();
+    static List<Form> fullscreenAlarms = new List<Form>();   // 全屏提醒实例 (强制休息), 防止重复
+    // 旧版单闹钟字段，仅用于读取旧 clock.cfg 后迁移。
     static string alarmTime = "";
     static bool alarmOn = false;
 
     static void LoadCfg()
     {
         try {
+            alarms.Clear();
             if (!File.Exists(CfgPath())) return;
             foreach (string raw in File.ReadAllLines(CfgPath(), System.Text.Encoding.UTF8)) {
                 string t = raw.Trim();
@@ -3117,16 +3140,125 @@ public class ClockPlugin
                 else if (k == "reminder") reminder = v;
                 else if (k == "alarm") alarmTime = v;
                 else if (k == "alarmon") alarmOn = v == "1";
+                else if (k.StartsWith("alarm.")) {
+                    string[] a = v.Split(new char[] { '|' }, 5);
+                    if (a.Length >= 2 && ValidAlarmTime(a[0])) {
+                        string nm = a.Length >= 3 ? UnescapeCfg(a[2]) : "闹钟";
+                        string rp = a.Length >= 4 ? UnescapeCfg(a[3]) : "每天";
+                        string md = a.Length >= 5 ? UnescapeCfg(a[4]) : "popup";
+                        if (md != "popup" && md != "full" && md != "tray") md = "popup";
+                        AlarmItem item = new AlarmItem(a[0], nm, a[1] == "1", rp); item.Mode = md;
+                        alarms.Add(item);
+                    }
+                }
             }
+            // 与旧版配置兼容：首次发现 alarm/alarmon 时自动迁移。
+            if (alarms.Count == 0 && ValidAlarmTime(alarmTime)) alarms.Add(new AlarmItem(alarmTime, "旧版闹钟", alarmOn));
         } catch {}
     }
+    static bool ValidAlarmTime(string t)
+    {
+        return System.Text.RegularExpressions.Regex.IsMatch(t == null ? "" : t, @"^([01]\d|2[0-3]):[0-5]\d$");
+    }
+    static string EscapeCfg(string s) { return Uri.EscapeDataString((s == null ? "" : s).Replace("\r", " ").Replace("\n", " ")); }
+    static string UnescapeCfg(string s) { try { return Uri.UnescapeDataString(s == null ? "" : s); } catch { return s == null ? "" : s; } }
     static void SaveCfg()
     {
         try {
             Directory.CreateDirectory(CfgDir());
-            File.WriteAllText(CfgPath(),
-                "hourly = " + (hourly ? "1" : "0") + "\nreminder = " + reminder + "\nalarm = " + alarmTime + "\nalarmon = " + (alarmOn ? "1" : "0") + "\n",
-                new System.Text.UTF8Encoding(false));
+            var b = new System.Text.StringBuilder();
+            b.Append("hourly = ").Append(hourly ? "1" : "0").Append("\n");
+            b.Append("reminder = ").Append(reminder).Append("\n");
+            for (int i = 0; i < alarms.Count; i++) {
+                AlarmItem a = alarms[i];
+                b.Append("alarm.").Append(i + 1).Append(" = ").Append(a.Time).Append("|").Append(a.Enabled ? "1" : "0").Append("|").Append(EscapeCfg(a.Name)).Append("|").Append(EscapeCfg(a.Repeat)).Append("|").Append(EscapeCfg(a.Mode)).Append("\n");
+            }
+            File.WriteAllText(CfgPath(), b.ToString(), new System.Text.UTF8Encoding(false));
+        } catch {}
+    }
+    static bool RepeatMatches(AlarmItem a, DateTime now)
+    {
+        if (a.Repeat == "仅一次" || a.Repeat == "每天") return true;
+        if (a.Repeat == "工作日") return now.DayOfWeek >= DayOfWeek.Monday && now.DayOfWeek <= DayOfWeek.Friday;
+        if (a.Repeat == "周末") return now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday;
+        string token = "日一二三四五六"[(int)now.DayOfWeek].ToString();
+        return a.Repeat != null && a.Repeat.StartsWith("自定义:") && a.Repeat.IndexOf(token) >= 0;
+    }
+    static void QueueAlarmPopup(AlarmItem a, DateTime now)
+    {
+        if (uiContext == null) return;
+        string time = a.Time, name = a.Name, repeat = a.Repeat, mode = a.Mode;
+        uiContext.Post(delegate(object state) { DispatchAlarm(time, name, repeat, mode); }, null);
+    }
+    static void DispatchAlarm(string time, string name, string repeat, string mode)
+    {
+        try {
+            if (mode == "full") { ShowFullscreenAlarm(time, name, repeat); return; }
+            if (mode == "tray") { ShowTrayAlarm(time, name, repeat); return; }
+            ShowAlarmPopup(time, name, repeat);
+        } catch {}
+    }
+    // 全屏强制休息: 全屏半透明遮罩 + 置顶, 必须点"我知道了"才能关闭 (有声音, 每 3 秒重响)
+    static void ShowFullscreenAlarm(string time, string name, string repeat)
+    {
+        // 同一时刻只保留一个全屏提醒 (防多个闹钟叠一起)
+        for (int i = fullscreenAlarms.Count - 1; i >= 0; i--) {
+            Form f = fullscreenAlarms[i];
+            if (f == null || f.IsDisposed) { fullscreenAlarms.RemoveAt(i); continue; }
+            try { f.Close(); } catch {}
+        }
+        var a = new Form();
+        a.Text = "WgIme 休息提醒"; a.FormBorderStyle = FormBorderStyle.None; a.AutoScaleMode = AutoScaleMode.None;
+        a.StartPosition = FormStartPosition.Manual; a.Location = new Point(0, 0);
+        a.WindowState = FormWindowState.Normal; a.FormBorderStyle = FormBorderStyle.None;
+        Rectangle wa = Screen.PrimaryScreen.Bounds;
+        a.Bounds = wa;
+        a.BackColor = Color.FromArgb(255, 18, 22, 30);          // 深色底
+        a.TopMost = true; a.ShowInTaskbar = true; a.Opacity = 0.96;
+        a.KeyPreview = true;
+        a.Paint += delegate(object ss, PaintEventArgs ee) {
+            var g = ee.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            int cx = a.ClientSize.Width / 2, cy = a.ClientSize.Height / 2;
+            using (var title = new Font("Microsoft YaHei UI", 30F, FontStyle.Bold))
+            using (var sub = new Font("Microsoft YaHei UI", 16F, FontStyle.Regular))
+            using (var big = new Font("Microsoft YaHei UI", 120F, FontStyle.Bold)) {
+                string msg = string.IsNullOrEmpty(name) ? "休息一下" : name;
+                using (var br = new SolidBrush(Color.FromArgb(255, 235, 235, 240)))
+                    g.DrawString(msg, title, br, new RectangleF(0, cy - 150, a.ClientSize.Width, 60), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+                using (var br2 = new SolidBrush(Color.FromArgb(255, 150, 160, 180)))
+                    g.DrawString(time + "  " + (repeat ?? ""), sub, br2, new RectangleF(0, cy - 80, a.ClientSize.Width, 40), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+                using (var br3 = new SolidBrush(Color.FromArgb(255, 0, 122, 255)))
+                    g.DrawString("☕", big, br3, new RectangleF(0, cy - 40, a.ClientSize.Width, 130), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+            }
+        };
+        var ok = new FlatBtn { Text = "我知道了，继续工作", Font = F(13F, FontStyle.Bold), Location = new Point(0, 0), Size = new Size(280, 52), Primary = true };
+        ok.Location = new Point(a.ClientSize.Width / 2 - 140, a.ClientSize.Height / 2 + 120);
+        ok.Click += delegate { a.Close(); };
+        a.Controls.Add(ok);
+        var st = new System.Windows.Forms.Timer { Interval = 3000 };
+        a.FormClosed += delegate { st.Stop(); st.Dispose(); fullscreenAlarms.Remove(a); };
+        fullscreenAlarms.Add(a);
+        System.Media.SystemSounds.Exclamation.Play();
+        st.Tick += delegate { System.Media.SystemSounds.Exclamation.Play(); };
+        st.Start();
+        a.Show(); a.Activate();
+    }
+    // 托盘气泡: 轻提醒, 不打断 (声音一次)
+    static void ShowTrayAlarm(string time, string name, string repeat)
+    {
+        try {
+            var ni = new NotifyIcon();
+            ni.Icon = System.Drawing.SystemIcons.Information;
+            ni.Visible = true;
+            ni.BalloonTipTitle = "WgIme 提醒  " + time;
+            ni.BalloonTipText = (string.IsNullOrEmpty(name) ? "闹钟" : name) + "  (" + repeat + ")";
+            ni.BalloonTipIcon = ToolTipIcon.Info;
+            ni.ShowBalloonTip(8000);
+            System.Media.SystemSounds.Asterisk.Play();
+            System.Windows.Forms.Timer t = null;
+            t = new System.Windows.Forms.Timer { Interval = 10000 };
+            t.Tick += delegate { t.Stop(); t.Dispose(); ni.Visible = false; ni.Dispose(); };
+            t.Start();
         } catch {}
     }
 
@@ -3138,7 +3270,8 @@ public class ClockPlugin
         if (!createdNew) return;
         var t = new System.Threading.Thread((System.Threading.ThreadStart)delegate {
             int lastHour = -1;
-            string lastAlarmMin = "";
+            var firedAlarms = new HashSet<string>();
+            string firedDay = "";
             while (true) {
                 System.Threading.Thread.Sleep(5000);
                 try {
@@ -3148,13 +3281,16 @@ public class ClockPlugin
                         lastHour = now.Hour;
                         System.Media.SystemSounds.Asterisk.Play();
                     }
-                    if (alarmOn && alarmTime.Length == 5) {
-                        string hm = now.ToString("HH:mm");
-                        if (hm == alarmTime && lastAlarmMin != hm) {
-                            lastAlarmMin = hm;
-                            System.Media.SystemSounds.Exclamation.Play();
-                            System.Threading.Thread.Sleep(700);
-                            System.Media.SystemSounds.Exclamation.Play();
+                    string day = now.ToString("yyyy-MM-dd");
+                    if (day != firedDay) { firedDay = day; firedAlarms.Clear(); }
+                    string hm = now.ToString("HH:mm");
+                    for (int ai = 0; ai < alarms.Count; ai++) {
+                        AlarmItem a = alarms[ai];
+                        string alarmKey = day + " " + hm + "#" + ai;
+                        if (a.Enabled && hm == a.Time && RepeatMatches(a, now) && !firedAlarms.Contains(alarmKey)) {
+                            firedAlarms.Add(alarmKey);
+                            QueueAlarmPopup(a, now);
+                            if (a.Repeat == "仅一次") { a.Enabled = false; SaveCfg(); }
                         }
                     }
                 } catch {}
@@ -3289,8 +3425,117 @@ public class ClockPlugin
     }
     static string WeekCn(DateTime d) { return "星期" + "日一二三四五六"[(int)d.DayOfWeek]; }
 
+    static void ShowAlarmPopup(string time, string name, string repeat)
+    {
+        var a = new Form();
+        a.Text = "WgIme 闹钟提醒"; a.FormBorderStyle = FormBorderStyle.None; a.AutoScaleMode = AutoScaleMode.None;
+        a.ClientSize = new Size(340, 224); a.BackColor = C_BG; a.TopMost = true; a.ShowInTaskbar = true;
+        a.StartPosition = FormStartPosition.CenterScreen;
+        EventHandler ar = delegate { try { SetWindowRgn(a.Handle, CreateRoundRectRgn(0, 0, a.Width + 1, a.Height + 1, 22, 22), true); } catch {} };
+        a.HandleCreated += delegate { ar(a, EventArgs.Empty); }; a.Resize += delegate { ar(a, EventArgs.Empty); };
+        a.Paint += delegate(object ss, PaintEventArgs ee) { ee.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var p = RoundRect(new Rectangle(1, 1, a.Width - 3, a.Height - 3), 10)) using (var pn = new Pen(C_BORDER)) ee.Graphics.DrawPath(pn, p); };
+        var head = new Panel { Location = new Point(0, 0), Size = new Size(340, 38), BackColor = C_HEADER };
+        head.Controls.Add(MkLabel("闹钟提醒", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 180, 24, ContentAlignment.MiddleLeft));
+        head.MouseDown += delegate(object ss, MouseEventArgs ee) { if (ee.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(a.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
+        a.Controls.Add(head);
+        a.Controls.Add(MkLabel(time, F(32F, FontStyle.Regular), C_ORANGE, 0, 52, 340, 52, ContentAlignment.MiddleCenter));
+        a.Controls.Add(MkLabel(name, F(12F, FontStyle.Bold), C_TEXT, 20, 108, 300, 28, ContentAlignment.MiddleCenter));
+        a.Controls.Add(MkLabel("重复：" + repeat, F(8.5F, FontStyle.Regular), C_SUB, 20, 136, 300, 20, ContentAlignment.MiddleCenter));
+        var stop = new FlatBtn { Text = "停止提醒", Font = F(9F, FontStyle.Regular), Location = new Point(20, 174), Size = new Size(142, 34), Primary = true };
+        var snooze = new FlatBtn { Text = "5分钟后提醒", Font = F(9F, FontStyle.Regular), Location = new Point(178, 174), Size = new Size(142, 34), Fg = C_ORANGE };
+        var sound = new Timer { Interval = 1400 };
+        sound.Tick += delegate { System.Media.SystemSounds.Exclamation.Play(); };
+        stop.Click += delegate { sound.Stop(); a.Close(); };
+        snooze.Click += delegate {
+            sound.Stop(); a.Close();
+            System.Threading.Timer later = null;
+            later = new System.Threading.Timer(delegate(object state) {
+                if (uiContext != null) uiContext.Post(delegate(object x) { ShowAlarmPopup(DateTime.Now.ToString("HH:mm"), name + "（稍后提醒）", "单次延后"); }, null);
+                try { later.Dispose(); snoozeTimers.Remove(later); } catch {}
+            }, null, 5 * 60 * 1000, System.Threading.Timeout.Infinite);
+            snoozeTimers.Add(later);
+        };
+        a.FormClosed += delegate { sound.Stop(); sound.Dispose(); };
+        a.Controls.Add(stop); a.Controls.Add(snooze);
+        System.Media.SystemSounds.Exclamation.Play(); sound.Start(); a.Show(); a.Activate();
+    }
+
+    static void ShowAlarmManager(Form owner, Action changed, Font fontBtn, Font fontSub)
+    {
+        var m = new Form();
+        m.Text = "WgIme 闹钟管理"; m.FormBorderStyle = FormBorderStyle.None; m.AutoScaleMode = AutoScaleMode.None;
+        m.ClientSize = new Size(360, 456); m.BackColor = C_BG; m.TopMost = true; m.ShowInTaskbar = false;
+        m.StartPosition = FormStartPosition.Manual;
+        m.Location = new Point(owner.Left + (owner.Width - m.Width) / 2, owner.Top + (owner.Height - m.Height) / 2);
+        EventHandler ar = delegate { try { SetWindowRgn(m.Handle, CreateRoundRectRgn(0, 0, m.Width + 1, m.Height + 1, 20, 20), true); } catch {} };
+        m.HandleCreated += delegate { ar(m, EventArgs.Empty); }; m.Resize += delegate { ar(m, EventArgs.Empty); };
+        m.Paint += delegate(object ss, PaintEventArgs ee) { ee.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var pp = RoundRect(new Rectangle(1, 1, m.Width - 3, m.Height - 3), 9)) using (var pn = new Pen(C_BORDER)) ee.Graphics.DrawPath(pn, pp); };
+        var head = new Panel { Location = new Point(0, 0), Size = new Size(360, 38), BackColor = C_HEADER };
+        var cap = MkLabel("闹钟管理", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 160, 24, ContentAlignment.MiddleLeft);
+        var close = new FlatBtn { Text = "✕", Font = fontBtn, Location = new Point(316, 6), Size = new Size(34, 26), Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70) };
+        close.Click += delegate { m.Close(); }; head.Controls.Add(cap); head.Controls.Add(close);
+        head.MouseDown += delegate(object ss, MouseEventArgs ee) { if (ee.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(m.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
+        m.Controls.Add(head);
+
+        var list = new ListBox { Location = new Point(16, 52), Size = new Size(328, 154), BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        m.Controls.Add(list);
+        var edTime = new RoundedEdit(76, 30, fontBtn); edTime.Location = new Point(16, 220); edTime.Box.Text = "07:30"; m.Controls.Add(edTime);
+        var edName = new RoundedEdit(148, 30, fontBtn); edName.Location = new Point(100, 220); edName.Box.TextAlign = HorizontalAlignment.Left; edName.Box.Text = "闹钟"; m.Controls.Add(edName);
+        var toggle = new FlatBtn { Text = "已开启", Font = fontBtn, Location = new Point(256, 219), Size = new Size(88, 32), Fg = C_GREEN };
+        var repeat = new ComboBox { Location = new Point(16, 260), Size = new Size(328, 28), DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn };
+        repeat.Items.AddRange(new object[] { "仅一次", "每天", "工作日", "周末", "自定义:一二三四五", "自定义:一三五", "自定义:二四六", "自定义:日六" }); repeat.SelectedItem = "每天"; m.Controls.Add(repeat);
+        var mode = new ComboBox { Location = new Point(16, 296), Size = new Size(328, 28), DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn };
+        mode.Items.AddRange(new object[] { "居中弹窗", "全屏强制休息", "托盘气泡" }); mode.SelectedIndex = 0; m.Controls.Add(mode);
+        bool editEnabled = true;
+        toggle.Click += delegate { editEnabled = !editEnabled; toggle.Text = editEnabled ? "已开启" : "已关闭"; toggle.Fg = editEnabled ? C_GREEN : C_SUB; toggle.Invalidate(); };
+        m.Controls.Add(toggle);
+        var note = MkLabel("选择项目可编辑；提醒方式可单独设置", fontSub, C_SUB, 16, 332, 328, 20, ContentAlignment.MiddleLeft); m.Controls.Add(note);
+
+        Action refresh = delegate {
+            list.Items.Clear();
+            for (int i = 0; i < alarms.Count; i++) list.Items.Add((alarms[i].Enabled ? "● " : "○ ") + alarms[i].Time + "   " + alarms[i].Name + "   [" + alarms[i].Repeat + "]");
+            if (changed != null) changed();
+        };
+        Action<int> loadItem = delegate(int idx) {
+            if (idx < 0 || idx >= alarms.Count) return;
+            AlarmItem a = alarms[idx]; edTime.Box.Text = a.Time; edName.Box.Text = a.Name; editEnabled = a.Enabled;
+            toggle.Text = editEnabled ? "已开启" : "已关闭"; toggle.Fg = editEnabled ? C_GREEN : C_SUB; toggle.Invalidate();
+            repeat.SelectedItem = a.Repeat; if (repeat.SelectedIndex < 0) repeat.SelectedItem = "每天";
+            mode.SelectedItem = a.Mode == "full" ? "全屏强制休息" : (a.Mode == "tray" ? "托盘气泡" : "居中弹窗");
+        };
+        list.SelectedIndexChanged += delegate { loadItem(list.SelectedIndex); };
+        Action normalize = delegate {
+            string t = edTime.Box.Text.Trim().Replace("：", ":"); string d = t.Replace(":", ""); int hh = 0, mm = 0;
+            if (d.Length == 3 || d.Length == 4) { string hs = d.Substring(0, d.Length - 2), ms = d.Substring(d.Length - 2); if (int.TryParse(hs, out hh) && int.TryParse(ms, out mm) && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) t = hh.ToString("00") + ":" + mm.ToString("00"); }
+            edTime.Box.Text = t;
+        };
+        Func<AlarmItem> readItem = delegate {
+            normalize(); string t = edTime.Box.Text.Trim();
+            if (!ValidAlarmTime(t)) { note.Text = "时间格式错误，请输入 00:00–23:59"; note.ForeColor = C_RED; return null; }
+            string nm = edName.Box.Text.Trim(); if (nm.Length == 0) nm = "闹钟";
+            note.Text = "已保存"; note.ForeColor = C_GREEN;
+            AlarmItem it = new AlarmItem(t, nm, editEnabled, repeat.SelectedItem == null ? "每天" : repeat.SelectedItem.ToString());
+            string sel = mode.SelectedItem == null ? "居中弹窗" : mode.SelectedItem.ToString();
+            it.Mode = sel == "全屏强制休息" ? "full" : (sel == "托盘气泡" ? "tray" : "popup");
+            return it;
+        };
+        var add = new FlatBtn { Text = "新增", Font = fontBtn, Location = new Point(16, 372), Size = new Size(76, 34), Primary = true };
+        var save = new FlatBtn { Text = "保存修改", Font = fontBtn, Location = new Point(100, 372), Size = new Size(92, 34), Fg = C_ACCENT };
+        var del = new FlatBtn { Text = "删除", Font = fontBtn, Location = new Point(200, 372), Size = new Size(68, 34), Fg = C_RED };
+        var clear = new FlatBtn { Text = "清空", Font = fontBtn, Location = new Point(276, 372), Size = new Size(68, 34), Fg = C_SUB };
+        add.Click += delegate { AlarmItem a = readItem(); if (a == null) return; alarms.Add(a); SaveCfg(); refresh(); list.SelectedIndex = alarms.Count - 1; };
+        save.Click += delegate { int i = list.SelectedIndex; if (i < 0 || i >= alarms.Count) { note.Text = "请先选择一个闹钟"; note.ForeColor = C_RED; return; } AlarmItem a = readItem(); if (a == null) return; alarms[i] = a; SaveCfg(); refresh(); list.SelectedIndex = i; };
+        del.Click += delegate { int i = list.SelectedIndex; if (i < 0 || i >= alarms.Count) return; alarms.RemoveAt(i); SaveCfg(); refresh(); if (alarms.Count > 0) list.SelectedIndex = Math.Min(i, alarms.Count - 1); };
+        clear.Click += delegate { edTime.Box.Text = "07:30"; edName.Box.Text = "闹钟"; editEnabled = true; toggle.Text = "已开启"; toggle.Fg = C_GREEN; toggle.Invalidate(); repeat.SelectedItem = "每天"; mode.SelectedIndex = 0; list.ClearSelected(); note.Text = "填写后点击新增"; note.ForeColor = C_SUB; };
+        m.Controls.Add(add); m.Controls.Add(save); m.Controls.Add(del); m.Controls.Add(clear);
+        m.FormClosed += delegate { SaveCfg(); if (changed != null) changed(); };
+        refresh(); m.Show(owner);
+    }
+
     public static void Run()
     {
+        uiContext = System.Threading.SynchronizationContext.Current;
+        if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
         LoadCfg();
         StartChimeWatcher();
 
@@ -3397,25 +3642,19 @@ public class ClockPlugin
             Location = new Point(16, 282), Size = new Size(118, 32), Fg = hourly ? C_GREEN : C_SUB };
         chkHourly.Click += delegate { hourly = !hourly; SaveCfg(); chkHourly.Text = hourly ? "整点报时: 开" : "整点报时: 关"; chkHourly.Fg = hourly ? C_GREEN : C_SUB; chkHourly.Invalidate(); };
         var lblAl = MkLabel("闹钟", fontBtn, C_SUB, 144, 288, 40, 22, ContentAlignment.MiddleLeft);
-        var edAlarm = new RoundedEdit(58, 28, fontBtn); edAlarm.Location = new Point(186, 284);
-        var txtAlarm = edAlarm.Box; txtAlarm.Text = alarmTime.Length == 5 ? alarmTime : "07:30";
-        var chkAlarm = new FlatBtn { Text = alarmOn ? "开" : "关", Font = fontBtn, Location = new Point(252, 282), Size = new Size(46, 32), Fg = alarmOn ? C_ORANGE : C_SUB };
-        chkAlarm.Click += delegate {
-            alarmOn = !alarmOn;
-            var t = txtAlarm.Text.Trim();
-            if (System.Text.RegularExpressions.Regex.IsMatch(t, @"^([01]\d|2[0-3]):[0-5]\d$")) { alarmTime = t; txtAlarm.Text = t; }
-            chkAlarm.Text = alarmOn ? "开" : "关"; chkAlarm.Fg = alarmOn ? C_ORANGE : C_SUB; chkAlarm.Invalidate();
-            SaveCfg();
+        var lblAlSummary = MkLabel("", fontSub, C_SUB, 184, 288, 104, 22, ContentAlignment.MiddleLeft);
+        var btnAlarmManage = new FlatBtn { Text = "管理闹钟", Font = fontBtn, Location = new Point(292, 282), Size = new Size(92, 32), Fg = C_ACCENT };
+        Action refreshAlarmSummary = delegate {
+            int enabled = 0; string next = "";
+            for (int i = 0; i < alarms.Count; i++) if (alarms[i].Enabled) { enabled++; if (next.Length == 0 || String.Compare(alarms[i].Time, next) < 0) next = alarms[i].Time; }
+            lblAlSummary.Text = alarms.Count == 0 ? "未设置" : (enabled + "个开启" + (next.Length > 0 ? " · " + next : ""));
         };
-        var lblAlNote = MkLabel(alarmTime.Length == 5 ? "每天 " + alarmTime + " 响" : "格式 HH:mm", fontSub, C_SUB, 306, 288, 90, 22, ContentAlignment.MiddleLeft);
-        txtAlarm.LostFocus += delegate {
-            var t = txtAlarm.Text.Trim();
-            if (System.Text.RegularExpressions.Regex.IsMatch(t, @"^([01]\d|2[0-3]):[0-5]\d$")) { alarmTime = t; lblAlNote.Text = "每天 " + t + " 响"; SaveCfg(); }
-        };
+        refreshAlarmSummary();
+        btnAlarmManage.Click += delegate { ShowAlarmManager(f, refreshAlarmSummary, fontBtn, fontSub); };
         var p0 = pages[0];
         p0.Controls.Add(lblTime); p0.Controls.Add(lblDate); p0.Controls.Add(lblDayOf);
         p0.Controls.Add(ringClock);
-        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(edAlarm); p0.Controls.Add(chkAlarm); p0.Controls.Add(lblAlNote);
+        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(lblAlSummary); p0.Controls.Add(btnAlarmManage);
 
         // =========================================================
         //  page 1: countdown (ring / presets / custom reminder)
@@ -3644,6 +3883,7 @@ public class ClockPlugin
     static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
 }
 [/csharp]
+
 '@
 $seedCalc = @'
 ; ============================================================
