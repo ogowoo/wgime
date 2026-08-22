@@ -139715,6 +139715,7 @@ public class WordBoard : Form
     static readonly object CharPyLock = new object();       // lazy CharPy build (word creation only)
     static int freqDirty;
     static DateTime lastFreqSave = DateTime.MinValue;       // throttle: save at most every 5s even under heavy typing
+    static volatile bool freqSaving;                        // guard: never pile up background save tasks
 
     string keys = "";
     List<string> cands = new List<string>();
@@ -140447,13 +140448,18 @@ public class WordBoard : Form
     static void Learn(string code, string w, int md)   // instant per-code top + frequency counter (bucketed by mode; md 3 = translate: combined view only)
     {
         if (string.IsNullOrEmpty(w)) return;
-        if (Freq != null) { int n; Freq.TryGetValue(w, out n); Freq[w] = n + 1; }
+        if (Freq != null) { int n; Freq.TryGetValue(w, out n); Freq[w] = n + 1; if (Freq.Count > 90000) { var first = Freq.First(); Freq.Remove(first.Key); } }
         if (md >= 0 && md < 3 && FreqM != null) {
             var fb = FreqM[md]; int n2; fb.TryGetValue(w, out n2); fb[w] = n2 + 1;
-            if (!string.IsNullOrEmpty(code)) LastPickM[md][code] = w;
+            if (fb.Count > 30000) { var first = fb.First(); fb.Remove(first.Key); }   // cap in-memory growth cheaply; save sorts by freq anyway
+            if (!string.IsNullOrEmpty(code)) {
+                LastPickM[md][code] = w;
+                if (LastPickM[md].Count > 30000) { var first = LastPickM[md].First(); LastPickM[md].Remove(first.Key); }  // lastpick is unordered: drop one, keep 30k
+            }
         }
         if (++freqDirty >= 50 || (DateTime.Now - lastFreqSave).TotalSeconds >= 5)   // 50 learns OR 5s elapsed: flush
-        { freqDirty = 0; lastFreqSave = DateTime.Now; SaveFreq(); }
+        { freqDirty = 0; lastFreqSave = DateTime.Now;
+          if (!freqSaving) { freqSaving = true; System.Threading.ThreadPool.QueueUserWorkItem(delegate { try { SaveFreq(); } finally { freqSaving = false; } }); } }
     }
 
     static readonly string[] ModeSuffix = new string[] { "mix", "py", "wb" };
@@ -140461,13 +140467,31 @@ public class WordBoard : Form
     static void SaveFreq()
     {
         try {
+            // Everything (snapshot + sort + IO) runs on a background thread so key
+            // handling is never blocked. A concurrent Learn() during enumeration makes
+            // the snapshot throw - that just skips this flush and retries next cycle.
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate { SaveFreqSync(); });
+        } catch {}
+    }
+    static void SaveFreqSync()   // synchronous flush (used on exit); callers must not be on the hot key path
+    {
+        try {
+            var snaps = new KeyValuePair<string,int>[][] { null, null, null };
+            var lastSnaps = new Dictionary<string,string>[] { null, null, null };
+            for (int m = 0; m < 3; m++) {
+                snaps[m] = FreqM[m].OrderByDescending(kv => kv.Value).Take(20000).ToArray();
+                lastSnaps[m] = LastPickM[m].Take(20000).ToDictionary(kv => kv.Key, kv => kv.Value);
+            }
+            var assocSnap = Assoc != null ? Assoc.OrderByDescending(kv => kv.Value.Values.Sum()).Take(20000).ToArray() : null;
             for (int m = 0; m < 3; m++) {
                 File.WriteAllLines(Path.Combine(DataDir, "userdict_" + ModeSuffix[m] + ".txt"),
-                    FreqM[m].OrderByDescending(kv => kv.Value).Take(20000).Select(kv => kv.Key + " " + kv.Value).ToArray(), Encoding.UTF8);
+                    snaps[m].Select(kv => kv.Key + " " + kv.Value).ToArray(), Encoding.UTF8);
                 File.WriteAllLines(Path.Combine(DataDir, "lastpick_" + ModeSuffix[m] + ".txt"),
-                    LastPickM[m].Take(20000).Select(kv => kv.Key + " " + kv.Value).ToArray(), Encoding.UTF8);
+                    lastSnaps[m].Select(kv => kv.Key + " " + kv.Value).ToArray(), Encoding.UTF8);
             }
-            if (Assoc != null) SaveAssoc();
+            if (assocSnap != null)
+                File.WriteAllLines(Path.Combine(DataDir, "assoc.txt"),
+                    assocSnap.Select(kv => kv.Key + "\t" + string.Join(" ", kv.Value.OrderByDescending(x => x.Value).Take(8).Select(x => x.Key + ":" + x.Value).ToArray())).ToArray(), Encoding.UTF8);
         } catch {}
     }
 
@@ -141162,7 +141186,10 @@ public class WordBoard : Form
         if (string.IsNullOrEmpty(prev) || string.IsNullOrEmpty(cur) || prev == cur) return;
         if (prev.Length > 8 || cur.Length > 8 || !IsAllCJK(prev) || !IsAllCJK(cur)) return;
         Dictionary<string,int> m;
-        if (!Assoc.TryGetValue(prev, out m)) { m = new Dictionary<string,int>(); Assoc[prev] = m; }
+        if (!Assoc.TryGetValue(prev, out m)) {
+            if (Assoc.Count >= 20000) { var first = Assoc.First(); Assoc.Remove(first.Key); }   // cap total bigram keys so save/scan stay fast
+            m = new Dictionary<string,int>(); Assoc[prev] = m;
+        }
         int c; m.TryGetValue(cur, out c); m[cur] = c + 1;
         if (m.Count > 12) {                            // cap per key: drop the weakest
             string weak = null; int wc = int.MaxValue;
@@ -141190,15 +141217,6 @@ public class WordBoard : Form
     {
         lastCommitWord = (!string.IsNullOrEmpty(w) && w.Length <= 8 && IsAllCJK(w)) ? w : null;
         ShowAssoc();
-    }
-
-    static void SaveAssoc()                           // assoc.txt: prev<TAB>next:cnt ... (top 20000 keys, top 8 nexts)
-    {
-        try {
-            var lines = Assoc.OrderByDescending(kv => kv.Value.Values.Sum()).Take(20000)
-                .Select(kv => kv.Key + "\t" + string.Join(" ", kv.Value.OrderByDescending(x => x.Value).Take(8).Select(x => x.Key + ":" + x.Value).ToArray())).ToArray();
-            File.WriteAllLines(Path.Combine(DataDir, "assoc.txt"), lines, Encoding.UTF8);
-        } catch {}
     }
 
     static void LoadAssoc()
@@ -144981,7 +144999,7 @@ public class WordBoard : Form
                 return;
             }
             var form = new WordBoard();
-            Application.ApplicationExit += delegate { SaveFreq(); };
+            Application.ApplicationExit += delegate { try { SaveFreqSync(); } catch {} };
             System.Threading.Tasks.Task.Run(delegate {
                 try {
                     LoadFreq();                                            // startup only: load BEFORE dicts so BuildAcro/ApplySwap can sort by frequency
