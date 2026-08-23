@@ -77,6 +77,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1  
 
 - 主分支 `master`（唯一活跃分支）。`wgtray` 已归档（`wgtray-archive` tag），不再更新。
 - 提交后推 `origin/master`。release 发版本用 GitHub API + zip（见历史操作）。
+- **发 release 的中文坑**：用 GitHub API 创建/更新 release 的 body 时，必须用 `HttpWebRequest` + `[Text.Encoding]::UTF8.GetBytes(json)` 显式 UTF-8 字节发送。**不要用 `Invoke-RestMethod` + `ConvertTo-Json`**——PowerShell 5.1 会把中文 body 编码成 `?`（曾导致 v1.2.0~v1.2.4 的 release 描述全变问号）。
 - 版本 tag：`v1.0.0` ~ `v1.2.4`（后续版本递增）。插件更新不单独发 release。
 
 ## 8. 当前状态速览
