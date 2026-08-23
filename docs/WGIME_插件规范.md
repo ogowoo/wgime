@@ -88,7 +88,7 @@ public class ClockPlugin
    - **WPF 窗体**：直接 `new System.Windows.Window { ... }.Show()` 即可（纯代码方式，无需 XAML；插件线程的 WinForms 消息泵同时服务 WPF Dispatcher）。
 4. `[csharp]` 块与步骤 DSL **不混用**：有 csharp 块就是代码插件，步骤区忽略。
 5. 编译错误不会炸宿主：插件照常出现在候选里，选中时气泡报编译错误（含行号）。
-6. 示例：`plugins\clock.txt`（输入 `sz` 弹出置顶小时钟）。
+6. 示例：`plugins\clock.txt`（输入 `sz` 弹出置顶时钟，支持全屏强制休息等提醒方式）、`plugins\chat.txt`（输入 `lt` 弹聊天窗，MQTT over WebSocket + AES 加密，与 itools-chat 互通）。
 7. 插件是**任意代码执行**——只放你自己写的/看得懂的插件文件。
 
 ## 5. 执行语义

@@ -1,6 +1,6 @@
 # WgIme 技术文档
 
-> 版本：2026-08-16（含"码表导入/固化/效率扩展/应用启动器/内嵌应用/插件系统/首次播种"）　适用文件：`wgime.bat`（单文件）
+> 版本：2026-08-23（含"码表导入/固化/效率扩展/应用启动器/内嵌应用/插件系统/首次播种/bat+ps1 双形态载荷/词库加载优化"）　适用文件：`wgime.bat`（单文件）与 `WgIme.ps1`（ps1 载荷版）
 
 ## 1. 概述
 
@@ -48,15 +48,17 @@ wgime.bat
 
 ### 2.1 预编译 DLL 载荷机制
 
-- bat 尾部 `###WGIME_DLL###` 之后是 **base64 编码的完整 .NET DLL**（由 `$cs` 编译而来）。
-- 加载器逻辑：
+- 载荷有两种形态（都从 `$cs` 编译，但内容不同）：
+  - **bat 版 `wgime.bat`**：尾部 `###WGIME_DLL###` 之后是 **纯 WordBoard 代码的瘦 DLL（~550KB，不含码表、不含 WgImeLauncher）**。运行时调 `[WordBoard]::RunApp($pyData,$wbData,$ecData,…)`，码表由 PS 层 here-string 传参。
+  - **ps1 版 `WgIme.ps1`**：`###WGIME_DLL###` 之后是 **完整 DLL（含码表常量 + WgImeLauncher + deflate 码表 trailer，~28MB）**。运行时调 `[WgImeLauncher]::Run`，码表从 DLL 内嵌 trailer 解压。
+- 加载器逻辑（两者相同）：
   1. 取出 base64 串（`-replace '\s'` 去空白）；
   2. 计算 `MD5(base64串)` 前 8 位十六进制作为文件名 `%LOCALAPPDATA%\wgime\WgIme.<hash>.dll`；
   3. 文件不存在则解码写出，并 **删除同目录其他 `WgIme.*.dll`**（自动清理旧版本）；
   4. `Add-Type -Path` 加载；失败则回退 `Add-Type -TypeDefinition $cs` 内存编译。
 - 意义：在 AppLocker/WDAC 等 **ConstrainedLanguage 策略**机器上，内存编译被禁，预编译 DLL 是唯一可运行路径；加载失败时日志会给出提示。
 - **载荷行格式**：base64 串用**单引号包裹**（`'TVqQ…='`）——对 PowerShell 是无副作用的字符串表达式语句；若写成裸令牌，退出时会抛一次不可见的 CommandNotFoundException。加载器提取时用 `-replace "'"` 去掉引号（base64 字母表不含单引号，无损）。
-- **约束：任何对 `$cs` 的修改都必须重新生成该载荷**，否则运行时仍运行旧代码。重建方法见 §11。
+- **约束：任何对 `$cs` 的修改都必须重新生成载荷**，否则运行时仍运行旧代码。重建方法见 §11（bat 版用 `tests\rebuild-wgime-bat-payload.ps1` 生成瘦 DLL，ps1 版用 `build-wgime-ps1.ps1` 生成完整 DLL）。
 
 ## 3. 架构组件
 
@@ -165,23 +167,30 @@ wgime.bat
 
 | 偏移 | 内容 |
 |---|---|
-| 0 | Magic `WGMB2`（5 字节） |
+| 0 | Magic `WGMB4`（5 字节） |
 | 5 | 输入 MD5（16 字节）——见 4.4 |
-| 21 | Deflate 压缩流：按序写 拼音表 → 五笔表 → 英汉表 → 英汉反向表（各为 `count + [len+utf8 键][len+utf8 值]×N`）→ 简拼表（`count + [key][空格join的词表]×N`） |
+| 21 | Deflate 流（`CompressionLevel.Fastest`，解压优先）：按序写 拼音表 → 五笔表 → 英汉表 → 英汉反向表（各为**批量块**：`count + dataLen + [所有键值 UTF8 拼接块] + [偏移数组]`，一次大读而非逐条小读）→ 简拼表（`count + [key][空格join的词表]×N`）→ 词频表 |
 
-### 4.4 失效机制（InputMd5）
+> 版本演进：WGMB2（逐条流式）→ WGMB3（批量块）→ WGMB4（批量块 + Fastest 压缩）。旧版本 magic 不匹配自动重建。
 
-对以下 **10 项字节流**（每项后补一个 0x00 分隔）计算 MD5：内嵌三表、目录三 txt、导入三 txt、userwords.txt。
-任何一项变化（包括**删除导入文件**）都会使缓存 MD5 不匹配 → 丢弃缓存、全量重建并写回新缓存。
+### 4.4 失效机制
+
+- **bat 版（无 trailer）**：对以下 **10 项字节流**（每项后补 0x00 分隔）计算 MD5——内嵌三表、目录三 txt、导入三 txt、userwords.txt。任何变化 → 缓存失效重建。
+- **ps1 版（有 trailer）**：用 **trailer 压缩字节的 MD5**（`WgImeLauncher.ComputeTrailerHash`，不解压）+ 外部 txt 计算缓存 key。这样**缓存命中时无需解压 trailer**，miss 才经 `TrailerExtractor`（委托）解压。
 
 ### 4.5 共享管线与热重载（本版本重构）
 
 ```
+WgImeLauncher.Run（ps1 版）
+  ├─ ComputeTrailerHash：只算压缩 trailer 的 MD5（不解压）
+  └─ RunApp → BuildDicts
+
 BuildDicts(dir)          # lock(DictLock) 串行化
   ├─ LoadUserWords（UserWords 为空则初始化）
-  ├─ SafeRead 各源文件 → InputMd5
-  ├─ TryLoadMb 命中 → BuildCharPy（造词需要）→ 返回
-  └─ 未命中 → ParseDict×3 → OverlayImport×3 → MergeUserWords(py)
+  ├─ SafeRead 各源文件 → 缓存 key（TrailerHash 或 InputMd5）
+  ├─ TryLoadMb 命中 → 返回（跳过 trailer 解压）
+  └─ 未命中 → TrailerExtractor 解压 trailer（仅此冷路径）→ ParseDict×3
+       → OverlayImport×3 → MergeUserWords(py)
        → BuildReverse(ec) → BuildAcro(py)（内含 BuildCharPy）
        → BuildSorted×3 → SaveMb(path, md5, mb) → 返回 MbData
 
@@ -319,7 +328,7 @@ bat 目录 `config.txt`（UTF-8），键 = 值，`;`/`#` 注释。启动时加�
 
 ### 7.5 首次运行播种
 
-PS 引导层在 `RunApp` 之前内嵌四段 here-string 种子（`$seedTools`/`$seedPluginReadme`/`$seedCleanBin`/`$seedClock`）。哨兵 `%LOCALAPPDATA%\wgime\provisioned.done` 存在则跳过；否则写出缺失的 `tools.txt`、`plugins\README.txt`（精简规范）、`clean-bin.txt`、`clock.txt` 并落哨兵。**绝不覆盖已有文件**；用户删除示例不复活，删哨兵可重播。种子与仓库文件的逐字节一致性由 `tests/seed-sync.tests.ps1`（14 项）守住。
+PS 引导层在 `RunApp` 之前内嵌**三段** here-string 种子（`$seedTools`/`$seedPluginReadme`/`$seedCalc`）。哨兵 `%LOCALAPPDATA%\wgime\provisioned.done` 存在则跳过；否则写出缺失的 `tools.txt`、`plugins\README.txt`（精简规范）、`plugins\calc.txt` 并落哨兵。**绝不覆盖已有文件**；用户删除示例不复活，删哨兵可重播。其余插件（clock/chat/clean-bin 等）不从种子播种，用户从 `plugins\` 目录手动取用。
 
 ## 8. 线程模型与并发
 
@@ -343,7 +352,7 @@ PS 引导层在 `RunApp` 之前内嵌四段 here-string 种子（`$seedTools`/`$
 | `py.txt` / `wb.txt` / `ec.txt` | 扩展词典（`码 词 词…`，UTF-8），可选 |
 | `import_py.txt` / `import_wb.txt` / `import_ec.txt` | 码表导入产物，启动自动叠加，删除即撤销导入 |
 | `tools.txt` | 工具箱配置（§7.4），首次运行自动播种 |
-| `plugins\` | 插件目录（§7.4）：`README.txt` + `clean-bin.txt` + `clock.txt` 为播种示例 |
+| `plugins\` | 插件目录（§7.4）：`README.txt` + `calc.txt` 为播种示例；`clock.txt` / `chat.txt` / `clean-bin.txt` / `qping.txt` / `wgtranslate.txt` 为仓库随附（不播种，手动取用） |
 | `build-full-singles.ps1` | 全单字内嵌表构建脚本（§4.1 注） |
 
 **%LOCALAPPDATA%\wgime\**
