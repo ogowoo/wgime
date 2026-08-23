@@ -57,7 +57,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1     # 托盘�
 4. 改完 tools.txt / plugins / config.txt 后：托盘菜单 **配置 → 重载配置** 即时生效
 5. 数据目录 `%LOCALAPPDATA%\wgime`（插件禁用记录、便签、颜色设置等；删除即恢复初始状态）
 
-> 详细说明见 [docs/WGIME_使用说明.md](docs/WGIME_使用说明.md)（快捷键总表 / 四种模式 / 造词 / 码表导入 / 固化）、[docs/WGIME_技术文档.md](docs/WGIME_技术文档.md)（架构 / 启动链 / 载荷机制）。
+> 详细说明见 [docs/WGIME_使用说明.md](docs/WGIME_使用说明.md)（快捷键总表 / 四种模式 / 造词 / 码表导入 / 固化）、[docs/WGIME_技术文档.md](docs/WGIME_技术文档.md)（架构 / 启动链 / 载荷机制）。版本更新见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 构建与测试（Windows PowerShell 5.1）
 
