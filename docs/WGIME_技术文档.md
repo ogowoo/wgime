@@ -352,7 +352,7 @@ PS 引导层在 `RunApp` 之前内嵌**三段** here-string 种子（`$seedTools
 | `py.txt` / `wb.txt` / `ec.txt` | 扩展词典（`码 词 词…`，UTF-8），可选 |
 | `import_py.txt` / `import_wb.txt` / `import_ec.txt` | 码表导入产物，启动自动叠加，删除即撤销导入 |
 | `tools.txt` | 工具箱配置（§7.4），首次运行自动播种 |
-| `plugins\` | 插件目录（§7.4）：`README.txt` + `calc.txt` 为播种示例；`clock.txt` / `chat.txt` / `clean-bin.txt` / `qping.txt` / `wgtranslate.txt` 为仓库随附（不播种，手动取用） |
+| `plugins\` | 插件目录（§7.4）：`README.txt` + `calc.txt` 为播种种子；`clock.txt` / `chat.txt` 为正式插件，`clean-bin.txt` / `qping.txt` / `wgtranslate.txt` 为仓库随附（均不播种，手动取用） |
 | `build-full-singles.ps1` | 全单字内嵌表构建脚本（§4.1 注） |
 
 **%LOCALAPPDATA%\wgime\**
