@@ -22,7 +22,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 | `build-wgtray.ps1` | 生成 wgtray 各版（`-Bat`/`-NoPayload`，默认 ps1） | 含**切片行号**，wgime.bat 增删行后要同步 |
 | `config.txt` / `tools.txt` | 配置 / 工具箱模板 | root 与 wg-all、release 三方同步 |
 | `plugins\*.txt` | 插件（calc 种子 / clock / chat / clean-bin / qping / wgtranslate） | 三处同步 |
-| `release\` | 纯成品目录 | 只放成品 + docs + plugins，不放 build/test |
+| `release\` | 纯成品目录 | 成品 + 码表 txt + config/tools + docs + plugins，不放 build/test |
 
 ## 3. 改动后必做的连锁动作
 
@@ -39,6 +39,8 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 **改了插件 `plugins\*.txt`**：同步到 `wg-all\plugins\` 和 `release\plugins\`（Copy-Item）。
 
 **改了 `config.txt`/`tools.txt`**：同步到 `wg-all\` 和 `release\`。
+
+**改了码表 `py.txt`/`wb.txt`/`ec.txt`/`import_*`**：同步到 `release\`（`Copy-Item`；release 目录也放一份码表，供离线分发/扩展词库）。
 
 ## 4. 测试
 
