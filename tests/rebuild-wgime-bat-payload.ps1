@@ -1,42 +1,31 @@
-# Rebuild the embedded DLL payload inside wgime.bat (the bat edition's runtime DLL)
-# Steps: 1) compile fresh WgIme.dll via build-wgime-dll.ps1 into a temp dir
-#        2) replace the base64 after ###WGIME_DLL### in wgime.bat with the new DLL
+# Rebuild wgime.bat's embedded THIN DLL: pure WordBoard (no WgImeLauncher, no dict consts).
+# The bat edition calls [WordBoard]::RunApp($pyData,$wbData,$ecData,...) with the dict
+# here-strings, so the DLL only needs the compiled WordBoard code (~550KB), NOT the
+# launcher+embedded-dicts full build (which would balloon the bat to ~10MB).
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot | Split-Path -Parent
+$batPath = Join-Path $root 'wgime.bat'
 
-# 1) build the DLL (temp) - temporarily hide ext dicts so the DLL stays THIN
-#    (no trailer: wgime.bat carries base tables in its $cs here-strings and
-#     reads py/wb/ec txt from its own folder at runtime)
-$ext = @('py.txt','wb.txt','ec.txt','import_py.txt','import_wb.txt','import_ec.txt')
-$moved = @()
-foreach ($f in $ext) {
-    $p = Join-Path $root $f
-    if (Test-Path $p) { Move-Item $p ($p + '.embed-tmp') -Force; $moved += $f }
-}
-$tmpOut = Join-Path $env:TEMP ("wgime-embed-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
-New-Item $tmpOut -ItemType Directory -Force | Out-Null
-try {
-    & (Join-Path $root 'build-wgime-dll.ps1') -OutDir $tmpOut | Out-Null
-    $dll = Join-Path $tmpOut 'WgIme.dll'
-    if (-not (Test-Path $dll)) { throw "DLL not produced" }
-    Write-Host ("built THIN DLL: {0:N1} KB" -f ((Get-Item $dll).Length / 1KB))
+$bat = [IO.File]::ReadAllText($batPath, [Text.Encoding]::UTF8)
+$i = $bat.IndexOf("cs = @'")
+if ($i -lt 0) { throw "cs = @' not found" }
+$start = $bat.IndexOf("`n", $i) + 1
+$end = $bat.IndexOf("`n'@", $start)
+if ($end -lt 0) { throw "cs close not found" }
+$cs = $bat.Substring($start, $end - $start)
 
-    # 2) replace payload in wgime.bat
-    $batPath = Join-Path $root 'wgime.bat'
-    $bat = [IO.File]::ReadAllText($batPath, [Text.Encoding]::UTF8)
-    $tag = '###WGIME_DLL###'
-    $ti = $bat.LastIndexOf($tag)
-    if ($ti -lt 0) { throw 'marker not found in wgime.bat' }
-    $head = $bat.Substring(0, $ti + $tag.Length)
-    $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($dll))
-    $newBat = $head + "`n'" + $b64 + "'"
-    [IO.File]::WriteAllText($batPath, $newBat, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host ("wgime.bat payload replaced, new size {0:N1} MB" -f ((Get-Item $batPath).Length / 1MB))
-} finally {
-    Remove-Item $tmpOut -Recurse -Force -EA SilentlyContinue
-    foreach ($f in $moved) {
-        $src = (Join-Path $root ($f + '.embed-tmp'))
-        $dst = Join-Path $root $f
-        if (Test-Path $src) { Move-Item $src $dst -Force }
-    }
-}
+# compile pure WordBoard
+$outDll = Join-Path $env:TEMP ("wgime-thin-" + [guid]::NewGuid().ToString('N').Substring(0,6) + ".dll")
+Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System.Drawing,UIAutomationClient,UIAutomationTypes,WindowsBase -OutputAssembly $outDll -OutputType Library -ErrorAction Stop
+Write-Host ("thin DLL compiled: {0:N0} KB" -f ((Get-Item $outDll).Length / 1KB))
+
+# embed into wgime.bat
+$tag = '###WGIME_DLL###'
+$ti = $bat.LastIndexOf($tag)
+if ($ti -lt 0) { throw 'marker not found' }
+$head = $bat.Substring(0, $ti + $tag.Length)
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($outDll))
+$newBat = $head + "`n'" + $b64 + "'"
+[IO.File]::WriteAllText($batPath, $newBat, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host ("wgime.bat rebuilt: {0:N1} MB (was {1:N1} MB)" -f ((Get-Item $batPath).Length/1MB), ($bat.Length/1MB))
+Remove-Item $outDll -Force -EA SilentlyContinue

@@ -142,6 +142,7 @@ public static class WgImeLauncher
         // then let BuildDicts decide cache-hit vs miss. Only on a miss do we
         // decompress the trailer (ExtractDictsFull).
         WordBoard.TrailerHash = ComputeTrailerHash();
+        WordBoard.TrailerExtractor = ExtractDictsFull;
         string py = null, wb = null, ec = null, pw = null, wf = null;
         WordBoard.RunApp(py, wb, ec, pw, wf, dir, batPath);
     }
