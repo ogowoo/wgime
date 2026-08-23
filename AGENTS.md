@@ -1,0 +1,83 @@
+# AGENTS.md — 面向 AI Agent 的项目上下文
+
+> 本文件是给 AI Agent（及多会话）的速查上下文。接手任务时先读这里，避免重复踩坑、避免上下文失忆。
+> 人类视角的说明见 README.md；逐版本记录见 CHANGELOG.md。
+
+## 1. 项目是什么
+
+WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）+ WgTray（无输入法的托盘工具箱）。
+两个程序 × 两种形态（bat 带载荷 / ps1 带载荷），全部单文件自包含。
+
+## 2. 关键文件与职责
+
+| 文件 | 角色 | 注意 |
+|---|---|---|
+| `wgime.bat` | **C# 源码真身** + bat 版（内嵌瘦 DLL + 码表 here-string） | 改输入法/工具箱/插件核心逻辑一律改这里 |
+| `WgIme.ps1` | WgIme ps1 版（内嵌完整 DLL + 码表 trailer） | **从 wgime.bat 生成**，不要手改 |
+| `wgtray.bat` / `wgtray-nopayload.bat` | WgTray bat 两版 | 从 wgime.bat 的 C# 切分生成 |
+| `WgTray.ps1` | WgTray ps1 版 | 同上 |
+| `build-wgime-dll.ps1` | 编译 WgIme 完整 DLL（含码表 + WgImeLauncher + trailer） | 给 ps1 版用 |
+| `build-wgime-ps1.ps1` | 组装 WgIme.ps1（调 build-wgime-dll 到临时目录再 base64 嵌入） | 同步 root + wg-all + release |
+| `tests\rebuild-wgime-bat-payload.ps1` | **重编译 wgime.bat 的内嵌瘦 DLL**（纯 WordBoard，555KB） | 改 wgime.bat 的 `$cs` 后必须跑这个 |
+| `build-wgtray.ps1` | 生成 wgtray 各版（`-Bat`/`-NoPayload`，默认 ps1） | 含**切片行号**，wgime.bat 增删行后要同步 |
+| `config.txt` / `tools.txt` | 配置 / 工具箱模板 | root 与 wg-all、release 三方同步 |
+| `plugins\*.txt` | 插件（calc 种子 / clock / chat / clean-bin / qping / wgtranslate） | 三处同步 |
+| `release\` | 纯成品目录 | 只放成品 + docs + plugins，不放 build/test |
+
+## 3. 改动后必做的连锁动作
+
+**改了 `wgime.bat` 的 C#（`$cs`）**：
+1. `powershell -File tests\rebuild-wgime-bat-payload.ps1`（重编译 bat 内嵌瘦 DLL）
+2. `powershell -File build-wgime-ps1.ps1`（重生成 WgIme.ps1 + 同步 wg-all/release）
+3. `powershell -File build-wgtray.ps1` + `-Bat` + `-Bat -NoPayload`（重生成 WgTray 各版）
+4. `Copy-Item wgime.bat release\wgime.bat`（手动同步，build 脚本不复制它）
+5. 跑测试（见 §4）
+6. 更新 CHANGELOG.md + 相关 docs
+
+**改了 `build-wgtray.ps1` 切片**：wgime.bat 的 C# 增删行会导致切片 anchor 失配。切片行号在 build-wgtray.ps1 的 `$sliceDefs`，anchor 失配时报错会指明是哪个切片。用 anchor 重新定位行号（`Slice` 函数有 anchor 校验）。
+
+**改了插件 `plugins\*.txt`**：同步到 `wg-all\plugins\` 和 `release\plugins\`（Copy-Item）。
+
+**改了 `config.txt`/`tools.txt`**：同步到 `wg-all\` 和 `release\`。
+
+## 4. 测试
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1    # WgIme ps1 版（15 项）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray-ps1.tests.ps1   # WgTray ps1 版（10 项）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1       # WgTray 两版（61 项）
+```
+
+- 测试需要 Windows PowerShell 5.1（`powershell.exe`，不是 pwsh）。
+- 测试会启动真实 IME/托盘进程，可能被**单实例锁**影响；失败时先杀掉残留的 powershell 进程（`Get-CimInstance Win32_Process | ? CommandLine -match 'WgIme|WgTray' | % { Stop-Process $_.ProcessId -Force }`），清理 `%LOCALAPPDATA%\wgime\WgIme.*.dll` 和 `wgime.mb` 缓存后重跑。
+- schtasks 相关断言在无交互会话会 SKIP（已处理）。
+
+## 5. 关键约束（踩过的坑）
+
+1. **行尾**：`wgime.bat`/`wgtray.bat` 必须 CRLF 无 BOM（.gitattributes `eol=crlf`，仓库存储 LF、checkout 转 CRLF）。build 脚本用 LF 内部处理、写出时转 CRLF。**不要用 -text**（那会导致 blob 存成 LF，别人 clone 后 cmd 解析失败）。
+2. **编码**：`wgime.bat` 是 UTF-8 无 BOM（C# 里中文直接用）。`.ps1` 构建脚本必须 ASCII（PS 5.1 按 ANSI 读），非 ASCII 内容放 UTF-8 模板文件（如 `wgtray_glue.cs.txt`）。测试脚本也是 ASCII。
+3. **提交消息**：含 `>`/`▶`/中文的 commit message 用 `git commit -F 文件`（不要用 `-m`，会破坏 PowerShell 解析）。
+4. **大文件推送**：39MB ps1 推送可能 HTTP 408，先 `git config core.compression 0`。
+5. **码表 txt**：`py.txt`/`wb.txt`/`ec.txt`/`import_*` 已**入库跟踪**（根目录，构建源）。它们也用于 build-wgime-dll 生成 trailer。
+6. **wgime.bat 瘦 DLL 陷阱**：`build-wgime-dll.ps1` 产出的是**含码表 + launcher 的完整 DLL（5.3MB）**，只该给 WgIme.ps1。wgime.bat 的内嵌 DLL 是**纯 WordBoard（555KB）**，必须用 `tests\rebuild-wgime-bat-payload.ps1` 生成——否则 wgime.bat 会涨到 9.6MB。
+7. **WordBoard 与 WgImeLauncher 解耦**：WordBoard 不硬引用 WgImeLauncher，用 `TrailerExtractor` 委托字段。bat 版不设置它（码表走 RunApp 参数），ps1 版 launcher 设置它。改动时保持这个解耦。
+8. **种子**：首次播种只留 `tools.txt` + `plugins\README.txt` + `plugins\calc.txt`（三段 here-string：`$seedTools`/`$seedPluginReadme`/`$seedCalc`）。config.txt 是运行时 C# `DefaultConfigText()` 生成的，**不是种子**。
+9. **自启**：程序**不自带**自启（无 -Install / 无计划任务 / 无菜单自启项）。用户自己挂任务/启动文件夹。
+
+## 6. 加载与性能（已做的优化，改动时别回退）
+
+- **缓存命中跳过 trailer 解压**：`WgImeLauncher.ComputeTrailerHash`（压缩字节 md5，不解压）→ `BuildDicts` 用它查 `.mb` 缓存；miss 才 `ExtractDictsFull` 解压（经 `TrailerExtractor` 委托）。
+- **WGB4 缓存格式**：批量块读取 + 并行 ToMap + `CompressionLevel.Fastest`。
+- **词频保存后台化**：`SaveFreq` 走线程池（`freqSaving` 防堆积），退出时 `SaveFreqSync` 同步落盘。内存上限：FreqM/LastPickM 各 3 万、Freq 9 万、Assoc key 2 万。
+- **启动计时日志**：`startup: LoadFreq+BuildDicts=XXXms ApplySwap=YYYms`。
+
+## 7. Git / 分支
+
+- 主分支 `master`（唯一活跃分支）。`wgtray` 已归档（`wgtray-archive` tag），不再更新。
+- 提交后推 `origin/master`。release 发版本用 GitHub API + zip（见历史操作）。
+- 版本 tag：`v1.0.0` ~ `v1.2.4`（后续版本递增）。插件更新不单独发 release。
+
+## 8. 当前状态速览
+
+- 最近工作：词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、chat 插件（MQTT）、clock 多提醒、文档同步（CHANGELOG + docs + README 项目演进）。
+- 待用户验证：词库加载速度（缓存命中路径）、chat 插件与手机互通。

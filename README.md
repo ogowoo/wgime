@@ -127,6 +127,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 - 运行测试：`tests\wgime-ps1.tests.ps1` + `tests\wgtray-ps1.tests.ps1` + `tests\wgtray.tests.ps1`
 - 文件约束：wgime.bat / wgtray.bat 纯 CRLF / 无 BOM（cmd.exe 依赖 CRLF 解析批处理头，见 .gitattributes）；.ps1 构建脚本保持 ASCII（Windows PS 5.1 按 ANSI 读取），非 ASCII 内容一律放 UTF-8 模板
 
+## 项目演进
+
+> 完整逐版本记录见 [CHANGELOG.md](CHANGELOG.md)。这里是从最初到现在的概览。
+
+- **2026-08-13 最初形态**：单一 `wgime.bat`（~930KB），纯 C# 内存编译（每次启动 `Add-Type`），无 ps1 版、无托盘工具箱、无插件系统。词库是散落的 `py.txt`/`wb.txt`/`ec.txt`。
+- **分发形态演进**：
+  1. 纯内存编译 bat（受限语言模式机器跑不了）→ **预编译 DLL 载荷**（AppLocker/WDAC 锁定机也能跑）
+  2. 单一程序 → **双程序**：WgIme（输入法）+ WgTray（无输入法的托盘工具箱）
+  3. 每种程序 → **bat / ps1 双形态**（bat 双击即用，ps1 命令行干净规避 EDR 告警）
+  4. 词库散落 → **全部内嵌**（压缩 trailer，文件夹不再需要 txt）
+- **新增子系统**：托盘菜单、插件系统（DSL + C# 代码插件 + 管理器）、应用启动器、网络工具、时钟插件（多提醒方式）、聊天插件（MQTT+加密，与 itools-chat 互通）、tools.txt 按钮启动编码。
+- **性能与稳定性**：词库加载优化（批量缓存读 + 并行建表 + 缓存命中跳过解压）、修复长时间运行上屏卡顿（词频保存后台化 + 内存上限）。
+- **安全与合规**：去 base64 降 ML 误报面、移除快捷方式/计划任务自启、控制台自隐藏、词库原始二进制。
+- **工程化**：完整测试套件（86 项）、docs 文档、CHANGELOG、Git 分支合并回 master、码表 txt 入库、行尾规范化。
+
 ## 系统要求
 
 Windows 10/11，Windows PowerShell 5.1（系统自带），无需安装。
