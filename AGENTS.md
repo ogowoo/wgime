@@ -12,7 +12,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 
 | 文件 | 角色 | 注意 |
 |---|---|---|
-| `wgime.bat` | **C# 源码真身** + bat 版（内嵌瘦 DLL + 码表 here-string） | 改输入法/工具箱/插件核心逻辑一律改这里 |
+| `wgime.bat` | **C# 源码真身** + bat 版（内嵌瘦 DLL + 码表 `###WGIME_DATA###` 数据块） | 改输入法/工具箱/插件核心逻辑一律改这里 |
 | `WgIme.ps1` | WgIme ps1 版（内嵌完整 DLL + 码表 trailer） | **从 wgime.bat 生成**，不要手改 |
 | `wgtray.bat` / `wgtray-nopayload.bat` | WgTray bat 两版 | 从 wgime.bat 的 C# 切分生成 |
 | `WgTray.ps1` | WgTray ps1 版 | 同上 |
@@ -65,6 +65,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1  
 7. **WordBoard 与 WgImeLauncher 解耦**：WordBoard 不硬引用 WgImeLauncher，用 `TrailerExtractor` 委托字段。bat 版不设置它（码表走 RunApp 参数），ps1 版 launcher 设置它。改动时保持这个解耦。
 8. **种子**：首次播种只留 `tools.txt` + `plugins\README.txt` + `plugins\calc.txt`（三段 here-string：`$seedTools`/`$seedPluginReadme`/`$seedCalc`）。config.txt 是运行时 C# `DefaultConfigText()` 生成的，**不是种子**。
 9. **自启**：程序**不自带**自启（无 -Install / 无计划任务 / 无菜单自启项）。用户自己挂任务/启动文件夹。
+10. **码表数据块 `###WGIME_DATA###`**：wgime.bat 的内置码表（原 5 段 here-string）已移到文件尾部的 `###WGIME_DATA###` 数据块（在 `###WGIME_DLL###` 之前），分段标记 `###PYDATA###`/`###WBDATA###`/`###ECDATA###`/`###PYWORDS###`/`###PYWFREQ###`。PS 引导层用 `Get-DictSeg` 按 `###NAME###` + 下一个 `\n###` 分段提取，码表**不参与 PS 脚本解析**（消除 Invoke-Expression 扫描大 here-string 的启动开销）。cmd bootstrap 用 `$j=$s.LastIndexOf('###WGIME_DATA###')` 截断 `$p`——**必须 LastIndexOf**（marker 也出现在 bootstrap 行本身和提取逻辑注释里，IndexOf 会定位错）。固化码表（`BakeTables`）用 `ReplaceDictSeg(bat,"PYDATA"/"WBDATA"/"ECDATA",…)` 写回数据块对应 segment；`build-wgime-dll.ps1` 用同名 `Get-DictSeg` 从数据块取码表。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
@@ -82,5 +83,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1  
 
 ## 8. 当前状态速览
 
-- 最近工作：词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、chat 插件（MQTT）、clock 多提醒、文档同步（CHANGELOG + docs + README 项目演进）。
-- 待用户验证：词库加载速度（缓存命中路径）、chat 插件与手机互通。
+- 最近工作：码表数据块化（`###WGIME_DATA###`，消除启动时 PS 解析大 here-string）、固化码表写数据块、词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、chat 插件（MQTT）、clock 多提醒、文档同步。
+- 待用户验证：词库加载速度（缓存命中路径）、chat 插件与手机互通、固化码表后启动速度。

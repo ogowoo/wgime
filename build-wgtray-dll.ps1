@@ -105,8 +105,6 @@ function Get-Seed([string]$varName) {
 }
 $seedTools        = Get-Seed 'seedTools'
 $seedPluginReadme = Get-Seed 'seedPluginReadme'
-$seedCleanBin     = Get-Seed 'seedCleanBin'
-$seedClock        = Get-Seed 'seedClock'
 $seedCalc         = Get-Seed 'seedCalc'
 
 $patchPath = Join-Path $PSScriptRoot 'wgtray_seed_patches.txt'
@@ -135,12 +133,10 @@ $seedBlock = @"
         static void SeedSamples()
         {
             try {
-                string[] seedNames = { "tools.txt", "plugins\\README.txt", "plugins\\clean-bin.txt", "plugins\\clock.txt", "plugins\\calc.txt" };
+                string[] seedNames = { "tools.txt", "plugins\\README.txt", "plugins\\calc.txt" };
                 string[] seedTexts = {
                     "$(Esc-CSharp $seedTools)",
                     "$(Esc-CSharp $seedPluginReadme)",
-                    "$(Esc-CSharp $seedCleanBin)",
-                    "$(Esc-CSharp $seedClock)",
                     "$(Esc-CSharp $seedCalc)"
                 };
                 for (int si = 0; si < seedNames.Length; si++) {

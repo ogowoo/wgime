@@ -3002,9 +3002,10 @@ $seedPluginReadme = @'
 
   <步骤>                 ; 头部之后直到文件末尾都是步骤
 
-用法: 右键托盘图标 -> 插件 -> 点插件名, 后台执行, 气泡报结果。
+用法 (WgTray): 右键托盘图标 -> 插件 -> 点插件名执行, 后台运行, 气泡报结果。
+       (WgIme):   输入编码 -> 候选条出现 ▶<name> -> 空格选中执行。
 改完/新增后: 托盘"配置 -> 重载配置"即时生效。
-管理: 托盘 -> 插件 -> 插件管理… (列表/编辑/删除/新建/重载)。
+管理 (WgTray): 托盘 -> 插件 -> 插件管理… (列表/运行/编辑/删除/新建/重载)。
 
 步骤动词 (与 tools.txt 工具箱完全一致):
   msg / confirm / run / shell / open / kill / wait
@@ -3034,344 +3035,81 @@ C# 代码插件 (要窗体就用它):
         WindowsBase/System.Xaml —— 可直接 new System.Windows.Window 建 WPF 窗体);
         注意是 C# 5 语法 (.NET 4.x CodeDom)
   示例: clock.txt (输入 sz 弹现代风悬浮时钟: 时钟/闹钟/倒计时/秒表计次/番茄统计)
+        chat.txt  (输入 lt 弹局域网聊天: 与 itools-chat (chat.bat) 互通, 无需服务器)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
 完整规范见仓库 docs\WGIME_插件规范.md; 窗体 UI 风格见 docs\WGIME_插件UI规范.md。
 
 (本文件与两个示例插件是首次运行时自动播种的; 删掉不会复活。想重新播种: 删除
- %LOCALAPPDATA%\wgime\provisioned-tray.done 后重启 wgtray.bat。)
-'@
-$seedCleanBin = @'
-; ============================================================
-;  WgIme 插件示例: 清空回收站
-;  放在 plugins\ 目录下即自动注册; 输入 qls 选 ▶清空回收站 执行
-;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
-; ============================================================
-code = qls
-name = 清空回收站
-desc = confirm 后调用 PowerShell Clear-RecycleBin
+ %LOCALAPPDATA%\wgime\provisioned-tray.done 后重启 wgtray.bat。)'@
 
-confirm 确定清空回收站吗?
-[powershell]
-Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-Write-Output "recycle bin cleared"
-[/powershell]
-msg 回收站已清空
-'@
-$seedClock = @'
+
+
+
+
+
+
+$seedCalc = @'
 ; ============================================================
-;  WgIme C# 插件: 悬浮时钟 (现代重制版)
-;  输入 sz 选 ▶悬浮时钟, 弹出置顶无边框窗体 (Esc / ✕ 关闭, 拖标题栏移动)
-;  时钟(秒环/闹钟/整点报时) + 倒计时(圆环/预设/自定义提醒) + 秒表(计次) + 番茄(统计/7日图)
-;  设置与统计存 %LOCALAPPDATA%\wgime\clock.cfg / pomodoro.txt (格式兼容旧版)
-;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
+;  WgIme C# 插件: 计算器 (由内嵌升级为插件, 现代 UI)
+;  输入 jsq (或 calc) 选 ▶计算器: 圆角磁贴按键, 可点按也可键盘直输
+;  回车求值, 退格删字符, Esc 关闭; 支持 + - * / % 括号, 兼容全角 ×÷（）
 ; ============================================================
-;  WgIme C# 插件: 悬浮时钟 (现代重制版)
-;  输入 sz 选 ▶悬浮时钟, 弹出置顶无边框窗体 (Esc / ✕ 关闭, 拖标题栏移动)
-;  时钟(秒环/闹钟/整点报时) + 倒计时(圆环/预设/自定义提醒) + 秒表(计次) + 番茄(统计/7日图)
-;  设置与统计存 %LOCALAPPDATA%\wgime\clock.cfg / pomodoro.txt (格式兼容旧版)
-;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
-; ============================================================
-code = sz
-name = 悬浮时钟
-desc = 现代风时钟: 秒环/闹钟/整点报时/倒计时圆环/预设/秒表计次/番茄统计与7日图
+code = jsq
+name = 计算器
+desc = 迷你计算器: 四则/括号/取余, 全角符号兼容, 键盘直输回车求值
 
 [csharp]
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.IO;
 using System.Windows.Forms;
-using System.Collections.Generic;
 
-public class ClockPlugin
+public class CalcPlugin
 {
-    // ---------- palette (light blue-gray body + white cards: stands out from white desktop windows) ----------
-    static Color C_BG      = Color.FromArgb(255, 232, 237, 245);   // #E8EDF5 light blue-gray
-    static Color C_HEADER  = Color.FromArgb(255, 220, 227, 239);   // deeper tint: title bar stands out from white windows
-    static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);   // white title bar / cards
-    static Color C_SURF2   = Color.FromArgb(255, 217, 224, 236);   // tracks / wells
-    static Color C_BORDER  = Color.FromArgb(255, 195, 204, 221);   // visible hairline
-    static Color C_TEXT    = Color.FromArgb(255, 29, 29, 31);
-    static Color C_SUB     = Color.FromArgb(255, 110, 116, 133);
-    static Color C_ACCENT  = Color.FromArgb(255, 0, 122, 255);     // systemBlue
-    static Color C_GREEN   = Color.FromArgb(255, 52, 199, 89);     // systemGreen
-    static Color C_ORANGE  = Color.FromArgb(255, 255, 149, 0);     // systemOrange
-    static Color C_BLUE    = Color.FromArgb(255, 48, 176, 199);    // systemTeal
-    static Color C_RED     = Color.FromArgb(255, 255, 55, 95);     // systemPink
+    // palette: light blue-gray body + white cards (matches the clock / toolbox)
+    static Color C_BG     = Color.FromArgb(255, 232, 237, 245);
+    static Color C_HEADER = Color.FromArgb(255, 220, 227, 239);
+    static Color C_CARD   = Color.FromArgb(255, 255, 255, 255);
+    static Color C_BORDER = Color.FromArgb(255, 195, 204, 221);
+    static Color C_TEXT   = Color.FromArgb(255, 29, 29, 31);
+    static Color C_SUB    = Color.FromArgb(255, 110, 116, 133);
+    static Color C_ACCENT = Color.FromArgb(255, 0, 122, 255);
+    static Color C_OP     = Color.FromArgb(255, 227, 234, 244);    // operator tile tint
+    static Color C_RED    = Color.FromArgb(255, 255, 55, 95);
 
-    // ---------- persisted settings & stats ----------
-    static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
-    static string CfgPath() { return Path.Combine(CfgDir(), "clock.cfg"); }
-    static string PomoPath() { return Path.Combine(CfgDir(), "pomodoro.txt"); }
-
-    static bool hourly = true;
-    static string reminder = "休息一下, 喝点水";
-    class AlarmItem {
-        public string Time = "07:30";
-        public string Name = "闹钟";
-        public bool Enabled = true;
-        public string Repeat = "每天";
-        public string Mode = "popup";    // popup=居中弹窗  full=全屏强制休息  tray=托盘气泡
-        public AlarmItem() {}
-        public AlarmItem(string time, string name, bool enabled) { Time = time; Name = name; Enabled = enabled; Repeat = "每天"; }
-        public AlarmItem(string time, string name, bool enabled, string repeat) { Time = time; Name = name; Enabled = enabled; Repeat = repeat; }
-    }
-    static List<AlarmItem> alarms = new List<AlarmItem>();
-    static System.Threading.SynchronizationContext uiContext;
-    static readonly object alarmLock = new object();
-    static List<System.Threading.Timer> snoozeTimers = new List<System.Threading.Timer>();
-    static List<Form> fullscreenAlarms = new List<Form>();   // 全屏提醒实例 (强制休息), 防止重复
-    // 旧版单闹钟字段，仅用于读取旧 clock.cfg 后迁移。
-    static string alarmTime = "";
-    static bool alarmOn = false;
-
-    static void LoadCfg()
-    {
-        try {
-            alarms.Clear();
-            if (!File.Exists(CfgPath())) return;
-            foreach (string raw in File.ReadAllLines(CfgPath(), System.Text.Encoding.UTF8)) {
-                string t = raw.Trim();
-                int eq = t.IndexOf('=');
-                if (eq < 1) continue;
-                string k = t.Substring(0, eq).Trim().ToLower(), v = t.Substring(eq + 1).Trim();
-                if (k == "hourly") hourly = v != "0";
-                else if (k == "reminder") reminder = v;
-                else if (k == "alarm") alarmTime = v;
-                else if (k == "alarmon") alarmOn = v == "1";
-                else if (k.StartsWith("alarm.")) {
-                    string[] a = v.Split(new char[] { '|' }, 5);
-                    if (a.Length >= 2 && ValidAlarmTime(a[0])) {
-                        string nm = a.Length >= 3 ? UnescapeCfg(a[2]) : "闹钟";
-                        string rp = a.Length >= 4 ? UnescapeCfg(a[3]) : "每天";
-                        string md = a.Length >= 5 ? UnescapeCfg(a[4]) : "popup";
-                        if (md != "popup" && md != "full" && md != "tray") md = "popup";
-                        AlarmItem item = new AlarmItem(a[0], nm, a[1] == "1", rp); item.Mode = md;
-                        alarms.Add(item);
-                    }
-                }
-            }
-            // 与旧版配置兼容：首次发现 alarm/alarmon 时自动迁移。
-            if (alarms.Count == 0 && ValidAlarmTime(alarmTime)) alarms.Add(new AlarmItem(alarmTime, "旧版闹钟", alarmOn));
-        } catch {}
-    }
-    static bool ValidAlarmTime(string t)
-    {
-        return System.Text.RegularExpressions.Regex.IsMatch(t == null ? "" : t, @"^([01]\d|2[0-3]):[0-5]\d$");
-    }
-    static string EscapeCfg(string s) { return Uri.EscapeDataString((s == null ? "" : s).Replace("\r", " ").Replace("\n", " ")); }
-    static string UnescapeCfg(string s) { try { return Uri.UnescapeDataString(s == null ? "" : s); } catch { return s == null ? "" : s; } }
-    static void SaveCfg()
-    {
-        try {
-            Directory.CreateDirectory(CfgDir());
-            var b = new System.Text.StringBuilder();
-            b.Append("hourly = ").Append(hourly ? "1" : "0").Append("\n");
-            b.Append("reminder = ").Append(reminder).Append("\n");
-            for (int i = 0; i < alarms.Count; i++) {
-                AlarmItem a = alarms[i];
-                b.Append("alarm.").Append(i + 1).Append(" = ").Append(a.Time).Append("|").Append(a.Enabled ? "1" : "0").Append("|").Append(EscapeCfg(a.Name)).Append("|").Append(EscapeCfg(a.Repeat)).Append("|").Append(EscapeCfg(a.Mode)).Append("\n");
-            }
-            File.WriteAllText(CfgPath(), b.ToString(), new System.Text.UTF8Encoding(false));
-        } catch {}
-    }
-    static bool RepeatMatches(AlarmItem a, DateTime now)
-    {
-        if (a.Repeat == "仅一次" || a.Repeat == "每天") return true;
-        if (a.Repeat == "工作日") return now.DayOfWeek >= DayOfWeek.Monday && now.DayOfWeek <= DayOfWeek.Friday;
-        if (a.Repeat == "周末") return now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday;
-        string token = "日一二三四五六"[(int)now.DayOfWeek].ToString();
-        return a.Repeat != null && a.Repeat.StartsWith("自定义:") && a.Repeat.IndexOf(token) >= 0;
-    }
-    static void QueueAlarmPopup(AlarmItem a, DateTime now)
-    {
-        if (uiContext == null) return;
-        string time = a.Time, name = a.Name, repeat = a.Repeat, mode = a.Mode;
-        uiContext.Post(delegate(object state) { DispatchAlarm(time, name, repeat, mode); }, null);
-    }
-    static void DispatchAlarm(string time, string name, string repeat, string mode)
-    {
-        try {
-            if (mode == "full") { ShowFullscreenAlarm(time, name, repeat); return; }
-            if (mode == "tray") { ShowTrayAlarm(time, name, repeat); return; }
-            ShowAlarmPopup(time, name, repeat);
-        } catch {}
-    }
-    // 全屏强制休息: 全屏半透明遮罩 + 置顶, 必须点"我知道了"才能关闭 (有声音, 每 3 秒重响)
-    static void ShowFullscreenAlarm(string time, string name, string repeat)
-    {
-        // 同一时刻只保留一个全屏提醒 (防多个闹钟叠一起)
-        for (int i = fullscreenAlarms.Count - 1; i >= 0; i--) {
-            Form f = fullscreenAlarms[i];
-            if (f == null || f.IsDisposed) { fullscreenAlarms.RemoveAt(i); continue; }
-            try { f.Close(); } catch {}
-        }
-        var a = new Form();
-        a.Text = "WgIme 休息提醒"; a.FormBorderStyle = FormBorderStyle.None; a.AutoScaleMode = AutoScaleMode.None;
-        a.StartPosition = FormStartPosition.Manual; a.Location = new Point(0, 0);
-        a.WindowState = FormWindowState.Normal; a.FormBorderStyle = FormBorderStyle.None;
-        Rectangle wa = Screen.PrimaryScreen.Bounds;
-        a.Bounds = wa;
-        a.BackColor = Color.FromArgb(255, 18, 22, 30);          // 深色底
-        a.TopMost = true; a.ShowInTaskbar = true; a.Opacity = 0.96;
-        a.KeyPreview = true;
-        a.Paint += delegate(object ss, PaintEventArgs ee) {
-            var g = ee.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            int cx = a.ClientSize.Width / 2, cy = a.ClientSize.Height / 2;
-            using (var title = new Font("Microsoft YaHei UI", 30F, FontStyle.Bold))
-            using (var sub = new Font("Microsoft YaHei UI", 16F, FontStyle.Regular))
-            using (var big = new Font("Microsoft YaHei UI", 120F, FontStyle.Bold)) {
-                string msg = string.IsNullOrEmpty(name) ? "休息一下" : name;
-                using (var br = new SolidBrush(Color.FromArgb(255, 235, 235, 240)))
-                    g.DrawString(msg, title, br, new RectangleF(0, cy - 150, a.ClientSize.Width, 60), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
-                using (var br2 = new SolidBrush(Color.FromArgb(255, 150, 160, 180)))
-                    g.DrawString(time + "  " + (repeat ?? ""), sub, br2, new RectangleF(0, cy - 80, a.ClientSize.Width, 40), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
-                using (var br3 = new SolidBrush(Color.FromArgb(255, 0, 122, 255)))
-                    g.DrawString("☕", big, br3, new RectangleF(0, cy - 40, a.ClientSize.Width, 130), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
-            }
-        };
-        var ok = new FlatBtn { Text = "我知道了，继续工作", Font = F(13F, FontStyle.Bold), Location = new Point(0, 0), Size = new Size(280, 52), Primary = true };
-        ok.Location = new Point(a.ClientSize.Width / 2 - 140, a.ClientSize.Height / 2 + 120);
-        ok.Click += delegate { a.Close(); };
-        a.Controls.Add(ok);
-        var st = new System.Windows.Forms.Timer { Interval = 3000 };
-        a.FormClosed += delegate { st.Stop(); st.Dispose(); fullscreenAlarms.Remove(a); };
-        fullscreenAlarms.Add(a);
-        System.Media.SystemSounds.Exclamation.Play();
-        st.Tick += delegate { System.Media.SystemSounds.Exclamation.Play(); };
-        st.Start();
-        a.Show(); a.Activate();
-    }
-    // 托盘气泡: 轻提醒, 不打断 (声音一次)
-    static void ShowTrayAlarm(string time, string name, string repeat)
-    {
-        try {
-            var ni = new NotifyIcon();
-            ni.Icon = System.Drawing.SystemIcons.Information;
-            ni.Visible = true;
-            ni.BalloonTipTitle = "WgIme 提醒  " + time;
-            ni.BalloonTipText = (string.IsNullOrEmpty(name) ? "闹钟" : name) + "  (" + repeat + ")";
-            ni.BalloonTipIcon = ToolTipIcon.Info;
-            ni.ShowBalloonTip(8000);
-            System.Media.SystemSounds.Asterisk.Play();
-            System.Windows.Forms.Timer t = null;
-            t = new System.Windows.Forms.Timer { Interval = 10000 };
-            t.Tick += delegate { t.Stop(); t.Dispose(); ni.Visible = false; ni.Dispose(); };
-            t.Start();
-        } catch {}
-    }
-
-    // ---------- resident watcher: hourly chime + alarm (works after first sz, no window needed) ----------
-    static void StartChimeWatcher()
-    {
-        bool createdNew;
-        var mx = new System.Threading.Mutex(true, "WgImeClockChime", out createdNew);
-        if (!createdNew) return;
-        var t = new System.Threading.Thread((System.Threading.ThreadStart)delegate {
-            int lastHour = -1;
-            var firedAlarms = new HashSet<string>();
-            string firedDay = "";
-            while (true) {
-                System.Threading.Thread.Sleep(5000);
-                try {
-                    LoadCfg();
-                    var now = DateTime.Now;
-                    if (hourly && now.Minute == 0 && now.Hour != lastHour) {
-                        lastHour = now.Hour;
-                        System.Media.SystemSounds.Asterisk.Play();
-                    }
-                    string day = now.ToString("yyyy-MM-dd");
-                    if (day != firedDay) { firedDay = day; firedAlarms.Clear(); }
-                    string hm = now.ToString("HH:mm");
-                    for (int ai = 0; ai < alarms.Count; ai++) {
-                        AlarmItem a = alarms[ai];
-                        string alarmKey = day + " " + hm + "#" + ai;
-                        if (a.Enabled && hm == a.Time && RepeatMatches(a, now) && !firedAlarms.Contains(alarmKey)) {
-                            firedAlarms.Add(alarmKey);
-                            QueueAlarmPopup(a, now);
-                            if (a.Repeat == "仅一次") { a.Enabled = false; SaveCfg(); }
-                        }
-                    }
-                } catch {}
-            }
-        });
-        t.IsBackground = true;
-        t.Name = "ClockChime";
-        t.Start();
-    }
-
-    // ---------- ui helpers ----------
-    static Font F(float size, FontStyle style)
+    static Font F(float size, FontStyle st)
     {
         string[] names = { "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI" };
-        foreach (string n in names) { try { return new Font(n, size, style, GraphicsUnit.Point); } catch {} }
-        return new Font(FontFamily.GenericSansSerif, size, style, GraphicsUnit.Point);
+        foreach (string n in names) { try { return new Font(n, size, st, GraphicsUnit.Point); } catch {} }
+        return new Font(FontFamily.GenericSansSerif, size, st, GraphicsUnit.Point);
     }
-
     static GraphicsPath RoundRect(Rectangle r, int rad)
     {
         var p = new GraphicsPath();
         int d = rad * 2;
-        p.AddArc(r.X, r.Y, d, d, 180, 90);
-        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
         p.CloseFigure();
         return p;
     }
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+    static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool ReleaseCapture();
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-    class DBPanel : Panel { public DBPanel() { DoubleBuffered = true; } }
-
-    class RoundedEdit : Panel      // rounded text field: native TextBox is always square, so wrap a borderless one
+    internal class TBtn : Panel   // Panel base: zero native chrome
     {
-        public readonly TextBox Box;
-        public RoundedEdit(int w, int h, Font f)
-        {
-            Size = new Size(w, h);
-            DoubleBuffered = true;
-            BackColor = C_SURFACE;
-            Box = new TextBox { BorderStyle = BorderStyle.None, Font = f, Dock = DockStyle.Fill,
-                BackColor = C_SURFACE, ForeColor = C_TEXT, TextAlign = HorizontalAlignment.Center };
-            Padding = new Padding(9, 4, 9, 3);
-            Controls.Add(Box);
-            Cursor = Cursors.IBeam;
-            Click += delegate { Box.Focus(); };
-            Box.Enter += delegate { Invalidate(); };
-            Box.Leave += delegate { Invalidate(); };
-        }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            var g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (Parent != null) { using (var pb = new SolidBrush(Parent.BackColor)) g.FillRectangle(pb, ClientRectangle); }
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = RoundRect(rect, 7))
-            using (var br = new SolidBrush(C_SURFACE)) { g.FillPath(br, path); }
-            using (var path = RoundRect(rect, 7))
-            using (var pen = new Pen(Box.Focused ? C_ACCENT : C_BORDER, Box.Focused ? 2F : 1F)) { g.DrawPath(pen, path); }
-        }
-    }
-
-    class FlatBtn : Panel    // Panel base: zero native chrome (a Button's themed edge bleeds back over time)
-    {
-        public Color Bg = Color.FromArgb(255, 255, 255, 255);       // white card button on the blue-gray body
+        public Color Bg = Color.FromArgb(255, 255, 255, 255);
         public Color BgHover = Color.FromArgb(255, 240, 243, 249);
         public Color BgDown = Color.FromArgb(255, 226, 232, 242);
         public Color Fg = Color.FromArgb(255, 29, 29, 31);
-        public bool AccentLine;                       // tab mode: 3px accent underline when Selected
-        public bool Selected;
-        public bool Primary;                          // solid systemBlue fill (macOS accent button)
         bool hover, down;
-        static Color PriA  = Color.FromArgb(255, 10, 132, 255);     // #0A84FF
-        static Color PriB  = Color.FromArgb(255, 0, 122, 255);      // #007AFF, near-solid gradient = macOS flat accent
-        static Color Lighten(Color c, int d) { return Color.FromArgb(255,
-            Math.Max(0, Math.Min(255, c.R + d)), Math.Max(0, Math.Min(255, c.G + d)), Math.Max(0, Math.Min(255, c.B + d))); }
-        public FlatBtn()
-        {
-            DoubleBuffered = true;
-            Cursor = Cursors.Hand;
-        }
+        public TBtn() { DoubleBuffered = true; Cursor = Cursors.Hand; }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
@@ -3380,510 +3118,157 @@ public class ClockPlugin
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            // fill the full rect with the parent's background first: pixels outside the rounded
-            // path are otherwise never painted and show whatever sits underneath (corner notches)
             if (Parent != null) { using (var pb = new SolidBrush(Parent.BackColor)) g.FillRectangle(pb, ClientRectangle); }
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = RoundRect(rect, 7)) {
-                if (Primary) {
-                    int d = down ? -12 : (hover ? 18 : 0);
-                    using (var lb = new LinearGradientBrush(new Rectangle(0, 0, Width, Height), Lighten(PriA, d), Lighten(PriB, d), 25F))
-                        g.FillPath(lb, path);
-                } else {
-                    using (var br = new SolidBrush(down ? BgDown : (hover ? BgHover : Bg))) { g.FillPath(br, path); }
-                }
-            }
-            if (AccentLine && Selected) {
-                using (var br = new SolidBrush(C_ACCENT)) g.FillRectangle(br, 12, Height - 4, Width - 24, 3);
-            }
-            using (var br = new SolidBrush(Selected ? C_TEXT : Fg))
+            using (var path = RoundRect(rect, 8))
+            using (var br = new SolidBrush(down ? BgDown : (hover ? BgHover : Bg))) { g.FillPath(br, path); }
+            using (var br = new SolidBrush(Fg))
             using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-            { g.DrawString(Text, Font, br, new RectangleF(0, 0, Width, Height), sf); }
+                g.DrawString(Text, Font, br, new RectangleF(0, 0, Width, Height), sf);
         }
     }
 
-    static Label MkLabel(string text, Font f, Color fg, int x, int y, int w, int h, ContentAlignment align)
+    // ---------- expression parser (unchanged from the built-in version) ----------
+    class P { internal string s; internal int i; }
+    static double ParseExpr(P p) { double v = ParseTerm(p); while (p.i < p.s.Length) { char c = p.s[p.i]; if (c == '+') { p.i++; v += ParseTerm(p); } else if (c == '-') { p.i++; v -= ParseTerm(p); } else break; } return v; }
+    static double ParseTerm(P p) { double v = ParseFac(p);  while (p.i < p.s.Length) { char c = p.s[p.i]; if (c == '*') { p.i++; v *= ParseFac(p); } else if (c == '/') { p.i++; v /= ParseFac(p); } else if (c == '%') { p.i++; v = (double)((long)v % (long)ParseFac(p)); } else break; } return v; }
+    static double ParseFac(P p)
     {
-        return new Label { Text = text, Font = f, ForeColor = fg, Location = new Point(x, y), Size = new Size(w, h),
-            TextAlign = align, BackColor = Color.Transparent };
+        while (p.i < p.s.Length && p.s[p.i] == ' ') p.i++;
+        if (p.i >= p.s.Length) throw new Exception("eof");
+        char c = p.s[p.i];
+        if (c == '(') { p.i++; double v = ParseExpr(p); if (p.i >= p.s.Length || p.s[p.i] != ')') throw new Exception("paren"); p.i++; return v; }
+        if (c == '-') { p.i++; return -ParseFac(p); }
+        if (c == '+') { p.i++; return ParseFac(p); }
+        int st = p.i;
+        while (p.i < p.s.Length && (char.IsDigit(p.s[p.i]) || p.s[p.i] == '.')) p.i++;
+        if (st == p.i) throw new Exception("num");
+        return double.Parse(p.s.Substring(st, p.i - st), System.Globalization.CultureInfo.InvariantCulture);
     }
-
-    static string FmtCd(TimeSpan t)
+    public static string Calc(string s)
     {
-        if (t.TotalHours >= 1) return (int)t.TotalHours + ":" + t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00");
-        return t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00");
-    }
-    static string FmtSw(TimeSpan t)
-    {
-        if (t.TotalMinutes >= 60) return ((int)t.TotalMinutes / 60) + ":" + t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + t.Milliseconds.ToString("000");
-        return t.Minutes.ToString("00") + ":" + t.Seconds.ToString("00") + "." + t.Milliseconds.ToString("000");
-    }
-    static string FmtMinutes(double min)
-    {
-        if (min >= 60) return ((int)(min / 60)) + "小时" + ((int)(min % 60)) + "分";
-        return ((int)min) + "分钟";
-    }
-    static string WeekCn(DateTime d) { return "星期" + "日一二三四五六"[(int)d.DayOfWeek]; }
-
-    static void ShowAlarmPopup(string time, string name, string repeat)
-    {
-        var a = new Form();
-        a.Text = "WgIme 闹钟提醒"; a.FormBorderStyle = FormBorderStyle.None; a.AutoScaleMode = AutoScaleMode.None;
-        a.ClientSize = new Size(340, 224); a.BackColor = C_BG; a.TopMost = true; a.ShowInTaskbar = true;
-        a.StartPosition = FormStartPosition.CenterScreen;
-        EventHandler ar = delegate { try { SetWindowRgn(a.Handle, CreateRoundRectRgn(0, 0, a.Width + 1, a.Height + 1, 22, 22), true); } catch {} };
-        a.HandleCreated += delegate { ar(a, EventArgs.Empty); }; a.Resize += delegate { ar(a, EventArgs.Empty); };
-        a.Paint += delegate(object ss, PaintEventArgs ee) { ee.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var p = RoundRect(new Rectangle(1, 1, a.Width - 3, a.Height - 3), 10)) using (var pn = new Pen(C_BORDER)) ee.Graphics.DrawPath(pn, p); };
-        var head = new Panel { Location = new Point(0, 0), Size = new Size(340, 38), BackColor = C_HEADER };
-        head.Controls.Add(MkLabel("闹钟提醒", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 180, 24, ContentAlignment.MiddleLeft));
-        head.MouseDown += delegate(object ss, MouseEventArgs ee) { if (ee.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(a.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
-        a.Controls.Add(head);
-        a.Controls.Add(MkLabel(time, F(32F, FontStyle.Regular), C_ORANGE, 0, 52, 340, 52, ContentAlignment.MiddleCenter));
-        a.Controls.Add(MkLabel(name, F(12F, FontStyle.Bold), C_TEXT, 20, 108, 300, 28, ContentAlignment.MiddleCenter));
-        a.Controls.Add(MkLabel("重复：" + repeat, F(8.5F, FontStyle.Regular), C_SUB, 20, 136, 300, 20, ContentAlignment.MiddleCenter));
-        var stop = new FlatBtn { Text = "停止提醒", Font = F(9F, FontStyle.Regular), Location = new Point(20, 174), Size = new Size(142, 34), Primary = true };
-        var snooze = new FlatBtn { Text = "5分钟后提醒", Font = F(9F, FontStyle.Regular), Location = new Point(178, 174), Size = new Size(142, 34), Fg = C_ORANGE };
-        var sound = new Timer { Interval = 1400 };
-        sound.Tick += delegate { System.Media.SystemSounds.Exclamation.Play(); };
-        stop.Click += delegate { sound.Stop(); a.Close(); };
-        snooze.Click += delegate {
-            sound.Stop(); a.Close();
-            System.Threading.Timer later = null;
-            later = new System.Threading.Timer(delegate(object state) {
-                if (uiContext != null) uiContext.Post(delegate(object x) { ShowAlarmPopup(DateTime.Now.ToString("HH:mm"), name + "（稍后提醒）", "单次延后"); }, null);
-                try { later.Dispose(); snoozeTimers.Remove(later); } catch {}
-            }, null, 5 * 60 * 1000, System.Threading.Timeout.Infinite);
-            snoozeTimers.Add(later);
-        };
-        a.FormClosed += delegate { sound.Stop(); sound.Dispose(); };
-        a.Controls.Add(stop); a.Controls.Add(snooze);
-        System.Media.SystemSounds.Exclamation.Play(); sound.Start(); a.Show(); a.Activate();
-    }
-
-    static void ShowAlarmManager(Form owner, Action changed, Font fontBtn, Font fontSub)
-    {
-        var m = new Form();
-        m.Text = "WgIme 闹钟管理"; m.FormBorderStyle = FormBorderStyle.None; m.AutoScaleMode = AutoScaleMode.None;
-        m.ClientSize = new Size(360, 456); m.BackColor = C_BG; m.TopMost = true; m.ShowInTaskbar = false;
-        m.StartPosition = FormStartPosition.Manual;
-        m.Location = new Point(owner.Left + (owner.Width - m.Width) / 2, owner.Top + (owner.Height - m.Height) / 2);
-        EventHandler ar = delegate { try { SetWindowRgn(m.Handle, CreateRoundRectRgn(0, 0, m.Width + 1, m.Height + 1, 20, 20), true); } catch {} };
-        m.HandleCreated += delegate { ar(m, EventArgs.Empty); }; m.Resize += delegate { ar(m, EventArgs.Empty); };
-        m.Paint += delegate(object ss, PaintEventArgs ee) { ee.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var pp = RoundRect(new Rectangle(1, 1, m.Width - 3, m.Height - 3), 9)) using (var pn = new Pen(C_BORDER)) ee.Graphics.DrawPath(pn, pp); };
-        var head = new Panel { Location = new Point(0, 0), Size = new Size(360, 38), BackColor = C_HEADER };
-        var cap = MkLabel("闹钟管理", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 160, 24, ContentAlignment.MiddleLeft);
-        var close = new FlatBtn { Text = "✕", Font = fontBtn, Location = new Point(316, 6), Size = new Size(34, 26), Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70) };
-        close.Click += delegate { m.Close(); }; head.Controls.Add(cap); head.Controls.Add(close);
-        head.MouseDown += delegate(object ss, MouseEventArgs ee) { if (ee.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(m.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
-        m.Controls.Add(head);
-
-        var list = new ListBox { Location = new Point(16, 52), Size = new Size(328, 154), BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn, BorderStyle = BorderStyle.None, IntegralHeight = false };
-        m.Controls.Add(list);
-        var edTime = new RoundedEdit(76, 30, fontBtn); edTime.Location = new Point(16, 220); edTime.Box.Text = "07:30"; m.Controls.Add(edTime);
-        var edName = new RoundedEdit(148, 30, fontBtn); edName.Location = new Point(100, 220); edName.Box.TextAlign = HorizontalAlignment.Left; edName.Box.Text = "闹钟"; m.Controls.Add(edName);
-        var toggle = new FlatBtn { Text = "已开启", Font = fontBtn, Location = new Point(256, 219), Size = new Size(88, 32), Fg = C_GREEN };
-        var repeat = new ComboBox { Location = new Point(16, 260), Size = new Size(328, 28), DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn };
-        repeat.Items.AddRange(new object[] { "仅一次", "每天", "工作日", "周末", "自定义:一二三四五", "自定义:一三五", "自定义:二四六", "自定义:日六" }); repeat.SelectedItem = "每天"; m.Controls.Add(repeat);
-        var mode = new ComboBox { Location = new Point(16, 296), Size = new Size(328, 28), DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn };
-        mode.Items.AddRange(new object[] { "居中弹窗", "全屏强制休息", "托盘气泡" }); mode.SelectedIndex = 0; m.Controls.Add(mode);
-        bool editEnabled = true;
-        toggle.Click += delegate { editEnabled = !editEnabled; toggle.Text = editEnabled ? "已开启" : "已关闭"; toggle.Fg = editEnabled ? C_GREEN : C_SUB; toggle.Invalidate(); };
-        m.Controls.Add(toggle);
-        var note = MkLabel("选择项目可编辑；提醒方式可单独设置", fontSub, C_SUB, 16, 332, 328, 20, ContentAlignment.MiddleLeft); m.Controls.Add(note);
-
-        Action refresh = delegate {
-            list.Items.Clear();
-            for (int i = 0; i < alarms.Count; i++) list.Items.Add((alarms[i].Enabled ? "● " : "○ ") + alarms[i].Time + "   " + alarms[i].Name + "   [" + alarms[i].Repeat + "]");
-            if (changed != null) changed();
-        };
-        Action<int> loadItem = delegate(int idx) {
-            if (idx < 0 || idx >= alarms.Count) return;
-            AlarmItem a = alarms[idx]; edTime.Box.Text = a.Time; edName.Box.Text = a.Name; editEnabled = a.Enabled;
-            toggle.Text = editEnabled ? "已开启" : "已关闭"; toggle.Fg = editEnabled ? C_GREEN : C_SUB; toggle.Invalidate();
-            repeat.SelectedItem = a.Repeat; if (repeat.SelectedIndex < 0) repeat.SelectedItem = "每天";
-            mode.SelectedItem = a.Mode == "full" ? "全屏强制休息" : (a.Mode == "tray" ? "托盘气泡" : "居中弹窗");
-        };
-        list.SelectedIndexChanged += delegate { loadItem(list.SelectedIndex); };
-        Action normalize = delegate {
-            string t = edTime.Box.Text.Trim().Replace("：", ":"); string d = t.Replace(":", ""); int hh = 0, mm = 0;
-            if (d.Length == 3 || d.Length == 4) { string hs = d.Substring(0, d.Length - 2), ms = d.Substring(d.Length - 2); if (int.TryParse(hs, out hh) && int.TryParse(ms, out mm) && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) t = hh.ToString("00") + ":" + mm.ToString("00"); }
-            edTime.Box.Text = t;
-        };
-        Func<AlarmItem> readItem = delegate {
-            normalize(); string t = edTime.Box.Text.Trim();
-            if (!ValidAlarmTime(t)) { note.Text = "时间格式错误，请输入 00:00–23:59"; note.ForeColor = C_RED; return null; }
-            string nm = edName.Box.Text.Trim(); if (nm.Length == 0) nm = "闹钟";
-            note.Text = "已保存"; note.ForeColor = C_GREEN;
-            AlarmItem it = new AlarmItem(t, nm, editEnabled, repeat.SelectedItem == null ? "每天" : repeat.SelectedItem.ToString());
-            string sel = mode.SelectedItem == null ? "居中弹窗" : mode.SelectedItem.ToString();
-            it.Mode = sel == "全屏强制休息" ? "full" : (sel == "托盘气泡" ? "tray" : "popup");
-            return it;
-        };
-        var add = new FlatBtn { Text = "新增", Font = fontBtn, Location = new Point(16, 372), Size = new Size(76, 34), Primary = true };
-        var save = new FlatBtn { Text = "保存修改", Font = fontBtn, Location = new Point(100, 372), Size = new Size(92, 34), Fg = C_ACCENT };
-        var del = new FlatBtn { Text = "删除", Font = fontBtn, Location = new Point(200, 372), Size = new Size(68, 34), Fg = C_RED };
-        var clear = new FlatBtn { Text = "清空", Font = fontBtn, Location = new Point(276, 372), Size = new Size(68, 34), Fg = C_SUB };
-        add.Click += delegate { AlarmItem a = readItem(); if (a == null) return; alarms.Add(a); SaveCfg(); refresh(); list.SelectedIndex = alarms.Count - 1; };
-        save.Click += delegate { int i = list.SelectedIndex; if (i < 0 || i >= alarms.Count) { note.Text = "请先选择一个闹钟"; note.ForeColor = C_RED; return; } AlarmItem a = readItem(); if (a == null) return; alarms[i] = a; SaveCfg(); refresh(); list.SelectedIndex = i; };
-        del.Click += delegate { int i = list.SelectedIndex; if (i < 0 || i >= alarms.Count) return; alarms.RemoveAt(i); SaveCfg(); refresh(); if (alarms.Count > 0) list.SelectedIndex = Math.Min(i, alarms.Count - 1); };
-        clear.Click += delegate { edTime.Box.Text = "07:30"; edName.Box.Text = "闹钟"; editEnabled = true; toggle.Text = "已开启"; toggle.Fg = C_GREEN; toggle.Invalidate(); repeat.SelectedItem = "每天"; mode.SelectedIndex = 0; list.ClearSelected(); note.Text = "填写后点击新增"; note.ForeColor = C_SUB; };
-        m.Controls.Add(add); m.Controls.Add(save); m.Controls.Add(del); m.Controls.Add(clear);
-        m.FormClosed += delegate { SaveCfg(); if (changed != null) changed(); };
-        refresh(); m.Show(owner);
+        s = s.Replace(" ", "").Replace('×', '*').Replace('÷', '/').Replace('（', '(').Replace('）', ')');
+        if (s.Length == 0) return "";
+        try {
+            var p = new P { s = s };
+            double v = ParseExpr(p);
+            if (p.i != s.Length || double.IsNaN(v) || double.IsInfinity(v)) return "Err";
+            return (v == Math.Floor(v) && Math.Abs(v) < 1e15) ? ((long)v).ToString() : v.ToString("G10");
+        } catch { return "Err"; }
     }
 
     public static void Run()
     {
-        uiContext = System.Threading.SynchronizationContext.Current;
-        if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
-        LoadCfg();
-        StartChimeWatcher();
-
         var f = new Form();
-        f.Text = "WgIme Clock";                 // window identity (alt-tab / tests); caption is drawn by the custom title bar
-        f.AutoScaleMode = AutoScaleMode.None;   // pixel-designed layout: no font/DPI autoscaling distortion
+        f.Text = "WgIme Calc";
         f.FormBorderStyle = FormBorderStyle.None;
-        f.TopMost = true;
+        f.AutoScaleMode = AutoScaleMode.None;
         f.StartPosition = FormStartPosition.CenterScreen;
-        f.ClientSize = new Size(400, 400);
-        f.BackColor = C_BG;
-        f.ForeColor = C_TEXT;
+        f.TopMost = true;
         f.KeyPreview = true;
         f.ShowInTaskbar = false;
-        // rounded outer frame via GDI CreateRoundRectRgn: cleaner corners than GraphicsPath->Region
-        // (no jagged stub pixels); corner pixels outside the rgn are see-through (inherent to rounded windows)
-        EventHandler applyRegion = delegate { try { SetWindowRgn(f.Handle, CreateRoundRectRgn(0, 0, f.Width + 1, f.Height + 1, 24, 24), true); } catch {} };
-        f.HandleCreated += delegate { applyRegion(f, EventArgs.Empty); };
-        f.Resize += delegate { applyRegion(f, EventArgs.Empty); };
+        f.ClientSize = new Size(264, 356);
+        f.BackColor = C_BG;
+        EventHandler rg = delegate { try { SetWindowRgn(f.Handle, CreateRoundRectRgn(0, 0, f.Width + 1, f.Height + 1, 20, 20), true); } catch {} };
+        f.HandleCreated += delegate { rg(f, EventArgs.Empty); };
+        f.Resize += delegate { rg(f, EventArgs.Empty); };
         f.Paint += delegate(object s, PaintEventArgs e) {
             var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var path = RoundRect(new Rectangle(1, 1, f.Width - 3, f.Height - 3), 11))   // inset 1px: AA never touches the clip boundary
+            using (var path = RoundRect(new Rectangle(1, 1, f.Width - 3, f.Height - 3), 9))
             using (var pen = new Pen(C_BORDER, 1)) { g.DrawPath(pen, path); }
         };
 
         var fontTitle = F(9.5F, FontStyle.Bold);
-        var fontSub = F(8.5F, FontStyle.Regular);
-        var fontBtn = F(9F, FontStyle.Regular);
-        var fontBig = F(40F, FontStyle.Regular);
-        var fontMid = F(26F, FontStyle.Regular);
-        var fontTab = F(9.5F, FontStyle.Regular);
+        var fontKey = F(11F, FontStyle.Regular);
 
-        // ---------- title bar ----------
-        // explicit bounds, no Dock: dock order depends on z-order and silently scrambled once
-        // (title ended up below the tab strip). Fixed-size form => fixed coordinates.
-        var title = new Panel { Location = new Point(0, 0), Size = new Size(400, 38), BackColor = C_HEADER };
-        var lblCap = new Label { Text = "悬浮时钟", Font = fontTitle, ForeColor = C_TEXT, AutoSize = true, Location = new Point(30, 9), BackColor = Color.Transparent };
-        var btnClose = new FlatBtn { Text = "✕", Font = fontTitle, Size = new Size(34, 26), Location = new Point(356, 6),
-            Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70), BgDown = Color.FromArgb(255, 170, 40, 50) };
-        btnClose.Click += delegate { f.Close(); };
-        title.Controls.Add(lblCap); title.Controls.Add(btnClose);
+        // title bar
+        var title = new Panel { Location = new Point(0, 0), Size = new Size(264, 32), BackColor = C_HEADER };
+        var capLbl = new Label { Text = "计算器", Font = fontTitle, ForeColor = C_TEXT, AutoSize = true, Location = new Point(12, 7), BackColor = Color.Transparent };
+        var close = new Label { Text = "✕", Size = new Size(28, 22), Location = new Point(228, 5), TextAlign = ContentAlignment.MiddleCenter,
+            Font = fontTitle, ForeColor = C_TEXT, BackColor = Color.Transparent, Cursor = Cursors.Hand };
+        close.MouseEnter += delegate { close.BackColor = Color.FromArgb(255, 232, 17, 35); close.ForeColor = Color.White; };
+        close.MouseLeave += delegate { close.BackColor = Color.Transparent; close.ForeColor = C_TEXT; };
+        close.Click += delegate { f.Close(); };
+        title.Controls.Add(capLbl); title.Controls.Add(close);
         title.Paint += delegate(object s, PaintEventArgs e) {
-            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var br = new SolidBrush(C_ACCENT)) g.FillEllipse(br, 14, 15, 8, 8);
-            using (var pen = new Pen(C_BORDER)) g.DrawLine(pen, 0, title.Height - 1, title.Width, title.Height - 1);
+            using (var pen = new Pen(C_BORDER)) e.Graphics.DrawLine(pen, 0, title.Height - 1, title.Width, title.Height - 1);
         };
-        // drag to move
-        EventHandler drag = delegate {
-            try {
-                ReleaseCapture();
-                SendMessage(f.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero);
-            } catch {}
+        MouseEventHandler drag = delegate(object s, MouseEventArgs e) {
+            if (e.Button != MouseButtons.Left) return;
+            try { ReleaseCapture(); SendMessage(f.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } catch {}
         };
-        title.MouseDown += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) drag(s, e); };
-        lblCap.MouseDown += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) drag(s, e); };
+        title.MouseDown += drag; capLbl.MouseDown += drag;
         f.Controls.Add(title);
 
-        // ---------- tab strip ----------
-        var strip = new Panel { Location = new Point(0, 38), Size = new Size(400, 40), BackColor = C_BG };
-        string[] names = { "时钟", "倒计时", "秒表", "番茄" };
-        var tabBtns = new FlatBtn[4];
-        var pages = new Panel[4];
-        var timer = new Timer { Interval = 100 };   // declared early: stopwatch handlers speed it up while running
-        for (int i = 0; i < 4; i++) {
-            var b = new FlatBtn { Text = names[i], Font = fontTab, Size = new Size(88, 28), Location = new Point(14 + i * 94, 6),
-                AccentLine = true, Selected = (i == 0), Fg = C_SUB, Bg = C_BG, BgHover = C_SURF2, BgDown = C_SURF2 };
-            int idx = i;
-            b.Click += delegate {
-                for (int j = 0; j < 4; j++) { tabBtns[j].Selected = (j == idx); tabBtns[j].Invalidate(); pages[j].Visible = (j == idx); }
-            };
-            tabBtns[i] = b; strip.Controls.Add(b);
-        }
-        f.Controls.Add(strip);
-
-        for (int i = 0; i < 4; i++) {
-            pages[i] = new Panel { Location = new Point(0, 78), Size = new Size(400, 322), BackColor = C_BG, Visible = (i == 0), Padding = new Padding(0) };
-            f.Controls.Add(pages[i]);
-        }
-        pages[0].BringToFront();
-
-        // =========================================================
-        //  page 0: clock (seconds ring / alarm / hourly chime)
-        // =========================================================
-        var lblTime = MkLabel("00:00:00", fontBig, C_GREEN, 0, 16, 400, 58, ContentAlignment.MiddleCenter);
-        var lblDate = MkLabel("", F(10.5F, FontStyle.Regular), C_SUB, 0, 78, 400, 22, ContentAlignment.MiddleCenter);
-        var lblDayOf = MkLabel("", fontSub, C_SUB, 0, 100, 400, 18, ContentAlignment.MiddleCenter);
-        var ringClock = new DBPanel { Location = new Point(130, 126), Size = new Size(140, 140), BackColor = Color.Transparent };
-        ringClock.Paint += delegate(object s, PaintEventArgs e) {
+        // display card
+        var card = new Panel { Location = new Point(12, 42), Size = new Size(240, 58), BackColor = C_CARD };
+        var lblExpr = new Label { Text = "", Location = new Point(10, 5), Size = new Size(220, 16), TextAlign = ContentAlignment.MiddleRight,
+            Font = F(8F, FontStyle.Regular), ForeColor = C_SUB, BackColor = Color.Transparent };
+        var lblMain = new Label { Text = "0", Location = new Point(10, 20), Size = new Size(220, 34), TextAlign = ContentAlignment.MiddleRight,
+            Font = F(17F, FontStyle.Regular), ForeColor = C_TEXT, BackColor = Color.Transparent };
+        card.Controls.Add(lblExpr); card.Controls.Add(lblMain);
+        card.Paint += delegate(object s, PaintEventArgs e) {
             var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            var r = new Rectangle(8, 8, 124, 124);
-            using (var pen = new Pen(C_SURF2, 7)) g.DrawEllipse(pen, r);
-            var now = DateTime.Now;
-            double pct = (now.Second * 1000.0 + now.Millisecond) / 60000.0;
-            using (var pen = new Pen(C_GREEN, 7)) { pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round;
-                g.DrawArc(pen, r, -90, (float)(360.0 * pct)); }
-            // draw the seconds number inside the ring: a transparent panel paints AFTER sibling labels
-            // (z-order) and would overdraw them on screen, so the text must live in this Paint handler
-            using (var br = new SolidBrush(C_TEXT))
-            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                g.DrawString(now.Second.ToString(), fontMid, br, new RectangleF(0, 0, 140, 140), sf);
+            if (card.Parent != null) { using (var pb = new SolidBrush(card.Parent.BackColor)) g.FillRectangle(pb, card.ClientRectangle); }
+            var rect = new Rectangle(0, 0, card.Width - 1, card.Height - 1);
+            using (var path = RoundRect(rect, 8))
+            using (var br = new SolidBrush(C_CARD)) { g.FillPath(br, path); }
+            using (var path = RoundRect(rect, 8))
+            using (var pen = new Pen(C_BORDER, 1)) { g.DrawPath(pen, path); }
+        };
+        f.Controls.Add(card);
+
+        string expr = "";
+        Action Refresh = delegate { lblMain.Text = expr.Length > 0 ? expr : "0"; };
+        Action Evaluate = delegate {
+            if (expr.Length == 0) return;
+            string r = Calc(expr);
+            lblExpr.Text = expr + " =";
+            expr = r == "Err" ? "" : r;
+            if (r == "Err") { lblMain.Text = "Err"; expr = ""; } else Refresh();
+        };
+        Action<string> Press = delegate(string cap) {
+            if (cap == "C") { expr = ""; lblExpr.Text = ""; }
+            else if (cap == "<-") { if (expr.Length > 0) expr = expr.Substring(0, expr.Length - 1); }
+            else if (cap == "=") { Evaluate(); return; }
+            else expr += cap;
+            Refresh();
         };
 
-        var chkHourly = new FlatBtn { Text = hourly ? "整点报时: 开" : "整点报时: 关", Font = fontBtn,
-            Location = new Point(16, 282), Size = new Size(118, 32), Fg = hourly ? C_GREEN : C_SUB };
-        chkHourly.Click += delegate { hourly = !hourly; SaveCfg(); chkHourly.Text = hourly ? "整点报时: 开" : "整点报时: 关"; chkHourly.Fg = hourly ? C_GREEN : C_SUB; chkHourly.Invalidate(); };
-        var lblAl = MkLabel("闹钟", fontBtn, C_SUB, 144, 288, 40, 22, ContentAlignment.MiddleLeft);
-        var lblAlSummary = MkLabel("", fontSub, C_SUB, 184, 288, 104, 22, ContentAlignment.MiddleLeft);
-        var btnAlarmManage = new FlatBtn { Text = "管理闹钟", Font = fontBtn, Location = new Point(292, 282), Size = new Size(92, 32), Fg = C_ACCENT };
-        Action refreshAlarmSummary = delegate {
-            int enabled = 0; string next = "";
-            for (int i = 0; i < alarms.Count; i++) if (alarms[i].Enabled) { enabled++; if (next.Length == 0 || String.Compare(alarms[i].Time, next) < 0) next = alarms[i].Time; }
-            lblAlSummary.Text = alarms.Count == 0 ? "未设置" : (enabled + "个开启" + (next.Length > 0 ? " · " + next : ""));
+        // key grid 4x5
+        string[,] caps = new string[,] {
+            { "C", "<-", "(", ")" },
+            { "7", "8", "9", "/" },
+            { "4", "5", "6", "*" },
+            { "1", "2", "3", "-" },
+            { "0", ".", "=", "+" },
         };
-        refreshAlarmSummary();
-        btnAlarmManage.Click += delegate { ShowAlarmManager(f, refreshAlarmSummary, fontBtn, fontSub); };
-        var p0 = pages[0];
-        p0.Controls.Add(lblTime); p0.Controls.Add(lblDate); p0.Controls.Add(lblDayOf);
-        p0.Controls.Add(ringClock);
-        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(lblAlSummary); p0.Controls.Add(btnAlarmManage);
-
-        // =========================================================
-        //  page 1: countdown (ring / presets / custom reminder)
-        // =========================================================
-        var cdTotal = TimeSpan.FromMinutes(25);
-        var cdRemain = cdTotal;
-        var cdTarget = DateTime.MinValue;
-        bool cdRunning = false, cdPaused = false;
-        int cdFlash = 0;
-        string cdState = "就绪";
-
-        var ringCd = new DBPanel { Location = new Point(110, 8), Size = new Size(180, 180), BackColor = Color.Transparent };
-        ringCd.Paint += delegate(object s, PaintEventArgs e) {
-            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            var r = new Rectangle(9, 9, 162, 162);
-            using (var pen = new Pen(C_SURF2, 9)) g.DrawEllipse(pen, r);
-            double pct = cdTotal.TotalSeconds > 0 ? cdRemain.TotalSeconds / cdTotal.TotalSeconds : 0;
-            using (var pen = new Pen(cdFlash > 0 && cdFlash % 2 == 1 ? C_RED : C_ORANGE, 9)) { pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round;
-                g.DrawArc(pen, r, -90, (float)(360.0 * pct)); }
-            // countdown digits + state drawn inside the ring Paint (see clock page note about z-order)
-            string main = cdFlash > 0 ? reminder : FmtCd(cdRemain);
-            Color mc = cdFlash > 0 ? (cdFlash % 2 == 1 ? C_RED : C_ORANGE) : C_ORANGE;
-            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center }) {
-                using (var br = new SolidBrush(mc)) g.DrawString(main, fontMid, br, new RectangleF(0, 50, 180, 44), sf);
-                using (var br = new SolidBrush(C_SUB)) g.DrawString(cdState, fontSub, br, new RectangleF(0, 100, 180, 20), sf);
+        int pad = 12, gap = 8, bw = (264 - 2 * pad - 3 * gap) / 4, bh = 38;
+        for (int r = 0; r < 5; r++)
+            for (int c = 0; c < 4; c++) {
+                string cap2 = caps[r, c];
+                var b = new TBtn { Text = cap2, Font = fontKey, TabStop = false,
+                    Size = new Size(bw, bh), Location = new Point(pad + c * (bw + gap), 110 + r * (bh + gap)) };
+                if (cap2 == "=") { b.Bg = C_ACCENT; b.BgHover = Color.FromArgb(255, 26, 134, 255); b.BgDown = Color.FromArgb(255, 0, 108, 224); b.Fg = Color.White; }
+                else if (cap2 == "C") { b.Fg = C_RED; }
+                else if (cap2 == "(" || cap2 == ")" || cap2 == "/" || cap2 == "*" || cap2 == "-" || cap2 == "+") { b.Bg = C_OP; }
+                b.Click += delegate { Press(cap2); f.Focus(); };
+                f.Controls.Add(b);
             }
+
+        // keyboard input
+        f.KeyPress += delegate(object s, KeyPressEventArgs e) {
+            char c = e.KeyChar;
+            if (c == '\r') { Evaluate(); e.Handled = true; return; }
+            if (c == '\b') { Press("<-"); e.Handled = true; return; }
+            if (c == 27) return;                                     // Esc handled in KeyDown
+            if ("0123456789.+-*/%()".IndexOf(c) >= 0) { expr += c; Refresh(); e.Handled = true; }
         };
-
-        var edMin = new RoundedEdit(46, 28, fontBtn); edMin.Location = new Point(16, 201); edMin.Box.Text = "25";
-        var txtMin = edMin.Box;
-        var lblMinNote = MkLabel("分", fontBtn, C_SUB, 68, 206, 20, 20, ContentAlignment.MiddleLeft);
-        var edRm = new RoundedEdit(368, 28, fontBtn); edRm.Location = new Point(16, 237);
-        var txtRm = edRm.Box; txtRm.TextAlign = HorizontalAlignment.Left; txtRm.Text = reminder;
-        txtRm.LostFocus += delegate { reminder = txtRm.Text.Trim(); if (reminder.Length == 0) reminder = "休息一下"; SaveCfg(); };
-        var btnCdGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 276), Size = new Size(180, 36), Primary = true };
-        var btnCdReset = new FlatBtn { Text = "重置", Font = fontBtn, Location = new Point(204, 276), Size = new Size(180, 36), Fg = C_SUB };
-        var p1 = pages[1];
-        p1.Controls.Add(ringCd);
-        p1.Controls.Add(edMin); p1.Controls.Add(lblMinNote);
-        p1.Controls.Add(edRm); p1.Controls.Add(btnCdGo); p1.Controls.Add(btnCdReset);
-
-        Action<double> CdPreset = delegate(double m) {          // preset chip: set minutes + show it ready (press 开始 to run)
-            txtMin.Text = ((int)m).ToString();
-            cdRunning = false; cdPaused = false; cdFlash = 0;
-            cdTotal = TimeSpan.FromMinutes(m); cdRemain = cdTotal;
-            btnCdGo.Text = "开始"; cdState = "就绪";
-        };
-        int[] presets = { 5, 10, 15, 25, 45 };
-        for (int i = 0; i < presets.Length; i++) {
-            var chip = new FlatBtn { Text = presets[i] + "", Font = fontSub, Size = new Size(38, 26), Location = new Point(86 + i * 44, 202), Fg = C_SUB };
-            int mm = presets[i];
-            chip.Click += delegate { CdPreset(mm); };
-            p1.Controls.Add(chip);
-        }
-
-        btnCdGo.Click += delegate {
-            if (cdRunning) { cdRunning = false; cdPaused = true; btnCdGo.Text = "继续"; cdState = "已暂停"; return; }
-            if (cdPaused) { cdTarget = DateTime.Now + cdRemain; cdRunning = true; cdPaused = false; btnCdGo.Text = "暂停"; cdState = "进行中"; return; }
-            double m;
-            if (!double.TryParse(txtMin.Text, out m) || m <= 0) m = 25;
-            reminder = txtRm.Text.Trim(); if (reminder.Length == 0) reminder = "休息一下"; SaveCfg();
-            cdTotal = TimeSpan.FromMinutes(m); cdRemain = cdTotal;
-            cdTarget = DateTime.Now + cdRemain;
-            cdRunning = true; cdPaused = false; btnCdGo.Text = "暂停"; cdState = "进行中";
-        };
-        btnCdReset.Click += delegate {
-            cdRunning = false; cdPaused = false; cdFlash = 0;
-            double m;
-            if (!double.TryParse(txtMin.Text, out m) || m <= 0) m = 25;
-            cdTotal = TimeSpan.FromMinutes(m); cdRemain = cdTotal;
-            btnCdGo.Text = "开始"; cdState = "就绪";
-        };
-
-        // =========================================================
-        //  page 2: stopwatch (laps)
-        // =========================================================
-        var swStart = DateTime.MinValue;
-        var swAcc = TimeSpan.Zero;
-        bool swRunning = false;
-        var laps = new List<TimeSpan>();
-
-        var lblSw = MkLabel("00:00.0", fontBig, C_BLUE, 0, 22, 400, 60, ContentAlignment.MiddleCenter);
-        var btnSwGo = new FlatBtn { Text = "开始", Font = fontBtn, Location = new Point(16, 96), Size = new Size(118, 36), Primary = true };
-        var btnSwLap = new FlatBtn { Text = "计次", Font = fontBtn, Location = new Point(141, 96), Size = new Size(118, 36), Fg = C_SUB };
-        var btnSwReset = new FlatBtn { Text = "重置", Font = fontBtn, Location = new Point(266, 96), Size = new Size(118, 36), Fg = C_SUB };
-        var lstLaps = new ListBox { Location = new Point(16, 146), Size = new Size(368, 158),
-            BackColor = C_SURFACE, ForeColor = C_SUB, Font = F(9F, FontStyle.Regular), BorderStyle = BorderStyle.None, IntegralHeight = false };
-        var p2 = pages[2];
-        p2.Controls.Add(lblSw); p2.Controls.Add(btnSwGo); p2.Controls.Add(btnSwLap); p2.Controls.Add(btnSwReset); p2.Controls.Add(lstLaps);
-
-        Action RefreshLaps = delegate {
-            lstLaps.Items.Clear();
-            for (int i = laps.Count - 1; i >= 0; i--) {
-                string diff = i > 0 ? "  (+" + FmtSw(laps[i] - laps[i - 1]) + ")" : "";
-                lstLaps.Items.Add("  #" + (i + 1) + "   " + FmtSw(laps[i]) + diff);
-            }
-        };
-        btnSwGo.Click += delegate {
-            if (swRunning) { swAcc += DateTime.Now - swStart; swRunning = false; btnSwGo.Text = "继续"; timer.Interval = 100; }
-            else { swStart = DateTime.Now; swRunning = true; btnSwGo.Text = "暂停"; timer.Interval = 30; }   // 30ms tick so the millisecond digits actually move
-        };
-        btnSwLap.Click += delegate {
-            if (!swRunning && swAcc == TimeSpan.Zero) return;
-            laps.Add(swAcc + (swRunning ? DateTime.Now - swStart : TimeSpan.Zero));
-            RefreshLaps();
-        };
-        btnSwReset.Click += delegate { swAcc = TimeSpan.Zero; swRunning = false; btnSwGo.Text = "开始"; timer.Interval = 100; laps.Clear(); RefreshLaps(); };
-
-        // =========================================================
-        //  page 3: pomodoro (count-up focus / stats / 7-day chart)
-        // =========================================================
-        var pmStart = DateTime.MinValue;
-        bool pmRunning = false;
-
-        var lblPm = MkLabel("00:00", fontBig, C_RED, 0, 14, 400, 56, ContentAlignment.MiddleCenter);
-        var btnPmGo = new FlatBtn { Text = "开始专注", Font = fontBtn, Location = new Point(16, 78), Size = new Size(118, 34), Primary = true };
-        var lblToday = MkLabel("今日 0 次 / 0分钟", fontBtn, C_TEXT, 146, 84, 240, 22, ContentAlignment.MiddleLeft);
-        var lblTotal = MkLabel("总计 0 次 / 0分钟", fontSub, C_SUB, 146, 106, 240, 18, ContentAlignment.MiddleLeft);
-        var chart = new DBPanel { Location = new Point(16, 136), Size = new Size(368, 108), BackColor = C_SURFACE };
-        var lstPomo = new ListBox { Location = new Point(16, 252), Size = new Size(368, 56),
-            BackColor = C_SURFACE, ForeColor = C_SUB, Font = F(8.5F, FontStyle.Regular), BorderStyle = BorderStyle.None, IntegralHeight = false };
-        var p3 = pages[3];
-        p3.Controls.Add(lblPm); p3.Controls.Add(btnPmGo); p3.Controls.Add(lblToday); p3.Controls.Add(lblTotal);
-        p3.Controls.Add(chart); p3.Controls.Add(lstPomo);
-
-        var dayMin = new double[7];
-        var fontChart = F(7.5F, FontStyle.Regular);
-        chart.Paint += delegate(object s, PaintEventArgs e) {
-            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            double max = 25;
-            foreach (double v in dayMin) if (v > max) max = v;
-            int bw = 28, gap = (368 - 7 * bw) / 8;
-            for (int i = 0; i < 7; i++) {
-                int x = gap + i * (bw + gap);
-                int bh = (int)(70 * dayMin[i] / max);
-                if (bh < 2 && dayMin[i] > 0) bh = 2;
-                var rect = new Rectangle(x, 80 - bh, bw, Math.Max(bh, 1));
-                using (var path = RoundRect(rect, 4))
-                using (var br = new SolidBrush(i == 6 ? C_RED : C_SURF2)) { g.FillPath(br, path); }
-                var day = DateTime.Today.AddDays(i - 6);
-                using (var br = new SolidBrush(i == 6 ? C_TEXT : C_SUB))
-                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near, FormatFlags = StringFormatFlags.NoWrap })
-                    g.DrawString("周" + "日一二三四五六"[(int)day.DayOfWeek], fontChart, br, new RectangleF(x - 20, 88, bw + 40, 16), sf);   // rect-centered: point-draw ignores Alignment
-            }
-        };
-
-        Action RefreshPomo = delegate {
-            try {
-                for (int i = 0; i < 7; i++) dayMin[i] = 0;
-                if (!File.Exists(PomoPath())) { lstPomo.Items.Clear(); lblToday.Text = "今日 0 次 / 0分钟"; lblTotal.Text = "总计 0 次 / 0分钟"; chart.Invalidate(); return; }
-                string[] lines = File.ReadAllLines(PomoPath(), System.Text.Encoding.UTF8);
-                string today = DateTime.Now.ToString("yyyy-MM-dd");
-                int nToday = 0, nAll = 0; double mToday = 0, mAll = 0;
-                foreach (string ln in lines) {
-                    var m = System.Text.RegularExpressions.Regex.Match(ln, @"^(\d{4}-\d{2}-\d{2}).*\+(\d+)m");
-                    if (!m.Success) continue;
-                    nAll++; mAll += double.Parse(m.Groups[2].Value);
-                    if (m.Groups[1].Value == today) { nToday++; mToday += double.Parse(m.Groups[2].Value); }
-                    try {
-                        var d = DateTime.ParseExact(m.Groups[1].Value, "yyyy-MM-dd", null);
-                        int ago = (int)(DateTime.Today - d).TotalDays;
-                        if (ago >= 0 && ago < 7) dayMin[6 - ago] += double.Parse(m.Groups[2].Value);
-                    } catch {}
-                }
-                lblToday.Text = "今日 " + nToday + " 次 / " + FmtMinutes(mToday);
-                lblTotal.Text = "总计 " + nAll + " 次 / " + FmtMinutes(mAll);
-                lstPomo.Items.Clear();
-                for (int i = lines.Length - 1; i >= 0 && i >= lines.Length - 3; i--) lstPomo.Items.Add("  " + lines[i]);
-                chart.Invalidate();
-            } catch {}
-        };
-        RefreshPomo();
-
-        btnPmGo.Click += delegate {
-            if (!pmRunning) { pmStart = DateTime.Now; pmRunning = true; btnPmGo.Text = "结束专注"; return; }
-            pmRunning = false; btnPmGo.Text = "开始专注";
-            var span = DateTime.Now - pmStart;
-            int mins = (int)Math.Round(span.TotalMinutes);
-            if (mins < 1) mins = 1;
-            try {
-                Directory.CreateDirectory(CfgDir());
-                File.AppendAllText(PomoPath(), pmStart.ToString("yyyy-MM-dd HH:mm") + " +" + mins + "m\n", System.Text.Encoding.UTF8);
-            } catch {}
-            RefreshPomo();
-            lblPm.Text = "00:00";
-        };
-
-        // ---------- main timer ----------
-        timer.Tick += delegate {
-            var now = DateTime.Now;
-            lblTime.Text = now.ToString("HH:mm:ss");
-            lblDate.Text = now.ToString("yyyy年M月d日 ") + WeekCn(now);
-            lblDayOf.Text = "今年第 " + now.DayOfYear + " 天 · 第 " + ((now.DayOfYear - 1) / 7 + 1) + " 周";
-            ringClock.Invalidate();
-            if (cdRunning) {
-                var left = cdTarget - now;
-                if (left <= TimeSpan.Zero) {
-                    cdRunning = false; cdRemain = TimeSpan.Zero;
-                    btnCdGo.Text = "开始";
-                    System.Media.SystemSounds.Exclamation.Play();
-                    cdFlash = 12;
-                    cdState = reminder;
-                    f.Activate();
-                } else cdRemain = left;
-            }
-            if (cdFlash > 0) cdFlash--;
-            ringCd.Invalidate();
-            var el = swAcc + (swRunning ? DateTime.Now - swStart : TimeSpan.Zero);
-            lblSw.Text = FmtSw(el);
-            if (pmRunning) lblPm.Text = FmtCd(DateTime.Now - pmStart);
-        };
-        timer.Start();
-
         f.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) f.Close(); };
-        f.FormClosed += delegate { timer.Stop(); timer.Dispose(); };
         f.Show();
     }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    static extern bool ReleaseCapture();
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
-    static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
 }
 [/csharp]
-
 '@
 $seedCalc = @'
 ; ============================================================
@@ -4117,10 +3502,6 @@ try {
         if (-not (Test-Path $pdir)) { [IO.Directory]::CreateDirectory($pdir) | Out-Null }
         $rf = Join-Path $pdir 'README.txt'
         if (-not (Test-Path $rf)) { [IO.File]::WriteAllText($rf, $seedPluginReadme, $utf8n) }
-        $cf = Join-Path $pdir 'clean-bin.txt'
-        if (-not (Test-Path $cf)) { [IO.File]::WriteAllText($cf, $seedCleanBin, $utf8n) }
-        $kf = Join-Path $pdir 'clock.txt'
-        if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
         $jf = Join-Path $pdir 'calc.txt'
         if (-not (Test-Path $jf)) { [IO.File]::WriteAllText($jf, $seedCalc, $utf8n) }
         try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}

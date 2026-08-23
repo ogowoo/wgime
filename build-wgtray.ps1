@@ -84,20 +84,20 @@ $parts.Add($glue)
 
 # ---- 4) verbatim reusable slices (only display-name renames) ----
 $sliceDefs = @(
-    @{ A = 1511; B = 1519; Anchor = 'static void FixLegacyConfigIfBroken' },
-    @{ A = 1865; B = 1920; Anchor = 'void LaunchApp(string code)' },
-    @{ A = 1929; B = 1934; Anchor = 'class ToolAction' },
-    @{ A = 1935; B = 2220; Anchor = 'static List<string> ToolToks(string line)' },
-    @{ A = 2222; B = 2562; Anchor = 'class ToolsForm : Form' },
-    @{ A = 2564; B = 2881; Anchor = '// ---------- embedded network tools' },
-    @{ A = 2882; B = 3370; Anchor = 'class NetToolsForm : Form' },
-    @{ A = 3372; B = 3391; Anchor = '// ---------- embedded clipboard history' },
-    @{ A = 3392; B = 3453; Anchor = 'class ClipForm : Form' },
-    @{ A = 3455; B = 3466; Anchor = '// ---------- embedded sticky note' },
-    @{ A = 3467; B = 3811; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
-    @{ A = 3813; B = 3837; Anchor = '// ---------- embedded color picker' },
-    @{ A = 3839; B = 3911; Anchor = 'class ColorForm : Form' },
-    @{ A = 3913; B = 4127; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
+    @{ A = 1514; B = 1522; Anchor = 'static void FixLegacyConfigIfBroken' },
+    @{ A = 1868; B = 1923; Anchor = 'void LaunchApp(string code)' },
+    @{ A = 1932; B = 1937; Anchor = 'class ToolAction' },
+    @{ A = 1938; B = 2223; Anchor = 'static List<string> ToolToks(string line)' },
+    @{ A = 2225; B = 2565; Anchor = 'class ToolsForm : Form' },
+    @{ A = 2567; B = 2884; Anchor = '// ---------- embedded network tools' },
+    @{ A = 2885; B = 3373; Anchor = 'class NetToolsForm : Form' },
+    @{ A = 3375; B = 3394; Anchor = '// ---------- embedded clipboard history' },
+    @{ A = 3395; B = 3456; Anchor = 'class ClipForm : Form' },
+    @{ A = 3458; B = 3469; Anchor = '// ---------- embedded sticky note' },
+    @{ A = 3470; B = 3814; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
+    @{ A = 3816; B = 3840; Anchor = '// ---------- embedded color picker' },
+    @{ A = 3842; B = 3914; Anchor = 'class ColorForm : Form' },
+    @{ A = 3916; B = 4130; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
 )
 foreach ($d in $sliceDefs) {
     $s = Slice $d.A $d.B $d.Anchor
@@ -148,8 +148,6 @@ function Get-Seed([string]$varName) {
 }
 $seedTools        = Get-Seed 'seedTools'
 $seedPluginReadme = Get-Seed 'seedPluginReadme'
-$seedCleanBin     = Get-Seed 'seedCleanBin'
-$seedClock        = Get-Seed 'seedClock'
 $seedCalc         = Get-Seed 'seedCalc'
 
 $patchPath = Join-Path $PSScriptRoot 'wgtray_seed_patches.txt'
@@ -271,8 +269,6 @@ else            { $psBody = $psBody.Replace('PAYLOAD_LOADER', $payloadLoader) }
 $psBody = $psBody.Replace('CS_SOURCE', $csTray)
 $psBody = $psBody.Replace('SEED_TOOLS', $seedTools)
 $psBody = $psBody.Replace('SEED_README', $seedPluginReadme)
-$psBody = $psBody.Replace('SEED_CLEANBIN', $seedCleanBin)
-$psBody = $psBody.Replace('SEED_CLOCK', $seedClock)
 $psBody = $psBody.Replace('SEED_CALC', $seedCalc)
 
 # ---- 10) assemble the output file ----
@@ -327,12 +323,13 @@ if ($NoPayload) {
 Write-Output "file constraints OK"
 # ps1 editions also refresh the wg-all distribution folder (keeps it in sync)
 if (-not $Bat) {
-    $wgAllOut = Join-Path $PSScriptRoot 'wg-all\WgTray.ps1'
+    $leaf = Split-Path $out -Leaf
+    $wgAllOut = Join-Path $PSScriptRoot ('wg-all\' + $leaf)
     [IO.File]::WriteAllText($wgAllOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
-    Write-Output ("wg-all\WgTray.ps1 refreshed: {0} bytes" -f (Get-Item $wgAllOut).Length)
-    $relOut = Join-Path $PSScriptRoot 'release\WgTray.ps1'
+    Write-Output ("wg-all\{0} refreshed: {1} bytes" -f $leaf, (Get-Item $wgAllOut).Length)
+    $relOut = Join-Path $PSScriptRoot ('release\' + $leaf)
     [IO.File]::WriteAllText($relOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
-    Write-Output ("release\WgTray.ps1 refreshed: {0} bytes" -f (Get-Item $relOut).Length)
+    Write-Output ("release\{0} refreshed: {1} bytes" -f $leaf, (Get-Item $relOut).Length)
 }
 # -Bat editions also refresh the release folder (pure deliverables)
 if ($Bat) {

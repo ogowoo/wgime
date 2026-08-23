@@ -12,7 +12,7 @@
 #  only does Add-Type -Path, so there is no base64 PE payload, no
 #  runtime C# compile and no script self-extract anywhere. The base
 #  dictionaries ride inside the assembly (extracted from wgime.bat's
-#  here-strings at build time), so the txt extension files remain
+#  ###WGIME_DATA### block at build time), so the txt extension files remain
 #  optional (py.txt / wb.txt / ec.txt merge on top, same as before).
 #
 #  The C# itself is UNCHANGED: WordBoard.RunApp keeps its original
@@ -20,7 +20,7 @@
 #  supplies the embedded dictionaries and calls it. The user data
 #  directory stays %LOCALAPPDATA%\wgime (created automatically,
 #  shared with WgTray). Bake-in ("bake tables") intentionally fails
-#  gracefully on this edition: there is no here-string to write into.
+#  gracefully on this edition: there is no data block to write into.
 #
 #  Reads (never modifies): wgime.bat.
 #  Requires Windows PowerShell 5.1. ASCII-only script.
@@ -48,20 +48,20 @@ $end   = $txt.IndexOf("`n'@", $start)
 $cs    = $txt.Substring($start, $end - $start)
 Write-Output ("wgime C# source: {0} chars" -f $cs.Length)
 
-function Get-HereString([string]$varName) {
-    $m = "`n`$$varName = @'`n"
-    $p = $txt.IndexOf($m)
-    if ($p -lt 0) { throw "here-string $varName not found" }
-    $s = $p + $m.Length
-    $e = $txt.IndexOf("`n'@", $s)
-    if ($e -lt 0) { throw "here-string $varName terminator not found" }
-    return $txt.Substring($s, $e - $s)
+function Get-DictSeg([string]$name) {
+    $open = "###" + $name + "###"
+    $a = $txt.IndexOf($open)
+    if ($a -lt 0) { throw "dict segment $name not found" }
+    $a = $txt.IndexOf("`n", $a) + 1
+    $b = $txt.IndexOf("`n###", $a)
+    if ($b -lt 0) { $b = $txt.Length }
+    return $txt.Substring($a, $b - $a).TrimEnd("`r", "`n")
 }
-$pyData = Get-HereString 'pyData'      # pinyin single chars
-$wbData = Get-HereString 'wbData'      # wubi single chars
-$ecData = Get-HereString 'ecData'      # EN-CN dictionary
-$pyWords = Get-HereString 'pyWords'    # pinyin word table
-$pyWFreq = Get-HereString 'pyWFreq'    # word/char corpus weights
+$pyData = Get-DictSeg 'PYDATA'      # pinyin single chars
+$wbData = Get-DictSeg 'WBDATA'      # wubi single chars
+$ecData = Get-DictSeg 'ECDATA'      # EN-CN dictionary
+$pyWords = Get-DictSeg 'PYWORDS'    # pinyin word table
+$pyWFreq = Get-DictSeg 'PYWFREQ'    # word/char corpus weights
 Write-Output ("dicts: pyData={0} wbData={1} ecData={2} pyWords={3} pyWFreq={4}" -f $pyData.Length, $wbData.Length, $ecData.Length, $pyWords.Length, $pyWFreq.Length)
 
 # ---- 1b) emoji PNGs: strip the base64 array from the C# and replace it

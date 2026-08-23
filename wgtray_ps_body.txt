@@ -46,12 +46,6 @@ SEED_TOOLS
 $seedPluginReadme = @'
 SEED_README
 '@
-$seedCleanBin = @'
-SEED_CLEANBIN
-'@
-$seedClock = @'
-SEED_CLOCK
-'@
 $seedCalc = @'
 SEED_CALC
 '@
@@ -66,10 +60,6 @@ try {
         if (-not (Test-Path $pdir)) { [IO.Directory]::CreateDirectory($pdir) | Out-Null }
         $rf = Join-Path $pdir 'README.txt'
         if (-not (Test-Path $rf)) { [IO.File]::WriteAllText($rf, $seedPluginReadme, $utf8n) }
-        $cf = Join-Path $pdir 'clean-bin.txt'
-        if (-not (Test-Path $cf)) { [IO.File]::WriteAllText($cf, $seedCleanBin, $utf8n) }
-        $kf = Join-Path $pdir 'clock.txt'
-        if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
         $jf = Join-Path $pdir 'calc.txt'
         if (-not (Test-Path $jf)) { [IO.File]::WriteAllText($jf, $seedCalc, $utf8n) }
         try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}

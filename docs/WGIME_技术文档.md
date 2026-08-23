@@ -35,13 +35,15 @@ wgime.bat
 ├─ [57-…]   PowerShell 引导
 │    ├─ WgLog 日志函数（追加写 %TEMP%\WgIme_error.log）
 │    ├─ 加载 System.Windows.Forms / System.Drawing
-│    ├─ 三个内嵌 here-string 数据表：$pyData（拼音）、$wbData（五笔）、$ecData（英汉）
-│    │    （**全单字内嵌**：拼音 26,719 字 / 五笔 17,366 字，由根目录 `build-full-singles.ps1`
+│    ├─ 内置码表：从文件尾部 `###WGIME_DATA###` 数据块用 `Get-DictSeg` 按 segment 提取
+│    │    （`$pyData` 拼音 / `$wbData` 五笔 / `$ecData` 英汉 / `$pyWords` 词组 / `$pyWFreq` 词频；
+│    │      全单字内嵌：拼音 26,719 字 / 五笔 17,366 字，由根目录 `build-full-singles.ps1`
 │    │      从 py.txt/wb.txt 单字 + tests/pinyin-data.txt（mozillazg Unihan 派生表，声调符号
 │    │      剥离、ü→v）合并生成；每次跑自带时间戳备份，字典缓存经 InputMd5 自动失效重建）
 │    ├─ $cs = @'…'@ ：完整 C# 源码（命名空间外平铺类：KeyBordHook、WordBoard、MbData…）
 │    ├─ DLL 加载器（见 2.1）：优先加载预编译 DLL，失败回退内存编译 $cs
-│    └─ 首次播种（§7.5）：provisioned.done 哨兵 + 四段内嵌种子文本
+│    └─ 首次播种（§7.5）：provisioned.done 哨兵 + 三段内嵌种子文本
+├─ [末尾]  ###WGIME_DATA### 数据块（5 段码表，在 DLL 标记之前，不参与 PS 解析）
 ├─ [末尾]  ###WGIME_DLL### 标记
 └─ [末行]  base64 编码的预编译 DLL（单行，当前约 63 KB）
 ```
@@ -49,7 +51,7 @@ wgime.bat
 ### 2.1 预编译 DLL 载荷机制
 
 - 载荷有两种形态（都从 `$cs` 编译，但内容不同）：
-  - **bat 版 `wgime.bat`**：尾部 `###WGIME_DLL###` 之后是 **纯 WordBoard 代码的瘦 DLL（~550KB，不含码表、不含 WgImeLauncher）**。运行时调 `[WordBoard]::RunApp($pyData,$wbData,$ecData,…)`，码表由 PS 层 here-string 传参。
+  - **bat 版 `wgime.bat`**：尾部 `###WGIME_DLL###` 之后是 **纯 WordBoard 代码的瘦 DLL（~550KB，不含码表、不含 WgImeLauncher）**。运行时调 `[WordBoard]::RunApp($pyData,$wbData,$ecData,…)`，码表由 PS 层从 `###WGIME_DATA###` 数据块提取（`Get-DictSeg`，不参与脚本解析）。
   - **ps1 版 `WgIme.ps1`**：`###WGIME_DLL###` 之后是 **完整 DLL（含码表常量 + WgImeLauncher + deflate 码表 trailer，~28MB）**。运行时调 `[WgImeLauncher]::Run`，码表从 DLL 内嵌 trailer 解压。
 - 加载器逻辑（两者相同）：
   1. 取出 base64 串（`-replace '\s'` 去空白）；
@@ -149,7 +151,7 @@ wgime.bat
 ### 4.1 数据源分层（叠加优先级从低到高）
 
 ```
-内嵌 $pyData/$wbData/$ecData（bat 内 here-string，打包单字自动拆空格式）
+内嵌 $pyData/$wbData/$ecData（`###WGIME_DATA###` 数据块，打包单字自动拆空格式）
   → 目录文件 py.txt / wb.txt / ec.txt（UTF-8，覆盖或扩展同码候选）
   → 导入文件 import_py.txt / import_wb.txt / import_ec.txt（码表导入功能生成，叠加）
   → userwords.txt（仅并入拼音表，MergeUserWords）
@@ -251,13 +253,13 @@ ApplySwap(mb)            # 一次性原子替换全部静态引用，DictsReady=
 
 ## 6. 固化码表（烘焙进内置）
 
-把**当前合并后的词库**（内嵌表 + 目录 txt + 导入文件 + 用户词）写回 bat 的内嵌 here-string，使 bat 成为自包含单文件——之后目录下的 txt 码表文件可以放心删除。
+把**当前合并后的词库**（内嵌表 + 目录 txt + 导入文件 + 用户词）写回 bat 的 `###WGIME_DATA###` 数据块，使 bat 成为自包含单文件——之后目录下的 txt 码表文件可以放心删除。
 
 ### 6.1 机制
 
 - `SerializeDict(d)`：把词典按码排序序列化为 `码 词1 词2…` 行（与 wgime txt 格式一致，空格分隔——单字不打包，与运行时词典值直接对应）。
-- `ReplaceHereString(bat, varName, newBody, out result)`：定位 `$pyData = @'` 等开标记，取其后**首个行首 `'@`** 为结束，整段替换正文。三个 here-string 依次链式替换后整体写回（UTF-8 无 BOM；替换区外字节不变——批处理头保持 CRLF，被替换的表体为 LF，混合换行对 cmd/PowerShell 均安全）。
-- **here-string 安全性**：生成内容每行都以编码开头（`[a-z][a-z0-9']*`），不可能出现行首 `'@` 提前终止；单引号 here-string 不做插值、不处理转义，词条中的 `$`、反引号、行中 `@'` 均安全。
+- `ReplaceDictSeg(bat, name, newBody, out result)`：定位 `###NAME###` 标记，取下一个 `\n###` 为结束，整段替换正文（`name` 为 `PYDATA`/`WBDATA`/`ECDATA`）。三个 segment 依次链式替换后整体写回（UTF-8 无 BOM；替换区外字节不变——批处理头保持 CRLF，被替换的表体为 LF，混合换行对 cmd/PowerShell 均安全）。
+- **数据块安全性**：生成内容每行都以编码开头（`[a-z][a-z0-9']*`），不可能出现行首 `\n###` 提前终止 segment；数据块不参与脚本解析，词条中的 `$`、反引号、`@'` 均安全。
 - **与缓存的关系**：烘焙不改内存词典（已经是最新合并结果）；下次启动时内嵌表字节变化 → `InputMd5` 失效 → 自动重建 `wgime.mb`（一次性，约 3 秒），之后仍秒开。重复烘焙幂等（已验证字节级一致）。
 
 ### 6.2 交互流程（BakeTables）
@@ -266,13 +268,13 @@ ApplySwap(mb)            # 一次性原子替换全部静态引用，DictsReady=
 
 1. 读入 `BatPath`（由 `$env:WGIME_PATH` 传入，改名不影响）全部文本；
 2. 先写滚动备份 `wgime.bat.bak-yyyyMMdd-HHmmss`（UTF-8 无 BOM；**备份写失败则整体中止**，bat 不被改动），随后 `PruneBaks` 裁剪：文件名严格匹配 15 位时间戳，按字典序（=时间序）只保留**最新 7 份**，其余删除——无关文件（如 `wgime.bat.bak-notes.txt`、旧版 `wgime.bat.bak`）不参与匹配也不受影响；
-3. 按勾选依次替换 here-string 并写回 bat（**写回成功之后**才执行第 4 步）；
+3. 按勾选依次替换数据块 segment 并写回 bat（**写回成功之后**才执行第 4 步）；
 4. 可选删除 `py/wb/ec.txt` 与 `import_py/wb/ec.txt` 中对应词库的文件；
 5. 气泡提示统计与备份位置。任一步失败：气泡报错，源文件不动。
 
 - 词频（`userdict_mix/py/wb.txt`，按模式分桶）、上次选择（`lastpick_mix/py/wb.txt`）、用户词（`userwords.txt`）、候选条位置（`pos.txt`）**不参与固化**，仍为独立学习数据。
 - 已删除的 txt 若日后想恢复：从任一份 `wgime.bat.bak-*` 备份还原，或重新放置同名 txt 文件（内容会再叠加，重复条目自动去重）。
-- 注意：bat 体积会增长到十几 MB，每次启动 PowerShell 需解析更大的脚本文本（略慢数秒，词典本身仍走缓存秒开）。固化写入的是"当时"的合并快照，之后新导入的码表仍通过 import 文件叠加。
+- 注意：bat 体积会增长到十几 MB（码表存入独立数据块，不参与脚本解析，启动速度不受影响）。固化写入的是"当时"的合并快照，之后新导入的码表仍通过 import 文件叠加。
 
 ## 7. 配置与扩展功能（config.txt）
 
@@ -415,8 +417,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 ### 11.3 编码与格式约束（踩坑清单）
 
 1. **C# 5.0**（CodeDom/csc）：禁 `$"…"` 插值、`?.`、表达式体成员、`nameof`、`using static`。
-2. **批处理头（`###PWSH###` 之前）必须为 CRLF 换行、无 BOM、UTF-8**——cmd.exe 依赖 CRLF 解析标签/括号块/`exit /b`；纯 LF 会让 cmd 把行切碎并跌进 PowerShell 段（报 `'xxx' is not recognized`）。here-string 数据体可以是 LF（烘焙/播种替换产生混合换行也安全），PowerShell 与 C# 对两种换行都能解析。仓库用 `.gitattributes` 的 `eol=crlf` 强制保证克隆产物可直接运行；rebuild.ps1 写回纯 CRLF 并硬断言。
-3. 新增 C# 代码**不得以行首 `'@` 开头**（会提前终止 here-string）；`'@` 行首仅允许出现在三个数据表与 $cs 的结束行。
+2. **批处理头（`###PWSH###` 之前）必须为 CRLF 换行、无 BOM、UTF-8**——cmd.exe 依赖 CRLF 解析标签/括号块/`exit /b`；纯 LF 会让 cmd 把行切碎并跌进 PowerShell 段（报 `'xxx' is not recognized`）。码表数据块（`###WGIME_DATA###` 之后）可以是 LF（烘焙替换产生混合换行也安全），PowerShell 与 C# 对两种换行都能解析。仓库用 `.gitattributes` 的 `eol=crlf` 强制保证克隆产物可直接运行；rebuild.ps1 写回纯 CRLF 并硬断言。
+3. 新增 C# 代码**不得以行首 `'@` 开头**（会提前终止 `$cs` here-string）；`'@` 行首仅允许出现在 `$cs` 的结束行。
 4. `###WGIME_DLL###` 全文件只出现一次（加载器代码里拆成两段字符串拼接），勿在别处复制该字样。
 5. SendKeys 输出需经 `Sanitize` 转义；钩子依赖 `LLKHF_INJECTED` 防回环。
 6. 候选词不得含空格（分隔符冲突），导入转换器已自动跳过此类词条。
@@ -430,4 +432,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 - 码表词条不支持内嵌空格；每码候选上限 60（显示）、每码存储上限 300（导入）。
 - 钩子放行一切含 Ctrl/Alt/Win 的组合键，无法自定义组合快捷键。
 - 不支持 .scel（搜狗二进制词库）等二进制格式导入。
-- 固化码表后 bat 体积增大到约十几 MB，启动时 PowerShell 解析脚本文本略慢（词典加载本身仍走 `wgime.mb` 缓存秒开）。
+- 固化码表后 bat 体积增大到约十几 MB（码表存入独立数据块，不参与脚本解析，启动速度不受影响；词典加载本身仍走 `wgime.mb` 缓存）。
