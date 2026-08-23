@@ -3038,7 +3038,7 @@ C# 代码插件 (要窗体就用它):
         chat.txt  (输入 lt 弹局域网聊天: 与 itools-chat (chat.bat) 互通, 无需服务器)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
-完整规范见仓库 docs\WGIME_插件规范.md; 窗体 UI 风格见 docs\WGIME_插件UI规范.md。
+完整规范见仓库 docs\WGIME_插件规范.md; 窗体设计语言见 docs\WGIME_窗体设计语言.md。
 
 (本文件与两个示例插件是首次运行时自动播种的; 删掉不会复活。想重新播种: 删除
  %LOCALAPPDATA%\wgime\provisioned-tray.done 后重启 wgtray.bat。)'@

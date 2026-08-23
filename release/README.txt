@@ -30,7 +30,7 @@
   config.txt    共用配置 (WgIme 输入法键 + WgTray 的 app=/hotkey_*)
   tools.txt     工具箱配置 ([tab 标签页] / [按钮名] / code = xxx 启动编码 / 步骤行)
   plugins\      插件目录 (步骤 DSL / C# 插件)
-  docs\         文档: 使用说明 / 技术文档 / 插件规范 / 插件 UI 规范
+  docs\         文档: 使用说明 / 技术文档 / 插件规范 / 窗体设计语言
   README.txt    本文档
 
 首次运行自动播种 tools.txt / plugins\ / config.txt 示例 (不覆盖已有文件)。

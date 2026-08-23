@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-08-24 (文档改名:插件 UI 规范 → 窗体设计语言)
+
+- `docs\WGIME_插件UI规范.md` 改名为 `docs\WGIME_窗体设计语言.md`——该规范不止服务插件,还覆盖内置工具箱/便签/网络工具等 WgIme 家族窗体
+- 同步更新所有引用:README、插件规范文档的"相关"指向、种子文本(plugins README)、WgTray/wgtray 产物
+
+---
+
 ## 2026-08-24 (真机验证:固化码表后启动命中缓存)
 
 ### 验证通过:PrebuildCacheAfterBake 在真实 bake 流程下闭环

@@ -110,7 +110,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 | `WgTray.ps1` | WgTray ps1 版（PS 引导 + 内嵌 base64 预编译 DLL） |
 | `config.txt` | 共用配置（WgIme 输入法键 + WgTray 的 app=/hotkey_*；互相兼容） |
 | `tools.txt` | 工具箱配置（`[tab 标签页]` / `[按钮名]` / `code = xxx` 启动编码 / 步骤行） |
-| `plugins/` | 插件目录（步骤 DSL / C# 插件；规范见 [docs/WGIME_插件规范.md](docs/WGIME_插件规范.md)、UI 风格见 [docs/WGIME_插件UI规范.md](docs/WGIME_插件UI规范.md)） |
+| `plugins/` | 插件目录（步骤 DSL / C# 插件；规范见 [docs/WGIME_插件规范.md](docs/WGIME_插件规范.md)、窗体风格见 [docs/WGIME_窗体设计语言.md](docs/WGIME_窗体设计语言.md)） |
 | `build-wgime-ps1.ps1` | 从 wgime.bat 构建 WgIme.ps1（编译 DLL + base64 嵌入 + wg-all 同步） |
 | `build-wgtray.ps1` | 生成 wgtray.bat / wgtray-nopayload.bat / WgTray.ps1（从 wgime.bat 切分复用代码） |
 | `rebuild-tray.ps1` | 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷（Windows PowerShell 5.1） |
@@ -118,7 +118,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 | `vt-scan.ps1` | VirusTotal 一键扫描脚本（wg-all 分发文件） |
 | `tests/` | 回归测试（wgime-ps1 / wgtray-ps1 / wgtray 两版 / 载荷一致性） |
 | `wg-all/` | 合并分发目录（install.bat + 双 ps1 版 + 配置/插件/README） |
-| `docs/` | 文档目录：使用说明 / 技术文档 / 插件规范 / 插件 UI 规范 / TSF 评估 |
+| `docs/` | 文档目录：使用说明 / 技术文档 / 插件规范 / 窗体设计语言 / TSF 评估 |
 
 ## 开发
 
