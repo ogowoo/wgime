@@ -22,6 +22,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 | `build-wgtray.ps1` | 生成 wgtray 各版（`-Bat`/`-NoPayload`，默认 ps1） | 含**切片行号**，wgime.bat 增删行后要同步 |
 | `config.txt` / `tools.txt` | 配置 / 工具箱模板 | root 与 wg-all、release 三方同步 |
 | `plugins\*.txt` | 插件（calc 种子 / clock / chat / clean-bin / qping / wgtranslate） | 三处同步 |
+| `sync-dist.ps1` | **一键刷分发目录**（config/tools/插件/码表/文档/wgime.bat → wg-all + release） | 改完这些文件后跑一次 |
 | `release\` | 纯成品目录 | 成品 + 码表 txt + config/tools + docs + plugins，不放 build/test |
 
 ## 3. 改动后必做的连锁动作
@@ -36,11 +37,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 
 **改了 `build-wgtray.ps1` 切片**：wgime.bat 的 C# 增删行会导致切片 anchor 失配。切片行号在 build-wgtray.ps1 的 `$sliceDefs`，anchor 失配时报错会指明是哪个切片。用 anchor 重新定位行号（`Slice` 函数有 anchor 校验）。
 
-**改了插件 `plugins\*.txt`**：同步到 `wg-all\plugins\` 和 `release\plugins\`（Copy-Item）。
-
-**改了 `config.txt`/`tools.txt`**：同步到 `wg-all\` 和 `release\`。
-
-**改了码表 `py.txt`/`wb.txt`/`ec.txt`/`import_*`**：同步到 `release\`（`Copy-Item`；release 目录也放一份码表，供离线分发/扩展词库）。
+**改了 `config.txt`/`tools.txt`/插件 `plugins\*.txt`/码表 `py.txt`/`wb.txt`/`ec.txt`/`import_*`/文档 `docs\WGIME_*.md`/`wgime.bat`**：跑 `powershell -File sync-dist.ps1` 一键同步到 wg-all + release（替代手工 Copy-Item；码表只进 release，文档只进 release\docs，WGIME_*.md 不含 AGENTS/CHANGELOG）。
 
 ## 4. 测试
 
