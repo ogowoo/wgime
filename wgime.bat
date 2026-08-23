@@ -146319,6 +146319,429 @@ public class CalcPlugin
 }
 [/csharp]
 '@
+$seedChat = @'
+; ============================================================
+;  WgIme C# 插件: 局域网聊天 (LAN chat)
+;  输入 lt (或 chat) 选 ▶局域网聊天: UDP 局域网实时聊天, 与 itools-chat (chat.bat) 互通
+;  端口 20003 + 组播 224.0.0.251:5353 + 子网广播, 无需服务器
+; ============================================================
+code = lt
+name = 局域网聊天
+desc = UDP 局域网聊天: 与 itools-chat (chat.bat) 互通, 无需服务器
+
+[csharp]
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Windows.Forms;
+using System.Collections.Generic;
+
+public class ChatPlugin
+{
+    // ---------- palette (matches clock / toolbox) ----------
+    static Color C_BG      = Color.FromArgb(255, 232, 237, 245);   // #E8EDF5 light blue-gray
+    static Color C_HEADER  = Color.FromArgb(255, 220, 227, 239);   // title bar
+    static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);   // cards
+    static Color C_SURF2   = Color.FromArgb(255, 217, 224, 236);   // input well
+    static Color C_BORDER  = Color.FromArgb(255, 195, 204, 221);   // hairline
+    static Color C_TEXT    = Color.FromArgb(255, 29, 29, 31);
+    static Color C_SUB     = Color.FromArgb(255, 110, 116, 133);
+    static Color C_ACCENT  = Color.FromArgb(255, 0, 122, 255);     // systemBlue
+    static Color C_GREEN   = Color.FromArgb(255, 52, 199, 89);
+    static Color C_ORANGE  = Color.FromArgb(255, 255, 149, 0);
+
+    // ---------- protocol (compatible with itools-chat chat.bat LAN mode) ----------
+    const int CHAT_PORT = 20003;                 // main UDP chat port (chat.bat default)
+    const string MCAST_GROUP = "224.0.0.251";    // mDNS-style discovery multicast
+    const int MCAST_PORT = 5353;
+
+    static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
+    static string CfgPath() { return Path.Combine(CfgDir(), "chat.cfg"); }
+
+    // ---------- persisted ----------
+    static string nick = "";
+    static string room = "大厅";
+    static string docId = "";                    // stable self id (filters own echo)
+
+    // ---------- runtime ----------
+    static UdpClient udp;                        // main chat listener (port 20003)
+    static UdpClient mcast;                      // multicast listener (5353)
+    static readonly object lockObj = new object();
+    static System.Threading.SynchronizationContext uiContext;
+    static HashSet<string> recentMsgs = new HashSet<string>();   // dedup: id:ts
+    static Dictionary<string, string> peers = new Dictionary<string, string>();   // id -> nick
+    static Dictionary<string, string> peerIps = new Dictionary<string, string>(); // ip -> id (auto-unicast)
+    static bool running = false;
+
+    static void LoadCfg()
+    {
+        try {
+            if (!File.Exists(CfgPath())) return;
+            foreach (string raw in File.ReadAllLines(CfgPath(), Encoding.UTF8)) {
+                string t = raw.Trim(); int eq = t.IndexOf('='); if (eq < 1) continue;
+                string k = t.Substring(0, eq).Trim().ToLower(), v = t.Substring(eq + 1).Trim();
+                if (k == "nick") nick = v;
+                else if (k == "room") room = v;
+            }
+        } catch {}
+    }
+    static void SaveCfg()
+    {
+        try {
+            Directory.CreateDirectory(CfgDir());
+            File.WriteAllText(CfgPath(), "nick = " + nick + "\r\nroom = " + room + "\r\n", new UTF8Encoding(false));
+        } catch {}
+    }
+
+    // ---------- UDP helpers ----------
+    static void UdpSend(IPEndPoint ep, string payload)
+    {
+        try { byte[] b = Encoding.UTF8.GetBytes(payload); if (udp != null) udp.Send(b, b.Length, ep); } catch {}
+    }
+    static void UdpBroadcast(int port, string payload)
+    {
+        try { byte[] b = Encoding.UTF8.GetBytes(payload); if (udp != null) { udp.Send(b, b.Length, new IPEndPoint(IPAddress.Broadcast, port)); } } catch {}
+    }
+    static void UdpMulticast(string group, int port, string payload)
+    {
+        try {
+            using (var c = new UdpClient()) {
+                byte[] b = Encoding.UTF8.GetBytes(payload);
+                c.Send(b, b.Length, new IPEndPoint(IPAddress.Parse(group), port));
+            }
+        } catch {}
+    }
+    static void UdpSubnetSweep(string payload)
+    {
+        // send to the broadcast address of every IPv4 NIC subnet (chat.bat does the same)
+        byte[] b = Encoding.UTF8.GetBytes(payload);
+        foreach (var iface in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()) {
+            try {
+                var props = iface.GetIPProperties();
+                foreach (var ua in props.UnicastAddresses) {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork || ua.IPv4Mask == null) continue;
+                    try {
+                        byte[] ip = ua.Address.GetAddressBytes(), mk = ua.IPv4Mask.GetAddressBytes();
+                        byte[] bc = new byte[4];
+                        for (int j = 0; j < 4; j++) bc[j] = (byte)(ip[j] | (byte)(~mk[j]));
+                        if (udp != null) udp.Send(b, b.Length, new IPEndPoint(new IPAddress(bc), CHAT_PORT));
+                    } catch {}
+                }
+            } catch {}
+        }
+    }
+
+    // ---------- listeners ----------
+    static void StartListeners()
+    {
+        StopListeners();
+        udp = new UdpClient();
+        udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        udp.Client.ReceiveBufferSize = 4 * 1024 * 1024;
+        udp.Client.Bind(new IPEndPoint(IPAddress.Any, CHAT_PORT));
+        udp.BeginReceive(OnUdpReceive, udp);
+        // multicast discovery listener
+        try {
+            mcast = new UdpClient();
+            mcast.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            mcast.Client.ReceiveBufferSize = 4 * 1024 * 1024;
+            mcast.Client.Bind(new IPEndPoint(IPAddress.Any, MCAST_PORT));
+            mcast.JoinMulticastGroup(IPAddress.Parse(MCAST_GROUP));
+            mcast.BeginReceive(OnMcastReceive, mcast);
+        } catch { mcast = null; }
+    }
+    static void StopListeners()
+    {
+        try { if (udp != null) { udp.Close(); udp = null; } } catch {}
+        try { if (mcast != null) { mcast.DropMulticastGroup(IPAddress.Parse(MCAST_GROUP)); mcast.Close(); mcast = null; } } catch {}
+    }
+
+    static void OnUdpReceive(IAsyncResult ar) { HandlePacket(ar, (UdpClient)ar.AsyncState); }
+    static void OnMcastReceive(IAsyncResult ar) { HandlePacket(ar, (UdpClient)ar.AsyncState); }
+    static void HandlePacket(IAsyncResult ar, UdpClient sock)
+    {
+        byte[] data = null; IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+        try { data = sock.EndReceive(ar, ref remote); } catch { }
+        try { if (sock != null) sock.BeginReceive(OnUdpReceive, sock); } catch {}
+        if (data == null || data.Length == 0) return;
+        try { OnPacket(Encoding.UTF8.GetString(data), remote); } catch {}
+    }
+
+    // ---------- packet handling (protocol-compatible with chat.bat LAN mode) ----------
+    static void OnPacket(string json, IPEndPoint remote)
+    {
+        string type = JsonGet(json, "type");
+        if (type == null) return;
+        string rid = JsonGet(json, "id");
+        if (rid == docId) return;   // own echo
+        string srcIp = remote.Address.ToString();
+
+        if (type == "lan-beacon") {
+            string rroom = JsonGet(json, "room"), rnick = JsonGet(json, "nick");
+            if (rroom != room || rnick == null) return;
+            if (srcIp != "127.0.0.1" && !peerIps.ContainsKey(srcIp)) peerIps[srcIp] = rid;
+            if (!peers.ContainsKey(rid)) { peers[rid] = rnick; NotifyEvent(rnick + " 上线"); }
+        } else if (type == "lan-room-query") {
+            // answer with our beacon (helps new joiner find us)
+            if (srcIp != "127.0.0.1") SendBeacon(srcIp);
+        } else if (type == "lan-msg") {
+            string rroom = JsonGet(json, "room");
+            if (rroom != room) return;
+            string rnick = JsonGet(json, "nick"), rtext = JsonGet(json, "text"), rts = JsonGet(json, "ts");
+            string key = rid + ":" + rts;
+            if (recentMsgs.Contains(key)) return;
+            recentMsgs.Add(key);
+            if (recentMsgs.Count > 300) recentMsgs.Clear();
+            NotifyMessage(rnick, rtext, rts);
+        }
+    }
+
+    static void SendBeacon(string toIp)
+    {
+        string bj = "{\"type\":\"lan-beacon\",\"room\":\"" + JsonEsc(room) + "\",\"nick\":\"" + JsonEsc(nick) + "\",\"id\":\"" + JsonEsc(docId) + "\"}";
+        if (toIp != null) UdpSend(new IPEndPoint(IPAddress.Parse(toIp), CHAT_PORT), bj);
+        UdpBroadcast(CHAT_PORT, bj);
+        UdpMulticast(MCAST_GROUP, MCAST_PORT, bj);
+        UdpSubnetSweep(bj);
+    }
+
+    static void SendChat(string text)
+    {
+        string ts = DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString();
+        string msg = "{\"type\":\"lan-msg\",\"room\":\"" + JsonEsc(room) + "\",\"nick\":\"" + JsonEsc(nick) + "\",\"text\":\"" + JsonEsc(text) + "\",\"ts\":" + ts + ",\"id\":\"" + JsonEsc(docId) + "\"}";
+        UdpBroadcast(CHAT_PORT, msg);
+        UdpMulticast(MCAST_GROUP, MCAST_PORT, msg);
+        foreach (var kv in peerIps) UdpSend(new IPEndPoint(IPAddress.Parse(kv.Key), CHAT_PORT), msg);
+        UdpSubnetSweep(msg);
+    }
+
+    // ---------- minimal JSON helpers (no dependency) ----------
+    static string JsonEsc(string s) { return s == null ? "" : s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n"); }
+    static string JsonGet(string json, string key)
+    {
+        // minimal extractor: find "key": then a string or a number
+        string pat = "\"" + key + "\":";
+        int i = json.IndexOf(pat);
+        if (i < 0) return null;
+        i += pat.Length;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length) return null;
+        if (json[i] == '"') {
+            var sb = new StringBuilder();
+            i++;
+            while (i < json.Length) {
+                char c = json[i];
+                if (c == '\\' && i + 1 < json.Length) {
+                    char n = json[i + 1];
+                    if (n == '"' || n == '\\' || n == '/') sb.Append(n);
+                    else if (n == 'n') sb.Append('\n');
+                    else if (n == 'r') sb.Append('\r');
+                    else if (n == 't') sb.Append('\t');
+                    else sb.Append(n);
+                    i += 2;
+                } else if (c == '"') { break; } else { sb.Append(c); i++; }
+            }
+            return sb.ToString();
+        }
+        int start = i;
+        while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '-' || json[i] == '.' || json[i] == 'e' || json[i] == 'E' || json[i] == '+')) i++;
+        return json.Substring(start, i - start);
+    }
+
+    // ---------- UI events (marshalled to UI thread) ----------
+    static Action<string> onEvent;                       // "nick 上线" / event line
+    static Action<string, string, string> onMessage;     // nick, text, ts
+    static void NotifyEvent(string s) { if (onEvent != null && uiContext != null) uiContext.Post(delegate(object x) { onEvent(s); }, null); }
+    static void NotifyMessage(string n, string t, string ts) { if (onMessage != null && uiContext != null) uiContext.Post(delegate(object x) { onMessage(n, t, ts); }, null); }
+
+    // ---------- UI helpers (rounded flat style, matches clock/toolbox) ----------
+    static Font F(float size, FontStyle style) { return new Font("Microsoft YaHei UI", size, style); }
+    static Label MkLabel(string text, Font f, Color fg, int x, int y, int w, int h, ContentAlignment align)
+    {
+        return new Label { Text = text, Font = f, ForeColor = fg, Location = new Point(x, y), Size = new Size(w, h), TextAlign = align, BackColor = Color.Transparent, AutoSize = false };
+    }
+    class FlatBtn : Panel
+    {
+        public Color Bg = C_SURFACE, BgHover = C_SURF2, Fg = C_TEXT;
+        public bool Primary;
+        Label lbl;
+        public FlatBtn()
+        {
+            lbl = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Cursor = Cursors.Hand, BackColor = Color.Transparent };
+            lbl.Click += delegate { OnClick(EventArgs.Empty); };
+            Controls.Add(lbl);
+        }
+        public override string Text { get { return lbl.Text; } set { lbl.Text = value; } }
+        public Font BtnFont { get { return lbl.Font; } set { lbl.Font = value; } }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color bg = Primary ? C_ACCENT : (Bounds.Contains(Parent.PointToClient(Cursor.Position)) ? BgHover : Bg);
+            Color fg = Primary ? Color.White : Fg;
+            using (var path = Round(new Rectangle(0, 0, Width - 1, Height - 1), 7))
+            using (var br = new SolidBrush(bg)) g.FillPath(br, path);
+            lbl.ForeColor = fg;
+        }
+        protected override void OnMouseEnter(EventArgs e) { Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { Invalidate(); }
+        protected override void OnSizeChanged(EventArgs e) { Invalidate(); }
+    }
+    static GraphicsPath Round(Rectangle r, int rad)
+    {
+        var p = new GraphicsPath();
+        int d = rad * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure(); return p;
+    }
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+
+    // ---------- chat window ----------
+    static Form chatForm;
+    static TextBox inputBox;
+    static ListBox msgList, peerList;
+    static TextBox edNick, edRoom;
+    static Label statusLbl;
+    static Button joinBtn;
+
+    public static void Run()
+    {
+        uiContext = System.Threading.SynchronizationContext.Current;
+        if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
+        LoadCfg();
+        if (string.IsNullOrEmpty(nick)) nick = "用户_" + Guid.NewGuid().ToString("N").Substring(0, 6);
+        docId = "wg-" + Guid.NewGuid().ToString("N").Substring(0, 10);
+
+        var f = new Form();
+        chatForm = f;
+        f.Text = "WgIme 局域网聊天";
+        f.FormBorderStyle = FormBorderStyle.None; f.AutoScaleMode = AutoScaleMode.None;
+        f.TopMost = true; f.StartPosition = FormStartPosition.CenterScreen;
+        f.ClientSize = new Size(520, 560); f.BackColor = C_BG; f.ForeColor = C_TEXT;
+        f.KeyPreview = true; f.ShowInTaskbar = true;
+        f.Paint += delegate(object s, PaintEventArgs e) {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = Round(new Rectangle(1, 1, f.Width - 3, f.Height - 3), 11))
+            using (var pen = new Pen(C_BORDER, 1)) g.DrawPath(pen, path);
+        };
+
+        // title bar
+        var head = new Panel { Location = new Point(0, 0), Size = new Size(520, 38), BackColor = C_HEADER };
+        head.Controls.Add(MkLabel("局域网聊天  (与 itools-chat 互通)", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 320, 24, ContentAlignment.MiddleLeft));
+        var close = new FlatBtn { Text = "✕", Font = F(9F, FontStyle.Bold), Location = new Point(476, 6), Size = new Size(34, 26), Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70) };
+        close.Click += delegate { f.Close(); };
+        head.Controls.Add(close);
+        head.MouseDown += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(f.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
+        f.Controls.Add(head);
+
+        // top: nick + room + join
+        edNick = new TextBox { Location = new Point(16, 52), Size = new Size(120, 30), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = nick };
+        edRoom = new TextBox { Location = new Point(144, 52), Size = new Size(200, 30), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = room };
+        joinBtn = new Button { Location = new Point(352, 50), Size = new Size(88, 34), Text = "加入", Font = F(9.5F, FontStyle.Bold), BackColor = C_ACCENT, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+        joinBtn.FlatAppearance.BorderSize = 0;
+        joinBtn.Click += delegate { ToggleJoin(); };
+        f.Controls.Add(edNick); f.Controls.Add(edRoom); f.Controls.Add(joinBtn);
+        var hint1 = MkLabel("昵称", F(8.5F, FontStyle.Regular), C_SUB, 16, 32, 60, 16, ContentAlignment.MiddleLeft);
+        var hint2 = MkLabel("房间名", F(8.5F, FontStyle.Regular), C_SUB, 144, 32, 80, 16, ContentAlignment.MiddleLeft);
+        f.Controls.Add(hint1); f.Controls.Add(hint2);
+
+        // status + peers
+        statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, 90, 300, 18, ContentAlignment.MiddleLeft);
+        f.Controls.Add(statusLbl);
+        var peerLbl = MkLabel("在线:", F(8.5F, FontStyle.Bold), C_SUB, 352, 90, 40, 18, ContentAlignment.MiddleLeft);
+        f.Controls.Add(peerLbl);
+        peerList = new ListBox { Location = new Point(352, 112), Size = new Size(152, 320), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        f.Controls.Add(peerList);
+
+        // message list
+        msgList = new ListBox { Location = new Point(16, 112), Size = new Size(328, 320), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        f.Controls.Add(msgList);
+
+        // input + send
+        inputBox = new TextBox { Location = new Point(16, 444), Size = new Size(328, 30), Font = F(10F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None };
+        inputBox.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendCurrent(); } };
+        f.Controls.Add(inputBox);
+        var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(352, 444), Size = new Size(88, 30), Primary = true };
+        send.Click += delegate { SendCurrent(); };
+        f.Controls.Add(send);
+
+        // events
+        onEvent = delegate(string s) { msgList.Items.Add("· " + s + "  " + DateTime.Now.ToString("HH:mm")); msgList.TopIndex = msgList.Items.Count - 1; };
+        onMessage = delegate(string n, string t, string ts) {
+            string tm = ts != null ? DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(ts)).LocalDateTime.ToString("HH:mm") : DateTime.Now.ToString("HH:mm");
+            msgList.Items.Add(n + "  " + tm + "  " + t);
+            msgList.TopIndex = msgList.Items.Count - 1;
+            if (!f.Focused) FlashTitle(f);
+        };
+
+        f.FormClosed += delegate { LeaveRoom(); SaveCfg(); };
+        f.Shown += delegate { inputBox.Focus(); };
+        f.Show();
+    }
+
+    static void FlashTitle(Form f)
+    {
+        try { string old = f.Text; f.Text = "● 新消息 - " + f.Text.Replace("● 新消息 - ", ""); } catch {}
+    }
+
+    static void ToggleJoin()
+    {
+        if (running) { LeaveRoom(); } else { JoinRoom(); }
+    }
+    static void JoinRoom()
+    {
+        nick = edNick.Text.Trim(); if (nick.Length == 0) nick = "用户";
+        room = edRoom.Text.Trim(); if (room.Length == 0) room = "大厅";
+        SaveCfg();
+        StartListeners();
+        running = true;
+        edNick.Enabled = false; edRoom.Enabled = false; joinBtn.Text = "离开";
+        statusLbl.Text = "已连接  " + room + "  (端口 20003, 与 itools-chat 互通)";
+        statusLbl.ForeColor = C_GREEN;
+        msgList.Items.Add("· 已加入房间 [" + room + "]，发送第一条消息或等别人上线");
+        // announce ourselves (repeating beacon so late joiners find us)
+        SendBeacon(null);
+        var t = new System.Threading.Timer(delegate(object s) { SendBeacon(null); }, null, 2000, 2000);
+        f0f0Timers.Add(t);
+        UpdatePeers();
+    }
+    static void LeaveRoom()
+    {
+        running = false;
+        foreach (var t in f0f0Timers) { try { t.Dispose(); } catch {} }
+        f0f0Timers.Clear();
+        StopListeners();
+        peers.Clear(); peerIps.Clear();
+        edNick.Enabled = true; edRoom.Enabled = true; joinBtn.Text = "加入";
+        statusLbl.Text = "未连接"; statusLbl.ForeColor = C_SUB;
+        UpdatePeers();
+    }
+    static List<System.Threading.Timer> f0f0Timers = new List<System.Threading.Timer>();
+
+    static void SendCurrent()
+    {
+        string t = inputBox.Text.Trim();
+        if (t.Length == 0 || !running) return;
+        SendChat(t);
+        inputBox.Text = "";
+        msgList.Items.Add(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + t);
+        msgList.TopIndex = msgList.Items.Count - 1;
+    }
+    static void UpdatePeers()
+    {
+        if (uiContext == null) return;
+        uiContext.Post(delegate(object x) {
+            peerList.Items.Clear();
+            foreach (var kv in peers) peerList.Items.Add(kv.Value);
+        }, null);
+    }
+}
+'@
 
 try {
     $seedDir = Join-Path $env:LOCALAPPDATA 'wgime'
@@ -146337,6 +146760,8 @@ try {
         if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
         $jf = Join-Path $pdir 'calc.txt'
         if (-not (Test-Path $jf)) { [IO.File]::WriteAllText($jf, $seedCalc, $utf8n) }
+        $cf2 = Join-Path $pdir 'chat.txt'
+        if (-not (Test-Path $cf2)) { [IO.File]::WriteAllText($cf2, $seedChat, $utf8n) }
         try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}
         [IO.File]::WriteAllText($seedMark, (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $utf8n)
         WgLog "first-run seeding done (tools.txt + plugins samples)"
