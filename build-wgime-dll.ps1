@@ -138,17 +138,31 @@ public static class WgImeLauncher
 {
     public static void Run(string dir, string batPath)
     {
-        string py, wb, ec, pw, wf;
-        ExtractDicts(out py, out wb, out ec, out pw, out wf);   // trailer extensions merged over the embedded base
+        // Fast path: compute the trailer's COMPRESSED-byte hash (no decompress),
+        // then let BuildDicts decide cache-hit vs miss. Only on a miss do we
+        // decompress the trailer (ExtractDictsFull).
+        WordBoard.TrailerHash = ComputeTrailerHash();
+        string py = null, wb = null, ec = null, pw = null, wf = null;
         WordBoard.RunApp(py, wb, ec, pw, wf, dir, batPath);
     }
-
-    // The full extension tables (py.txt / wb.txt / ec.txt / import_*.txt, ~57MB)
-    // are stored deflate-compressed in a base64 trailer appended to this DLL at
-    // build time (the PE loader ignores trailing data). ExtractDicts decompresses
-    // them and merges them over the embedded base tables, so the folder needs no
-    // txt files at all. Falls back to the embedded base if the trailer is absent.
-    static void ExtractDicts(out string py, out string wb, out string ec, out string pw, out string wf)
+    static byte[] ComputeTrailerHash()
+    {
+        try {
+            string dll = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            if (string.IsNullOrEmpty(dll) || !File.Exists(dll)) return null;
+            byte[] all = File.ReadAllBytes(dll);
+            byte[] m0 = Encoding.ASCII.GetBytes("###WGIME_DICT###");
+            int i = IndexOfBytes(all, m0, 0);
+            if (i < 0) return null;
+            i += m0.Length;
+            byte[] m1 = Encoding.ASCII.GetBytes("###WGIME_DICT_END###");
+            int j = IndexOfBytes(all, m1, i);
+            if (j < 0) return null;
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+                return md5.ComputeHash(all, i, j - i);   // hash of the compressed trailer bytes
+        } catch { return null; }
+    }
+    public static void ExtractDictsFull(out string py, out string wb, out string ec, out string pw, out string wf)
     {
         py = PyData; wb = WbData; ec = EcData; pw = PyWords; wf = PyWf;
         try {
@@ -174,13 +188,13 @@ public static class WgImeLauncher
                     string name = Encoding.ASCII.GetString(br.ReadBytes(br.ReadByte()));
                     int len = br.ReadInt32();
                     byte[] comp = br.ReadBytes(len);
-                    string text = Encoding.UTF8.GetString(comp);   // entry data is raw UTF-8 (only the whole blob is compressed)
-                    if (name == "py") py = text;        // build-time pre-merged FULL table (base + py.txt + pyWords + import)
-                    else if (name == "wb") wb = text;   // base + wb.txt + import_wb
-                    else if (name == "ec") ec = text;   // base + ec.txt
+                    string text = Encoding.UTF8.GetString(comp);
+                    if (name == "py") py = text;
+                    else if (name == "wb") wb = text;
+                    else if (name == "ec") ec = text;
                 }
-                pw = "";                                // pyWords already merged into py at build time
-                WordBoard.EmbeddedMerged = true;        // embedded tables are fully merged: skip pack-splitting
+                pw = "";
+                WordBoard.EmbeddedMerged = true;
             }
         } catch {}
     }

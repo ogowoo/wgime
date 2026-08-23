@@ -40,7 +40,7 @@ $sw.Stop()
 Write-Host ("LoadFreq: {0} ms" -f $sw.ElapsedMilliseconds)
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$mb = $buildDicts.Invoke($null, [object[]]@(( | Split-Path -Parent)))
+$mb = $buildDicts.Invoke($null, [object[]]@([string]($PSScriptRoot | Split-Path -Parent)))
 $sw.Stop()
 Write-Host ("BuildDicts (cache hit): {0} ms" -f $sw.ElapsedMilliseconds)
 
