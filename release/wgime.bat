@@ -145278,6 +145278,12 @@ $seedClock = @'
 ;  设置与统计存 %LOCALAPPDATA%\wgime\clock.cfg / pomodoro.txt (格式兼容旧版)
 ;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
 ; ============================================================
+;  WgIme C# 插件: 悬浮时钟 (现代重制版)
+;  输入 sz 选 ▶悬浮时钟, 弹出置顶无边框窗体 (Esc / ✕ 关闭, 拖标题栏移动)
+;  时钟(秒环/闹钟/整点报时) + 倒计时(圆环/预设/自定义提醒) + 秒表(计次) + 番茄(统计/7日图)
+;  设置与统计存 %LOCALAPPDATA%\wgime\clock.cfg / pomodoro.txt (格式兼容旧版)
+;  规范详见 plugins\README.txt 或 docs\WGIME_插件规范.md
+; ============================================================
 code = sz
 name = 悬浮时钟
 desc = 现代风时钟: 秒环/闹钟/整点报时/倒计时圆环/预设/秒表计次/番茄统计与7日图
@@ -145313,12 +145319,29 @@ public class ClockPlugin
 
     static bool hourly = true;
     static string reminder = "休息一下, 喝点水";
+    class AlarmItem {
+        public string Time = "07:30";
+        public string Name = "闹钟";
+        public bool Enabled = true;
+        public string Repeat = "每天";
+        public string Mode = "popup";    // popup=居中弹窗  full=全屏强制休息  tray=托盘气泡
+        public AlarmItem() {}
+        public AlarmItem(string time, string name, bool enabled) { Time = time; Name = name; Enabled = enabled; Repeat = "每天"; }
+        public AlarmItem(string time, string name, bool enabled, string repeat) { Time = time; Name = name; Enabled = enabled; Repeat = repeat; }
+    }
+    static List<AlarmItem> alarms = new List<AlarmItem>();
+    static System.Threading.SynchronizationContext uiContext;
+    static readonly object alarmLock = new object();
+    static List<System.Threading.Timer> snoozeTimers = new List<System.Threading.Timer>();
+    static List<Form> fullscreenAlarms = new List<Form>();   // 全屏提醒实例 (强制休息), 防止重复
+    // 旧版单闹钟字段，仅用于读取旧 clock.cfg 后迁移。
     static string alarmTime = "";
     static bool alarmOn = false;
 
     static void LoadCfg()
     {
         try {
+            alarms.Clear();
             if (!File.Exists(CfgPath())) return;
             foreach (string raw in File.ReadAllLines(CfgPath(), System.Text.Encoding.UTF8)) {
                 string t = raw.Trim();
@@ -145329,16 +145352,125 @@ public class ClockPlugin
                 else if (k == "reminder") reminder = v;
                 else if (k == "alarm") alarmTime = v;
                 else if (k == "alarmon") alarmOn = v == "1";
+                else if (k.StartsWith("alarm.")) {
+                    string[] a = v.Split(new char[] { '|' }, 5);
+                    if (a.Length >= 2 && ValidAlarmTime(a[0])) {
+                        string nm = a.Length >= 3 ? UnescapeCfg(a[2]) : "闹钟";
+                        string rp = a.Length >= 4 ? UnescapeCfg(a[3]) : "每天";
+                        string md = a.Length >= 5 ? UnescapeCfg(a[4]) : "popup";
+                        if (md != "popup" && md != "full" && md != "tray") md = "popup";
+                        AlarmItem item = new AlarmItem(a[0], nm, a[1] == "1", rp); item.Mode = md;
+                        alarms.Add(item);
+                    }
+                }
             }
+            // 与旧版配置兼容：首次发现 alarm/alarmon 时自动迁移。
+            if (alarms.Count == 0 && ValidAlarmTime(alarmTime)) alarms.Add(new AlarmItem(alarmTime, "旧版闹钟", alarmOn));
         } catch {}
     }
+    static bool ValidAlarmTime(string t)
+    {
+        return System.Text.RegularExpressions.Regex.IsMatch(t == null ? "" : t, @"^([01]\d|2[0-3]):[0-5]\d$");
+    }
+    static string EscapeCfg(string s) { return Uri.EscapeDataString((s == null ? "" : s).Replace("\r", " ").Replace("\n", " ")); }
+    static string UnescapeCfg(string s) { try { return Uri.UnescapeDataString(s == null ? "" : s); } catch { return s == null ? "" : s; } }
     static void SaveCfg()
     {
         try {
             Directory.CreateDirectory(CfgDir());
-            File.WriteAllText(CfgPath(),
-                "hourly = " + (hourly ? "1" : "0") + "\nreminder = " + reminder + "\nalarm = " + alarmTime + "\nalarmon = " + (alarmOn ? "1" : "0") + "\n",
-                new System.Text.UTF8Encoding(false));
+            var b = new System.Text.StringBuilder();
+            b.Append("hourly = ").Append(hourly ? "1" : "0").Append("\n");
+            b.Append("reminder = ").Append(reminder).Append("\n");
+            for (int i = 0; i < alarms.Count; i++) {
+                AlarmItem a = alarms[i];
+                b.Append("alarm.").Append(i + 1).Append(" = ").Append(a.Time).Append("|").Append(a.Enabled ? "1" : "0").Append("|").Append(EscapeCfg(a.Name)).Append("|").Append(EscapeCfg(a.Repeat)).Append("|").Append(EscapeCfg(a.Mode)).Append("\n");
+            }
+            File.WriteAllText(CfgPath(), b.ToString(), new System.Text.UTF8Encoding(false));
+        } catch {}
+    }
+    static bool RepeatMatches(AlarmItem a, DateTime now)
+    {
+        if (a.Repeat == "仅一次" || a.Repeat == "每天") return true;
+        if (a.Repeat == "工作日") return now.DayOfWeek >= DayOfWeek.Monday && now.DayOfWeek <= DayOfWeek.Friday;
+        if (a.Repeat == "周末") return now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday;
+        string token = "日一二三四五六"[(int)now.DayOfWeek].ToString();
+        return a.Repeat != null && a.Repeat.StartsWith("自定义:") && a.Repeat.IndexOf(token) >= 0;
+    }
+    static void QueueAlarmPopup(AlarmItem a, DateTime now)
+    {
+        if (uiContext == null) return;
+        string time = a.Time, name = a.Name, repeat = a.Repeat, mode = a.Mode;
+        uiContext.Post(delegate(object state) { DispatchAlarm(time, name, repeat, mode); }, null);
+    }
+    static void DispatchAlarm(string time, string name, string repeat, string mode)
+    {
+        try {
+            if (mode == "full") { ShowFullscreenAlarm(time, name, repeat); return; }
+            if (mode == "tray") { ShowTrayAlarm(time, name, repeat); return; }
+            ShowAlarmPopup(time, name, repeat);
+        } catch {}
+    }
+    // 全屏强制休息: 全屏半透明遮罩 + 置顶, 必须点"我知道了"才能关闭 (有声音, 每 3 秒重响)
+    static void ShowFullscreenAlarm(string time, string name, string repeat)
+    {
+        // 同一时刻只保留一个全屏提醒 (防多个闹钟叠一起)
+        for (int i = fullscreenAlarms.Count - 1; i >= 0; i--) {
+            Form f = fullscreenAlarms[i];
+            if (f == null || f.IsDisposed) { fullscreenAlarms.RemoveAt(i); continue; }
+            try { f.Close(); } catch {}
+        }
+        var a = new Form();
+        a.Text = "WgIme 休息提醒"; a.FormBorderStyle = FormBorderStyle.None; a.AutoScaleMode = AutoScaleMode.None;
+        a.StartPosition = FormStartPosition.Manual; a.Location = new Point(0, 0);
+        a.WindowState = FormWindowState.Normal; a.FormBorderStyle = FormBorderStyle.None;
+        Rectangle wa = Screen.PrimaryScreen.Bounds;
+        a.Bounds = wa;
+        a.BackColor = Color.FromArgb(255, 18, 22, 30);          // 深色底
+        a.TopMost = true; a.ShowInTaskbar = true; a.Opacity = 0.96;
+        a.KeyPreview = true;
+        a.Paint += delegate(object ss, PaintEventArgs ee) {
+            var g = ee.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            int cx = a.ClientSize.Width / 2, cy = a.ClientSize.Height / 2;
+            using (var title = new Font("Microsoft YaHei UI", 30F, FontStyle.Bold))
+            using (var sub = new Font("Microsoft YaHei UI", 16F, FontStyle.Regular))
+            using (var big = new Font("Microsoft YaHei UI", 120F, FontStyle.Bold)) {
+                string msg = string.IsNullOrEmpty(name) ? "休息一下" : name;
+                using (var br = new SolidBrush(Color.FromArgb(255, 235, 235, 240)))
+                    g.DrawString(msg, title, br, new RectangleF(0, cy - 150, a.ClientSize.Width, 60), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+                using (var br2 = new SolidBrush(Color.FromArgb(255, 150, 160, 180)))
+                    g.DrawString(time + "  " + (repeat ?? ""), sub, br2, new RectangleF(0, cy - 80, a.ClientSize.Width, 40), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+                using (var br3 = new SolidBrush(Color.FromArgb(255, 0, 122, 255)))
+                    g.DrawString("☕", big, br3, new RectangleF(0, cy - 40, a.ClientSize.Width, 130), new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center });
+            }
+        };
+        var ok = new FlatBtn { Text = "我知道了，继续工作", Font = F(13F, FontStyle.Bold), Location = new Point(0, 0), Size = new Size(280, 52), Primary = true };
+        ok.Location = new Point(a.ClientSize.Width / 2 - 140, a.ClientSize.Height / 2 + 120);
+        ok.Click += delegate { a.Close(); };
+        a.Controls.Add(ok);
+        var st = new System.Windows.Forms.Timer { Interval = 3000 };
+        a.FormClosed += delegate { st.Stop(); st.Dispose(); fullscreenAlarms.Remove(a); };
+        fullscreenAlarms.Add(a);
+        System.Media.SystemSounds.Exclamation.Play();
+        st.Tick += delegate { System.Media.SystemSounds.Exclamation.Play(); };
+        st.Start();
+        a.Show(); a.Activate();
+    }
+    // 托盘气泡: 轻提醒, 不打断 (声音一次)
+    static void ShowTrayAlarm(string time, string name, string repeat)
+    {
+        try {
+            var ni = new NotifyIcon();
+            ni.Icon = System.Drawing.SystemIcons.Information;
+            ni.Visible = true;
+            ni.BalloonTipTitle = "WgIme 提醒  " + time;
+            ni.BalloonTipText = (string.IsNullOrEmpty(name) ? "闹钟" : name) + "  (" + repeat + ")";
+            ni.BalloonTipIcon = ToolTipIcon.Info;
+            ni.ShowBalloonTip(8000);
+            System.Media.SystemSounds.Asterisk.Play();
+            System.Windows.Forms.Timer t = null;
+            t = new System.Windows.Forms.Timer { Interval = 10000 };
+            t.Tick += delegate { t.Stop(); t.Dispose(); ni.Visible = false; ni.Dispose(); };
+            t.Start();
         } catch {}
     }
 
@@ -145350,7 +145482,8 @@ public class ClockPlugin
         if (!createdNew) return;
         var t = new System.Threading.Thread((System.Threading.ThreadStart)delegate {
             int lastHour = -1;
-            string lastAlarmMin = "";
+            var firedAlarms = new HashSet<string>();
+            string firedDay = "";
             while (true) {
                 System.Threading.Thread.Sleep(5000);
                 try {
@@ -145360,13 +145493,16 @@ public class ClockPlugin
                         lastHour = now.Hour;
                         System.Media.SystemSounds.Asterisk.Play();
                     }
-                    if (alarmOn && alarmTime.Length == 5) {
-                        string hm = now.ToString("HH:mm");
-                        if (hm == alarmTime && lastAlarmMin != hm) {
-                            lastAlarmMin = hm;
-                            System.Media.SystemSounds.Exclamation.Play();
-                            System.Threading.Thread.Sleep(700);
-                            System.Media.SystemSounds.Exclamation.Play();
+                    string day = now.ToString("yyyy-MM-dd");
+                    if (day != firedDay) { firedDay = day; firedAlarms.Clear(); }
+                    string hm = now.ToString("HH:mm");
+                    for (int ai = 0; ai < alarms.Count; ai++) {
+                        AlarmItem a = alarms[ai];
+                        string alarmKey = day + " " + hm + "#" + ai;
+                        if (a.Enabled && hm == a.Time && RepeatMatches(a, now) && !firedAlarms.Contains(alarmKey)) {
+                            firedAlarms.Add(alarmKey);
+                            QueueAlarmPopup(a, now);
+                            if (a.Repeat == "仅一次") { a.Enabled = false; SaveCfg(); }
                         }
                     }
                 } catch {}
@@ -145501,8 +145637,117 @@ public class ClockPlugin
     }
     static string WeekCn(DateTime d) { return "星期" + "日一二三四五六"[(int)d.DayOfWeek]; }
 
+    static void ShowAlarmPopup(string time, string name, string repeat)
+    {
+        var a = new Form();
+        a.Text = "WgIme 闹钟提醒"; a.FormBorderStyle = FormBorderStyle.None; a.AutoScaleMode = AutoScaleMode.None;
+        a.ClientSize = new Size(340, 224); a.BackColor = C_BG; a.TopMost = true; a.ShowInTaskbar = true;
+        a.StartPosition = FormStartPosition.CenterScreen;
+        EventHandler ar = delegate { try { SetWindowRgn(a.Handle, CreateRoundRectRgn(0, 0, a.Width + 1, a.Height + 1, 22, 22), true); } catch {} };
+        a.HandleCreated += delegate { ar(a, EventArgs.Empty); }; a.Resize += delegate { ar(a, EventArgs.Empty); };
+        a.Paint += delegate(object ss, PaintEventArgs ee) { ee.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var p = RoundRect(new Rectangle(1, 1, a.Width - 3, a.Height - 3), 10)) using (var pn = new Pen(C_BORDER)) ee.Graphics.DrawPath(pn, p); };
+        var head = new Panel { Location = new Point(0, 0), Size = new Size(340, 38), BackColor = C_HEADER };
+        head.Controls.Add(MkLabel("闹钟提醒", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 180, 24, ContentAlignment.MiddleLeft));
+        head.MouseDown += delegate(object ss, MouseEventArgs ee) { if (ee.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(a.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
+        a.Controls.Add(head);
+        a.Controls.Add(MkLabel(time, F(32F, FontStyle.Regular), C_ORANGE, 0, 52, 340, 52, ContentAlignment.MiddleCenter));
+        a.Controls.Add(MkLabel(name, F(12F, FontStyle.Bold), C_TEXT, 20, 108, 300, 28, ContentAlignment.MiddleCenter));
+        a.Controls.Add(MkLabel("重复：" + repeat, F(8.5F, FontStyle.Regular), C_SUB, 20, 136, 300, 20, ContentAlignment.MiddleCenter));
+        var stop = new FlatBtn { Text = "停止提醒", Font = F(9F, FontStyle.Regular), Location = new Point(20, 174), Size = new Size(142, 34), Primary = true };
+        var snooze = new FlatBtn { Text = "5分钟后提醒", Font = F(9F, FontStyle.Regular), Location = new Point(178, 174), Size = new Size(142, 34), Fg = C_ORANGE };
+        var sound = new Timer { Interval = 1400 };
+        sound.Tick += delegate { System.Media.SystemSounds.Exclamation.Play(); };
+        stop.Click += delegate { sound.Stop(); a.Close(); };
+        snooze.Click += delegate {
+            sound.Stop(); a.Close();
+            System.Threading.Timer later = null;
+            later = new System.Threading.Timer(delegate(object state) {
+                if (uiContext != null) uiContext.Post(delegate(object x) { ShowAlarmPopup(DateTime.Now.ToString("HH:mm"), name + "（稍后提醒）", "单次延后"); }, null);
+                try { later.Dispose(); snoozeTimers.Remove(later); } catch {}
+            }, null, 5 * 60 * 1000, System.Threading.Timeout.Infinite);
+            snoozeTimers.Add(later);
+        };
+        a.FormClosed += delegate { sound.Stop(); sound.Dispose(); };
+        a.Controls.Add(stop); a.Controls.Add(snooze);
+        System.Media.SystemSounds.Exclamation.Play(); sound.Start(); a.Show(); a.Activate();
+    }
+
+    static void ShowAlarmManager(Form owner, Action changed, Font fontBtn, Font fontSub)
+    {
+        var m = new Form();
+        m.Text = "WgIme 闹钟管理"; m.FormBorderStyle = FormBorderStyle.None; m.AutoScaleMode = AutoScaleMode.None;
+        m.ClientSize = new Size(360, 456); m.BackColor = C_BG; m.TopMost = true; m.ShowInTaskbar = false;
+        m.StartPosition = FormStartPosition.Manual;
+        m.Location = new Point(owner.Left + (owner.Width - m.Width) / 2, owner.Top + (owner.Height - m.Height) / 2);
+        EventHandler ar = delegate { try { SetWindowRgn(m.Handle, CreateRoundRectRgn(0, 0, m.Width + 1, m.Height + 1, 20, 20), true); } catch {} };
+        m.HandleCreated += delegate { ar(m, EventArgs.Empty); }; m.Resize += delegate { ar(m, EventArgs.Empty); };
+        m.Paint += delegate(object ss, PaintEventArgs ee) { ee.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var pp = RoundRect(new Rectangle(1, 1, m.Width - 3, m.Height - 3), 9)) using (var pn = new Pen(C_BORDER)) ee.Graphics.DrawPath(pn, pp); };
+        var head = new Panel { Location = new Point(0, 0), Size = new Size(360, 38), BackColor = C_HEADER };
+        var cap = MkLabel("闹钟管理", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 160, 24, ContentAlignment.MiddleLeft);
+        var close = new FlatBtn { Text = "✕", Font = fontBtn, Location = new Point(316, 6), Size = new Size(34, 26), Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70) };
+        close.Click += delegate { m.Close(); }; head.Controls.Add(cap); head.Controls.Add(close);
+        head.MouseDown += delegate(object ss, MouseEventArgs ee) { if (ee.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(m.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
+        m.Controls.Add(head);
+
+        var list = new ListBox { Location = new Point(16, 52), Size = new Size(328, 154), BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        m.Controls.Add(list);
+        var edTime = new RoundedEdit(76, 30, fontBtn); edTime.Location = new Point(16, 220); edTime.Box.Text = "07:30"; m.Controls.Add(edTime);
+        var edName = new RoundedEdit(148, 30, fontBtn); edName.Location = new Point(100, 220); edName.Box.TextAlign = HorizontalAlignment.Left; edName.Box.Text = "闹钟"; m.Controls.Add(edName);
+        var toggle = new FlatBtn { Text = "已开启", Font = fontBtn, Location = new Point(256, 219), Size = new Size(88, 32), Fg = C_GREEN };
+        var repeat = new ComboBox { Location = new Point(16, 260), Size = new Size(328, 28), DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn };
+        repeat.Items.AddRange(new object[] { "仅一次", "每天", "工作日", "周末", "自定义:一二三四五", "自定义:一三五", "自定义:二四六", "自定义:日六" }); repeat.SelectedItem = "每天"; m.Controls.Add(repeat);
+        var mode = new ComboBox { Location = new Point(16, 296), Size = new Size(328, 28), DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = C_SURFACE, ForeColor = C_TEXT, Font = fontBtn };
+        mode.Items.AddRange(new object[] { "居中弹窗", "全屏强制休息", "托盘气泡" }); mode.SelectedIndex = 0; m.Controls.Add(mode);
+        bool editEnabled = true;
+        toggle.Click += delegate { editEnabled = !editEnabled; toggle.Text = editEnabled ? "已开启" : "已关闭"; toggle.Fg = editEnabled ? C_GREEN : C_SUB; toggle.Invalidate(); };
+        m.Controls.Add(toggle);
+        var note = MkLabel("选择项目可编辑；提醒方式可单独设置", fontSub, C_SUB, 16, 332, 328, 20, ContentAlignment.MiddleLeft); m.Controls.Add(note);
+
+        Action refresh = delegate {
+            list.Items.Clear();
+            for (int i = 0; i < alarms.Count; i++) list.Items.Add((alarms[i].Enabled ? "● " : "○ ") + alarms[i].Time + "   " + alarms[i].Name + "   [" + alarms[i].Repeat + "]");
+            if (changed != null) changed();
+        };
+        Action<int> loadItem = delegate(int idx) {
+            if (idx < 0 || idx >= alarms.Count) return;
+            AlarmItem a = alarms[idx]; edTime.Box.Text = a.Time; edName.Box.Text = a.Name; editEnabled = a.Enabled;
+            toggle.Text = editEnabled ? "已开启" : "已关闭"; toggle.Fg = editEnabled ? C_GREEN : C_SUB; toggle.Invalidate();
+            repeat.SelectedItem = a.Repeat; if (repeat.SelectedIndex < 0) repeat.SelectedItem = "每天";
+            mode.SelectedItem = a.Mode == "full" ? "全屏强制休息" : (a.Mode == "tray" ? "托盘气泡" : "居中弹窗");
+        };
+        list.SelectedIndexChanged += delegate { loadItem(list.SelectedIndex); };
+        Action normalize = delegate {
+            string t = edTime.Box.Text.Trim().Replace("：", ":"); string d = t.Replace(":", ""); int hh = 0, mm = 0;
+            if (d.Length == 3 || d.Length == 4) { string hs = d.Substring(0, d.Length - 2), ms = d.Substring(d.Length - 2); if (int.TryParse(hs, out hh) && int.TryParse(ms, out mm) && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) t = hh.ToString("00") + ":" + mm.ToString("00"); }
+            edTime.Box.Text = t;
+        };
+        Func<AlarmItem> readItem = delegate {
+            normalize(); string t = edTime.Box.Text.Trim();
+            if (!ValidAlarmTime(t)) { note.Text = "时间格式错误，请输入 00:00–23:59"; note.ForeColor = C_RED; return null; }
+            string nm = edName.Box.Text.Trim(); if (nm.Length == 0) nm = "闹钟";
+            note.Text = "已保存"; note.ForeColor = C_GREEN;
+            AlarmItem it = new AlarmItem(t, nm, editEnabled, repeat.SelectedItem == null ? "每天" : repeat.SelectedItem.ToString());
+            string sel = mode.SelectedItem == null ? "居中弹窗" : mode.SelectedItem.ToString();
+            it.Mode = sel == "全屏强制休息" ? "full" : (sel == "托盘气泡" ? "tray" : "popup");
+            return it;
+        };
+        var add = new FlatBtn { Text = "新增", Font = fontBtn, Location = new Point(16, 372), Size = new Size(76, 34), Primary = true };
+        var save = new FlatBtn { Text = "保存修改", Font = fontBtn, Location = new Point(100, 372), Size = new Size(92, 34), Fg = C_ACCENT };
+        var del = new FlatBtn { Text = "删除", Font = fontBtn, Location = new Point(200, 372), Size = new Size(68, 34), Fg = C_RED };
+        var clear = new FlatBtn { Text = "清空", Font = fontBtn, Location = new Point(276, 372), Size = new Size(68, 34), Fg = C_SUB };
+        add.Click += delegate { AlarmItem a = readItem(); if (a == null) return; alarms.Add(a); SaveCfg(); refresh(); list.SelectedIndex = alarms.Count - 1; };
+        save.Click += delegate { int i = list.SelectedIndex; if (i < 0 || i >= alarms.Count) { note.Text = "请先选择一个闹钟"; note.ForeColor = C_RED; return; } AlarmItem a = readItem(); if (a == null) return; alarms[i] = a; SaveCfg(); refresh(); list.SelectedIndex = i; };
+        del.Click += delegate { int i = list.SelectedIndex; if (i < 0 || i >= alarms.Count) return; alarms.RemoveAt(i); SaveCfg(); refresh(); if (alarms.Count > 0) list.SelectedIndex = Math.Min(i, alarms.Count - 1); };
+        clear.Click += delegate { edTime.Box.Text = "07:30"; edName.Box.Text = "闹钟"; editEnabled = true; toggle.Text = "已开启"; toggle.Fg = C_GREEN; toggle.Invalidate(); repeat.SelectedItem = "每天"; mode.SelectedIndex = 0; list.ClearSelected(); note.Text = "填写后点击新增"; note.ForeColor = C_SUB; };
+        m.Controls.Add(add); m.Controls.Add(save); m.Controls.Add(del); m.Controls.Add(clear);
+        m.FormClosed += delegate { SaveCfg(); if (changed != null) changed(); };
+        refresh(); m.Show(owner);
+    }
+
     public static void Run()
     {
+        uiContext = System.Threading.SynchronizationContext.Current;
+        if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
         LoadCfg();
         StartChimeWatcher();
 
@@ -145609,25 +145854,19 @@ public class ClockPlugin
             Location = new Point(16, 282), Size = new Size(118, 32), Fg = hourly ? C_GREEN : C_SUB };
         chkHourly.Click += delegate { hourly = !hourly; SaveCfg(); chkHourly.Text = hourly ? "整点报时: 开" : "整点报时: 关"; chkHourly.Fg = hourly ? C_GREEN : C_SUB; chkHourly.Invalidate(); };
         var lblAl = MkLabel("闹钟", fontBtn, C_SUB, 144, 288, 40, 22, ContentAlignment.MiddleLeft);
-        var edAlarm = new RoundedEdit(58, 28, fontBtn); edAlarm.Location = new Point(186, 284);
-        var txtAlarm = edAlarm.Box; txtAlarm.Text = alarmTime.Length == 5 ? alarmTime : "07:30";
-        var chkAlarm = new FlatBtn { Text = alarmOn ? "开" : "关", Font = fontBtn, Location = new Point(252, 282), Size = new Size(46, 32), Fg = alarmOn ? C_ORANGE : C_SUB };
-        chkAlarm.Click += delegate {
-            alarmOn = !alarmOn;
-            var t = txtAlarm.Text.Trim();
-            if (System.Text.RegularExpressions.Regex.IsMatch(t, @"^([01]\d|2[0-3]):[0-5]\d$")) { alarmTime = t; txtAlarm.Text = t; }
-            chkAlarm.Text = alarmOn ? "开" : "关"; chkAlarm.Fg = alarmOn ? C_ORANGE : C_SUB; chkAlarm.Invalidate();
-            SaveCfg();
+        var lblAlSummary = MkLabel("", fontSub, C_SUB, 184, 288, 104, 22, ContentAlignment.MiddleLeft);
+        var btnAlarmManage = new FlatBtn { Text = "管理闹钟", Font = fontBtn, Location = new Point(292, 282), Size = new Size(92, 32), Fg = C_ACCENT };
+        Action refreshAlarmSummary = delegate {
+            int enabled = 0; string next = "";
+            for (int i = 0; i < alarms.Count; i++) if (alarms[i].Enabled) { enabled++; if (next.Length == 0 || String.Compare(alarms[i].Time, next) < 0) next = alarms[i].Time; }
+            lblAlSummary.Text = alarms.Count == 0 ? "未设置" : (enabled + "个开启" + (next.Length > 0 ? " · " + next : ""));
         };
-        var lblAlNote = MkLabel(alarmTime.Length == 5 ? "每天 " + alarmTime + " 响" : "格式 HH:mm", fontSub, C_SUB, 306, 288, 90, 22, ContentAlignment.MiddleLeft);
-        txtAlarm.LostFocus += delegate {
-            var t = txtAlarm.Text.Trim();
-            if (System.Text.RegularExpressions.Regex.IsMatch(t, @"^([01]\d|2[0-3]):[0-5]\d$")) { alarmTime = t; lblAlNote.Text = "每天 " + t + " 响"; SaveCfg(); }
-        };
+        refreshAlarmSummary();
+        btnAlarmManage.Click += delegate { ShowAlarmManager(f, refreshAlarmSummary, fontBtn, fontSub); };
         var p0 = pages[0];
         p0.Controls.Add(lblTime); p0.Controls.Add(lblDate); p0.Controls.Add(lblDayOf);
         p0.Controls.Add(ringClock);
-        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(edAlarm); p0.Controls.Add(chkAlarm); p0.Controls.Add(lblAlNote);
+        p0.Controls.Add(chkHourly); p0.Controls.Add(lblAl); p0.Controls.Add(lblAlSummary); p0.Controls.Add(btnAlarmManage);
 
         // =========================================================
         //  page 1: countdown (ring / presets / custom reminder)
@@ -145856,6 +146095,7 @@ public class ClockPlugin
     static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
 }
 [/csharp]
+
 '@
 
 $seedCalc = @'
@@ -146079,6 +146319,558 @@ public class CalcPlugin
 }
 [/csharp]
 '@
+$seedChat = @'
+; ============================================================
+;  WgIme C# 插件: 聊天 (与 itools-chat 互通, 手机/网页兼容)
+;  输入 lt (或 chat) 选 ▶聊天: MQTT over WebSocket, 与 itools-chat (chat.bat) 互通
+;  默认 broker wss://chat.seee.uno, 消息 AES-256-CBC 加密 (房间名派生密钥)
+; ============================================================
+code = lt
+name = 聊天
+desc = 局域网/在线聊天: 与 itools-chat (chat.bat) 和手机网页互通, 加密消息
+
+[csharp]
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.IO;
+using System.Net.WebSockets;
+using System.Text;
+using System.Windows.Forms;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Threading;
+
+public class ChatPlugin
+{
+    // ---------- palette (matches clock / toolbox) ----------
+    static Color C_BG      = Color.FromArgb(255, 232, 237, 245);
+    static Color C_HEADER  = Color.FromArgb(255, 220, 227, 239);
+    static Color C_SURFACE = Color.FromArgb(255, 255, 255, 255);
+    static Color C_SURF2   = Color.FromArgb(255, 217, 224, 236);
+    static Color C_BORDER  = Color.FromArgb(255, 195, 204, 221);
+    static Color C_TEXT    = Color.FromArgb(255, 29, 29, 31);
+    static Color C_SUB     = Color.FromArgb(255, 110, 116, 133);
+    static Color C_ACCENT  = Color.FromArgb(255, 0, 122, 255);
+    static Color C_GREEN   = Color.FromArgb(255, 52, 199, 89);
+
+    // ---------- protocol (itools-chat compatible) ----------
+    static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
+    static string CfgPath() { return Path.Combine(CfgDir(), "chat.cfg"); }
+
+    static string nick = "";
+    static string room = "大厅";
+    static string docId = "";
+    static string customKey = "";   // optional custom key (default: room name)
+    static string brokerUrl = "wss://chat.seee.uno";
+
+    static ClientWebSocket ws;
+    static CancellationTokenSource cts;
+    static readonly object lockObj = new object();
+    static SynchronizationContext uiContext;
+    static bool running = false;
+    static Dictionary<string, string> users = new Dictionary<string, string>();   // id -> nick
+    static HashSet<string> recentMsgs = new HashSet<string>();
+    static HashSet<string> typingUsers = new HashSet<string>();
+
+    // ---------- crypto (compatible with chat.bat: SHA256 key, AES-256-CBC, HMAC) ----------
+    static byte[] DeriveKey()
+    {
+        string raw = room + ":" + (customKey.Length > 0 ? customKey : room);
+        using (var sha = SHA256.Create()) return sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
+    }
+    static string Encrypt(string plain)
+    {
+        try {
+            byte[] key = DeriveKey();
+            byte[] iv = new byte[16];
+            using (var rng = new RNGCryptoServiceProvider()) rng.GetBytes(iv);
+            using (var aes = Aes.Create()) {
+                aes.Key = key; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+                using (var enc = aes.CreateEncryptor()) {
+                    byte[] pt = Encoding.UTF8.GetBytes(plain);
+                    byte[] ct = enc.TransformFinalBlock(pt, 0, pt.Length);
+                    string ivHex = ToHex(iv), ctHex = ToHex(ct);
+                    string hmacInput = ivHex + ":" + ctHex;
+                    string hmac;
+                    using (var h = new HMACSHA256(key)) hmac = ToHex(h.ComputeHash(Encoding.UTF8.GetBytes(hmacInput)));
+                    return ivHex + ":" + ctHex + ":" + hmac;
+                }
+            }
+        } catch { return plain; }
+    }
+    static string Decrypt(string data)
+    {
+        try {
+            byte[] key = DeriveKey();
+            var p = data.Split(':');
+            if (p.Length < 3) return null;
+            string ivHex = p[0], ctHex = p[1], hmacStr = p[2];
+            string hmacInput = ivHex + ":" + ctHex;
+            string expect;
+            using (var h = new HMACSHA256(key)) expect = ToHex(h.ComputeHash(Encoding.UTF8.GetBytes(hmacInput)));
+            if (expect != hmacStr) return null;
+            using (var aes = Aes.Create()) {
+                aes.Key = key; aes.IV = FromHex(ivHex); aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+                using (var dec = aes.CreateDecryptor()) {
+                    byte[] ct = FromHex(ctHex);
+                    byte[] pt = dec.TransformFinalBlock(ct, 0, ct.Length);
+                    return Encoding.UTF8.GetString(pt);
+                }
+            }
+        } catch { return null; }
+    }
+    static string ToHex(byte[] b) { var sb = new StringBuilder(); foreach (byte x in b) sb.Append(x.ToString("x2")); return sb.ToString(); }
+    static byte[] FromHex(string hex)
+    {
+        var b = new byte[hex.Length / 2];
+        for (int i = 0; i < b.Length; i++) b[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+        return b;
+    }
+
+    // ---------- MQTT over WebSocket (minimal: CONNECT/SUBSCRIBE/PUBLISH/PINGREQ/DISCONNECT) ----------
+    static string Topic() { return "itools/chat/" + room; }
+
+    static void MqttConnect()
+    {
+        var payload = new List<byte>();
+        AddMqttString(payload, "MQTT");                        // protocol name
+        payload.Add(4);                                        // protocol level 4 (MQTT 3.1.1)
+        payload.Add(2);                                        // clean session
+        AddMqttU16(payload, 60);                               // keepalive 60s
+        AddMqttString(payload, docId);                         // client id
+        byte[] connect = BuildMqtt(0x10, payload.ToArray());
+        WsSend(connect);
+    }
+    static void MqttSubscribe()
+    {
+        var payload = new List<byte>();
+        AddMqttU16(payload, 1);                                // packet id
+        AddMqttString(payload, Topic());                       // topic
+        payload.Add(0);                                        // qos 0
+        WsSend(BuildMqtt(0x82, payload.ToArray()));
+    }
+    static void MqttPublish(string json)
+    {
+        var payload = new List<byte>();
+        AddMqttString(payload, Topic());
+        payload.AddRange(Encoding.UTF8.GetBytes(json));
+        WsSend(BuildMqtt(0x30, payload.ToArray()));
+    }
+    static void MqttPing() { WsSend(new byte[] { 0xC0, 0x00 }); }
+    static void MqttDisconnect() { try { WsSend(new byte[] { 0xE0, 0x00 }); } catch {} }
+
+    static byte[] BuildMqtt(byte type, byte[] payload)
+    {
+        var pkt = new List<byte>();
+        pkt.Add(type);
+        int rem = payload.Length;
+        do {
+            byte b = (byte)(rem % 128);
+            rem /= 128;
+            if (rem > 0) b |= 0x80;
+            pkt.Add(b);
+        } while (rem > 0);
+        pkt.AddRange(payload);
+        return pkt.ToArray();
+    }
+    static void AddMqttString(List<byte> buf, string s)
+    {
+        byte[] b = Encoding.UTF8.GetBytes(s);
+        buf.Add((byte)(b.Length >> 8)); buf.Add((byte)(b.Length & 0xFF));
+        buf.AddRange(b);
+    }
+    static void AddMqttU16(List<byte> buf, int v) { buf.Add((byte)(v >> 8)); buf.Add((byte)(v & 0xFF)); }
+
+    // ---------- WebSocket helpers ----------
+    static void WsSend(byte[] data)
+    {
+        try { lock (lockObj) { if (ws != null && ws.State == WebSocketState.Open) ws.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Binary, true, cts.Token).Wait(); } } catch {}
+    }
+    static void WsClose()
+    {
+        try { lock (lockObj) { if (ws != null) { ws.Abort(); ws = null; } } } catch {}
+        try { if (cts != null) { cts.Cancel(); cts = null; } } catch {}
+    }
+    static void WsConnect()
+    {
+        WsClose();
+        cts = new CancellationTokenSource();
+        ws = new ClientWebSocket();
+        string url = brokerUrl + "/room/" + Uri.EscapeDataString(room);
+        ws.ConnectAsync(new Uri(url), cts.Token).Wait();
+        MqttConnect();
+        var buf = new byte[4096];
+        var res = ws.ReceiveAsync(new ArraySegment<byte>(buf), cts.Token).Result;
+        if (res.MessageType == WebSocketMessageType.Binary && buf[0] == 0x20) { /* CONNACK */ }
+        MqttSubscribe();
+    }
+    static void WsReceiveLoop()
+    {
+        var buf = new byte[65536];
+        while (running && ws != null && ws.State == WebSocketState.Open) {
+            try {
+                var res = ws.ReceiveAsync(new ArraySegment<byte>(buf), cts.Token).Result;
+                if (res.MessageType == WebSocketMessageType.Close) break;
+                if (res.MessageType != WebSocketMessageType.Binary) continue;
+                HandleMqtt(buf, res.Count);
+            } catch { break; }
+        }
+        WsClose();
+        NotifyStatus("已断开", false);
+    }
+    static void HandleMqtt(byte[] buf, int len)
+    {
+        if (len < 2) return;
+        byte type = (byte)(buf[0] & 0xF0);
+        if (type == 0x30) {           // PUBLISH
+            int i = 1;
+            int rem = 0, shift = 0;
+            while (true) { byte b = buf[i++]; rem |= (b & 0x7F) << shift; shift += 7; if ((b & 0x80) == 0) break; }
+            int tl = (buf[i] << 8) | buf[i + 1]; i += 2;
+            i += tl;                  // skip topic
+            int payloadStart = i;
+            int payloadLen = len - payloadStart;
+            if (payloadLen < 0) return;
+            string json = Encoding.UTF8.GetString(buf, payloadStart, payloadLen);
+            OnMqttMessage(json);
+        }
+    }
+
+    // ---------- protocol messages (itools-chat compatible) ----------
+    static void OnMqttMessage(string json)
+    {
+        string type = JsonGet(json, "type");
+        if (type == null) return;
+        string rid = JsonGet(json, "id");
+        string rnick = JsonGet(json, "nick");
+        string rts = JsonGet(json, "ts");
+
+        if (type == "join") {
+            if (rid != docId && rnick != null) {
+                users[rid] = rnick; NotifyEvent(rnick + " 加入了"); NotifyUsers();
+                SendJson("{\"type\":\"online\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}");
+            }
+        } else if (type == "leave") {
+            if (users.Remove(rid)) { NotifyEvent((rnick ?? "?") + " 离开了"); NotifyUsers(); }
+        } else if (type == "chat") {
+            if (rid == docId) return;
+            string key = "m" + rnick + ":" + rts;
+            if (recentMsgs.Contains(key)) return;
+            recentMsgs.Add(key); if (recentMsgs.Count > 300) recentMsgs.Clear();
+            string enc = JsonGet(json, "text");
+            string text = Decrypt(enc);
+            if (text == null) return;
+            NotifyMessage(rnick ?? "?", text, rts);
+        } else if (type == "online") {
+            if (rid != docId && rnick != null) { users[rid] = rnick; NotifyUsers(); }
+        } else if (type == "typing") {
+            if (rid != docId && rnick != null) {
+                typingUsers.Add(rnick);
+                NotifyTyping(rnick + " 正在输入…");
+                System.Threading.Timer t = null;
+                t = new System.Threading.Timer(delegate(object s) { typingUsers.Remove(rnick); try { t.Dispose(); } catch {} }, null, 4000, Timeout.Infinite);
+            }
+        }
+    }
+
+    static void SendJson(string json) { MqttPublish(json); }
+    static void SendChat(string text)
+    {
+        string enc = Encrypt(text);
+        string json = "{\"type\":\"chat\",\"nick\":\"" + JsonEsc(nick) + "\",\"text\":\"" + JsonEsc(enc) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}";
+        SendJson(json);
+    }
+    static void SendJoin()
+    {
+        SendJson("{\"type\":\"join\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}");
+    }
+    static void SendLeave()
+    {
+        SendJson("{\"type\":\"leave\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}");
+    }
+
+    // ---------- minimal JSON helpers ----------
+    static string JsonEsc(string s) { return s == null ? "" : s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n"); }
+    static string JsonGet(string json, string key)
+    {
+        string pat = "\"" + key + "\":";
+        int i = json.IndexOf(pat);
+        if (i < 0) return null;
+        i += pat.Length;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length) return null;
+        if (json[i] == '"') {
+            var sb = new StringBuilder();
+            i++;
+            while (i < json.Length) {
+                char c = json[i];
+                if (c == '\\' && i + 1 < json.Length) {
+                    char n = json[i + 1];
+                    if (n == '"' || n == '\\' || n == '/') sb.Append(n);
+                    else if (n == 'n') sb.Append('\n');
+                    else if (n == 'r') sb.Append('\r');
+                    else if (n == 't') sb.Append('\t');
+                    else sb.Append(n);
+                    i += 2;
+                } else if (c == '"') { break; } else { sb.Append(c); i++; }
+            }
+            return sb.ToString();
+        }
+        int start = i;
+        while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '-' || json[i] == '.' || json[i] == 'e' || json[i] == 'E' || json[i] == '+')) i++;
+        return json.Substring(start, i - start);
+    }
+
+    // ---------- UI events (marshalled to UI thread) ----------
+    static Action<string> onEvent;
+    static Action<string, string, string> onMessage;
+    static Action<string> onTyping;
+    static Action onUsers;
+    static Action<string, bool> onStatus;
+    static void NotifyEvent(string s) { if (onEvent != null && uiContext != null) uiContext.Post(delegate(object x) { onEvent(s); }, null); }
+    static void NotifyMessage(string n, string t, string ts) { if (onMessage != null && uiContext != null) uiContext.Post(delegate(object x) { onMessage(n, t, ts); }, null); }
+    static void NotifyTyping(string s) { if (onTyping != null && uiContext != null) uiContext.Post(delegate(object x) { onTyping(s); }, null); }
+    static void NotifyUsers() { if (onUsers != null && uiContext != null) uiContext.Post(delegate(object x) { onUsers(); }, null); }
+    static void NotifyStatus(string s, bool ok) { if (onStatus != null && uiContext != null) uiContext.Post(delegate(object x) { onStatus(s, ok); }, null); }
+
+    // ---------- UI helpers ----------
+    static Font F(float size, FontStyle style) { return new Font("Microsoft YaHei UI", size, style); }
+    static Label MkLabel(string text, Font f, Color fg, int x, int y, int w, int h, ContentAlignment align)
+    {
+        return new Label { Text = text, Font = f, ForeColor = fg, Location = new Point(x, y), Size = new Size(w, h), TextAlign = align, BackColor = Color.Transparent, AutoSize = false };
+    }
+    class FlatBtn : Panel
+    {
+        public Color Bg = C_SURFACE, BgHover = C_SURF2, Fg = C_TEXT;
+        public bool Primary;
+        Label lbl;
+        public FlatBtn()
+        {
+            lbl = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Cursor = Cursors.Hand, BackColor = Color.Transparent };
+            lbl.Click += delegate { OnClick(EventArgs.Empty); };
+            Controls.Add(lbl);
+        }
+        public override string Text { get { return lbl.Text; } set { lbl.Text = value; } }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color bg = Primary ? C_ACCENT : (Bounds.Contains(Parent.PointToClient(Cursor.Position)) ? BgHover : Bg);
+            using (var path = Round(new Rectangle(0, 0, Width - 1, Height - 1), 7))
+            using (var br = new SolidBrush(bg)) g.FillPath(br, path);
+            lbl.ForeColor = Primary ? Color.White : Fg;
+        }
+        protected override void OnMouseEnter(EventArgs e) { Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { Invalidate(); }
+        protected override void OnSizeChanged(EventArgs e) { Invalidate(); }
+    }
+    static GraphicsPath Round(Rectangle r, int rad)
+    {
+        var p = new GraphicsPath();
+        int d = rad * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure(); return p;
+    }
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+
+    // ---------- chat window ----------
+    static Form chatForm;
+    static TextBox inputBox;
+    static ListBox msgList, userList;
+    static TextBox edNick, edRoom, edKey, edBroker;
+    static Label statusLbl, typingLbl, onlineLbl;
+    static FlatBtn joinBtn;
+
+    public static void Run()
+    {
+        uiContext = SynchronizationContext.Current;
+        if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
+        LoadCfg();
+        if (string.IsNullOrEmpty(nick)) nick = "用户_" + Guid.NewGuid().ToString("N").Substring(0, 6);
+        docId = "wg-" + Guid.NewGuid().ToString("N").Substring(0, 10);
+
+        var f = new Form();
+        chatForm = f;
+        f.Text = "WgIme 聊天";
+        f.FormBorderStyle = FormBorderStyle.None; f.AutoScaleMode = AutoScaleMode.None;
+        f.TopMost = true; f.StartPosition = FormStartPosition.CenterScreen;
+        f.ClientSize = new Size(560, 640); f.BackColor = C_BG; f.ForeColor = C_TEXT;
+        f.KeyPreview = true; f.ShowInTaskbar = true;
+        f.Paint += delegate(object s, PaintEventArgs e) {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = Round(new Rectangle(1, 1, f.Width - 3, f.Height - 3), 11))
+            using (var pen = new Pen(C_BORDER, 1)) g.DrawPath(pen, path);
+        };
+
+        var head = new Panel { Location = new Point(0, 0), Size = new Size(560, 38), BackColor = C_HEADER };
+        head.Controls.Add(MkLabel("聊天  (与 itools-chat / 手机网页互通)", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 380, 24, ContentAlignment.MiddleLeft));
+        var close = new FlatBtn { Text = "✕", Font = F(9F, FontStyle.Bold), Location = new Point(516, 6), Size = new Size(34, 26), Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70) };
+        close.Click += delegate { f.Close(); };
+        head.Controls.Add(close);
+        head.MouseDown += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(f.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); } };
+        f.Controls.Add(head);
+
+        int ty = 52;
+        edNick = new TextBox { Location = new Point(16, ty), Size = new Size(110, 30), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = nick };
+        edRoom = new TextBox { Location = new Point(134, ty), Size = new Size(130, 30), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = room };
+        edKey = new TextBox { Location = new Point(272, ty), Size = new Size(100, 30), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = customKey, UseSystemPasswordChar = true };
+        joinBtn = new FlatBtn { Text = "加入", Font = F(9.5F, FontStyle.Bold), Location = new Point(382, ty), Size = new Size(80, 34), Primary = true };
+        joinBtn.Click += delegate { ToggleJoin(); };
+        f.Controls.Add(edNick); f.Controls.Add(edRoom); f.Controls.Add(edKey); f.Controls.Add(joinBtn);
+        f.Controls.Add(MkLabel("昵称", F(8F, FontStyle.Regular), C_SUB, 16, ty - 16, 60, 14, ContentAlignment.MiddleLeft));
+        f.Controls.Add(MkLabel("房间名", F(8F, FontStyle.Regular), C_SUB, 134, ty - 16, 80, 14, ContentAlignment.MiddleLeft));
+        f.Controls.Add(MkLabel("密钥(空=房间名)", F(8F, FontStyle.Regular), C_SUB, 272, ty - 16, 130, 14, ContentAlignment.MiddleLeft));
+
+        edBroker = new TextBox { Location = new Point(16, ty + 42), Size = new Size(250, 28), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = brokerUrl };
+        f.Controls.Add(MkLabel("Broker", F(8F, FontStyle.Regular), C_SUB, 16, ty + 28, 60, 14, ContentAlignment.MiddleLeft));
+        f.Controls.Add(edBroker);
+
+        statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, ty + 74, 220, 18, ContentAlignment.MiddleLeft);
+        f.Controls.Add(statusLbl);
+        onlineLbl = MkLabel("在线 0 人", F(8.5F, FontStyle.Bold), C_GREEN, 380, ty + 74, 90, 18, ContentAlignment.MiddleLeft);
+        f.Controls.Add(onlineLbl);
+        typingLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_SUB, 16, ty + 92, 300, 16, ContentAlignment.MiddleLeft);
+        f.Controls.Add(typingLbl);
+
+        f.Controls.Add(MkLabel("在线", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 92, 60, 16, ContentAlignment.MiddleLeft));
+        userList = new ListBox { Location = new Point(382, ty + 112), Size = new Size(162, 396), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        f.Controls.Add(userList);
+
+        msgList = new ListBox { Location = new Point(16, ty + 112), Size = new Size(358, 396), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        f.Controls.Add(msgList);
+
+        inputBox = new TextBox { Location = new Point(16, ty + 516), Size = new Size(358, 32), Font = F(10F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None };
+        inputBox.KeyDown += delegate(object s, KeyEventArgs e) {
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendCurrent(); }
+            else if (running && ws != null && ws.State == WebSocketState.Open) { NotifyTypingSelf(); }
+        };
+        f.Controls.Add(inputBox);
+        var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(382, ty + 516), Size = new Size(80, 32), Primary = true };
+        send.Click += delegate { SendCurrent(); };
+        f.Controls.Add(send);
+
+        onEvent = delegate(string s) { msgList.Items.Add("· " + s + "  " + DateTime.Now.ToString("HH:mm")); msgList.TopIndex = msgList.Items.Count - 1; };
+        onMessage = delegate(string n, string t, string ts) {
+            string tm = ts != null ? DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(ts)).LocalDateTime.ToString("HH:mm") : DateTime.Now.ToString("HH:mm");
+            msgList.Items.Add(n + "  " + tm + "  " + t);
+            msgList.TopIndex = msgList.Items.Count - 1;
+            if (!f.Focused) FlashTitle(f);
+        };
+        onTyping = delegate(string s) { typingLbl.Text = s; };
+        onUsers = delegate {
+            userList.Items.Clear();
+            foreach (var kv in users) userList.Items.Add(kv.Value);
+            onlineLbl.Text = "在线 " + users.Count + " 人";
+        };
+        onStatus = delegate(string s, bool ok) {
+            statusLbl.Text = s;
+            statusLbl.ForeColor = ok ? C_GREEN : C_SUB;
+        };
+
+        f.FormClosed += delegate { LeaveRoom(); SaveCfg(); };
+        f.Shown += delegate { inputBox.Focus(); };
+        f.Show();
+    }
+
+    static void FlashTitle(Form f) { try { f.Text = "● 新消息 - " + f.Text.Replace("● 新消息 - ", ""); } catch {} }
+
+    static DateTime lastTypingNotify = DateTime.MinValue;
+    static void NotifyTypingSelf()
+    {
+        if ((DateTime.Now - lastTypingNotify).TotalMilliseconds < 2000) return;
+        lastTypingNotify = DateTime.Now;
+        try { SendJson("{\"type\":\"typing\",\"nick\":\"" + JsonEsc(nick) + "\",\"id\":\"" + JsonEsc(docId) + "\"}"); } catch {}
+    }
+
+    static void ToggleJoin()
+    {
+        if (running) { LeaveRoom(); } else { JoinRoom(); }
+    }
+    static void JoinRoom()
+    {
+        nick = edNick.Text.Trim(); if (nick.Length == 0) nick = "用户";
+        room = edRoom.Text.Trim(); if (room.Length == 0) room = "大厅";
+        customKey = edKey.Text.Trim();
+        brokerUrl = edBroker.Text.Trim(); if (brokerUrl.Length == 0) brokerUrl = "wss://chat.seee.uno";
+        SaveCfg();
+        try {
+            statusLbl.Text = "连接中…"; statusLbl.ForeColor = C_SUB;
+            WsConnect();
+            running = true;
+            SendJoin();
+            edNick.Enabled = false; edRoom.Enabled = false; edKey.Enabled = false; edBroker.Enabled = false;
+            joinBtn.Text = "离开";
+            statusLbl.Text = "已连接 " + brokerUrl;
+            statusLbl.ForeColor = C_GREEN;
+            msgList.Items.Add("· 已加入房间 [" + room + "]");
+            var rt = new Thread(WsReceiveLoop); rt.IsBackground = true; rt.Start();
+            var pt = new System.Threading.Timer(delegate(object s) { try { MqttPing(); } catch {} }, null, 30000, 30000);
+            _pingTimer = pt;
+        } catch (Exception ex) {
+            statusLbl.Text = "连接失败: " + ex.Message;
+            statusLbl.ForeColor = Color.FromArgb(255, 200, 60, 70);
+        }
+    }
+    static System.Threading.Timer _pingTimer;
+    static void LeaveRoom()
+    {
+        running = false;
+        try { if (_pingTimer != null) { _pingTimer.Dispose(); _pingTimer = null; } } catch {}
+        try { SendLeave(); } catch {}
+        WsClose();
+        users.Clear(); typingUsers.Clear();
+        edNick.Enabled = true; edRoom.Enabled = true; edKey.Enabled = true; edBroker.Enabled = true;
+        joinBtn.Text = "加入";
+        statusLbl.Text = "未连接"; statusLbl.ForeColor = C_SUB;
+        onlineLbl.Text = "在线 0 人"; typingLbl.Text = "";
+        UpdateUsers();
+    }
+    static void SendCurrent()
+    {
+        string t = inputBox.Text.Trim();
+        if (t.Length == 0 || !running) return;
+        SendChat(t);
+        inputBox.Text = "";
+        msgList.Items.Add(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + t);
+        msgList.TopIndex = msgList.Items.Count - 1;
+    }
+    static void UpdateUsers()
+    {
+        if (uiContext == null) return;
+        uiContext.Post(delegate(object x) {
+            userList.Items.Clear();
+            foreach (var kv in users) userList.Items.Add(kv.Value);
+            onlineLbl.Text = "在线 " + users.Count + " 人";
+        }, null);
+    }
+
+    // ---------- persisted ----------
+    static void LoadCfg()
+    {
+        try {
+            if (!File.Exists(CfgPath())) return;
+            foreach (string raw in File.ReadAllLines(CfgPath(), Encoding.UTF8)) {
+                string t = raw.Trim(); int eq = t.IndexOf('='); if (eq < 1) continue;
+                string k = t.Substring(0, eq).Trim().ToLower(), v = t.Substring(eq + 1).Trim();
+                if (k == "nick") nick = v;
+                else if (k == "room") room = v;
+                else if (k == "key") customKey = v;
+                else if (k == "broker") brokerUrl = v;
+            }
+        } catch {}
+    }
+    static void SaveCfg()
+    {
+        try {
+            Directory.CreateDirectory(CfgDir());
+            File.WriteAllText(CfgPath(), "nick = " + nick + "\r\nroom = " + room + "\r\nkey = " + customKey + "\r\nbroker = " + brokerUrl + "\r\n", new UTF8Encoding(false));
+        } catch {}
+    }
+}
+
+'@
 
 try {
     $seedDir = Join-Path $env:LOCALAPPDATA 'wgime'
@@ -146097,6 +146889,8 @@ try {
         if (-not (Test-Path $kf)) { [IO.File]::WriteAllText($kf, $seedClock, $utf8n) }
         $jf = Join-Path $pdir 'calc.txt'
         if (-not (Test-Path $jf)) { [IO.File]::WriteAllText($jf, $seedCalc, $utf8n) }
+        $cf2 = Join-Path $pdir 'chat.txt'
+        if (-not (Test-Path $cf2)) { [IO.File]::WriteAllText($cf2, $seedChat, $utf8n) }
         try { [IO.Directory]::CreateDirectory($seedDir) | Out-Null } catch {}
         [IO.File]::WriteAllText($seedMark, (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $utf8n)
         WgLog "first-run seeding done (tools.txt + plugins samples)"
