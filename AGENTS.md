@@ -73,6 +73,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1  
 - **WGB4 缓存格式**：批量块读取 + 并行 ToMap + `CompressionLevel.Fastest`。
 - **词频保存后台化**：`SaveFreq` 走线程池（`freqSaving` 防堆积），退出时 `SaveFreqSync` 同步落盘。内存上限：FreqM/LastPickM 各 3 万、Freq 9 万、Assoc key 2 万。
 - **启动计时日志**：`startup: LoadFreq+BuildDicts=XXXms ApplySwap=YYYms`。
+- **固化码表预生成缓存**：`BakeTables` 勾选"删除源文件"时，`PrebuildCacheAfterBake` 用 bake 后的输入重算 md5 并复用内存字典（已含合并结果）直接写 `wgime.mb`，下次启动命中缓存，跳过 ~10s 冷重建。注意它对新码表 `TrimEnd` 末尾换行，与 `Get-DictSeg` 读数据块时的 `TrimEnd` 字节级一致，否则 md5 对不上。
 
 ## 7. Git / 分支
 
@@ -83,5 +84,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1  
 
 ## 8. 当前状态速览
 
-- 最近工作：码表数据块化（`###WGIME_DATA###`，消除启动时 PS 解析大 here-string）、固化码表写数据块、词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、chat 插件（MQTT）、clock 多提醒、文档同步。
-- 待用户验证：词库加载速度（缓存命中路径）、chat 插件与手机互通、固化码表后启动速度。
+- 最近工作：码表数据块化（`###WGIME_DATA###`，消除启动时 PS 解析大 here-string）、固化码表写数据块 + 预生成 `.mb` 缓存（下次启动跳过 ~10s 冷重建）、词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、chat 插件（MQTT）、clock 多提醒、文档同步。
+- 待用户验证：词库加载速度（缓存命中路径）、chat 插件与手机互通、固化码表后启动速度（应已降到缓存命中级别）。

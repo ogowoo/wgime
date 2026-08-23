@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-24 (固化码表后预生成 `.mb` 缓存)
+
+### 固化后下次启动直接命中缓存(消除 ~10s 冷重建)
+
+- 固化码表勾选"完成后删除 txt/import"时,`BakeTables` 在写回数据块并删除源文件后,新增 `PrebuildCacheAfterBake`:用 bake 后的输入计算缓存 md5,并复用当前内存字典(已含合并结果)与排序数组,直接 `SaveMb` 写 `wgime.mb`
+- 下次启动 `BuildDicts` 用相同输入算出相同 md5,命中缓存,跳过 `ParseDict` + `BuildAcro` + `BuildReverse` + `BuildSorted` + Deflate 冷重建(实测冷重建约 9.8s,缓存命中约 1.6s)
+- 关键一致性:`PrebuildCacheAfterBake` 对 bake 后的码表 `TrimEnd` 末尾换行,与 `Get-DictSeg` 读取数据块时 `TrimEnd` 的行为字节级一致,确保 md5 匹配
+
+---
+
 ## 2026-08-24 (码表数据块化)
 
 ### 码表从 here-string 移到 `###WGIME_DATA###` 数据块(固化码表后启动更快)
