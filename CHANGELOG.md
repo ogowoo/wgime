@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-24 (修复:bake 后词频/候选顺序变动)
+
+- **根因**:bake 用 `SerializeDict` 按 code 排序重写内置表,改变了字典的键**插入顺序**;而 `BuildCharPy`/`BuildAcro`/`BuildCharWb`/`BuildReverse` 等遍历字典构建索引,结果依赖插入顺序 → bake 前后多音字简拼 key、同频候选 tie-break、五笔反查码都可能不一致
+- **修复**:这些方法改为按 code 排序遍历(`OrderBy(k => k.Key, StringComparer.Ordinal)`),消除对字典插入顺序的依赖,bake 与未 bake 行为一致
+- **影响面**:`BuildCharPy`(单字拼音表,决定简拼 key)、`BuildAcro`(简拼表)、`BuildCharWb`(单字五笔码,决定用户词五笔码)、`BuildReverse`(英汉反向)、`AddWubiWildcard`(五笔 z 通配)、`BuildRevWb`(反查五笔)
+- 顺带:`build-wgtray.ps1` 切片行号 +6 对齐
+
+---
+
 ## 2026-08-24 (新增 sync-dist.ps1 一键刷分发目录)
 
 - 新增 `sync-dist.ps1`：把 config/tools/插件/码表/文档/wgime.bat 从 root 一键同步到 wg-all + release，替代手工 Copy-Item

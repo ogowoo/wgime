@@ -84,20 +84,20 @@ $parts.Add($glue)
 
 # ---- 4) verbatim reusable slices (only display-name renames) ----
 $sliceDefs = @(
-    @{ A = 1514; B = 1522; Anchor = 'static void FixLegacyConfigIfBroken' },
-    @{ A = 1868; B = 1923; Anchor = 'void LaunchApp(string code)' },
-    @{ A = 1932; B = 1937; Anchor = 'class ToolAction' },
-    @{ A = 1938; B = 2223; Anchor = 'static List<string> ToolToks(string line)' },
-    @{ A = 2225; B = 2565; Anchor = 'class ToolsForm : Form' },
-    @{ A = 2567; B = 2884; Anchor = '// ---------- embedded network tools' },
-    @{ A = 2885; B = 3373; Anchor = 'class NetToolsForm : Form' },
-    @{ A = 3375; B = 3394; Anchor = '// ---------- embedded clipboard history' },
-    @{ A = 3395; B = 3456; Anchor = 'class ClipForm : Form' },
-    @{ A = 3458; B = 3469; Anchor = '// ---------- embedded sticky note' },
-    @{ A = 3470; B = 3814; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
-    @{ A = 3816; B = 3840; Anchor = '// ---------- embedded color picker' },
-    @{ A = 3842; B = 3914; Anchor = 'class ColorForm : Form' },
-    @{ A = 3916; B = 4130; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
+    @{ A = 1520; B = 1528; Anchor = 'static void FixLegacyConfigIfBroken' },
+    @{ A = 1874; B = 1929; Anchor = 'void LaunchApp(string code)' },
+    @{ A = 1938; B = 1943; Anchor = 'class ToolAction' },
+    @{ A = 1944; B = 2229; Anchor = 'static List<string> ToolToks(string line)' },
+    @{ A = 2231; B = 2571; Anchor = 'class ToolsForm : Form' },
+    @{ A = 2573; B = 2890; Anchor = '// ---------- embedded network tools' },
+    @{ A = 2891; B = 3379; Anchor = 'class NetToolsForm : Form' },
+    @{ A = 3381; B = 3400; Anchor = '// ---------- embedded clipboard history' },
+    @{ A = 3401; B = 3462; Anchor = 'class ClipForm : Form' },
+    @{ A = 3464; B = 3475; Anchor = '// ---------- embedded sticky note' },
+    @{ A = 3476; B = 3820; Anchor = 'class NoteForm : Form' },   # NoteForm nests NTChip + SBPanel; keep the whole block
+    @{ A = 3822; B = 3846; Anchor = '// ---------- embedded color picker' },
+    @{ A = 3848; B = 3920; Anchor = 'class ColorForm : Form' },
+    @{ A = 3922; B = 4136; Anchor = '// ---------- plugins: plugins' }   # PluginMgrForm now lives in wgtray_glue.cs.txt (with the Run button)
 )
 foreach ($d in $sliceDefs) {
     $s = Slice $d.A $d.B $d.Anchor

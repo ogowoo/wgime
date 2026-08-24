@@ -44,6 +44,7 @@ T 'ps1 parses without syntax errors' ($errors.Count -eq 0) (($errors | ForEach-O
 $errLog = Join-Path $env:TEMP 'WgIme_error.log'
 $mbCache = Join-Path $env:LOCALAPPDATA 'wgime\wgime.mb'
 Remove-Item $errLog, $mbCache -Force -EA SilentlyContinue   # force a genuine dict rebuild from the trailer
+Remove-Item (Join-Path $dllDir 'WgIme.*.dll') -Force -EA SilentlyContinue   # clear stale DLLs (bat thin DLL + ps1 full DLL share this dir; -First 1 would grab the wrong one)
 $dllDir = Join-Path $env:LOCALAPPDATA 'wgime'
 Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoLogo','-STA','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$ps1Path | Out-Null
 Start-Sleep -Seconds 40
