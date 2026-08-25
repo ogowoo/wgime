@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-08-25 (chat 插件重写:修复致命兼容性缺陷,实现 M1+M2 路线)
+
+### 修复的致命缺陷(此前与 PC/Android 双向都不互通)
+
+- **relay 改发裸 JSON 文本帧**:旧版在 Cloudflare relay 上发 MQTT 二进制帧,而 PC/Android 走 relay 时发的是裸 JSON 文本帧——双向不互通的根因。现在按 broker 地址自动识别:`chat.seee.uno` 走裸 JSON 文本帧,其余走 MQTT over WebSocket
+- **连接不再卡死 UI**:旧版在 UI 线程同步等 CONNACK(relay 永不发送,窗体冻结)。现在连接/接收全部在后台线程,UI 更新走 SynchronizationContext;连接超时 10s(WhenAny 兜底,.NET 4.x 的 token 取消不及时)
+
+### MQTT 模式(真 broker,新增)
+
+- broker URL 规则修正为 `wss://<host>:<port>/mqtt`(旧版错误拼接 `/room/<房间>`)
+- **必须带 `mqtt` 子协议**(`ws.Options.AddSubProtocol("mqtt")`),否则 EMQX 返回 400、Mosquitto 断连——实测验证
+- 帧解析健壮性:WebSocket 分片按 EndOfMessage 重组、一帧多包循环解析、CONNACK 驱动订阅、SUBACK/PINGRESP 忽略、QoS1/2 PUBLISH 跳过 packet id、SUBSCRIBE packet id 自增
+- **auto 自动兜底**:Broker 填 `auto`(默认)按 PC 端顺序尝试 Cloudflare→HiveMQ-TLS→EMQX→Mosquitto→HiveMQ,记住上次成功项(`lastbroker` 持久化)
+- **Active Rooms 注册表**:MQTT 模式订阅 `itools/registry/rooms`,10s room-beacon 心跳、25s 过期,右栏新增"活跃房间"列表,双击即切换房间
+- 断线自动重连 6s×3,状态栏实时反馈
+
+### 协议对齐
+
+- chat 消息补 `"enc":true`、typing 补 `ts`;解密失败显示 `[encrypted]`(与 PC 端一致)
+- 每次加入重新生成 docId(兼作 MQTT clientId,与 PC 端每次 join 重建一致)
+
+### 验证
+
+- 新增 `tests\chat-protocol-smoke.ps1`(需联网,PS 5.1):relay 裸 JSON 文本帧扇出+发送者无回显;EMQX 实机 CONNECT/CONNACK、SUBSCRIBE/SUBACK、PUBLISH 回环全通过
+- 注意:TLS 需 1.2+(插件启动时 `ServicePointManager.SecurityProtocol |= Tls11|Tls12` 兜底)
+
+### 仍未实现(后续路线 M3+)
+
+- quote 引用、文件/图片传输、LAN-only 模式(见 `docs\WGIME_CHAT_技术文档.md` §8.4)
+
+---
+
 ## 2026-08-24 (修复:bake 后词频/候选顺序变动)
 
 - **根因**:bake 用 `SerializeDict` 按 code 排序重写内置表,改变了字典的键**插入顺序**;而 `BuildCharPy`/`BuildAcro`/`BuildCharWb`/`BuildReverse` 等遍历字典构建索引,结果依赖插入顺序 → bake 前后多音字简拼 key、同频候选 tie-break、五笔反查码都可能不一致

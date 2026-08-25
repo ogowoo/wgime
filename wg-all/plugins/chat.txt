@@ -1,11 +1,15 @@
 ; ============================================================
-;  WgIme C# 插件: 聊天 (与 itools-chat 互通, 手机/网页兼容)
-;  输入 lt (或 chat) 选 ▶聊天: MQTT over WebSocket, 与 itools-chat (chat.bat) 互通
-;  默认 broker wss://chat.seee.uno, 消息 AES-256-CBC 加密 (房间名派生密钥)
+;  WgIme C# 插件: 聊天 (与 itools-chat 互通, PC/Android/网页兼容)
+;  输入 lt 选 ▶聊天。双传输模式（按 Broker 地址自动识别）:
+;    - Cloudflare 中继 wss://chat.seee.uno : WebSocket 裸 JSON 文本帧
+;    - 公共 MQTT broker (HiveMQ/EMQX/Mosquitto): MQTT 3.1.1 over WebSocket, 路径 /mqtt
+;  Broker 填 auto 时按 PC 端顺序自动兜底, 并记住上次成功的服务器。
+;  消息 AES-256-CBC 加密 (SHA256(房间:密钥) 派生), MQTT 模式下支持活跃房间注册表。
+;  连接/接收全部在后台线程, 断线自动重连 6s x 3。
 ; ============================================================
 code = lt
 name = 聊天
-desc = 局域网/在线聊天: 与 itools-chat (chat.bat) 和手机网页互通, 加密消息
+desc = 在线聊天: 与 itools-chat (PC/Android) 互通, 中继/MQTT 双模式, AES 加密
 
 [csharp]
 using System;
@@ -32,24 +36,55 @@ public class ChatPlugin
     static Color C_ACCENT  = Color.FromArgb(255, 0, 122, 255);
     static Color C_GREEN   = Color.FromArgb(255, 52, 199, 89);
 
-    // ---------- protocol (itools-chat compatible) ----------
+    // ---------- config ----------
     static string CfgDir() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "wgime"); }
     static string CfgPath() { return Path.Combine(CfgDir(), "chat.cfg"); }
 
     static string nick = "";
     static string room = "大厅";
     static string docId = "";
-    static string customKey = "";   // optional custom key (default: room name)
-    static string brokerUrl = "wss://chat.seee.uno";
+    static string customKey = "";        // optional custom key (default: room name)
+    static string brokerSel = "auto";    // UI 里选的: "auto" 或具体 URL
+    static string brokerUrl = "wss://chat.seee.uno";  // 本次实际使用的 URL
+    static string lastBroker = "";       // auto 模式上次成功的 URL
 
+    // PC 端 broker 表 (itools-chat Chat.bat), auto 模式按此顺序兜底
+    static readonly string[] BrokerUrls = new string[] {
+        "wss://chat.seee.uno",              // Cloudflare relay (裸 JSON)
+        "wss://broker.hivemq.com:8884",     // MQTT TLS
+        "wss://broker.emqx.io:8084",        // MQTT TLS
+        "wss://test.mosquitto.org:8081",    // MQTT TLS
+        "ws://broker.hivemq.com:8000"       // MQTT plain
+    };
+
+    // ---------- connection state ----------
     static ClientWebSocket ws;
     static CancellationTokenSource cts;
     static readonly object lockObj = new object();
     static SynchronizationContext uiContext;
-    static bool running = false;
+    static volatile bool running = false;
+    static volatile bool connecting = false;
+    static volatile bool manualLeave = true;
+    static volatile bool relayMode = true;
+    static int reconnectTries = 0;
+    static ManualResetEvent connackEvent;
+    static int mqttPktId = 0;
     static Dictionary<string, string> users = new Dictionary<string, string>();   // id -> nick
     static HashSet<string> recentMsgs = new HashSet<string>();
     static HashSet<string> typingUsers = new HashSet<string>();
+
+    static bool IsAuto(string s) { return s == null || s.Length == 0 || s == "auto"; }
+    static bool IsRelay(string url) { try { return new Uri(url).Host == "chat.seee.uno"; } catch { return false; } }
+    static string MqttUrl(string url)
+    {
+        try {
+            var u = new Uri(url);
+            if (u.AbsolutePath == "" || u.AbsolutePath == "/") return url.TrimEnd('/') + "/mqtt";
+        } catch {}
+        return url;
+    }
+    static string Topic() { return "itools/chat/" + room; }
+    const string REGISTRY_TOPIC = "itools/registry/rooms";
 
     // ---------- crypto (compatible with chat.bat: SHA256 key, AES-256-CBC, HMAC) ----------
     static byte[] DeriveKey()
@@ -106,37 +141,35 @@ public class ChatPlugin
         return b;
     }
 
-    // ---------- MQTT over WebSocket (minimal: CONNECT/SUBSCRIBE/PUBLISH/PINGREQ/DISCONNECT) ----------
-    static string Topic() { return "itools/chat/" + room; }
-
+    // ---------- MQTT frame builders (CONNECT/SUBSCRIBE/PUBLISH/PINGREQ/DISCONNECT) ----------
     static void MqttConnect()
     {
         var payload = new List<byte>();
         AddMqttString(payload, "MQTT");                        // protocol name
         payload.Add(4);                                        // protocol level 4 (MQTT 3.1.1)
         payload.Add(2);                                        // clean session
-        AddMqttU16(payload, 60);                               // keepalive 60s
+        AddMqttU16(payload, 30);                               // keepalive 30s
         AddMqttString(payload, docId);                         // client id
-        byte[] connect = BuildMqtt(0x10, payload.ToArray());
-        WsSend(connect);
+        WsSend(BuildMqtt(0x10, payload.ToArray()), WebSocketMessageType.Binary);
     }
-    static void MqttSubscribe()
+    static void MqttSubscribe(string topic)
     {
+        mqttPktId = (mqttPktId % 60000) + 1;
         var payload = new List<byte>();
-        AddMqttU16(payload, 1);                                // packet id
-        AddMqttString(payload, Topic());                       // topic
+        AddMqttU16(payload, mqttPktId);                        // packet id
+        AddMqttString(payload, topic);
         payload.Add(0);                                        // qos 0
-        WsSend(BuildMqtt(0x82, payload.ToArray()));
+        WsSend(BuildMqtt(0x82, payload.ToArray()), WebSocketMessageType.Binary);
     }
-    static void MqttPublish(string json)
+    static void MqttPublish(string topic, string json)
     {
         var payload = new List<byte>();
-        AddMqttString(payload, Topic());
+        AddMqttString(payload, topic);
         payload.AddRange(Encoding.UTF8.GetBytes(json));
-        WsSend(BuildMqtt(0x30, payload.ToArray()));
+        WsSend(BuildMqtt(0x30, payload.ToArray()), WebSocketMessageType.Binary);
     }
-    static void MqttPing() { WsSend(new byte[] { 0xC0, 0x00 }); }
-    static void MqttDisconnect() { try { WsSend(new byte[] { 0xE0, 0x00 }); } catch {} }
+    static void MqttPing() { WsSend(new byte[] { 0xC0, 0x00 }, WebSocketMessageType.Binary); }
+    static void MqttDisconnect() { try { if (!relayMode) WsSend(new byte[] { 0xE0, 0x00 }, WebSocketMessageType.Binary); } catch {} }
 
     static byte[] BuildMqtt(byte type, byte[] payload)
     {
@@ -161,62 +194,192 @@ public class ChatPlugin
     static void AddMqttU16(List<byte> buf, int v) { buf.Add((byte)(v >> 8)); buf.Add((byte)(v & 0xFF)); }
 
     // ---------- WebSocket helpers ----------
-    static void WsSend(byte[] data)
+    static void WsSend(byte[] data, WebSocketMessageType mt)
     {
-        try { lock (lockObj) { if (ws != null && ws.State == WebSocketState.Open) ws.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Binary, true, cts.Token).Wait(); } } catch {}
+        try { lock (lockObj) { if (ws != null && ws.State == WebSocketState.Open && cts != null) ws.SendAsync(new ArraySegment<byte>(data), mt, true, cts.Token).Wait(); } } catch {}
     }
+    static void WsSendText(string s) { WsSend(Encoding.UTF8.GetBytes(s), WebSocketMessageType.Text); }
     static void WsClose()
     {
         try { lock (lockObj) { if (ws != null) { ws.Abort(); ws = null; } } } catch {}
         try { if (cts != null) { cts.Cancel(); cts = null; } } catch {}
     }
-    static void WsConnect()
+
+    // ---------- connect / disconnect (全部在后台线程) ----------
+    static void ConnectWorker()
     {
-        WsClose();
-        cts = new CancellationTokenSource();
-        ws = new ClientWebSocket();
-        string url = brokerUrl + "/room/" + Uri.EscapeDataString(room);
-        ws.ConnectAsync(new Uri(url), cts.Token).Wait();
-        MqttConnect();
-        var buf = new byte[4096];
-        var res = ws.ReceiveAsync(new ArraySegment<byte>(buf), cts.Token).Result;
-        if (res.MessageType == WebSocketMessageType.Binary && buf[0] == 0x20) { /* CONNACK */ }
-        MqttSubscribe();
-    }
-    static void WsReceiveLoop()
-    {
-        var buf = new byte[65536];
-        while (running && ws != null && ws.State == WebSocketState.Open) {
-            try {
-                var res = ws.ReceiveAsync(new ArraySegment<byte>(buf), cts.Token).Result;
-                if (res.MessageType == WebSocketMessageType.Close) break;
-                if (res.MessageType != WebSocketMessageType.Binary) continue;
-                HandleMqtt(buf, res.Count);
-            } catch { break; }
+        bool auto = IsAuto(brokerSel);
+        string[] tryUrls;
+        if (auto) {
+            var list = new List<string>();
+            if (lastBroker.Length > 0) list.Add(lastBroker);
+            foreach (string u in BrokerUrls) if (!list.Contains(u)) list.Add(u);
+            tryUrls = list.ToArray();
+        } else {
+            tryUrls = new string[] { brokerSel };
         }
-        WsClose();
-        NotifyStatus("已断开", false);
+        foreach (string url in tryUrls) {
+            if (manualLeave) { connecting = false; return; }
+            brokerUrl = url;
+            relayMode = IsRelay(url);
+            NotifyStatus("连接中 " + url + " …", false);
+            try {
+                WsClose();
+                cts = new CancellationTokenSource();
+                ws = new ClientWebSocket();
+                ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(25);
+                if (!relayMode) ws.Options.AddSubProtocol("mqtt");    // EMQX/Mosquitto 要求 mqtt 子协议
+                string full = relayMode ? url.TrimEnd('/') + "/room/" + Uri.EscapeDataString(room) : MqttUrl(url);
+                // 10s 连接超时: WhenAny 兜底 (.NET 4.x 的 token 取消不一定及时)
+                var connTask = ws.ConnectAsync(new Uri(full), cts.Token);
+                if (System.Threading.Tasks.Task.WhenAny(connTask, System.Threading.Tasks.Task.Delay(10000)).Result != connTask) {
+                    try { ws.Abort(); } catch {}
+                    throw new Exception("connect timeout");
+                }
+                connTask.Wait();
+                if (relayMode) {
+                    JoinComplete();
+                    ReceiveLoop();                                     // 阻塞到断线, 内部走 OnDisconnected
+                } else {
+                    connackEvent = new ManualResetEvent(false);
+                    MqttConnect();
+                    var rt = new Thread(ReceiveLoop); rt.IsBackground = true; rt.Start();
+                    if (!connackEvent.WaitOne(8000)) throw new Exception("CONNACK timeout");
+                    // CONNACK 里已 MqttSubscribe + JoinComplete
+                }
+                connecting = false;
+                return;
+            } catch (Exception ex) {
+                WsClose();
+                if (!auto) {
+                    string m = ex is AggregateException && ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+                    NotifyStatus("连接失败: " + m, false);
+                    UiJoinFailed();
+                    return;
+                }
+                NotifyStatus(url + " 失败, 尝试下一个…", false);
+            }
+        }
+        connecting = false;
+        if (!manualLeave) { NotifyStatus("所有服务器均连接失败", false); UiJoinFailed(); }
     }
-    static void HandleMqtt(byte[] buf, int len)
+
+    static void OnConnack()
     {
-        if (len < 2) return;
-        byte type = (byte)(buf[0] & 0xF0);
-        if (type == 0x30) {           // PUBLISH
-            int i = 1;
-            int rem = 0, shift = 0;
-            while (true) { byte b = buf[i++]; rem |= (b & 0x7F) << shift; shift += 7; if ((b & 0x80) == 0) break; }
-            int tl = (buf[i] << 8) | buf[i + 1]; i += 2;
-            i += tl;                  // skip topic
-            int payloadStart = i;
-            int payloadLen = len - payloadStart;
-            if (payloadLen < 0) return;
-            string json = Encoding.UTF8.GetString(buf, payloadStart, payloadLen);
-            OnMqttMessage(json);
+        try { if (connackEvent != null) connackEvent.Set(); } catch {}
+        MqttSubscribe(Topic());
+        MqttSubscribe(REGISTRY_TOPIC);
+        JoinComplete();
+    }
+
+    static void JoinComplete()
+    {
+        running = true;
+        connecting = false;
+        reconnectTries = 0;
+        if (IsAuto(brokerSel) && brokerUrl != lastBroker) { lastBroker = brokerUrl; SaveCfg(); }
+        SendJoin();
+        NotifyStatus("已连接 " + (relayMode ? "[中继] " : "[MQTT] ") + brokerUrl, true);
+        NotifyEvent("已加入房间 [" + room + "] (" + (relayMode ? "Cloudflare 中继" : "MQTT") + ")");
+        StartTimers();
+    }
+
+    static void ReceiveLoop()
+    {
+        var ms = new MemoryStream();
+        var buf = new byte[65536];
+        while (true) {
+            WebSocketReceiveResult res;
+            try {
+                var w = ws; var c = cts;
+                if (w == null || c == null || w.State != WebSocketState.Open) break;
+                res = w.ReceiveAsync(new ArraySegment<byte>(buf), c.Token).Result;
+            } catch { break; }
+            if (res.MessageType == WebSocketMessageType.Close) break;
+            try { ms.Write(buf, 0, res.Count); } catch { break; }
+            if (!res.EndOfMessage) continue;                          // 拼 WS 分片
+            byte[] frame = ms.ToArray(); ms.SetLength(0);
+            try {
+                if (relayMode) {
+                    if (res.MessageType == WebSocketMessageType.Text)
+                        OnJsonMessage(Encoding.UTF8.GetString(frame));   // relay: 裸 JSON 文本帧
+                } else {
+                    if (res.MessageType == WebSocketMessageType.Binary)
+                        HandleMqttPackets(frame);
+                }
+            } catch {}
+        }
+        OnDisconnected();
+    }
+
+    static void HandleMqttPackets(byte[] frame)
+    {
+        int pos = 0;
+        while (pos + 2 <= frame.Length) {
+            byte head = frame[pos];
+            int type = head & 0xF0;
+            int i = pos + 1, rem = 0, shift = 0, guard = 0;
+            bool trunc = false;
+            while (true) {
+                if (i >= frame.Length || ++guard > 4) { trunc = true; break; }
+                byte b = frame[i++];
+                rem |= (b & 0x7F) << shift; shift += 7;
+                if ((b & 0x80) == 0) break;
+            }
+            if (trunc || i + rem > frame.Length) return;              // 不完整帧, 丢弃
+            int bodyStart = i;
+            if (type == 0x20) {                                       // CONNACK
+                if (rem >= 2 && frame[i + 1] == 0) OnConnack();
+            } else if (type == 0x30 || type == 0x32 || type == 0x34) { // PUBLISH qos 0/1/2
+                int qos = (head >> 1) & 0x3;
+                if (rem >= 2) {
+                    int tl = (frame[i] << 8) | frame[i + 1];
+                    if (2 + tl <= rem) {
+                        string topic = Encoding.UTF8.GetString(frame, i + 2, tl);
+                        int p = i + 2 + tl;
+                        if (qos > 0) p += 2;                          // 跳过 packet id
+                        int plen = i + rem - p;
+                        if (plen >= 0) DispatchJson(topic, Encoding.UTF8.GetString(frame, p, plen));
+                    }
+                }
+            }
+            // SUBACK(0x90) / PINGRESP(0xD0) / 其他: 忽略
+            pos = bodyStart + rem;
+        }
+    }
+
+    static void DispatchJson(string topic, string json)
+    {
+        if (topic == REGISTRY_TOPIC) { OnRegistryMessage(json); return; }
+        OnJsonMessage(json);
+    }
+
+    static void OnDisconnected()
+    {
+        bool wasRunning = running;
+        running = false;
+        connecting = false;
+        StopTimers();
+        WsClose();
+        if (manualLeave) return;
+        if (!wasRunning) { NotifyStatus("已断开", false); return; }
+        NotifyEvent("连接已断开");
+        if (reconnectTries < 3) {
+            reconnectTries++;
+            NotifyStatus("已断开, 6 秒后重连 (" + reconnectTries + "/3)…", false);
+            var t = new Thread(delegate() {
+                Thread.Sleep(6000);
+                if (!manualLeave) { connecting = true; ConnectWorker(); }
+            });
+            t.IsBackground = true; t.Start();
+        } else {
+            NotifyStatus("重连失败, 已断开", false);
+            UiJoinFailed();
         }
     }
 
     // ---------- protocol messages (itools-chat compatible) ----------
-    static void OnMqttMessage(string json)
+    static void OnJsonMessage(string json)
     {
         string type = JsonGet(json, "type");
         if (type == null) return;
@@ -236,9 +399,8 @@ public class ChatPlugin
             string key = "m" + rnick + ":" + rts;
             if (recentMsgs.Contains(key)) return;
             recentMsgs.Add(key); if (recentMsgs.Count > 300) recentMsgs.Clear();
-            string enc = JsonGet(json, "text");
-            string text = Decrypt(enc);
-            if (text == null) return;
+            string text = Decrypt(JsonGet(json, "text"));
+            if (text == null) text = "[encrypted]";                   // 密钥不符 (与 PC 端一致)
             NotifyMessage(rnick ?? "?", text, rts);
         } else if (type == "online") {
             if (rid != docId && rnick != null) { users[rid] = rnick; NotifyUsers(); }
@@ -252,11 +414,49 @@ public class ChatPlugin
         }
     }
 
-    static void SendJson(string json) { MqttPublish(json); }
+    // ---------- Active Rooms 注册表 (仅 MQTT 模式) ----------
+    class RoomEntry { public Dictionary<string, bool> nicks = new Dictionary<string, bool>(); public long lastTs; }
+    static Dictionary<string, RoomEntry> activeRooms = new Dictionary<string, RoomEntry>();
+    static List<string> roomNames = new List<string>();               // 与 roomList.Items 平行
+
+    static void OnRegistryMessage(string json)
+    {
+        if (JsonGet(json, "type") != "room-beacon") return;
+        string rid = JsonGet(json, "id");
+        if (rid == null || rid == docId) return;
+        string r = JsonGet(json, "room");
+        if (r == null || r.Length == 0) return;
+        string n = JsonGet(json, "nick");
+        RoomEntry e;
+        if (!activeRooms.TryGetValue(r, out e)) { e = new RoomEntry(); activeRooms[r] = e; }
+        if (n != null) e.nicks[n] = true;
+        string s = JsonGet(json, "ts"); long ts;
+        e.lastTs = (s != null && long.TryParse(s, out ts)) ? ts : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+        NotifyRooms();
+    }
+    static bool ExpireRooms()
+    {
+        long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+        var dead = new List<string>();
+        foreach (var kv in activeRooms) if (now - kv.Value.lastTs > 25000) dead.Add(kv.Key);
+        foreach (string k in dead) activeRooms.Remove(k);
+        return dead.Count > 0;
+    }
+    static void SendRegistryBeacon()
+    {
+        MqttPublish(REGISTRY_TOPIC, "{\"type\":\"room-beacon\",\"room\":\"" + JsonEsc(room) + "\",\"nick\":\"" + JsonEsc(nick) + "\",\"id\":\"" + JsonEsc(docId) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + "}");
+    }
+
+    // ---------- send ----------
+    static void SendJson(string json)
+    {
+        if (relayMode) WsSendText(json);                              // relay: 裸 JSON 文本帧
+        else MqttPublish(Topic(), json);                              // MQTT: 房间 topic
+    }
     static void SendChat(string text)
     {
         string enc = Encrypt(text);
-        string json = "{\"type\":\"chat\",\"nick\":\"" + JsonEsc(nick) + "\",\"text\":\"" + JsonEsc(enc) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}";
+        string json = "{\"type\":\"chat\",\"nick\":\"" + JsonEsc(nick) + "\",\"text\":\"" + JsonEsc(enc) + "\",\"enc\":true,\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}";
         SendJson(json);
     }
     static void SendJoin()
@@ -266,6 +466,27 @@ public class ChatPlugin
     static void SendLeave()
     {
         SendJson("{\"type\":\"leave\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}");
+    }
+
+    // ---------- timers ----------
+    static System.Threading.Timer pingTimer, beaconTimer;
+    static void StartTimers()
+    {
+        StopTimers();
+        if (relayMode) return;                                        // relay 无 MQTT 心跳/注册表 (WS KeepAlive 25s)
+        pingTimer = new System.Threading.Timer(delegate(object s) { try { if (running) MqttPing(); } catch {} }, null, 25000, 25000);
+        beaconTimer = new System.Threading.Timer(delegate(object s) {
+            try {
+                if (!running) return;
+                SendRegistryBeacon();
+                if (ExpireRooms()) NotifyRooms();
+            } catch {}
+        }, null, 3000, 10000);
+    }
+    static void StopTimers()
+    {
+        try { if (pingTimer != null) { pingTimer.Dispose(); pingTimer = null; } } catch {}
+        try { if (beaconTimer != null) { beaconTimer.Dispose(); beaconTimer = null; } } catch {}
     }
 
     // ---------- minimal JSON helpers ----------
@@ -305,11 +526,13 @@ public class ChatPlugin
     static Action<string, string, string> onMessage;
     static Action<string> onTyping;
     static Action onUsers;
+    static Action onRooms;
     static Action<string, bool> onStatus;
     static void NotifyEvent(string s) { if (onEvent != null && uiContext != null) uiContext.Post(delegate(object x) { onEvent(s); }, null); }
     static void NotifyMessage(string n, string t, string ts) { if (onMessage != null && uiContext != null) uiContext.Post(delegate(object x) { onMessage(n, t, ts); }, null); }
     static void NotifyTyping(string s) { if (onTyping != null && uiContext != null) uiContext.Post(delegate(object x) { onTyping(s); }, null); }
     static void NotifyUsers() { if (onUsers != null && uiContext != null) uiContext.Post(delegate(object x) { onUsers(); }, null); }
+    static void NotifyRooms() { if (onRooms != null && uiContext != null) uiContext.Post(delegate(object x) { onRooms(); }, null); }
     static void NotifyStatus(string s, bool ok) { if (onStatus != null && uiContext != null) uiContext.Post(delegate(object x) { onStatus(s, ok); }, null); }
 
     // ---------- UI helpers ----------
@@ -356,18 +579,19 @@ public class ChatPlugin
     // ---------- chat window ----------
     static Form chatForm;
     static TextBox inputBox;
-    static ListBox msgList, userList;
-    static TextBox edNick, edRoom, edKey, edBroker;
+    static ListBox msgList, userList, roomList;
+    static TextBox edNick, edRoom, edKey;
+    static ComboBox edBroker;
     static Label statusLbl, typingLbl, onlineLbl;
     static FlatBtn joinBtn;
 
     public static void Run()
     {
+        try { System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls11 | System.Net.SecurityProtocolType.Tls12; } catch {}
         uiContext = SynchronizationContext.Current;
         if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
         LoadCfg();
         if (string.IsNullOrEmpty(nick)) nick = "用户_" + Guid.NewGuid().ToString("N").Substring(0, 6);
-        docId = "wg-" + Guid.NewGuid().ToString("N").Substring(0, 10);
 
         var f = new Form();
         chatForm = f;
@@ -401,37 +625,51 @@ public class ChatPlugin
         f.Controls.Add(MkLabel("房间名", F(8F, FontStyle.Regular), C_SUB, 134, ty - 16, 80, 14, ContentAlignment.MiddleLeft));
         f.Controls.Add(MkLabel("密钥(空=房间名)", F(8F, FontStyle.Regular), C_SUB, 272, ty - 16, 130, 14, ContentAlignment.MiddleLeft));
 
-        edBroker = new TextBox { Location = new Point(16, ty + 42), Size = new Size(250, 28), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, Text = brokerUrl };
-        f.Controls.Add(MkLabel("Broker", F(8F, FontStyle.Regular), C_SUB, 16, ty + 28, 60, 14, ContentAlignment.MiddleLeft));
+        edBroker = new ComboBox { Location = new Point(16, ty + 42), Size = new Size(290, 26), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, Text = brokerSel };
+        edBroker.Items.Add("auto");
+        foreach (string u in BrokerUrls) edBroker.Items.Add(u);
+        f.Controls.Add(MkLabel("Broker (auto = 自动兜底)", F(8F, FontStyle.Regular), C_SUB, 16, ty + 28, 200, 14, ContentAlignment.MiddleLeft));
         f.Controls.Add(edBroker);
 
-        statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, ty + 74, 220, 18, ContentAlignment.MiddleLeft);
+        statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, ty + 76, 360, 18, ContentAlignment.MiddleLeft);
         f.Controls.Add(statusLbl);
-        onlineLbl = MkLabel("在线 0 人", F(8.5F, FontStyle.Bold), C_GREEN, 380, ty + 74, 90, 18, ContentAlignment.MiddleLeft);
+        onlineLbl = MkLabel("在线 0 人", F(8.5F, FontStyle.Bold), C_GREEN, 452, ty + 76, 92, 18, ContentAlignment.MiddleLeft);
         f.Controls.Add(onlineLbl);
-        typingLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_SUB, 16, ty + 92, 300, 16, ContentAlignment.MiddleLeft);
+        typingLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_SUB, 16, ty + 94, 360, 16, ContentAlignment.MiddleLeft);
         f.Controls.Add(typingLbl);
 
-        f.Controls.Add(MkLabel("在线", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 92, 60, 16, ContentAlignment.MiddleLeft));
-        userList = new ListBox { Location = new Point(382, ty + 112), Size = new Size(162, 396), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
-        f.Controls.Add(userList);
-
-        msgList = new ListBox { Location = new Point(16, ty + 112), Size = new Size(358, 396), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        msgList = new ListBox { Location = new Point(16, ty + 114), Size = new Size(358, 366), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
         f.Controls.Add(msgList);
 
-        inputBox = new TextBox { Location = new Point(16, ty + 516), Size = new Size(358, 32), Font = F(10F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None };
+        f.Controls.Add(MkLabel("在线", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 114, 100, 16, ContentAlignment.MiddleLeft));
+        userList = new ListBox { Location = new Point(382, ty + 132), Size = new Size(162, 154), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        f.Controls.Add(userList);
+
+        f.Controls.Add(MkLabel("活跃房间 (双击加入, 仅 MQTT)", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 292, 162, 16, ContentAlignment.MiddleLeft));
+        roomList = new ListBox { Location = new Point(382, ty + 310), Size = new Size(162, 170), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        roomList.DoubleClick += delegate {
+            int idx = roomList.SelectedIndex;
+            if (idx < 0 || idx >= roomNames.Count) return;
+            string rn = roomNames[idx];
+            if (rn == room) return;
+            if (running || connecting) { LeaveRoom(); edRoom.Text = rn; JoinRoom(); }
+            else edRoom.Text = rn;
+        };
+        f.Controls.Add(roomList);
+
+        inputBox = new TextBox { Location = new Point(16, ty + 492), Size = new Size(358, 32), Font = F(10F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None };
         inputBox.KeyDown += delegate(object s, KeyEventArgs e) {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendCurrent(); }
-            else if (running && ws != null && ws.State == WebSocketState.Open) { NotifyTypingSelf(); }
+            else if (running) { NotifyTypingSelf(); }
         };
         f.Controls.Add(inputBox);
-        var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(382, ty + 516), Size = new Size(80, 32), Primary = true };
+        var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(382, ty + 492), Size = new Size(80, 32), Primary = true };
         send.Click += delegate { SendCurrent(); };
         f.Controls.Add(send);
 
         onEvent = delegate(string s) { msgList.Items.Add("· " + s + "  " + DateTime.Now.ToString("HH:mm")); msgList.TopIndex = msgList.Items.Count - 1; };
         onMessage = delegate(string n, string t, string ts) {
-            string tm = ts != null ? DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(ts)).LocalDateTime.ToString("HH:mm") : DateTime.Now.ToString("HH:mm");
+            long ms2; string tm = (ts != null && long.TryParse(ts, out ms2)) ? DateTimeOffset.FromUnixTimeMilliseconds(ms2).LocalDateTime.ToString("HH:mm") : DateTime.Now.ToString("HH:mm");
             msgList.Items.Add(n + "  " + tm + "  " + t);
             msgList.TopIndex = msgList.Items.Count - 1;
             if (!f.Focused) FlashTitle(f);
@@ -441,6 +679,17 @@ public class ChatPlugin
             userList.Items.Clear();
             foreach (var kv in users) userList.Items.Add(kv.Value);
             onlineLbl.Text = "在线 " + users.Count + " 人";
+        };
+        onRooms = delegate {
+            roomList.Items.Clear(); roomNames.Clear();
+            if (relayMode) return;
+            var names = new List<string>(activeRooms.Keys);
+            names.Sort(StringComparer.Ordinal);
+            foreach (string rn in names) {
+                RoomEntry e = activeRooms[rn];
+                roomList.Items.Add(rn == room ? rn + " (你)" : rn + " (" + e.nicks.Count + " 人)");
+                roomNames.Add(rn);
+            }
         };
         onStatus = delegate(string s, bool ok) {
             statusLbl.Text = s;
@@ -459,51 +708,50 @@ public class ChatPlugin
     {
         if ((DateTime.Now - lastTypingNotify).TotalMilliseconds < 2000) return;
         lastTypingNotify = DateTime.Now;
-        try { SendJson("{\"type\":\"typing\",\"nick\":\"" + JsonEsc(nick) + "\",\"id\":\"" + JsonEsc(docId) + "\"}"); } catch {}
+        try { SendJson("{\"type\":\"typing\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}"); } catch {}
     }
 
     static void ToggleJoin()
     {
-        if (running) { LeaveRoom(); } else { JoinRoom(); }
+        if (running || connecting) { LeaveRoom(); } else { JoinRoom(); }
     }
     static void JoinRoom()
     {
         nick = edNick.Text.Trim(); if (nick.Length == 0) nick = "用户";
         room = edRoom.Text.Trim(); if (room.Length == 0) room = "大厅";
         customKey = edKey.Text.Trim();
-        brokerUrl = edBroker.Text.Trim(); if (brokerUrl.Length == 0) brokerUrl = "wss://chat.seee.uno";
+        brokerSel = edBroker.Text.Trim(); if (brokerSel.Length == 0) brokerSel = "auto";
+        docId = "wg-" + Guid.NewGuid().ToString("N").Substring(0, 10);
         SaveCfg();
-        try {
-            statusLbl.Text = "连接中…"; statusLbl.ForeColor = C_SUB;
-            WsConnect();
-            running = true;
-            SendJoin();
-            edNick.Enabled = false; edRoom.Enabled = false; edKey.Enabled = false; edBroker.Enabled = false;
-            joinBtn.Text = "离开";
-            statusLbl.Text = "已连接 " + brokerUrl;
-            statusLbl.ForeColor = C_GREEN;
-            msgList.Items.Add("· 已加入房间 [" + room + "]");
-            var rt = new Thread(WsReceiveLoop); rt.IsBackground = true; rt.Start();
-            var pt = new System.Threading.Timer(delegate(object s) { try { MqttPing(); } catch {} }, null, 30000, 30000);
-            _pingTimer = pt;
-        } catch (Exception ex) {
-            statusLbl.Text = "连接失败: " + ex.Message;
-            statusLbl.ForeColor = Color.FromArgb(255, 200, 60, 70);
-        }
+        manualLeave = false; reconnectTries = 0; connecting = true;
+        edNick.Enabled = false; edRoom.Enabled = false; edKey.Enabled = false; edBroker.Enabled = false;
+        joinBtn.Text = "离开";
+        statusLbl.Text = "连接中…"; statusLbl.ForeColor = C_SUB;
+        var t = new Thread(ConnectWorker); t.IsBackground = true; t.Start();
     }
-    static System.Threading.Timer _pingTimer;
     static void LeaveRoom()
     {
-        running = false;
-        try { if (_pingTimer != null) { _pingTimer.Dispose(); _pingTimer = null; } } catch {}
+        manualLeave = true;
+        running = false; connecting = false;
+        StopTimers();
         try { SendLeave(); } catch {}
+        MqttDisconnect();
         WsClose();
         users.Clear(); typingUsers.Clear();
+        activeRooms.Clear(); roomNames.Clear();
         edNick.Enabled = true; edRoom.Enabled = true; edKey.Enabled = true; edBroker.Enabled = true;
         joinBtn.Text = "加入";
         statusLbl.Text = "未连接"; statusLbl.ForeColor = C_SUB;
         onlineLbl.Text = "在线 0 人"; typingLbl.Text = "";
-        UpdateUsers();
+        userList.Items.Clear(); roomList.Items.Clear();
+    }
+    static void UiJoinFailed()
+    {
+        if (uiContext == null) return;
+        uiContext.Post(delegate(object x) {
+            edNick.Enabled = true; edRoom.Enabled = true; edKey.Enabled = true; edBroker.Enabled = true;
+            joinBtn.Text = "加入";
+        }, null);
     }
     static void SendCurrent()
     {
@@ -513,15 +761,6 @@ public class ChatPlugin
         inputBox.Text = "";
         msgList.Items.Add(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + t);
         msgList.TopIndex = msgList.Items.Count - 1;
-    }
-    static void UpdateUsers()
-    {
-        if (uiContext == null) return;
-        uiContext.Post(delegate(object x) {
-            userList.Items.Clear();
-            foreach (var kv in users) userList.Items.Add(kv.Value);
-            onlineLbl.Text = "在线 " + users.Count + " 人";
-        }, null);
     }
 
     // ---------- persisted ----------
@@ -535,7 +774,8 @@ public class ChatPlugin
                 if (k == "nick") nick = v;
                 else if (k == "room") room = v;
                 else if (k == "key") customKey = v;
-                else if (k == "broker") brokerUrl = v;
+                else if (k == "broker") brokerSel = v;
+                else if (k == "lastbroker") lastBroker = v;
             }
         } catch {}
     }
@@ -543,7 +783,8 @@ public class ChatPlugin
     {
         try {
             Directory.CreateDirectory(CfgDir());
-            File.WriteAllText(CfgPath(), "nick = " + nick + "\r\nroom = " + room + "\r\nkey = " + customKey + "\r\nbroker = " + brokerUrl + "\r\n", new UTF8Encoding(false));
+            File.WriteAllText(CfgPath(), "nick = " + nick + "\r\nroom = " + room + "\r\nkey = " + customKey + "\r\nbroker = " + brokerSel + "\r\nlastbroker = " + lastBroker + "\r\n", new UTF8Encoding(false));
         } catch {}
     }
 }
+[/csharp]

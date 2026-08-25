@@ -1,6 +1,6 @@
 # WgIme Chat 扩展技术文档 —— ITools Chat 系统全解析
 
-> 版本：2026-08-17 ｜ 读者：要在 WgIme 中实现/扩展聊天插件（与 itools-chat 互通）的工程师或 Agent
+> 版本：2026-08-25 ｜ 读者：要在 WgIme 中实现/扩展聊天插件（与 itools-chat 互通）的工程师或 Agent
 > 信息来源：`C:\Tools\itools-chat`（Chat.bat / cloudflare worker）、`C:\Tools\itools-chat-android`（Kotlin app）实际代码逐行提取；`ITOOLS_ARCHITECTURE.md` 等仓库内文档**部分内容已过时**，一律以本文为准。
 > 相关文档：`docs/WGIME_插件规范.md`（插件运行机制）、`docs/WGIME_窗体设计语言.md`（UI 规范）
 
@@ -30,7 +30,7 @@
 | Android 聊天端 | `itools-chat-android\android\` | Kotlin + Jetpack Compose + Paho MQTT 1.2.5 + OkHttp WebSocket + webrtc-sdk 125.6422.07 | 手机端，v2.0 原生重写（已弃用 WebView/chat.html 旧方案） |
 | Cloudflare Relay | `itools-chat\cloudflare\worker.js`（45 行） | Cloudflare Worker + Durable Objects | 私有极简中继 `wss://chat.seee.uno`，每房间一个 DO 广播 |
 | 公共 MQTT broker | 第三方公共服务（EMQX / HiveMQ / Mosquitto） | MQTT 3.1.1 over WebSocket / TCP / TLS | 无服务器组网的核心 |
-| WgIme chat 插件 | `WgIme\plugins\chat.txt` | WgIme C# 插件（WinForms） | **已有初版，存在致命兼容性缺陷，见 §8.3** |
+| WgIme chat 插件 | `WgIme\plugins\chat.txt` | WgIme C# 插件（WinForms） | **2026-08-25 已重写**：relay/MQTT 双模式互通（M1+M2 完成），见 §8.2 |
 
 ### 1.2 三种组网模式
 
@@ -55,21 +55,22 @@
 
 ### 1.3 功能矩阵
 
-| 功能 | PC Chat.bat | Android | WgIme 插件（现状） |
+| 功能 | PC Chat.bat | Android | WgIme 插件（2026-08-25 重写后） |
 |---|---|---|---|
-| MQTT broker 模式 | ✅ 5 broker 自动兜底 | ✅ 5 broker 自动兜底 | ❌（URL 拼接错误，见 §8.3） |
-| Cloudflare relay 模式 | ✅ 裸 JSON | ✅ 裸 JSON | ⚠️ 连得上但帧格式错误，**与任何端都不互通** |
+| MQTT broker 模式 | ✅ 5 broker 自动兜底 | ✅ 5 broker 自动兜底 | ✅ 同 5 broker auto 兜底 + 记住上次成功项 |
+| Cloudflare relay 模式 | ✅ 裸 JSON | ✅ 裸 JSON | ✅ 裸 JSON 文本帧（按 broker 地址自动识别） |
 | LAN-only 模式 | ✅ | ✅ | ❌ |
 | AES 加密聊天 | ✅ | ✅ | ✅（crypto 实现正确） |
 | join/leave/online | ✅ 收发 | 收 only（不发 leave/online） | ✅ 收发 |
-| typing 提示 | ✅ | ❌ | ✅（缺 ts 字段） |
+| typing 提示 | ✅ | ❌ | ✅（已补 ts 字段） |
 | quote 引用 | ✅（嵌套 ≤4 层） | ✅ | ❌ |
 | 文件/图片传输 | ✅ | ✅ | ❌ |
-| Active Rooms 注册表 | ✅（MQTT 模式） | ✅（MQTT 模式） | ❌ |
+| Active Rooms 注册表 | ✅（MQTT 模式） | ✅（MQTT 模式） | ✅（MQTT 模式，双击切换房间） |
 | WebRTC P2P | ✅ 单 peer | ✅ 单 peer | ❌ |
 | UDP LAN/打洞 | ✅ | ✅ | ❌ |
 | LAN-TCP 直连 | ✅ | ❌ | ❌ |
 | 消息持久化 | ✅ 每房间 80 条 | ✅ 每房间 80 条 | ❌ |
+| 断线自动重连 | ✅ 6s×3 | ✅ 3s | ✅ 6s×3 |
 
 ---
 
@@ -106,6 +107,7 @@
 | 参数 | PC | Android |
 |---|---|---|
 | WebSocket 路径 | 固定 `/mqtt`（`new Paho.MQTT.Client(host, port, '/mqtt', clientId)`） | N/A（Paho tcp/ssl 直连） |
+| **WS 子协议** | **`mqtt`**（Paho 自动携带；EMQX 缺子协议返回 400、Mosquitto 直接断连——手写 WS 客户端必须 `AddSubProtocol("mqtt")`） | N/A |
 | MQTT 版本 | 3.1.1（Paho 默认） | 3.1.1 |
 | clientId | = docId（见 §3.1），每次 join 重新生成 | = docId，每次启动生成 |
 | cleanSession | true | true |
@@ -407,41 +409,52 @@ file-resend:{type, id, missing:[...], room}
 - **没有 NuGet**——一切依赖只能用 .NET Framework 4.x 自带的（`System.Net.WebSockets.ClientWebSocket` 可用，`System.Security.Cryptography` 可用）
 - 现有 `plugins\chat.txt`（549 行）已具备：无边框窗体 + 圆角控件范式、WinForms 消息 UI、配置持久化（`%LOCALAPPDATA%\wgime\chat.cfg`）、**正确的加密实现**
 
-### 8.2 现有 `plugins\chat.txt` 做了什么
+### 8.2 现有 `plugins\chat.txt` 做了什么（2026-08-25 重写，M1+M2 完成）
 
-- 传输：手搓 MQTT 3.1.1 最小帧（CONNECT/SUBSCRIBE/PUBLISH/PINGREQ/DISCONNECT）跑在 `ClientWebSocket` 上，URL = `brokerUrl + "/room/" + room`，默认 broker `wss://chat.seee.uno`
-- 消息：join/leave/online/chat/typing 五种，字段与协议一致
-- 加密：§4 全套，**与 PC/Android 字节级兼容** ✅
-- UI：连接栏（昵称/房间/密钥/Broker）+ 消息列表 + 在线列表 + 输入栏
+- **传输分流**：broker 地址命中 `chat.seee.uno` → relay 裸 JSON 文本帧；否则 → MQTT 3.1.1 over WebSocket（路径 `/mqtt`，**携带 `mqtt` 子协议**）
+- **auto 兜底**：Broker 框填 `auto`（默认）按 PC 端顺序尝试 Cloudflare→HiveMQ-TLS→EMQX→Mosquitto→HiveMQ，上次成功项持久化到 `chat.cfg` 的 `lastbroker`
+- **后台连接**：连接/接收全部在后台线程（UI 经 SynchronizationContext 更新）；连接超时 10s（`Task.WhenAny` 兜底——.NET 4.x 的 token 取消对 ConnectAsync 不及时）；CONNACK 超时 8s 判失败换下一个 broker
+- **MQTT 健壮性**：WS 分片按 EndOfMessage 重组、一帧多包循环解析、CONNACK 驱动订阅+加入、SUBACK/PINGRESP 忽略、QoS1/2 PUBLISH 跳过 packet id
+- **消息**：join/leave/online/chat/typing 五种，chat 带 `enc:true`、typing 带 `ts`；解密失败显示 `[encrypted]`；每次加入重新生成 docId
+- **Active Rooms**：MQTT 模式订阅 `itools/registry/rooms`，10s room-beacon 心跳 + 25s 过期，右栏"活跃房间"列表双击切换房间
+- **重连**：意外断线 6s×3 自动重连
+- **TLS**：启动时 `ServicePointManager.SecurityProtocol |= Tls11|Tls12`（EMQX/Mosquitto 要求 TLS 1.2+）
+- **加密**：§4 全套，**与 PC/Android 字节级兼容** ✅
+- **UI**：连接栏（昵称/房间/密钥/Broker 下拉）+ 消息列表 + 在线列表 + 活跃房间列表 + 输入栏
 
-### 8.3 兼容性缺陷清单（按严重程度）
+### 8.3 兼容性缺陷清单（历史记录——2026-08-25 重写已全部修复，按严重程度）
 
-| # | 严重度 | 缺陷 | 后果 |
-|---|---|---|---|
-| 1 | 🔴 致命 | **relay 上发 MQTT 二进制帧**：PC/Android 在 relay 上发的是**裸 JSON 文本帧**（§2.2），插件却发 MQTT PUBLISH 二进制帧；接收方向 PC/Android 的文本帧被插件 `if (MessageType != Binary) continue` 丢弃 | **与任何端双向都不互通**（只能插件对插件）。这正是"chat 插件与手机互通"验证不过的根因 |
-| 2 | 🔴 致命 | **WsConnect 在 UI 线程同步阻塞等 CONNACK**：`ws.ReceiveAsync(...).Result` 等待一帧 `0x20` CONNACK，但 relay 永远不会发——房间内无人说话时**永远阻塞，聊天窗冻结**；有流量时还会吃掉一条消息 | 点"加入"后窗体卡死（插件 STA 线程整体冻结） |
-| 3 | 🟠 严重 | **broker URL 拼接写死 `/room/<room>`**：换真 MQTT broker（如 `wss://broker.emqx.io:8084`）会拼成 `.../room/大厅`，而 Paho 约定路径是 `/mqtt` | 无法使用任何公共 MQTT broker，模式 A 整体不可用 |
-| 4 | 🟠 严重 | **MQTT 接收未处理 PUBLISH QoS1 packet id、PINGRESP、多分片 WebSocket 帧**（`ReceiveAsync` 一次返回不一定是完整帧，也未循环拼 `EndOfMessage`） | 接真 broker 后随机丢消息/解析错位 |
-| 5 | 🟡 次要 | chat 消息缺 `"enc":true` 字段（PC 恒发送；当前各端接收端不校验，但应补齐对齐） | 未来版本若校验 enc 会断兼容 |
-| 6 | 🟡 次要 | typing 消息缺 `ts`；接收端按 nick 维护无 ts 检查，影响小 | 无 |
-| 7 | 🟡 次要 | 未实现：registry（Active Rooms）、文件/图片、quote、LAN-only、WebRTC/UDP | 功能差距，见 §8.4 路线图 |
-| 8 | 🟡 次要 | `HandleMqtt` 不解析 SUBACK/PUBACK；`recentMsgs` 去重 key 用 `m+nick+ts` 与 PC 一致 ✅；leave 时未发 typing 清理，无妨 | 鲁棒性 |
+| # | 严重度 | 缺陷 | 后果 | 状态 |
+|---|---|---|---|---|
+| 1 | 🔴 致命 | **relay 上发 MQTT 二进制帧**：PC/Android 在 relay 上发的是**裸 JSON 文本帧**（§2.2），旧插件却发 MQTT PUBLISH 二进制帧；接收方向 PC/Android 的文本帧被旧插件 `if (MessageType != Binary) continue` 丢弃 | **与任何端双向都不互通** | ✅ 已修复（relay 走裸 JSON 文本帧） |
+| 2 | 🔴 致命 | **WsConnect 在 UI 线程同步阻塞等 CONNACK**：relay 永远不会发——房间内无人说话时**永远阻塞，聊天窗冻结** | 点"加入"后窗体卡死 | ✅ 已修复（连接/接收全后台线程） |
+| 3 | 🟠 严重 | **broker URL 拼接写死 `/room/<room>`**：换真 MQTT broker 会拼错路径（Paho 约定 `/mqtt`） | 模式 A 整体不可用 | ✅ 已修复（按模式分流 URL） |
+| 4 | 🟠 严重 | **MQTT 接收未处理 PUBLISH QoS1 packet id、PINGRESP、多分片 WebSocket 帧** | 接真 broker 后随机丢消息/解析错位 | ✅ 已修复（EndOfMessage 重组 + 多包解析 + QoS 处理） |
+| 5 | 🟡 次要 | chat 消息缺 `"enc":true` 字段 | 未来版本若校验 enc 会断兼容 | ✅ 已补齐 |
+| 6 | 🟡 次要 | typing 消息缺 `ts` | 无 | ✅ 已补齐 |
+| 7 | 🟡 次要 | 未实现：registry（Active Rooms）、文件/图片、quote、LAN-only、WebRTC/UDP | 功能差距 | registry ✅ 已实现；其余见 §8.4 路线 |
+| 8 | 🟡 次要 | `HandleMqtt` 不解析 SUBACK/PUBACK | 鲁棒性 | ✅ 已处理（显式忽略并正确跳过包体） |
+
+**重写中新发现的两个环境坑**（实测验证，见 `tests\chat-protocol-smoke.ps1`）：
+
+1. **MQTT over WS 必须携带 `mqtt` 子协议**：EMQX 缺子协议返回 HTTP 400，Mosquitto 直接断连；`ClientWebSocket` 需 `Options.AddSubProtocol("mqtt")`（Paho 自动携带，所以 PC 端无感知）
+2. **TLS 1.2+**：EMQX/Mosquitto 拒绝 TLS 1.0；.NET 4.x 进程建议 `ServicePointManager.SecurityProtocol |= Tls11|Tls12`
 
 ### 8.4 推荐实现路线（里程碑）
 
-**M1 — MVP：relay 模式互通（工作量最小，立刻可用）**
-1. 传输分流：`brokerUrl` 以 `wss://` 开头且命中 relay（`chat.seee.uno`）→ 走**裸 JSON 文本帧**路径（无 CONNECT/SUBSCRIBE/CONNACK，连上直接收发 JSON 字符串）
-2. 修复阻塞：连接/接收全部移到后台线程（`Run()` 里 `new Thread(...){IsBackground=true}` 或 `Task.Run`），UI 更新走 `SynchronizationContext.Post`（现有 Notify* 范式已具备）
-3. 消息补齐 `enc:true`、typing 补 `ts`
-4. 验证：PC Chat.bat 选 Cloudflare broker + 插件同房间互发；Android 选 Cloudflare 同理
+**M1 — MVP：relay 模式互通（✅ 2026-08-25 已完成）**
+1. ✅ 传输分流：`brokerUrl` 命中 relay（`chat.seee.uno`）→ 走**裸 JSON 文本帧**路径
+2. ✅ 修复阻塞：连接/接收全部移到后台线程，UI 更新走 `SynchronizationContext.Post`
+3. ✅ 消息补齐 `enc:true`、typing 补 `ts`
+4. 验证：relay 裸 JSON 文本帧扇出已由 `tests\chat-protocol-smoke.ps1` 实机验证；**与 PC/Android 真机互发待用户验证**
 
-**M2 — 真 MQTT broker 模式 + Active Rooms**
-1. URL 规则：`wss://<host>:<port>/mqtt`（ broker 表抄 §2.1 PC 版，含 Auto 轮询 + localStorage 等价持久化上次成功项）
-2. MQTT 帧健壮性：按 `EndOfMessage` 循环拼帧、处理 SUBACK/PINGRESP、QoS0 PUBLISH 解析（现有代码加 packet id 跳过逻辑即可）
-3. registry：订阅 `itools/registry/rooms`，10s room-beacon 心跳，25s 过期清理，UI 加"活跃房间"列表
-4. 验证：PC + 插件同选 EMQX 互通；👥 列表互见
+**M2 — 真 MQTT broker 模式 + Active Rooms（✅ 2026-08-25 已完成）**
+1. ✅ URL 规则：`wss://<host>:<port>/mqtt`；broker 表抄 §2.1 PC 版，Auto 轮询 + `lastbroker` 持久化上次成功项；**必须 `AddSubProtocol("mqtt")`**（实测 EMQX 缺它 400、Mosquitto 断连）
+2. ✅ MQTT 帧健壮性：按 `EndOfMessage` 循环拼帧、一帧多包解析、CONNACK 驱动订阅、QoS0/1/2 PUBLISH 解析
+3. ✅ registry：订阅 `itools/registry/rooms`，10s room-beacon 心跳，25s 过期清理，右栏"活跃房间"列表（双击切换房间）
+4. 验证：EMQX 实机 CONNECT/SUBSCRIBE/PUBLISH 回环已由 `tests\chat-protocol-smoke.ps1` 验证；**与 PC 端 👥 互见待用户验证**
 
-**M3 — quote 引用 + 文件/图片**
+**M3 — quote 引用 + 文件/图片（下一步）**
 1. quote：发送侧明文改 `{"t":...,"q":...}` 包装（§3.5），接收侧解包渲染
 2. 文件：内存路径即可起步（8000 base64 字符 chunk，file-start/chunk，≤2MB relay 限制；收端按 idx 入槽 + gap 检测；file-end/resend 可选——注意 PC 只在 WebRTC DC 解析它们，relay 路径发了也白发）
 3. 图片：扩展名判定 + 预览
@@ -504,7 +517,7 @@ file-resend:{type, id, missing:[...], room}
 |---|---|
 | PC | `%LOCALAPPDATA%\itools-chat\chatstore.json`（localStorage KV）、`libs\`（JS 库）、`wv2_data\`、`PDFBridge.<md5>.dll` |
 | Android | SharedPreferences `"chat"`（nick/room/cryptoKey/broker/msgs:<room>）；收到的文件 `Android/data/<pkg>/Download/chat` |
-| WgIme 插件 | `%LOCALAPPDATA%\wgime\chat.cfg`（nick/room/key/broker） |
+| WgIme 插件 | `%LOCALAPPDATA%\wgime\chat.cfg`（nick/room/key/broker/lastbroker） |
 
 ### 9.4 已知协议缺陷与坑（实现时绕开）
 
@@ -518,6 +531,8 @@ file-resend:{type, id, missing:[...], room}
 8. rtc 信令 PC 不带 `to`、Android 带 `to`——单 peer 假设下忽略即可
 9. Android 自定义密钥**明文**存 SharedPreferences——WgIme 插件的 chat.cfg 同样明文，注意告知用户
 10. relay 无鉴权无加密（传输层只有 wss TLS）——机密性完全依赖 §4 的端到端加密，而无自定义密钥时密钥可从房间名推导（仅混淆）
+11. MQTT over WebSocket 必须带 `mqtt` 子协议（EMQX 缺它 400、Mosquitto 断连）；EMQX/Mosquitto 要求 TLS 1.2+
+12. PowerShell 里手写 MQTT 变长 Remaining Length 编码别用 `[int]($rem/128)`——PS 数值转换**四舍五入**而非截断（93/128 得 1），用 `[math]::Floor`；C# 的 int 除法无此坑
 
 ### 9.5 参考文件清单
 
