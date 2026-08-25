@@ -17,3 +17,5 @@ plugins/lt.txt
 /wg-all/WgTray.lnk
 
 /tray_cs.cs
+
+tests/interop/*.log

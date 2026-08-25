@@ -63,13 +63,13 @@
 | AES 加密聊天 | ✅ | ✅ | ✅（crypto 实现正确） |
 | join/leave/online | ✅ 收发 | 收 only（不发 leave/online） | ✅ 收发 |
 | typing 提示 | ✅ | ❌ | ✅（已补 ts 字段） |
-| quote 引用 | ✅（嵌套 ≤4 层） | ✅ | ❌ |
-| 文件/图片传输 | ✅ | ✅ | ❌ |
+| quote 引用 | ✅（嵌套 ≤4 层） | ✅ | ✅（双击引用，嵌套 ≤4 层单行拍平显示） |
+| 文件/图片传输 | ✅ | ✅ | ✅（内存路径 ≤2MB，含 gap 检测/重发/超时） |
 | Active Rooms 注册表 | ✅（MQTT 模式） | ✅（MQTT 模式） | ✅（MQTT 模式，双击切换房间） |
 | WebRTC P2P | ✅ 单 peer | ✅ 单 peer | ❌ |
 | UDP LAN/打洞 | ✅ | ✅ | ❌ |
 | LAN-TCP 直连 | ✅ | ❌ | ❌ |
-| 消息持久化 | ✅ 每房间 80 条 | ✅ 每房间 80 条 | ❌ |
+| 消息持久化 | ✅ 每房间 80 条 | ✅ 每房间 80 条 | ✅ 每房间 80 条（`chat-history.txt`） |
 | 断线自动重连 | ✅ 6s×3 | ✅ 3s | ✅ 6s×3 |
 
 ---
@@ -456,12 +456,13 @@ file-resend:{type, id, missing:[...], room}
 3. ✅ registry：订阅 `itools/registry/rooms`，10s room-beacon 心跳，25s 过期清理，右栏"活跃房间"列表（双击切换房间）
 4. ✅ 验证：`tests\interop\` MQTT 用例双向 PASS（EMQX 实机）
 
-**M3 — quote 引用 + 文件/图片（下一步）**
-1. quote：发送侧明文改 `{"t":...,"q":...}` 包装（§3.5），接收侧解包渲染
-2. 文件：内存路径即可起步（8000 base64 字符 chunk，file-start/chunk，≤2MB relay 限制；收端按 idx 入槽 + gap 检测；file-end/resend 可选——注意 PC 只在 WebRTC DC 解析它们，relay 路径发了也白发）
-3. 图片：扩展名判定 + 预览
+**M3 — quote 引用 + 文件/图片（✅ 2026-08-25 已完成）**
+1. ✅ quote：发送侧明文 `{"t":...,"q":...}` 包装（§3.5），接收侧解包单行拍平显示（嵌套 ≤4）
+2. ✅ 文件：内存路径（8000 base64 字符 chunk，file-start/chunk/end，≤2MB）；收端按 idx 入槽 + gap 检测 + file-resend（≤5 轮）+ 15s 超时清理；图片双击预览、文件双击保存
+3. ✅ 顺带补齐消息持久化（每房间 80 条，`chat-history.txt`，加入房间自动回放）
+4. ✅ 验证：`tests\interop\` 6 项断言（聊天/引用/文件 sha256 × 双向）relay + MQTT 双模式 PASS
 
-**M4 — LAN-only 模式**
+**M4 — LAN-only 模式（下一步）**
 - UDP 20003 监听 + 255.255.255.255 广播 + 224.0.0.251:5353 组播；lan-beacon 2s 心跳（解析时容忍带/不带 `itools/chat/` 前缀的 room）；lan-msg 明文收发按 room 过滤
 
 **M5 — 可选 P2P（建议跳过或最后做）**

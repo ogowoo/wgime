@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-25 (chat 插件 M3: quote 引用 + 文件/图片传输 + 消息历史)
+
+- **quote 引用**:双击消息设置引用(输入框上方出现引用条,点击取消),发送时明文打包 `{"t":正文,"q":{nick,text,q?}}` 再加密(§3.5,嵌套 ≤4 层);接收侧解包后单行显示 `↩引用 ｜ 正文`
+- **文件/图片传输**:📎 按钮发文件(内存路径,8000 base64 字符/块,file-start/chunk/end;无直连通道上限 2MB);接收侧 file-start/chunk 校验(sid/len/seq/idx 入槽)+ gap 检测发 file-resend(≤5 轮)+ 15s 超时;完成后双击消息保存文件/预览图片(图片弹窗预览 + 另存为)
+- **消息持久化**:每房间最近 80 条存 `%LOCALAPPDATA%\wgime\chat-history.txt`(base64 文本,≤30 房间),加入房间时自动回放
+- **验证**:`tests\interop\` 套件扩展为 6 项断言(聊天/引用/文件 × 双向,文件 sha256 逐字节比对),relay + MQTT(EMQX) 双模式全部 PASS
+- 测试基建:driver 改用宽松委托绑定(`Delegate.CreateDelegate`)适配插件私有嵌套类型;参考端周期性重发消息消除 relay 时序抖动
+
+---
+
 ## 2026-08-25 (chat 插件:互通性实机验证通过 + 调试日志)
 
 - **双向互通实机验证通过**:新增 `tests\interop\` 互操作测试套件——`ref-client.js`(Node 实现的协议参考端,按 itools chat-standalone 分支 Chat.bat / feature/chat-android 分支 Android 源码逐字段对齐)+ `plugin-harness.ps1`(Add-Type 加载**真实插件代码**无界面驱动)+ `run-interop.ps1`(双模式双向断言)。relay(Cloudflare)与 MQTT(EMQX)两种模式、收发两个方向全部 PASS,含端到端加密互解

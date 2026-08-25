@@ -1,5 +1,6 @@
 // C# driver appended after the plugin source: drives ChatPlugin headlessly and records
 // all Notify* callbacks in-process (no PowerShell delegates on foreign threads).
+// Private nested types (Quote/FileRecv) are handled via reflection + relaxed delegate binding.
 public static class ChatPluginDriver
 {
     public static System.Collections.Generic.List<string> Log = new System.Collections.Generic.List<string>();
@@ -7,7 +8,12 @@ public static class ChatPluginDriver
     static System.Type T = typeof(ChatPlugin);
     static void SetF(string n, object v) { T.GetField(n, F).SetValue(null, v); }
     static object GetF(string n) { return T.GetField(n, F).GetValue(null); }
-    static void CallM(string n, params object[] args) { T.GetMethod(n, F).Invoke(null, args); }
+    static object CallM(string n, params object[] args)
+    {
+        foreach (var m in T.GetMethods(F))
+            if (m.Name == n && m.GetParameters().Length == args.Length) return m.Invoke(null, args);
+        throw new System.Exception("method not found: " + n + "/" + args.Length);
+    }
     static void Add(string s) { lock (Log) Log.Add(s); }
 
     class InlineSync : System.Threading.SynchronizationContext
@@ -16,26 +22,42 @@ public static class ChatPluginDriver
         public override void Send(System.Threading.SendOrPostCallback d, object state) { try { d(state); } catch {} }
     }
 
-    public static string[] Run(string brokerUrl, string room, string nick, string key, int waitMs, string sendText)
+    // delegate targets with loosely-typed params (relaxed binding handles nested private types)
+    public static void OnMsg(string n, string t, string ts, object q) { Add("MSG|" + n + "|" + ts + "|" + t + (q != null ? "|QUOTE" : "")); }
+    public static void OnEvt(string s) { Add("EVT|" + s); }
+    public static void OnStatus(string s, bool ok) { Add("STATUS|" + ok + "|" + s); }
+    public static void OnTyping(string s) { Add("TYPING|" + s); }
+    public static void OnUsersOrRooms() { }
+    public static void OnFile(object fr) { Add("FILE|" + ObjF(fr, "name") + "|done=" + ObjF(fr, "done") + "|failed=" + ObjF(fr, "failed")); }
+    static object ObjF(object o, string n) { return o.GetType().GetField(n).GetValue(o); }
+
+    static void SetDelegate(string field, string method)
+    {
+        var delType = T.GetField(field, F).FieldType;
+        var mi = typeof(ChatPluginDriver).GetMethod(method, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        SetF(field, System.Delegate.CreateDelegate(delType, null, mi));
+    }
+
+    public static string[] Run(string brokerUrl, string room, string nick, string key, int waitMs, string sendText, string filePath)
     {
         SetF("nick", nick); SetF("room", room); SetF("customKey", key);
         SetF("brokerSel", brokerUrl); SetF("lastBroker", "");
         SetF("docId", "harn-" + System.Guid.NewGuid().ToString("N").Substring(0, 8));
         SetF("uiContext", new InlineSync());
         SetF("manualLeave", false); SetF("relayMode", false);
-        // dummy UI controls for failure paths
         SetF("edNick", new System.Windows.Forms.TextBox());
         SetF("edRoom", new System.Windows.Forms.TextBox());
         SetF("edKey", new System.Windows.Forms.TextBox());
         SetF("edBroker", new System.Windows.Forms.ComboBox());
         var flat = T.GetNestedType("FlatBtn", System.Reflection.BindingFlags.NonPublic);
         SetF("joinBtn", System.Activator.CreateInstance(flat));
-        SetF("onMessage", new System.Action<string, string, string>(delegate(string n, string t2, string ts) { Add("MSG|" + n + "|" + ts + "|" + t2); }));
-        SetF("onEvent", new System.Action<string>(delegate(string s) { Add("EVT|" + s); }));
-        SetF("onStatus", new System.Action<string, bool>(delegate(string s, bool ok) { Add("STATUS|" + ok + "|" + s); }));
-        SetF("onTyping", new System.Action<string>(delegate(string s) { Add("TYPING|" + s); }));
-        SetF("onUsers", new System.Action(delegate { Add("USERS"); }));
-        SetF("onRooms", new System.Action(delegate { }));
+        SetDelegate("onMessage", "OnMsg");
+        SetDelegate("onEvent", "OnEvt");
+        SetDelegate("onStatus", "OnStatus");
+        SetDelegate("onTyping", "OnTyping");
+        SetDelegate("onUsers", "OnUsersOrRooms");
+        SetDelegate("onRooms", "OnUsersOrRooms");
+        SetDelegate("onFile", "OnFile");
 
         var th = new System.Threading.Thread(delegate() { CallM("ConnectWorker"); });
         th.IsBackground = true; th.Start();
@@ -47,8 +69,29 @@ public static class ChatPluginDriver
             System.Threading.Thread.Sleep(2000);
             CallM("SendChat", sendText);
             Add("HARNESS: sent " + sendText);
+            var qt = T.GetNestedType("Quote", System.Reflection.BindingFlags.NonPublic);
+            var q = System.Activator.CreateInstance(qt);
+            qt.GetField("nick").SetValue(q, "QuotedNick");
+            qt.GetField("text").SetValue(q, "quoted original text");
+            CallM("SendChat2", sendText + "-withquote", q);
+            Add("HARNESS: sent quote");
+            if (filePath != null && filePath.Length > 0) {
+                CallM("SendFileBackground", filePath);
+                Add("HARNESS: sending file " + filePath);
+            }
         }
         System.Threading.Thread.Sleep(waitMs);
+        try {
+            var pend = (System.Collections.IDictionary)GetF("pendingFiles");
+            foreach (System.Collections.DictionaryEntry kv in pend) {
+                var fr = kv.Value;
+                if ((bool)ObjF(fr, "done")) {
+                    byte[] data = (byte[])ObjF(fr, "data");
+                    var sha = System.Security.Cryptography.SHA256.Create().ComputeHash(data);
+                    Add("RECV-FILE|" + ObjF(fr, "name") + "|" + data.Length + "|" + System.BitConverter.ToString(sha).Replace("-", "").ToLowerInvariant());
+                }
+            }
+        } catch (System.Exception ex) { Add("DUMP-ERR|" + ex.Message); }
         lock (Log) return Log.ToArray();
     }
 }

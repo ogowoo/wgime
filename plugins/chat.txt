@@ -7,10 +7,11 @@
 ;  消息 AES-256-CBC 加密 (SHA256(房间:密钥) 派生), MQTT 模式下支持活跃房间注册表。
 ;  连接/接收全部在后台线程, 断线自动重连 6s x 3。
 ;  头部勾选"调试"可把原始收发 JSON 记录到 %LOCALAPPDATA%\wgime\chat-debug.log。
+;  双击消息=引用回复; 双击文件消息=保存/查看图片; 每房间保留最近 80 条历史。
 ; ============================================================
 code = lt
 name = 聊天
-desc = 在线聊天: 与 itools-chat (PC/Android) 互通, 中继/MQTT 双模式, AES 加密
+desc = 在线聊天: 与 itools-chat (PC/Android) 互通, 中继/MQTT 双模式, AES 加密, 引用/文件/图片
 
 [csharp]
 using System;
@@ -85,6 +86,27 @@ public class ChatPlugin
             File.AppendAllText(DbgPath(), DateTime.Now.ToString("HH:mm:ss.fff ") + dir + " " + (s.Length > 500 ? s.Substring(0, 500) + "…" : s) + "\r\n", new UTF8Encoding(false));
         } catch {}
     }
+
+    // ---------- quote / file / history state ----------
+    class Quote { public string nick; public string text; public Quote q; }
+    class MsgMeta { public string nick; public string text; public FileRecv file; }   // 与 msgList.Items 平行
+    class FileRecv
+    {
+        public string id, name, sid, sender, caption, dispBase;
+        public long size; public int total, received, retries;
+        public string[] chunks; public DateTime t0;
+        public bool done, failed; public byte[] data;
+    }
+    class SentFile { public string id, b64; public int chunkSize, total; }
+    static Quote currentQuote;
+    static List<MsgMeta> msgMeta = new List<MsgMeta>();
+    static Dictionary<string, FileRecv> pendingFiles = new Dictionary<string, FileRecv>();
+    static Dictionary<string, SentFile> sentFiles = new Dictionary<string, SentFile>();
+    static Label quoteLbl;
+    static System.Threading.Timer fileSweeper;
+    const int FILE_MAX = 2097152;                            // 无直连通道, relay 限制 ≤2MB
+    static Dictionary<string, List<string>> history = new Dictionary<string, List<string>>();  // room -> "ts|nick|b64(text)"
+    static int histDirty = 0;
 
     static bool IsAuto(string s) { return s == null || s.Length == 0 || s == "auto"; }
     static bool IsRelay(string url) { try { return new Uri(url).Host == "chat.seee.uno"; } catch { return false; } }
@@ -416,9 +438,11 @@ public class ChatPlugin
             string key = "m" + rnick + ":" + rts;
             if (recentMsgs.Contains(key)) return;
             recentMsgs.Add(key); if (recentMsgs.Count > 300) recentMsgs.Clear();
-            string text = Decrypt(JsonGet(json, "text"));
-            if (text == null) text = "[encrypted]";                   // 密钥不符 (与 PC 端一致)
-            NotifyMessage(rnick ?? "?", text, rts);
+            string pt = Decrypt(JsonGet(json, "text"));
+            if (pt == null) { NotifyMessage(rnick ?? "?", "[encrypted]", rts, null); return; }   // 密钥不符 (与 PC 端一致)
+            Quote q;
+            string text = UnpackPayload(pt, out q);              // 拆 {"t":..,"q":..} 引用包装
+            NotifyMessage(rnick ?? "?", text, rts, q);
         } else if (type == "online") {
             if (rid != docId && rnick != null) { users[rid] = rnick; NotifyUsers(); }
         } else if (type == "typing") {
@@ -428,6 +452,14 @@ public class ChatPlugin
                 System.Threading.Timer t = null;
                 t = new System.Threading.Timer(delegate(object s) { typingUsers.Remove(rnick); try { t.Dispose(); } catch {} }, null, 4000, Timeout.Infinite);
             }
+        } else if (type == "file-start") {
+            if (JsonGet(json, "sid") != docId) OnFileStart(json);
+        } else if (type == "file-chunk") {
+            if (JsonGet(json, "sid") != docId) OnFileChunk(json);
+        } else if (type == "file-end") {
+            if (JsonGet(json, "sid") != docId) OnFileEnd(json);
+        } else if (type == "file-resend") {
+            OnFileResend(json);
         }
     }
 
@@ -471,9 +503,10 @@ public class ChatPlugin
         if (relayMode) WsSendText(json);                              // relay: 裸 JSON 文本帧
         else MqttPublish(Topic(), json);                              // MQTT: 房间 topic
     }
-    static void SendChat(string text)
+    static void SendChat(string text) { SendChat2(text, null); }
+    static void SendChat2(string text, Quote q)
     {
-        string enc = Encrypt(text);
+        string enc = Encrypt(PackPayload(text, q));
         string json = "{\"type\":\"chat\",\"nick\":\"" + JsonEsc(nick) + "\",\"text\":\"" + JsonEsc(enc) + "\",\"enc\":true,\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}";
         SendJson(json);
     }
@@ -484,6 +517,121 @@ public class ChatPlugin
     static void SendLeave()
     {
         SendJson("{\"type\":\"leave\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}");
+    }
+
+    // ---------- file/image transfer (内存路径, 8000 base64 字符/块, ≤2MB) ----------
+    static string To36(long v) { const string d = "0123456789abcdefghijklmnopqrstuvwxyz"; if (v <= 0) return "0"; var sb = new StringBuilder(); while (v > 0) { sb.Insert(0, d[(int)(v % 36)]); v /= 36; } return sb.ToString(); }
+    static bool IsImageName(string name)
+    {
+        string e = Path.GetExtension(name ?? "").ToLowerInvariant();
+        return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".gif" || e == ".webp" || e == ".bmp";
+    }
+    static void SendFileBackground(string path) { var t = new Thread(delegate() { SendFileWorker(path); }); t.IsBackground = true; t.Start(); }
+    static void SendFileWorker(string path)
+    {
+        try {
+            var fi = new FileInfo(path);
+            if (fi.Length <= 0 || fi.Length > FILE_MAX) { NotifyEvent("文件为空或超过 2MB (无直连通道): " + fi.Name); return; }
+            string b64 = Convert.ToBase64String(File.ReadAllBytes(path));
+            string name = fi.Name;
+            string fid = "f" + To36(DateTimeOffset.Now.ToUnixTimeMilliseconds()) + new Random().Next(99);
+            int chunkSize = 8000;
+            int total = (b64.Length + chunkSize - 1) / chunkSize;
+            sentFiles[fid] = new SentFile { id = fid, b64 = b64, chunkSize = chunkSize, total = total };
+            SendJson("{\"type\":\"file-start\",\"nick\":\"" + JsonEsc(nick) + "\",\"sid\":\"" + JsonEsc(docId) + "\",\"caption\":\"\",\"name\":\"" + JsonEsc(name) + "\",\"size\":" + fi.Length + ",\"id\":\"" + fid + "\",\"total\":" + total + "}");
+            for (int i = 0; i < total; i++) {
+                int len = Math.Min(chunkSize, b64.Length - i * chunkSize);
+                string cd = b64.Substring(i * chunkSize, len);
+                SendJson("{\"type\":\"file-chunk\",\"id\":\"" + fid + "\",\"idx\":" + i + ",\"seq\":" + i + ",\"total\":" + total + ",\"sid\":\"" + JsonEsc(docId) + "\",\"data\":\"" + cd + "\",\"len\":" + len + "}");
+                Thread.Sleep(3);
+            }
+            SendJson("{\"type\":\"file-end\",\"id\":\"" + fid + "\",\"total\":" + total + ",\"sid\":\"" + JsonEsc(docId) + "\"}");
+            NotifyEvent("已发送文件: " + name + " (" + (fi.Length / 1024) + "KB)");
+        } catch (Exception ex) { NotifyEvent("发送文件失败: " + ex.Message); }
+    }
+    static void OnFileStart(string json)
+    {
+        string id = JsonGet(json, "id");
+        if (id == null || pendingFiles.ContainsKey(id)) return;
+        string ts = JsonGet(json, "total"), sz = JsonGet(json, "size");
+        int total; long size;
+        if (ts == null || !int.TryParse(ts, out total)) return;
+        if (sz == null || !long.TryParse(sz, out size)) return;
+        if (total > 20000 || size > 200L * 1024 * 1024) { NotifyEvent("拒绝超大文件: " + JsonGet(json, "name")); return; }
+        var fr = new FileRecv { id = id, name = JsonGet(json, "name") ?? "file", sid = JsonGet(json, "sid"), sender = JsonGet(json, "nick") ?? "?", caption = JsonGet(json, "caption"), size = size, total = total, chunks = new string[total], t0 = DateTime.Now };
+        pendingFiles[id] = fr;
+        NotifyFileProgress(fr);
+    }
+    static void OnFileChunk(string json)
+    {
+        string id = JsonGet(json, "id");
+        if (id == null) return;
+        FileRecv fr;
+        if (!pendingFiles.TryGetValue(id, out fr) || fr.done) return;
+        string sid = JsonGet(json, "sid");
+        if (sid != null && fr.sid != null && sid.Length > 0 && fr.sid.Length > 0 && sid != fr.sid) return;
+        string data = JsonGet(json, "data");
+        if (data == null) return;
+        string lens = JsonGet(json, "len"); int len;
+        if (lens != null && int.TryParse(lens, out len) && len != data.Length) return;
+        string idxs = JsonGet(json, "idx"), seqs = JsonGet(json, "seq");
+        int idx; if (idxs == null || !int.TryParse(idxs, out idx) || idx < 0 || idx >= fr.total) return;
+        int seq; if (seqs != null && int.TryParse(seqs, out seq) && seq != idx) return;   // 重发的块不带 seq
+        if (fr.chunks[idx] == null) fr.received++;
+        fr.chunks[idx] = data;
+        if (fr.received >= fr.total) CompleteFile(fr);
+    }
+    static void OnFileEnd(string json)
+    {
+        string id = JsonGet(json, "id");
+        if (id == null) return;
+        FileRecv fr;
+        if (!pendingFiles.TryGetValue(id, out fr) || fr.done) return;
+        if (fr.retries >= 5) { fr.failed = true; pendingFiles.Remove(id); NotifyFileProgress(fr); return; }
+        fr.retries++;
+        RequestResend(fr);
+    }
+    static void RequestResend(FileRecv fr)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < fr.total; i++) if (fr.chunks[i] == null) { if (sb.Length > 0) sb.Append(','); sb.Append(i); }
+        if (sb.Length == 0) return;
+        SendJson("{\"type\":\"file-resend\",\"id\":\"" + fr.id + "\",\"missing\":[" + sb + "],\"room\":\"" + JsonEsc(room) + "\"}");
+    }
+    static void CompleteFile(FileRecv fr)
+    {
+        int cnt = 0;
+        for (int i = 0; i < fr.total; i++) if (fr.chunks[i] != null) cnt++;
+        if (cnt < fr.total) { fr.received = cnt; RequestResend(fr); return; }            // 有洞: 请求重发
+        var sb = new StringBuilder();
+        foreach (string c in fr.chunks) sb.Append(c);
+        string b64 = sb.ToString();
+        long expectLen = (long)Math.Ceiling(fr.size / 3.0) * 4;
+        if (expectLen > 0 && Math.Abs(b64.Length - expectLen) > expectLen / 200 + 2) {   // 重组校验失败: 全量重发
+            Array.Clear(fr.chunks, 0, fr.chunks.Length); fr.received = 0; RequestResend(fr); return;
+        }
+        try { fr.data = Convert.FromBase64String(b64); fr.done = true; } catch { fr.failed = true; }
+        NotifyFileProgress(fr);
+    }
+    static void OnFileResend(string json)
+    {
+        string id = JsonGet(json, "id");
+        if (id == null) return;
+        SentFile sf;
+        if (!sentFiles.TryGetValue(id, out sf)) return;
+        int mi = json.IndexOf("\"missing\"");
+        if (mi < 0) return;
+        int lb = json.IndexOf('[', mi); int rb = json.IndexOf(']', lb < 0 ? mi : lb);
+        if (lb < 0 || rb < 0) return;
+        foreach (string tok in json.Substring(lb + 1, rb - lb - 1).Split(',')) {
+            int idx; if (!int.TryParse(tok.Trim(), out idx)) continue;
+            int off = idx * sf.chunkSize;
+            if (off >= sf.b64.Length) continue;
+            int len = Math.Min(sf.chunkSize, sf.b64.Length - off);
+            string cd = sf.b64.Substring(off, len);
+            SendJson("{\"type\":\"file-chunk\",\"id\":\"" + sf.id + "\",\"idx\":" + idx + ",\"total\":" + sf.total + ",\"sid\":\"" + JsonEsc(docId) + "\",\"data\":\"" + cd + "\",\"len\":" + len + "}");
+        }
+        SendJson("{\"type\":\"file-end\",\"id\":\"" + sf.id + "\",\"total\":" + sf.total + ",\"sid\":\"" + JsonEsc(docId) + "\"}");
     }
 
     // ---------- timers ----------
@@ -538,20 +686,95 @@ public class ChatPlugin
         while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '-' || json[i] == '.' || json[i] == 'e' || json[i] == 'E' || json[i] == '+')) i++;
         return json.Substring(start, i - start);
     }
+    // 提取 "key":{...} 的原始对象子串 (字符串感知的大括号配对)
+    static string JsonGetObj(string json, string key)
+    {
+        string pat = "\"" + key + "\":";
+        int i = json.IndexOf(pat);
+        if (i < 0) return null;
+        i += pat.Length;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length || json[i] != '{') return null;
+        int depth = 0, start = i;
+        bool inStr = false;
+        for (; i < json.Length; i++) {
+            char c = json[i];
+            if (inStr) {
+                if (c == '\\') i++;
+                else if (c == '"') inStr = false;
+            } else if (c == '"') inStr = true;
+            else if (c == '{') depth++;
+            else if (c == '}') { depth--; if (depth == 0) return json.Substring(start, i - start + 1); }
+        }
+        return null;
+    }
+
+    // ---------- quote (§3.5: 有引用时加密前明文 = {"t":正文,"q":{nick,text,q?}} ) ----------
+    static string QuoteJson(Quote q, int depth)
+    {
+        if (q == null || depth >= 4) return "null";
+        string s = "{\"nick\":\"" + JsonEsc(q.nick) + "\",\"text\":\"" + JsonEsc(q.text) + "\"";
+        if (q.q != null) s += ",\"q\":" + QuoteJson(q.q, depth + 1);
+        return s + "}";
+    }
+    static string PackPayload(string text, Quote q)
+    {
+        if (q == null) return text;
+        return "{\"t\":\"" + JsonEsc(text) + "\",\"q\":" + QuoteJson(q, 0) + "}";
+    }
+    static Quote ParseQuote(string raw, int depth)
+    {
+        if (raw == null || depth >= 4) return null;
+        var q = new Quote();
+        q.nick = JsonGet(raw, "nick");
+        q.text = JsonGet(raw, "text");
+        if (q.nick == null && q.text == null) return null;
+        q.q = ParseQuote(JsonGetObj(raw, "q"), depth + 1);
+        return q;
+    }
+    // 解包: 明文若是 {"t":..(字符串),"q":..} 则拆出正文与引用, 否则原样返回
+    static string UnpackPayload(string pt, out Quote quote)
+    {
+        quote = null;
+        if (pt == null) return null;
+        if (pt.StartsWith("{")) {
+            string t = JsonGet(pt, "t");
+            if (t != null && JsonGetObj(pt, "t") == null) {
+                quote = ParseQuote(JsonGetObj(pt, "q"), 0);
+                return t;
+            }
+        }
+        return pt;
+    }
+    static string QuoteText(Quote q)
+    {
+        var sb = new StringBuilder();
+        int d = 0;
+        while (q != null && d < 4) {
+            if (d > 0) sb.Append(" ▸ ");
+            string t = q.text ?? "";
+            if (t.Length > 40) t = t.Substring(0, 40) + "…";
+            sb.Append(q.nick).Append(": ").Append(t);
+            q = q.q; d++;
+        }
+        return sb.ToString();
+    }
 
     // ---------- UI events (marshalled to UI thread) ----------
     static Action<string> onEvent;
-    static Action<string, string, string> onMessage;
+    static Action<string, string, string, Quote> onMessage;
     static Action<string> onTyping;
     static Action onUsers;
     static Action onRooms;
     static Action<string, bool> onStatus;
+    static Action<FileRecv> onFile;
     static void NotifyEvent(string s) { if (onEvent != null && uiContext != null) uiContext.Post(delegate(object x) { onEvent(s); }, null); }
-    static void NotifyMessage(string n, string t, string ts) { if (onMessage != null && uiContext != null) uiContext.Post(delegate(object x) { onMessage(n, t, ts); }, null); }
+    static void NotifyMessage(string n, string t, string ts, Quote q) { if (onMessage != null && uiContext != null) uiContext.Post(delegate(object x) { onMessage(n, t, ts, q); }, null); }
     static void NotifyTyping(string s) { if (onTyping != null && uiContext != null) uiContext.Post(delegate(object x) { onTyping(s); }, null); }
     static void NotifyUsers() { if (onUsers != null && uiContext != null) uiContext.Post(delegate(object x) { onUsers(); }, null); }
     static void NotifyRooms() { if (onRooms != null && uiContext != null) uiContext.Post(delegate(object x) { onRooms(); }, null); }
     static void NotifyStatus(string s, bool ok) { if (onStatus != null && uiContext != null) uiContext.Post(delegate(object x) { onStatus(s, ok); }, null); }
+    static void NotifyFileProgress(FileRecv fr) { if (onFile != null && uiContext != null) uiContext.Post(delegate(object x) { onFile(fr); }, null); }
 
     // ---------- UI helpers ----------
     static Font F(float size, FontStyle style) { return new Font("Microsoft YaHei UI", size, style); }
@@ -609,6 +832,7 @@ public class ChatPlugin
         uiContext = SynchronizationContext.Current;
         if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
         LoadCfg();
+        LoadHistory();
         if (string.IsNullOrEmpty(nick)) nick = "用户_" + Guid.NewGuid().ToString("N").Substring(0, 6);
 
         var f = new Form();
@@ -661,7 +885,18 @@ public class ChatPlugin
         typingLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_SUB, 16, ty + 94, 360, 16, ContentAlignment.MiddleLeft);
         f.Controls.Add(typingLbl);
 
-        msgList = new ListBox { Location = new Point(16, ty + 114), Size = new Size(358, 366), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        msgList = new ListBox { Location = new Point(16, ty + 114), Size = new Size(358, 348), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        msgList.DoubleClick += delegate {
+            int idx = msgList.SelectedIndex;
+            if (idx < 0 || idx >= msgMeta.Count) return;
+            var m = msgMeta[idx];
+            if (m == null) return;
+            if (m.file != null) { OpenFileRecv(m.file); return; }        // 文件/图片: 双击保存/查看
+            if (m.text == null || m.text.Length == 0) return;
+            currentQuote = new Quote { nick = m.nick, text = m.text.Length > 120 ? m.text.Substring(0, 120) : m.text };
+            UpdateQuoteBar();
+            inputBox.Focus();
+        };
         f.Controls.Add(msgList);
 
         f.Controls.Add(MkLabel("在线", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 114, 100, 16, ContentAlignment.MiddleLeft));
@@ -680,6 +915,12 @@ public class ChatPlugin
         };
         f.Controls.Add(roomList);
 
+        quoteLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_ACCENT, 16, ty + 466, 358, 16, ContentAlignment.MiddleLeft);
+        quoteLbl.Visible = false; quoteLbl.Cursor = Cursors.Hand;
+        tt.SetToolTip(quoteLbl, "点击取消引用");
+        quoteLbl.Click += delegate { currentQuote = null; UpdateQuoteBar(); };
+        f.Controls.Add(quoteLbl);
+
         inputBox = new TextBox { Location = new Point(16, ty + 492), Size = new Size(358, 32), Font = F(10F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None };
         inputBox.KeyDown += delegate(object s, KeyEventArgs e) {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendCurrent(); }
@@ -689,13 +930,36 @@ public class ChatPlugin
         var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(382, ty + 492), Size = new Size(80, 32), Primary = true };
         send.Click += delegate { SendCurrent(); };
         f.Controls.Add(send);
+        var fileBtn = new FlatBtn { Text = "📎 文件", Font = F(9F, FontStyle.Bold), Location = new Point(470, ty + 492), Size = new Size(74, 32) };
+        tt.SetToolTip(fileBtn, "发送文件/图片 (无直连通道, 上限 2MB)");
+        fileBtn.Click += delegate {
+            if (!running) return;
+            var dlg = new OpenFileDialog();
+            if (dlg.ShowDialog(f) == DialogResult.OK) SendFileBackground(dlg.FileName);
+        };
+        f.Controls.Add(fileBtn);
 
-        onEvent = delegate(string s) { msgList.Items.Add("· " + s + "  " + DateTime.Now.ToString("HH:mm")); msgList.TopIndex = msgList.Items.Count - 1; };
-        onMessage = delegate(string n, string t, string ts) {
+        onEvent = delegate(string s) { AddMsgLine("· " + s + "  " + DateTime.Now.ToString("HH:mm"), null); };
+        onMessage = delegate(string n, string t, string ts, Quote q) {
             long ms2; string tm = (ts != null && long.TryParse(ts, out ms2)) ? DateTimeOffset.FromUnixTimeMilliseconds(ms2).LocalDateTime.ToString("HH:mm") : DateTime.Now.ToString("HH:mm");
-            msgList.Items.Add(n + "  " + tm + "  " + t);
-            msgList.TopIndex = msgList.Items.Count - 1;
+            AddMsgLine(n + "  " + tm + "  " + (q != null ? "↩" + QuoteText(q) + " ｜ " : "") + t, new MsgMeta { nick = n, text = t });
+            HistAdd(room, n, ts != null ? ts : DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), t);
             if (!f.Focused) FlashTitle(f);
+        };
+        onFile = delegate(FileRecv fr) {
+            int idx = -1;
+            for (int i = 0; i < msgMeta.Count; i++) { var m = msgMeta[i]; if (m != null && m.file == fr) { idx = i; break; } }
+            if (idx < 0) {
+                string kb2 = fr.size < 1048576 ? (fr.size / 1024) + "KB" : (fr.size / 1048576.0).ToString("0.0") + "MB";
+                bool img = IsImageName(fr.name);
+                fr.dispBase = fr.sender + "  " + DateTime.Now.ToString("HH:mm") + "  " + (img ? "🖼" : "📄") + " " + fr.name + " (" + kb2 + ")" + (fr.caption != null && fr.caption.Length > 0 ? " — " + fr.caption : "");
+                AddMsgLine(fr.dispBase + " 接收中…", new MsgMeta { nick = fr.sender, text = (img ? "[图片] " : "[文件] ") + fr.name, file = fr });
+                HistAdd(room, fr.sender, DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), (img ? "[图片] " : "[文件] ") + fr.name);
+                if (!f.Focused) FlashTitle(f);
+                return;
+            }
+            if (fr.done) msgList.Items[idx] = fr.dispBase + (IsImageName(fr.name) ? " ✓ 双击查看" : " ✓ 双击保存");
+            else if (fr.failed) msgList.Items[idx] = fr.dispBase + " ✗ 接收失败";
         };
         onTyping = delegate(string s) { typingLbl.Text = s; };
         onUsers = delegate {
@@ -719,12 +983,84 @@ public class ChatPlugin
             statusLbl.ForeColor = ok ? C_GREEN : C_SUB;
         };
 
-        f.FormClosed += delegate { LeaveRoom(); SaveCfg(); };
+        fileSweeper = new System.Threading.Timer(delegate(object s) {
+            try {
+                var dead = new List<FileRecv>();
+                foreach (var kv in pendingFiles) if (!kv.Value.done && (DateTime.Now - kv.Value.t0).TotalSeconds > 15) dead.Add(kv.Value);
+                foreach (var fr in dead) { fr.failed = true; pendingFiles.Remove(fr.id); NotifyFileProgress(fr); }
+            } catch {}
+        }, null, 5000, 5000);
+
+        f.FormClosed += delegate { try { if (fileSweeper != null) fileSweeper.Dispose(); } catch {} LeaveRoom(); SaveCfg(); SaveHistory(); };
         f.Shown += delegate { inputBox.Focus(); };
         f.Show();
     }
 
     static void FlashTitle(Form f) { try { f.Text = "● 新消息 - " + f.Text.Replace("● 新消息 - ", ""); } catch {} }
+
+    // ---------- UI-thread helpers: 消息行 + 引用条 + 历史 ----------
+    static void AddMsgLine(string line, MsgMeta meta)
+    {
+        msgList.Items.Add(line);
+        msgMeta.Add(meta);
+        msgList.TopIndex = msgList.Items.Count - 1;
+    }
+    static void UpdateQuoteBar()
+    {
+        if (quoteLbl == null) return;
+        if (currentQuote != null) { quoteLbl.Text = "↩ " + QuoteText(currentQuote) + "   [点击取消]"; quoteLbl.Visible = true; }
+        else quoteLbl.Visible = false;
+    }
+    static void ShowHistory()
+    {
+        List<string> l;
+        if (!history.TryGetValue(room, out l) || l.Count == 0) return;
+        AddMsgLine("· —— 历史消息 ——", null);
+        int from = l.Count > 80 ? l.Count - 80 : 0;
+        for (int i = from; i < l.Count; i++) {
+            string line = l[i];
+            int p1 = line.IndexOf('|'); if (p1 < 0) continue;
+            int p2 = line.IndexOf('|', p1 + 1); if (p2 < 0) continue;
+            string ts = line.Substring(0, p1);
+            string n = line.Substring(p1 + 1, p2 - p1 - 1);
+            string txt;
+            try { txt = Encoding.UTF8.GetString(Convert.FromBase64String(line.Substring(p2 + 1))); } catch { continue; }
+            long msl; string tm = long.TryParse(ts, out msl) ? DateTimeOffset.FromUnixTimeMilliseconds(msl).LocalDateTime.ToString("MM-dd HH:mm") : "";
+            AddMsgLine(n + "  " + tm + "  " + txt, new MsgMeta { nick = n, text = txt });
+        }
+    }
+    static void OpenFileRecv(FileRecv fr)
+    {
+        if (fr == null || !fr.done || fr.data == null) return;
+        if (IsImageName(fr.name)) { ShowImagePreview(fr); return; }
+        var dlg = new SaveFileDialog { FileName = fr.name };
+        if (dlg.ShowDialog() == DialogResult.OK) {
+            try { File.WriteAllBytes(dlg.FileName, fr.data); } catch (Exception ex) { MessageBox.Show(ex.Message); }
+        }
+    }
+    static void ShowImagePreview(FileRecv fr)
+    {
+        try {
+            var ms = new MemoryStream(fr.data);
+            var img = Image.FromStream(ms);
+            var bmp = new Bitmap(img);
+            img.Dispose(); ms.Dispose();
+            int w = bmp.Width, h = bmp.Height;
+            int max = 520;
+            if (w > max || h > max) { double s = Math.Min((double)max / w, (double)max / h); w = (int)(w * s); h = (int)(h * s); }
+            var pf = new Form { Text = fr.name, StartPosition = FormStartPosition.CenterScreen, BackColor = C_BG, AutoScaleMode = AutoScaleMode.None, TopMost = true, FormBorderStyle = FormBorderStyle.FixedSingle, MaximizeBox = false };
+            pf.ClientSize = new Size(Math.Max(w, 220), Math.Max(h, 120) + 32);
+            var pb = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, Image = bmp };
+            var save = new FlatBtn { Text = "另存为…", Dock = DockStyle.Bottom, Primary = true, Height = 30, Font = F(9F, FontStyle.Bold) };
+            save.Click += delegate {
+                var dlg = new SaveFileDialog { FileName = fr.name };
+                if (dlg.ShowDialog() == DialogResult.OK) { try { File.WriteAllBytes(dlg.FileName, fr.data); } catch {} }
+            };
+            pf.Controls.Add(pb); pf.Controls.Add(save);
+            pf.FormClosed += delegate { bmp.Dispose(); };
+            pf.Show();
+        } catch {}
+    }
 
     static DateTime lastTypingNotify = DateTime.MinValue;
     static void NotifyTypingSelf()
@@ -746,6 +1082,8 @@ public class ChatPlugin
         brokerSel = edBroker.Text.Trim(); if (brokerSel.Length == 0) brokerSel = "auto";
         docId = "wg-" + Guid.NewGuid().ToString("N").Substring(0, 10);
         SaveCfg();
+        msgList.Items.Clear(); msgMeta.Clear();
+        ShowHistory();
         manualLeave = false; reconnectTries = 0; connecting = true;
         edNick.Enabled = false; edRoom.Enabled = false; edKey.Enabled = false; edBroker.Enabled = false;
         joinBtn.Text = "离开";
@@ -762,6 +1100,8 @@ public class ChatPlugin
         WsClose();
         users.Clear(); typingUsers.Clear();
         activeRooms.Clear(); roomNames.Clear();
+        pendingFiles.Clear(); sentFiles.Clear();
+        currentQuote = null; UpdateQuoteBar();
         edNick.Enabled = true; edRoom.Enabled = true; edKey.Enabled = true; edBroker.Enabled = true;
         joinBtn.Text = "加入";
         statusLbl.Text = "未连接"; statusLbl.ForeColor = C_SUB;
@@ -780,10 +1120,55 @@ public class ChatPlugin
     {
         string t = inputBox.Text.Trim();
         if (t.Length == 0 || !running) return;
-        SendChat(t);
+        Quote q = currentQuote;
+        currentQuote = null; UpdateQuoteBar();
+        SendChat2(t, q);
         inputBox.Text = "";
-        msgList.Items.Add(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + t);
-        msgList.TopIndex = msgList.Items.Count - 1;
+        AddMsgLine(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + (q != null ? "↩" + QuoteText(q) + " ｜ " : "") + t, new MsgMeta { nick = nick, text = t });
+        HistAdd(room, nick, DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), t);
+    }
+
+    // ---------- message history (每房间最近 80 条) ----------
+    static string HistPath() { return Path.Combine(CfgDir(), "chat-history.txt"); }
+    static void HistAdd(string r, string n, string ts, string t)
+    {
+        try {
+            List<string> l;
+            if (!history.TryGetValue(r, out l)) { l = new List<string>(); history[r] = l; }
+            l.Add((ts ?? "") + "|" + (n ?? "").Replace("|", "_") + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(t ?? "")));
+            if (l.Count > 80) l.RemoveRange(0, l.Count - 80);
+            if (++histDirty >= 10) { histDirty = 0; SaveHistory(); }
+        } catch {}
+    }
+    static void LoadHistory()
+    {
+        try {
+            history.Clear();
+            if (!File.Exists(HistPath())) return;
+            foreach (string raw in File.ReadAllLines(HistPath(), Encoding.UTF8)) {
+                int t1 = raw.IndexOf('\t'); if (t1 < 1) continue;
+                string r = raw.Substring(0, t1);
+                List<string> l;
+                if (!history.TryGetValue(r, out l)) { l = new List<string>(); history[r] = l; }
+                l.Add(raw.Substring(t1 + 1));
+            }
+        } catch {}
+    }
+    static void SaveHistory()
+    {
+        try {
+            Directory.CreateDirectory(CfgDir());
+            var sb = new StringBuilder();
+            int rooms = 0;
+            foreach (var kv in history) {
+                if (rooms++ >= 30) break;
+                var l = kv.Value;
+                int from = l.Count > 80 ? l.Count - 80 : 0;
+                string r = kv.Key.Replace('\t', ' ');
+                for (int i = from; i < l.Count; i++) sb.Append(r).Append('\t').Append(l[i]).Append("\r\n");
+            }
+            File.WriteAllText(HistPath(), sb.ToString(), new UTF8Encoding(false));
+        } catch {}
     }
 
     // ---------- persisted ----------

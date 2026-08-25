@@ -1,8 +1,9 @@
 // itools-chat reference peer (PC/Android wire-compatible) for interop testing.
-// usage: node ref-client.js <relay|mqtt> <url> <room> <nick> <key> <listenMs> <sendText>
+// usage: node ref-client.js <relay|mqtt> <url> <room> <nick> <key|nokey> <listenMs> <sendText> [sendFilePath]
 'use strict';
 const crypto = require('crypto');
-const [, , mode, baseUrl, room, nick, keyRaw, listenMsS, sendText] = process.argv;
+const fs = require('fs');
+const [, , mode, baseUrl, room, nick, keyRaw, listenMsS, sendText, sendFilePath] = process.argv;
 const key = keyRaw === 'nokey' ? '' : keyRaw;
 const listenMs = parseInt(listenMsS, 10);
 const docId = 'node-' + Math.random().toString(36).slice(2, 10);
@@ -27,6 +28,10 @@ function dec(data) {
     return Buffer.concat([d.update(Buffer.from(p[1], 'hex')), d.final()]).toString('utf8');
   } catch (e) { return null; }
 }
+function unpack(pt) {
+  try { const o = JSON.parse(pt); if (o && typeof o.t === 'string') return { t: o.t, q: o.q || null }; } catch (e) {}
+  return { t: pt, q: null };
+}
 function log(o) { console.log(JSON.stringify(o)); }
 
 // ---- minimal MQTT 3.1.1 framing (QoS0 only) ----
@@ -47,6 +52,53 @@ function sendJson(obj) {
   if (mode === 'relay') ws.send(s);
   else ws.send(mqPublish(TOPIC, s));
 }
+
+// ---- file receive state ----
+const pendingFiles = {};
+function handleFileStart(d) {
+  if (d.sid === docId) return;
+  pendingFiles[d.id] = { name: d.name, size: d.size, total: d.total, chunks: new Array(d.total).fill(null), received: 0 };
+  log({ ev: 'file-start', name: d.name, total: d.total });
+}
+function handleFileChunk(d) {
+  if (d.sid === docId) return;
+  const pf = pendingFiles[d.id];
+  if (!pf) return;
+  if (typeof d.len === 'number' && String(d.data).length !== d.len) return;
+  if (typeof d.seq === 'number' && d.seq !== d.idx) return;
+  if (d.idx < 0 || d.idx >= pf.total) return;
+  if (pf.chunks[d.idx] === null) pf.received++;
+  pf.chunks[d.idx] = String(d.data);
+  if (pf.received === pf.total) {
+    if (pf.chunks.some(c => c === null)) { log({ ev: 'file-gap', id: d.id }); return; }
+    const buf = Buffer.from(pf.chunks.join(''), 'base64');
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    log({ file: pf.name, len: buf.length, sha256: sha });
+    delete pendingFiles[d.id];
+  }
+}
+function sendFileNow(path) {
+  const bytes = fs.readFileSync(path);
+  const b64 = bytes.toString('base64');
+  const name = path.split(/[\\/]/).pop();
+  const fid = 'f' + Date.now().toString(36) + Math.floor(Math.random() * 99);
+  const chunkSize = 8000;
+  const total = Math.ceil(b64.length / chunkSize);
+  sendJson({ type: 'file-start', nick, sid: docId, caption: '', name, size: bytes.length, id: fid, total });
+  let i = 0;
+  const timer = setInterval(() => {
+    if (i >= total) {
+      clearInterval(timer);
+      sendJson({ type: 'file-end', id: fid, total, sid: docId });
+      log({ ev: 'file-sent', name, total });
+      return;
+    }
+    const cd = b64.slice(i * chunkSize, (i + 1) * chunkSize);
+    sendJson({ type: 'file-chunk', id: fid, idx: i, seq: i, total, sid: docId, data: cd, len: cd.length });
+    i++;
+  }, 4);
+}
+
 function handleJson(raw) {
   let d; try { d = JSON.parse(raw); } catch (e) { return; }
   if (d.type === 'join') {
@@ -59,10 +111,13 @@ function handleJson(raw) {
   } else if (d.type === 'chat') {
     if (d.id === docId) return;
     const pt = d.enc ? dec(d.text) : d.text;
-    log({ chat: d.nick, text: pt === null ? '[DECRYPT-FAIL]' : pt, ts: d.ts });
+    const u = pt === null ? { t: '[DECRYPT-FAIL]', q: null } : unpack(pt);
+    log({ chat: d.nick, text: u.t, quote: !!u.q, ts: d.ts });
   } else if (d.type === 'online') {
     log({ ev: 'online', nick: d.nick });
-  }
+  } else if (d.type === 'file-start') handleFileStart(d);
+  else if (d.type === 'file-chunk') handleFileChunk(d);
+  else if (d.type === 'file-end') { /* gap check omitted: chunk handler completes */ }
 }
 function handleMqtt(buf) {
   let pos = 0;
@@ -107,8 +162,15 @@ ws.addEventListener('close', (e) => { log({ ev: 'ws-close', code: e.code }); });
 let sendN = 0;
 const sendTimer = setInterval(() => {
   sendN++;
-  const txt = sendN === 1 ? sendText : sendText + '#' + sendN;
-  sendJson({ type: 'chat', nick, text: enc(txt), enc: true, ts: Date.now(), id: docId });
-  log({ ev: 'sent', text: txt });
+  let txt = sendN === 1 ? sendText : sendText + '#' + sendN;
+  if (sendN === 2) {
+    // quoted message: plaintext wrapped as {"t":..,"q":{nick,text}}
+    const payload = JSON.stringify({ t: txt, q: { nick: 'QuotedNick', text: 'quoted original text' } });
+    sendJson({ type: 'chat', nick, text: enc(payload), enc: true, ts: Date.now(), id: docId });
+  } else {
+    sendJson({ type: 'chat', nick, text: enc(txt), enc: true, ts: Date.now(), id: docId });
+  }
+  log({ ev: 'sent', text: txt, quoted: sendN === 2 });
+  if (sendN === 2 && sendFilePath) sendFileNow(sendFilePath);
 }, 5000);
 setTimeout(() => { clearInterval(sendTimer); try { ws.close(); } catch (e) {} process.exit(0); }, listenMs);
