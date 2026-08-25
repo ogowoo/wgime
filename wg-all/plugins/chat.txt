@@ -109,6 +109,21 @@ public class ChatPlugin
     static int histDirty = 0;
 
     static bool IsAuto(string s) { return s == null || s.Length == 0 || s == "auto"; }
+    // 与 PC 端一致的随机身份: nick = "User_" + 6 位 base36; 房间 = word-word-3digits
+    static readonly Random rng = new Random();
+    const string RoomWords = "blue red green gold silver ocean storm nova zen flux pulse echo orbit photon cipher quantum delta sigma omega alpha";
+    static string RandomNick()
+    {
+        const string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+        var sb = new StringBuilder("User_");
+        for (int i = 0; i < 6; i++) sb.Append(chars[rng.Next(chars.Length)]);
+        return sb.ToString();
+    }
+    static string RandomRoom()
+    {
+        var w = RoomWords.Split(' ');
+        return w[rng.Next(w.Length)] + "-" + w[rng.Next(w.Length)] + "-" + (rng.Next(900) + 100);
+    }
     static bool IsRelay(string url) { try { return new Uri(url).Host == "chat.seee.uno"; } catch { return false; } }
     static string MqttUrl(string url)
     {
@@ -886,7 +901,7 @@ public class ChatPlugin
         if (uiContext == null) uiContext = new WindowsFormsSynchronizationContext();
         LoadCfg();
         LoadHistory();
-        if (string.IsNullOrEmpty(nick)) nick = "用户_" + Guid.NewGuid().ToString("N").Substring(0, 6);
+        if (string.IsNullOrEmpty(nick)) nick = RandomNick();
 
         var f = new Form();
         chatForm = f;
@@ -923,14 +938,18 @@ public class ChatPlugin
 
         int ty = 52;
         edNick = MkEdit(f, nick, 16, ty, 110, 30, 9.5F, false);
-        edRoom = MkEdit(f, room, 134, ty, 130, 30, 9.5F, false);
-        edKey = MkEdit(f, customKey, 272, ty, 100, 30, 9.5F, true);
+        edRoom = MkEdit(f, room, 134, ty, 112, 30, 9.5F, false);
+        var diceBtn = new FlatBtn { Text = "随", Font = F(9F, FontStyle.Bold), Location = new Point(252, ty), Size = new Size(24, 30), Bg = C_SURF2 };
+        tt.SetToolTip(diceBtn, "随机房间名 (word-word-数字, 与 PC 端一致)");
+        diceBtn.Click += delegate { edRoom.Text = RandomRoom(); };
+        f.Controls.Add(diceBtn);
+        edKey = MkEdit(f, customKey, 282, ty, 90, 30, 9.5F, true);
         joinBtn = new FlatBtn { Text = "加入", Font = F(9.5F, FontStyle.Bold), Location = new Point(382, ty), Size = new Size(80, 34), Primary = true };
         joinBtn.Click += delegate { ToggleJoin(); };
-        f.Controls.Add(edNick); f.Controls.Add(edRoom); f.Controls.Add(edKey); f.Controls.Add(joinBtn);
+        f.Controls.Add(joinBtn);
         f.Controls.Add(MkLabel("昵称", F(8F, FontStyle.Regular), C_SUB, 16, ty - 16, 60, 14, ContentAlignment.MiddleLeft));
         f.Controls.Add(MkLabel("房间名", F(8F, FontStyle.Regular), C_SUB, 134, ty - 16, 80, 14, ContentAlignment.MiddleLeft));
-        f.Controls.Add(MkLabel("密钥(空=房间名)", F(8F, FontStyle.Regular), C_SUB, 272, ty - 16, 130, 14, ContentAlignment.MiddleLeft));
+        f.Controls.Add(MkLabel("密钥(空=房间名)", F(8F, FontStyle.Regular), C_SUB, 282, ty - 16, 130, 14, ContentAlignment.MiddleLeft));
 
         edBroker = new ComboBox { Location = new Point(16, ty + 42), Size = new Size(290, 26), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, Text = brokerSel };
         edBroker.Items.Add("auto");
@@ -1137,7 +1156,7 @@ public class ChatPlugin
     }
     static void JoinRoom()
     {
-        nick = edNick.Text.Trim(); if (nick.Length == 0) nick = "用户";
+        nick = edNick.Text.Trim(); if (nick.Length == 0) nick = RandomNick();
         room = edRoom.Text.Trim(); if (room.Length == 0) room = "大厅";
         customKey = edKey.Text.Trim();
         brokerSel = edBroker.Text.Trim(); if (brokerSel.Length == 0) brokerSel = "auto";

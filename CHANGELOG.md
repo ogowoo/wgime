@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-25 (chat 插件: 修复输入失灵 + 随机昵称/房间)
+
+- **修复昵称/房间/密钥/输入框无法输入**:上一版改 RoundedEdit 时遗留了一行 `f.Controls.Add(edNick…)`,把内嵌 TextBox 从圆角容器里扯出来直接挂到窗体上——白卡片成了空壳,点了没反应。新增 `tests\interop\ui-input-test.ps1` 真实键盘测试(SendKeys 逐字段验证),防再犯
+- **随机昵称对齐 PC 端**:`User_` + 6 位 base36(原"用户_" + hex)
+- **随机房间名**:房间名旁新增"随"按钮,生成 `word-word-3digits`(20 词表与 PC `chatRoomRandom`/Android `randomRoom` 一致)
+
+---
+
 ## 2026-08-25 (chat 插件: UI 对齐窗体设计语言)
 
 - **圆角**:补 `CreateRoundRectRgn`+`SetWindowRgn`(之前只画了圆角描边,窗口实际是直角)

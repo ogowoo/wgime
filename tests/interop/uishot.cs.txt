@@ -31,4 +31,24 @@ public static class ChatUiShot
             if (f != null) f.Invoke(new System.Action(delegate { f.Close(); }));
         } catch {}
     }
+
+    // 真实键盘输入测试: 激活窗体 → 聚焦字段 → SendKeys → 读回 Text
+    public static string TypeInto(string field, string text)
+    {
+        try {
+            var tb = (System.Windows.Forms.TextBox)typeof(ChatPlugin).GetField(field, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).GetValue(null);
+            string result = null;
+            tb.Invoke(new System.Action(delegate {
+                var f = tb.FindForm();
+                if (f != null) f.Activate();
+                tb.Select();
+                tb.Focus();
+                System.Threading.Thread.Sleep(250);
+                System.Windows.Forms.SendKeys.SendWait(text);
+                System.Threading.Thread.Sleep(300);
+                result = tb.Text;
+            }));
+            return result;
+        } catch (System.Exception ex) { return "ERR: " + ex.Message; }
+    }
 }
