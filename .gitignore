@@ -19,3 +19,6 @@ plugins/lt.txt
 /tray_cs.cs
 
 tests/interop/*.log
+
+tests/interop/*.png
+tests/interop/*.bin

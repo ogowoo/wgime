@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-25 (chat 插件: UI 对齐窗体设计语言)
+
+- **圆角**:补 `CreateRoundRectRgn`+`SetWindowRgn`(之前只画了圆角描边,窗口实际是直角)
+- **拖动修复**:之前只有标题栏 Panel 响应拖动,标题文字 Label 把鼠标事件吃掉导致几乎拖不动;现在标题 Label 也挂拖动,并新增标题栏底边发丝线
+- **FlatBtn 对齐规范**:先填父背景色(圆角外四角不再露出下层)、DoubleBuffered、悬停提亮/按下压暗/禁用置灰
+- **输入框**:昵称/房间/密钥/消息输入改用 RoundedEdit 范式(圆角白卡+描边,聚焦 accent 2px)
+- **字体**:F() 改用规范回退链 (Segoe UI Variable Display → Segoe UI → Microsoft YaHei UI, Point 单位)
+- 表情符号改文字标记(📎🖼📄 在 ListBox/自绘按钮里出豆腐块 → "文件"/[图片]/[文件])
+- 新增 `tests\interop\ui-screenshot.ps1`:真实弹窗 + CopyFromScreen 截屏 + 圆角/标题栏/卡片像素校验(规范 §9 的验证方式)
+
+---
+
 ## 2026-08-25 (chat 插件 M3: quote 引用 + 文件/图片传输 + 消息历史)
 
 - **quote 引用**:双击消息设置引用(输入框上方出现引用条,点击取消),发送时明文打包 `{"t":正文,"q":{nick,text,q?}}` 再加密(§3.5,嵌套 ≤4 层);接收侧解包后单行显示 `↩引用 ｜ 正文`
