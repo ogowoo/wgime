@@ -45,6 +45,8 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1    # WgIme ps1 版（15 项）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray-ps1.tests.ps1   # WgTray ps1 版（10 项）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1       # WgTray 两版（61 项）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\chat-protocol-smoke.ps1  # chat 协议冒烟（需联网）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-interop.ps1  # chat 双向互通验证（需联网+node）
 ```
 
 - 测试需要 Windows PowerShell 5.1（`powershell.exe`，不是 pwsh）。

@@ -6,6 +6,7 @@
 ;  Broker 填 auto 时按 PC 端顺序自动兜底, 并记住上次成功的服务器。
 ;  消息 AES-256-CBC 加密 (SHA256(房间:密钥) 派生), MQTT 模式下支持活跃房间注册表。
 ;  连接/接收全部在后台线程, 断线自动重连 6s x 3。
+;  头部勾选"调试"可把原始收发 JSON 记录到 %LOCALAPPDATA%\wgime\chat-debug.log。
 ; ============================================================
 code = lt
 name = 聊天
@@ -72,6 +73,18 @@ public class ChatPlugin
     static Dictionary<string, string> users = new Dictionary<string, string>();   // id -> nick
     static HashSet<string> recentMsgs = new HashSet<string>();
     static HashSet<string> typingUsers = new HashSet<string>();
+
+    // ---------- debug raw-traffic log (勾选头部"调试"后启用) ----------
+    static CheckBox dbgChk;
+    static volatile bool dbgOn = false;
+    static string DbgPath() { return Path.Combine(CfgDir(), "chat-debug.log"); }
+    static void Dbg(string dir, string s)
+    {
+        if (!dbgOn) return;
+        try {
+            File.AppendAllText(DbgPath(), DateTime.Now.ToString("HH:mm:ss.fff ") + dir + " " + (s.Length > 500 ? s.Substring(0, 500) + "…" : s) + "\r\n", new UTF8Encoding(false));
+        } catch {}
+    }
 
     static bool IsAuto(string s) { return s == null || s.Length == 0 || s == "auto"; }
     static bool IsRelay(string url) { try { return new Uri(url).Host == "chat.seee.uno"; } catch { return false; } }
@@ -301,8 +314,11 @@ public class ChatPlugin
             byte[] frame = ms.ToArray(); ms.SetLength(0);
             try {
                 if (relayMode) {
-                    if (res.MessageType == WebSocketMessageType.Text)
-                        OnJsonMessage(Encoding.UTF8.GetString(frame));   // relay: 裸 JSON 文本帧
+                    if (res.MessageType == WebSocketMessageType.Text) {
+                        string js = Encoding.UTF8.GetString(frame);
+                        Dbg("RX[relay]", js);
+                        OnJsonMessage(js);
+                    }
                 } else {
                     if (res.MessageType == WebSocketMessageType.Binary)
                         HandleMqttPackets(frame);
@@ -350,6 +366,7 @@ public class ChatPlugin
 
     static void DispatchJson(string topic, string json)
     {
+        Dbg("RX[" + topic + "]", json);
         if (topic == REGISTRY_TOPIC) { OnRegistryMessage(json); return; }
         OnJsonMessage(json);
     }
@@ -450,6 +467,7 @@ public class ChatPlugin
     // ---------- send ----------
     static void SendJson(string json)
     {
+        Dbg("TX", json);
         if (relayMode) WsSendText(json);                              // relay: 裸 JSON 文本帧
         else MqttPublish(Topic(), json);                              // MQTT: 房间 topic
     }
@@ -608,6 +626,11 @@ public class ChatPlugin
 
         var head = new Panel { Location = new Point(0, 0), Size = new Size(560, 38), BackColor = C_HEADER };
         head.Controls.Add(MkLabel("聊天  (与 itools-chat / 手机网页互通)", F(9.5F, FontStyle.Bold), C_TEXT, 16, 8, 380, 24, ContentAlignment.MiddleLeft));
+        dbgChk = new CheckBox { Text = "调试", Font = F(8.5F, FontStyle.Regular), ForeColor = C_SUB, Location = new Point(452, 9), Size = new Size(56, 20), BackColor = Color.Transparent };
+        var tt = new ToolTip();
+        tt.SetToolTip(dbgChk, "记录原始收发到 %LOCALAPPDATA%/wgime/chat-debug.log");
+        dbgChk.CheckedChanged += delegate { dbgOn = dbgChk.Checked; };
+        head.Controls.Add(dbgChk);
         var close = new FlatBtn { Text = "✕", Font = F(9F, FontStyle.Bold), Location = new Point(516, 6), Size = new Size(34, 26), Bg = C_HEADER, BgHover = Color.FromArgb(255, 200, 60, 70) };
         close.Click += delegate { f.Close(); };
         head.Controls.Add(close);

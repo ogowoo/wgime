@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-25 (chat 插件:互通性实机验证通过 + 调试日志)
+
+- **双向互通实机验证通过**:新增 `tests\interop\` 互操作测试套件——`ref-client.js`(Node 实现的协议参考端,按 itools chat-standalone 分支 Chat.bat / feature/chat-android 分支 Android 源码逐字段对齐)+ `plugin-harness.ps1`(Add-Type 加载**真实插件代码**无界面驱动)+ `run-interop.ps1`(双模式双向断言)。relay(Cloudflare)与 MQTT(EMQX)两种模式、收发两个方向全部 PASS,含端到端加密互解
+- **插件新增"调试"开关**:头部勾选后把原始收发 JSON 记录到 `%LOCALAPPDATA%\wgime\chat-debug.log`,用于现场排查互通问题
+- 源码级发现(以 itools 仓 `feature/chat-standalone` 与 `feature/chat-android` 分支为准):
+  - Android 端 `handleMessage` 对解密失败的消息显示**空气泡**(而非 `[encrypted]`,因 `unpackPayload("")` 返回空串)——对端看到空气泡=密钥不符
+  - Android 中继 URL 用 `URLEncoder.encode`(空格变 `+`),插件用 `%20`——**relay 模式房间名不要带空格**(worker 的 decodeURIComponent 不解 `+`,会进不同房间)
+  - Android 不发 leave/online(已知怪癖,在线列表会残留);Android 收到 join 会尝试 WebRTC offer(插件忽略,无影响)
+  - 注意:itools **master 分支的 ITools.bat 内嵌聊天没有 Cloudflare relay**(broker 只有 EMQX/Mosquitto/HiveMQ);relay 模式只在独立版 `feature/chat-standalone` 分支的 Chat.bat 和 Android app 里有
+
+---
+
 ## 2026-08-25 (chat 插件重写:修复致命兼容性缺陷,实现 M1+M2 路线)
 
 ### 修复的致命缺陷(此前与 PC/Android 双向都不互通)

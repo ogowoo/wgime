@@ -78,7 +78,9 @@
 
 ### 2.1 MQTT over WebSocket（模式 A）
 
-**PC 端 broker 列表**（`Chat.bat` 内 `var brokers=[...]`，自动模式按序轮询，从 localStorage `itools-chat-broker` 记录的上次成功项开始）：
+**PC 端 broker 列表**（`Chat.bat`（`feature/chat-standalone` 分支）内 `var brokers=[...]`，自动模式按序轮询，从 localStorage `itools-chat-broker` 记录的上次成功项开始）：
+
+> ⚠️ itools 仓 **master 分支的 ITools.bat** 内嵌聊天是**旧版**：brokers 只有 EMQX/Mosquitto/HiveMQ，**没有 Cloudflare relay**。relay 互通要用独立版 Chat.bat（chat-standalone 分支）或 Android app。
 
 | # | 名称 | host | 端口 | TLS | 备注 |
 |---|---|---|---|---|---|
@@ -420,7 +422,7 @@ file-resend:{type, id, missing:[...], room}
 - **重连**：意外断线 6s×3 自动重连
 - **TLS**：启动时 `ServicePointManager.SecurityProtocol |= Tls11|Tls12`（EMQX/Mosquitto 要求 TLS 1.2+）
 - **加密**：§4 全套，**与 PC/Android 字节级兼容** ✅
-- **UI**：连接栏（昵称/房间/密钥/Broker 下拉）+ 消息列表 + 在线列表 + 活跃房间列表 + 输入栏
+- **UI**：连接栏（昵称/房间/密钥/Broker 下拉）+ 消息列表 + 在线列表 + 活跃房间列表 + 输入栏；头部"调试"开关把原始收发 JSON 记录到 `%LOCALAPPDATA%\wgime\chat-debug.log`（排查互通问题用）
 
 ### 8.3 兼容性缺陷清单（历史记录——2026-08-25 重写已全部修复，按严重程度）
 
@@ -446,13 +448,13 @@ file-resend:{type, id, missing:[...], room}
 1. ✅ 传输分流：`brokerUrl` 命中 relay（`chat.seee.uno`）→ 走**裸 JSON 文本帧**路径
 2. ✅ 修复阻塞：连接/接收全部移到后台线程，UI 更新走 `SynchronizationContext.Post`
 3. ✅ 消息补齐 `enc:true`、typing 补 `ts`
-4. 验证：relay 裸 JSON 文本帧扇出已由 `tests\chat-protocol-smoke.ps1` 实机验证；**与 PC/Android 真机互发待用户验证**
+4. ✅ 验证：relay 裸 JSON 文本帧扇出已由 `tests\chat-protocol-smoke.ps1` 实机验证；**双向互通（含加密互解）已由 `tests\interop\` 套件验证通过**——Node 协议参考端（按 chat-standalone Chat.bat / chat-android 源码对齐）vs 真实插件代码，relay + MQTT(EMQX) 双模式双向 PASS
 
 **M2 — 真 MQTT broker 模式 + Active Rooms（✅ 2026-08-25 已完成）**
 1. ✅ URL 规则：`wss://<host>:<port>/mqtt`；broker 表抄 §2.1 PC 版，Auto 轮询 + `lastbroker` 持久化上次成功项；**必须 `AddSubProtocol("mqtt")`**（实测 EMQX 缺它 400、Mosquitto 断连）
 2. ✅ MQTT 帧健壮性：按 `EndOfMessage` 循环拼帧、一帧多包解析、CONNACK 驱动订阅、QoS0/1/2 PUBLISH 解析
 3. ✅ registry：订阅 `itools/registry/rooms`，10s room-beacon 心跳，25s 过期清理，右栏"活跃房间"列表（双击切换房间）
-4. 验证：EMQX 实机 CONNECT/SUBSCRIBE/PUBLISH 回环已由 `tests\chat-protocol-smoke.ps1` 验证；**与 PC 端 👥 互见待用户验证**
+4. ✅ 验证：`tests\interop\` MQTT 用例双向 PASS（EMQX 实机）
 
 **M3 — quote 引用 + 文件/图片（下一步）**
 1. quote：发送侧明文改 `{"t":...,"q":...}` 包装（§3.5），接收侧解包渲染
@@ -533,6 +535,9 @@ file-resend:{type, id, missing:[...], room}
 10. relay 无鉴权无加密（传输层只有 wss TLS）——机密性完全依赖 §4 的端到端加密，而无自定义密钥时密钥可从房间名推导（仅混淆）
 11. MQTT over WebSocket 必须带 `mqtt` 子协议（EMQX 缺它 400、Mosquitto 断连）；EMQX/Mosquitto 要求 TLS 1.2+
 12. PowerShell 里手写 MQTT 变长 Remaining Length 编码别用 `[int]($rem/128)`——PS 数值转换**四舍五入**而非截断（93/128 得 1），用 `[math]::Floor`；C# 的 int 除法无此坑
+13. relay 模式房间名**不要带空格**：Android 用 `URLEncoder.encode`（空格→`+`），插件用 `%20`，而 worker 的 `decodeURIComponent` 不解 `+`——两端会进不同房间 DO
+14. Android 端解密失败显示**空气泡**而非 `[encrypted]`（`unpackPayload("")` 怪癖）——对端空气泡=密钥不符
+15. 注意 PC 有两个版本：itools **master 分支 ITools.bat 内嵌聊天无 relay**（broker 仅 EMQX/Mosquitto/HiveMQ）；`feature/chat-standalone` 分支的独立 Chat.bat 才有 Cloudflare relay（broker 0）。要 relay 互通需对方用独立版/Android
 
 ### 9.5 参考文件清单
 
