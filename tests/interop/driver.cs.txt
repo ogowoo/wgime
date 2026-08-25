@@ -38,13 +38,13 @@ public static class ChatPluginDriver
         SetF(field, System.Delegate.CreateDelegate(delType, null, mi));
     }
 
-    public static string[] Run(string brokerUrl, string room, string nick, string key, int waitMs, string sendText, string filePath)
+    public static string[] Run(string brokerUrl, string room, string nick, string key, int waitMs, string sendText, string filePath, bool lan)
     {
         SetF("nick", nick); SetF("room", room); SetF("customKey", key);
         SetF("brokerSel", brokerUrl); SetF("lastBroker", "");
         SetF("docId", "harn-" + System.Guid.NewGuid().ToString("N").Substring(0, 8));
         SetF("uiContext", new InlineSync());
-        SetF("manualLeave", false); SetF("relayMode", false);
+        SetF("manualLeave", false); SetF("relayMode", false); SetF("lanOnly", lan);
         SetF("edNick", new System.Windows.Forms.TextBox());
         SetF("edRoom", new System.Windows.Forms.TextBox());
         SetF("edKey", new System.Windows.Forms.TextBox());
@@ -59,21 +59,30 @@ public static class ChatPluginDriver
         SetDelegate("onRooms", "OnUsersOrRooms");
         SetDelegate("onFile", "OnFile");
 
-        var th = new System.Threading.Thread(delegate() { CallM("ConnectWorker"); });
-        th.IsBackground = true; th.Start();
+        if (lan) { CallM("LanJoin"); }
+        else {
+            var th = new System.Threading.Thread(delegate() { CallM("ConnectWorker"); });
+            th.IsBackground = true; th.Start();
+        }
 
         var deadline = System.DateTime.Now.AddSeconds(45);
         while (!(bool)GetF("running") && System.DateTime.Now < deadline) System.Threading.Thread.Sleep(300);
         Add("HARNESS: running=" + GetF("running"));
         if ((bool)GetF("running")) {
             System.Threading.Thread.Sleep(2000);
-            CallM("SendChat", sendText);
-            Add("HARNESS: sent " + sendText);
             var qt = T.GetNestedType("Quote", System.Reflection.BindingFlags.NonPublic);
             var q = System.Activator.CreateInstance(qt);
             qt.GetField("nick").SetValue(q, "QuotedNick");
             qt.GetField("text").SetValue(q, "quoted original text");
-            CallM("SendChat2", sendText + "-withquote", q);
+            if (lan) {
+                CallM("LanSendChat", sendText, null);
+                Add("HARNESS: sent " + sendText);
+                CallM("LanSendChat", sendText + "-withquote", q);
+            } else {
+                CallM("SendChat", sendText);
+                Add("HARNESS: sent " + sendText);
+                CallM("SendChat2", sendText + "-withquote", q);
+            }
             Add("HARNESS: sent quote");
             if (filePath != null && filePath.Length > 0) {
                 CallM("SendFileBackground", filePath);

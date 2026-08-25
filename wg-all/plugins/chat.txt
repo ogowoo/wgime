@@ -8,10 +8,11 @@
 ;  连接/接收全部在后台线程, 断线自动重连 6s x 3。
 ;  头部勾选"调试"可把原始收发 JSON 记录到 %LOCALAPPDATA%\wgime\chat-debug.log。
 ;  双击消息=引用回复; 双击文件消息=保存/查看图片; 每房间保留最近 80 条历史。
+;  勾选 LAN = 纯局域网模式: 不连服务器, UDP 20003 广播+组播, 消息明文(与 PC/Android 的 LAN Only 互通)。
 ; ============================================================
 code = lt
 name = 聊天
-desc = 在线聊天: 与 itools-chat (PC/Android) 互通, 中继/MQTT 双模式, AES 加密, 引用/文件/图片
+desc = 在线聊天: 与 itools-chat (PC/Android) 互通, 中继/MQTT/LAN 三模式, AES 加密, 引用/文件/图片
 
 [csharp]
 using System;
@@ -103,10 +104,163 @@ public class ChatPlugin
     static Dictionary<string, FileRecv> pendingFiles = new Dictionary<string, FileRecv>();
     static Dictionary<string, SentFile> sentFiles = new Dictionary<string, SentFile>();
     static Label quoteLbl;
+    static CheckBox lanChk;
     static System.Threading.Timer fileSweeper;
     const int FILE_MAX = 2097152;                            // 无直连通道, relay 限制 ≤2MB
     static Dictionary<string, List<string>> history = new Dictionary<string, List<string>>();  // room -> "ts|nick|b64(text)"
     static int histDirty = 0;
+
+    // ---------- LAN-only 模式 (UDP 20003 广播/组播/单播, 明文, 与 PC/Android lan-* 协议兼容) ----------
+    static volatile bool lanOnly = false;
+    static string lanDocId = "";
+    static System.Net.Sockets.UdpClient udp;                 // 持久 20003 监听+发送
+    static System.Net.Sockets.UdpClient udpMc;               // 组播 224.0.0.251:5353 监听
+    static System.Threading.Timer lanBeaconTimer, lanSweepTimer;
+    static Dictionary<string, string> lanPeers = new Dictionary<string, string>();   // ip -> lanId
+    static Dictionary<string, string> lanRooms = new Dictionary<string, string>();   // room -> nick (beacon 来源)
+
+    static string LanNorm(string r) { return r != null && r.StartsWith("itools/chat/") ? r.Substring(12) : r; }   // Android beacon 带前缀
+    static string LanBeacon()
+    {
+        return "{\"type\":\"lan-beacon\",\"room\":\"" + JsonEsc(room) + "\",\"nick\":\"" + JsonEsc(nick) + "\",\"id\":\"" + JsonEsc(lanDocId) + "\"}";
+    }
+    static void LanJoin()
+    {
+        lanDocId = "lan-" + To36(DateTimeOffset.Now.ToUnixTimeMilliseconds());
+        try {
+            udp = new System.Net.Sockets.UdpClient();
+            udp.Client.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Socket, System.Net.Sockets.SocketOptionName.ReuseAddress, true);
+            udp.Client.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Any, 20003));
+            udp.EnableBroadcast = true;
+        } catch (Exception ex) { NotifyStatus("LAN 监听失败(端口被占用?): " + ex.Message, false); UiJoinFailed(); return; }
+        try {
+            udpMc = new System.Net.Sockets.UdpClient();
+            udpMc.Client.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Socket, System.Net.Sockets.SocketOptionName.ReuseAddress, true);
+            udpMc.Client.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Any, 5353));
+            udpMc.JoinMulticastGroup(System.Net.IPAddress.Parse("224.0.0.251"));
+        } catch { udpMc = null; }
+        running = true; connecting = false;
+        var rt = new Thread(LanRecvLoop); rt.IsBackground = true; rt.Start();
+        var mt = new Thread(LanMcRecvLoop); mt.IsBackground = true; mt.Start();
+        lanBeaconTimer = new System.Threading.Timer(delegate(object s) { try { if (running) LanSendAll(LanBeacon()); } catch {} }, null, 0, 2000);
+        LanSweep(null);                                      // 立即子网扫描一次
+        lanSweepTimer = new System.Threading.Timer(LanSweep, null, 30000, 30000);
+        LanSendAll("{\"type\":\"lan-room-query\",\"nick\":\"" + JsonEsc(nick) + "\",\"id\":\"scan-" + JsonEsc(lanDocId) + "\"}");
+        NotifyStatus("已连接 [LAN] 明文, 不经过服务器", true);
+        NotifyEvent("已进入 LAN 房间 [" + room + "] (明文, 仅同子网)");
+    }
+    static void LanLeave()
+    {
+        running = false;
+        try { if (lanBeaconTimer != null) { lanBeaconTimer.Dispose(); lanBeaconTimer = null; } } catch {}
+        try { if (lanSweepTimer != null) { lanSweepTimer.Dispose(); lanSweepTimer = null; } } catch {}
+        try { if (udp != null) { udp.Close(); udp = null; } } catch {}
+        try { if (udpMc != null) { udpMc.Close(); udpMc = null; } } catch {}
+        lanPeers.Clear(); lanRooms.Clear();
+    }
+    static void LanSendAll(string json)
+    {
+        Dbg("TX[lan]", json);
+        byte[] b = Encoding.UTF8.GetBytes(json);
+        try { if (udp != null) udp.Send(b, b.Length, new System.Net.IPEndPoint(System.Net.IPAddress.Broadcast, 20003)); } catch {}
+        try { if (udp != null) udp.Send(b, b.Length, new System.Net.IPEndPoint(System.Net.IPAddress.Parse("224.0.0.251"), 5353)); } catch {}
+        string[] peers;
+        lock (lanPeers) peers = new List<string>(lanPeers.Keys).ToArray();
+        foreach (string ip in peers) {
+            try { if (udp != null) udp.Send(b, b.Length, new System.Net.IPEndPoint(System.Net.IPAddress.Parse(ip), 20003)); } catch {}
+        }
+    }
+    static void LanRecvLoop()
+    {
+        while (running && udp != null) {
+            try {
+                var ep = new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0);
+                byte[] b = udp.Receive(ref ep);
+                HandleLanPacket(ep.Address.ToString(), Encoding.UTF8.GetString(b));
+            } catch { break; }
+        }
+    }
+    static void LanMcRecvLoop()
+    {
+        while (running && udpMc != null) {
+            try {
+                var ep = new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0);
+                byte[] b = udpMc.Receive(ref ep);
+                HandleLanPacket(ep.Address.ToString(), Encoding.UTF8.GetString(b));
+            } catch { break; }
+        }
+    }
+    static void LanSweep(object state)                       // 子网扫描: ≤512 主机/接口
+    {
+        try {
+            byte[] b = Encoding.UTF8.GetBytes(LanBeacon());
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()) {
+                if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses) {
+                    if (ua.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                    byte[] ip = ua.Address.GetAddressBytes();
+                    byte[] mk;
+                    try { mk = ua.IPv4Mask.GetAddressBytes(); } catch { continue; }
+                    if (mk == null || mk.Length != 4) continue;
+                    uint mask = (uint)mk[0] << 24 | (uint)mk[1] << 16 | (uint)mk[2] << 8 | mk[3];
+                    uint net = ((uint)ip[0] << 24 | (uint)ip[1] << 16 | (uint)ip[2] << 8 | ip[3]) & mask;
+                    int hosts = (int)Math.Min(~mask & 0x7FFFFFFF, 512);
+                    for (int i = 1; i <= hosts; i++) {
+                        uint a = net + (uint)i;
+                        try { if (udp != null) udp.Send(b, b.Length, new System.Net.IPEndPoint(new System.Net.IPAddress(new byte[] { (byte)(a >> 24), (byte)(a >> 16), (byte)(a >> 8), (byte)a }), 20003)); } catch {}
+                    }
+                }
+            }
+        } catch {}
+    }
+    static void HandleLanPacket(string fromIp, string json)
+    {
+        if (json.Length == 0 || json[0] != '{') return;
+        string type = JsonGet(json, "type");
+        if (type == null) return;
+        Dbg("RX[lan]", json);
+        if (type == "lan-beacon") {
+            string id = JsonGet(json, "id");
+            if (id == null || id == lanDocId || id == "scan-" + lanDocId) return;
+            string r = LanNorm(JsonGet(json, "room"));
+            string n = JsonGet(json, "nick");
+            lock (lanPeers) lanPeers[fromIp] = id;
+            if (r == room && n != null) {
+                bool isNew = !users.ContainsKey(id);
+                users[id] = n; NotifyUsers();
+                if (isNew) NotifyEvent(n + " (LAN) 在线");
+            } else if (r != null && r.Length > 0) {
+                lanRooms[r] = n; NotifyRooms();
+            }
+        } else if (type == "lan-room-query") {
+            try {
+                byte[] b = Encoding.UTF8.GetBytes(LanBeacon());
+                if (udp != null) udp.Send(b, b.Length, new System.Net.IPEndPoint(System.Net.IPAddress.Parse(fromIp), 20003));
+            } catch {}
+        } else if (type == "lan-msg") {
+            string id = JsonGet(json, "id");
+            if (id == null || id == lanDocId) return;
+            if (LanNorm(JsonGet(json, "room")) != room) return;
+            string rts = JsonGet(json, "ts");
+            string key = "l" + id + ":" + rts;               // LAN 按 id:ts 去重
+            if (recentMsgs.Contains(key)) return;
+            recentMsgs.Add(key); if (recentMsgs.Count > 300) recentMsgs.Clear();
+            Quote q = ParseQuote(JsonGetObj(json, "quote"), 0);
+            NotifyMessage(JsonGet(json, "nick") ?? "?", JsonGet(json, "text") ?? "", rts, q);
+        } else if (type == "file-start") {
+            if (JsonGet(json, "sid") != lanDocId) OnFileStart(json);
+        } else if (type == "file-chunk") {
+            if (JsonGet(json, "sid") != lanDocId) OnFileChunk(json);
+        }
+    }
+    static void LanSendChat(string text, Quote q)
+    {
+        string json = "{\"type\":\"lan-msg\",\"room\":\"" + JsonEsc(room) + "\",\"nick\":\"" + JsonEsc(nick) + "\",\"text\":\"" + JsonEsc(text) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(lanDocId) + "\",\"quote\":" + (q != null ? QuoteJson(q, 0) : "null") + "}";
+        LanSendAll(json);
+    }
+    // 发送路由: LAN 走 UDP, 否则 relay/MQTT
+    static void SendRawAny(string json) { if (lanOnly) LanSendAll(json); else SendJson(json); }
 
     static bool IsAuto(string s) { return s == null || s.Length == 0 || s == "auto"; }
     // 与 PC 端一致的随机身份: nick = "User_" + 6 位 base36; 房间 = word-word-3digits
@@ -550,17 +704,23 @@ public class ChatPlugin
             string b64 = Convert.ToBase64String(File.ReadAllBytes(path));
             string name = fi.Name;
             string fid = "f" + To36(DateTimeOffset.Now.ToUnixTimeMilliseconds()) + new Random().Next(99);
-            int chunkSize = 8000;
+            string sid = lanOnly ? lanDocId : docId;
+            int chunkSize = lanOnly ? 3000 : 8000;           // LAN-only 用 3000 字符块 (协议规定)
             int total = (b64.Length + chunkSize - 1) / chunkSize;
             sentFiles[fid] = new SentFile { id = fid, b64 = b64, chunkSize = chunkSize, total = total };
-            SendJson("{\"type\":\"file-start\",\"nick\":\"" + JsonEsc(nick) + "\",\"sid\":\"" + JsonEsc(docId) + "\",\"caption\":\"\",\"name\":\"" + JsonEsc(name) + "\",\"size\":" + fi.Length + ",\"id\":\"" + fid + "\",\"total\":" + total + "}");
+            string start = "{\"type\":\"file-start\",\"nick\":\"" + JsonEsc(nick) + "\",\"sid\":\"" + JsonEsc(sid) + "\",\"caption\":\"\",\"name\":\"" + JsonEsc(name) + "\",\"size\":" + fi.Length + ",\"id\":\"" + fid + "\",\"total\":" + total + "}";
+            SendRawAny(start);
+            if (lanOnly) {                                   // LAN: file-start 连发 3 次抗 UDP 丢包
+                Thread.Sleep(60); SendRawAny(start);
+                Thread.Sleep(60); SendRawAny(start);
+            }
             for (int i = 0; i < total; i++) {
                 int len = Math.Min(chunkSize, b64.Length - i * chunkSize);
                 string cd = b64.Substring(i * chunkSize, len);
-                SendJson("{\"type\":\"file-chunk\",\"id\":\"" + fid + "\",\"idx\":" + i + ",\"seq\":" + i + ",\"total\":" + total + ",\"sid\":\"" + JsonEsc(docId) + "\",\"data\":\"" + cd + "\",\"len\":" + len + "}");
+                SendRawAny("{\"type\":\"file-chunk\",\"id\":\"" + fid + "\",\"idx\":" + i + ",\"seq\":" + i + ",\"total\":" + total + ",\"sid\":\"" + JsonEsc(sid) + "\",\"data\":\"" + cd + "\",\"len\":" + len + "}");
                 Thread.Sleep(3);
             }
-            SendJson("{\"type\":\"file-end\",\"id\":\"" + fid + "\",\"total\":" + total + ",\"sid\":\"" + JsonEsc(docId) + "\"}");
+            if (!lanOnly) SendRawAny("{\"type\":\"file-end\",\"id\":\"" + fid + "\",\"total\":" + total + ",\"sid\":\"" + JsonEsc(sid) + "\"}");   // LAN 无 file-end
             NotifyEvent("已发送文件: " + name + " (" + (fi.Length / 1024) + "KB)");
         } catch (Exception ex) { NotifyEvent("发送文件失败: " + ex.Message); }
     }
@@ -617,13 +777,13 @@ public class ChatPlugin
     {
         int cnt = 0;
         for (int i = 0; i < fr.total; i++) if (fr.chunks[i] != null) cnt++;
-        if (cnt < fr.total) { fr.received = cnt; RequestResend(fr); return; }            // 有洞: 请求重发
+        if (cnt < fr.total) { fr.received = cnt; if (!lanOnly) RequestResend(fr); return; }   // 有洞: 请求重发 (LAN 无重发, 等超时)
         var sb = new StringBuilder();
         foreach (string c in fr.chunks) sb.Append(c);
         string b64 = sb.ToString();
         long expectLen = (long)Math.Ceiling(fr.size / 3.0) * 4;
         if (expectLen > 0 && Math.Abs(b64.Length - expectLen) > expectLen / 200 + 2) {   // 重组校验失败: 全量重发
-            Array.Clear(fr.chunks, 0, fr.chunks.Length); fr.received = 0; RequestResend(fr); return;
+            Array.Clear(fr.chunks, 0, fr.chunks.Length); fr.received = 0; if (!lanOnly) RequestResend(fr); return;
         }
         try { fr.data = Convert.FromBase64String(b64); fr.done = true; } catch { fr.failed = true; }
         NotifyFileProgress(fr);
@@ -951,11 +1111,15 @@ public class ChatPlugin
         f.Controls.Add(MkLabel("房间名", F(8F, FontStyle.Regular), C_SUB, 134, ty - 16, 80, 14, ContentAlignment.MiddleLeft));
         f.Controls.Add(MkLabel("密钥(空=房间名)", F(8F, FontStyle.Regular), C_SUB, 282, ty - 16, 130, 14, ContentAlignment.MiddleLeft));
 
-        edBroker = new ComboBox { Location = new Point(16, ty + 42), Size = new Size(290, 26), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, Text = brokerSel };
+        edBroker = new ComboBox { Location = new Point(16, ty + 42), Size = new Size(270, 26), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, Text = brokerSel };
         edBroker.Items.Add("auto");
         foreach (string u in BrokerUrls) edBroker.Items.Add(u);
         f.Controls.Add(MkLabel("Broker (auto = 自动兜底)", F(8F, FontStyle.Regular), C_SUB, 16, ty + 28, 200, 14, ContentAlignment.MiddleLeft));
         f.Controls.Add(edBroker);
+        lanChk = new CheckBox { Text = "LAN", Font = F(8.5F, FontStyle.Regular), ForeColor = C_SUB, Location = new Point(294, ty + 44), Size = new Size(52, 22), BackColor = Color.Transparent };
+        tt.SetToolTip(lanChk, "纯局域网模式: 不连任何服务器, 消息明文, 同子网互通 (与 PC/Android 的 LAN Only 一致)");
+        lanChk.CheckedChanged += delegate { edBroker.Enabled = !lanChk.Checked; };
+        f.Controls.Add(lanChk);
 
         statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, ty + 76, 360, 18, ContentAlignment.MiddleLeft);
         f.Controls.Add(statusLbl);
@@ -1049,6 +1213,12 @@ public class ChatPlugin
         };
         onRooms = delegate {
             roomList.Items.Clear(); roomNames.Clear();
+            if (lanOnly) {
+                var lr = new List<string>(lanRooms.Keys);
+                lr.Sort(StringComparer.Ordinal);
+                foreach (string rn in lr) { roomList.Items.Add(rn + " (LAN)"); roomNames.Add(rn); }
+                return;
+            }
             if (relayMode) return;
             var names = new List<string>(activeRooms.Keys);
             names.Sort(StringComparer.Ordinal);
@@ -1145,6 +1315,7 @@ public class ChatPlugin
     static DateTime lastTypingNotify = DateTime.MinValue;
     static void NotifyTypingSelf()
     {
+        if (lanOnly) return;                                 // LAN 无 typing
         if ((DateTime.Now - lastTypingNotify).TotalMilliseconds < 2000) return;
         lastTypingNotify = DateTime.Now;
         try { SendJson("{\"type\":\"typing\",\"nick\":\"" + JsonEsc(nick) + "\",\"ts\":" + DateTimeOffset.Now.ToUnixTimeMilliseconds() + ",\"id\":\"" + JsonEsc(docId) + "\"}"); } catch {}
@@ -1161,13 +1332,15 @@ public class ChatPlugin
         customKey = edKey.Text.Trim();
         brokerSel = edBroker.Text.Trim(); if (brokerSel.Length == 0) brokerSel = "auto";
         docId = "wg-" + Guid.NewGuid().ToString("N").Substring(0, 10);
+        lanOnly = lanChk != null && lanChk.Checked;
         SaveCfg();
         msgList.Items.Clear(); msgMeta.Clear();
         ShowHistory();
         manualLeave = false; reconnectTries = 0; connecting = true;
-        edNick.Enabled = false; edRoom.Enabled = false; edKey.Enabled = false; edBroker.Enabled = false;
+        edNick.Enabled = false; edRoom.Enabled = false; edKey.Enabled = false; edBroker.Enabled = false; lanChk.Enabled = false;
         joinBtn.Text = "离开";
         statusLbl.Text = "连接中…"; statusLbl.ForeColor = C_SUB;
+        if (lanOnly) { LanJoin(); return; }
         var t = new Thread(ConnectWorker); t.IsBackground = true; t.Start();
     }
     static void LeaveRoom()
@@ -1175,14 +1348,15 @@ public class ChatPlugin
         manualLeave = true;
         running = false; connecting = false;
         StopTimers();
-        try { SendLeave(); } catch {}
+        if (lanOnly) LanLeave();
+        try { if (!lanOnly) SendLeave(); } catch {}
         MqttDisconnect();
         WsClose();
         users.Clear(); typingUsers.Clear();
         activeRooms.Clear(); roomNames.Clear();
         pendingFiles.Clear(); sentFiles.Clear();
         currentQuote = null; UpdateQuoteBar();
-        edNick.Enabled = true; edRoom.Enabled = true; edKey.Enabled = true; edBroker.Enabled = true;
+        edNick.Enabled = true; edRoom.Enabled = true; edKey.Enabled = true; edBroker.Enabled = true; lanChk.Enabled = true;
         joinBtn.Text = "加入";
         statusLbl.Text = "未连接"; statusLbl.ForeColor = C_SUB;
         onlineLbl.Text = "在线 0 人"; typingLbl.Text = "";
@@ -1202,7 +1376,7 @@ public class ChatPlugin
         if (t.Length == 0 || !running) return;
         Quote q = currentQuote;
         currentQuote = null; UpdateQuoteBar();
-        SendChat2(t, q);
+        if (lanOnly) LanSendChat(t, q); else SendChat2(t, q);
         inputBox.Text = "";
         AddMsgLine(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + (q != null ? "↩" + QuoteText(q) + " ｜ " : "") + t, new MsgMeta { nick = nick, text = t });
         HistAdd(room, nick, DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), t);

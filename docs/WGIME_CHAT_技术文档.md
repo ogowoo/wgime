@@ -59,7 +59,7 @@
 |---|---|---|---|
 | MQTT broker 模式 | ✅ 5 broker 自动兜底 | ✅ 5 broker 自动兜底 | ✅ 同 5 broker auto 兜底 + 记住上次成功项 |
 | Cloudflare relay 模式 | ✅ 裸 JSON | ✅ 裸 JSON | ✅ 裸 JSON 文本帧（按 broker 地址自动识别） |
-| LAN-only 模式 | ✅ | ✅ | ❌ |
+| LAN-only 模式 | ✅ | ✅ | ✅（beacon/组播/子网扫描/lan-msg/文件 3000 字符块） |
 | AES 加密聊天 | ✅ | ✅ | ✅（crypto 实现正确） |
 | join/leave/online | ✅ 收发 | 收 only（不发 leave/online） | ✅ 收发 |
 | typing 提示 | ✅ | ❌ | ✅（已补 ts 字段） |
@@ -462,11 +462,13 @@ file-resend:{type, id, missing:[...], room}
 3. ✅ 顺带补齐消息持久化（每房间 80 条，`chat-history.txt`，加入房间自动回放）
 4. ✅ 验证：`tests\interop\` 6 项断言（聊天/引用/文件 sha256 × 双向）relay + MQTT 双模式 PASS
 
-**M4 — LAN-only 模式（下一步）**
-- UDP 20003 监听 + 255.255.255.255 广播 + 224.0.0.251:5353 组播；lan-beacon 2s 心跳（解析时容忍带/不带 `itools/chat/` 前缀的 room）；lan-msg 明文收发按 room 过滤
+**M4 — LAN-only 模式（✅ 2026-08-25 已完成）**
+- ✅ UDP 20003 持久监听（SO_REUSEADDR）+ 255.255.255.255 广播 + 224.0.0.251:5353 组播；lan-beacon 2s 三路心跳（PC 格式：room 不带前缀）；解析时容忍 Android 带 `itools/chat/` 前缀的 room
+- ✅ 子网扫描 30s（按接口掩码枚举，≤512 主机/接口）；lan-room-query 应答（单播回 beacon）；LAN 房间列表（beacon 来源，双击切换）
+- ✅ lan-msg 明文聊天（按 room 过滤、id:ts 去重、支持 quote 字段）；文件传输 3000 字符块 + file-start 连发 3 次（0/60/120ms），无 file-end/resend
+- ✅ 验证：`tests\interop\` LAN 用例 6 项 PASS（同机回环，真实插件代码 vs Node dgram 参考端）
 
-**M5 — 可选 P2P（建议跳过或最后做）**
-- UDP 打洞（STUN 手工 RFC 5389 可抄 PC C# 实现思路）；WebRTC 在 .NET Framework 插件环境无内置支持（需第三方库，与"无 NuGet"约束冲突，建议直接放弃，让 PC/Android 端享受 P2P 即可）
+**M5 — P2P（确认跳过）**：WebRTC 在 .NET Framework 插件环境无内置支持（无 NuGet），UDP 打洞价值有限——由 PC/Android 端享受 P2P 即可，插件始终有 relay/MQTT/LAN 三条可用路径。
 
 ### 8.5 互操作测试方案
 

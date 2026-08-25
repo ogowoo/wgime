@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-25 (chat 插件 M4: LAN-only 纯局域网模式)
+
+- **LAN 模式**:勾选连接栏"LAN"后不连任何服务器——UDP 20003 持久监听(SO_REUSEADDR)+ 255.255.255.255 广播 + 224.0.0.251:5353 组播,与 PC/Android 的 LAN Only 互通
+- **对端发现**:lan-beacon 2s 三路心跳(广播/组播/已知 peer 单播)+ 子网扫描 30s(≤512 主机/接口)+ lan-room-query 应答;beacon 来源的 LAN 房间进"活跃房间"列表(双击切换);解析容忍 Android 带 `itools/chat/` 前缀的 room
+- **明文聊天**:lan-msg 按 room 过滤、id:ts 去重、支持 quote 引用;无 join/leave/typing(协议如此)
+- **文件传输**:LAN 用 3000 字符块,file-start 连发 3 次抗丢包,无 file-end/resend(协议如此)
+- **验证**:`tests\interop\` 三模式(relay/MQTT/LAN)× 6 项断言(聊天/引用/文件 sha256 × 双向)全部 PASS;期间修了参考端一个变量名 bug(lanId→docId 导致进程崩)
+- 至此 §8.4 路线全部完成;M5(WebRTC P2P)按文档建议确认跳过(插件环境无 NuGet 装不了 WebRTC 库)
+
+---
+
 ## 2026-08-25 (chat 插件: 修复输入失灵 + 随机昵称/房间)
 
 - **修复昵称/房间/密钥/输入框无法输入**:上一版改 RoundedEdit 时遗留了一行 `f.Controls.Add(edNick…)`,把内嵌 TextBox 从圆角容器里扯出来直接挂到窗体上——白卡片成了空壳,点了没反应。新增 `tests\interop\ui-input-test.ps1` 真实键盘测试(SendKeys 逐字段验证),防再犯

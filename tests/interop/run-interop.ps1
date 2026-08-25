@@ -21,7 +21,8 @@ function Run-Case($mode, $url) {
     $psOut = "$PSScriptRoot\ps-$tag.log"
     $node = Start-Process -FilePath 'node' -ArgumentList "$PSScriptRoot\ref-client.js $mode $url $room NodeRef nokey 40000 node2plugin-$mode $testFile" -RedirectStandardOutput $nodeOut -RedirectStandardError "$PSScriptRoot\node-err-$tag.log" -PassThru -WindowStyle Hidden
     Start-Sleep -Seconds 3
-    $ps = Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File $PSScriptRoot\plugin-harness.ps1 -BrokerUrl $url -Room $room -Nick WgPlugin -Key nokey -WaitMs 22000 -SendText plugin2node-$mode -SendFile $testFile" -RedirectStandardOutput $psOut -RedirectStandardError "$PSScriptRoot\ps-err-$tag.log" -PassThru -WindowStyle Hidden
+    $lanFlag = if ($mode -eq 'lan') { ' -Lan' } else { '' }
+    $ps = Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File $PSScriptRoot\plugin-harness.ps1 -BrokerUrl $url -Room $room -Nick WgPlugin -Key nokey -WaitMs 22000 -SendText plugin2node-$mode -SendFile $testFile$lanFlag" -RedirectStandardOutput $psOut -RedirectStandardError "$PSScriptRoot\ps-err-$tag.log" -PassThru -WindowStyle Hidden
     $ps.WaitForExit(120000)
     if (-not $ps.HasExited) { $ps.Kill() }
     Start-Sleep -Seconds 8
@@ -46,6 +47,7 @@ function Run-Case($mode, $url) {
 
 if ($Mode -eq 'relay' -or $Mode -eq 'all') { Run-Case 'relay' 'wss://chat.seee.uno' }
 if ($Mode -eq 'mqtt' -or $Mode -eq 'all') { Run-Case 'mqtt' 'wss://broker.emqx.io:8084' }
+if ($Mode -eq 'lan' -or $Mode -eq 'all') { Run-Case 'lan' 'lan' }
 Write-Host '===== SUMMARY ====='
 $fail = 0
 foreach ($k in $results.Keys) { Write-Host ("{0}: {1}" -f $k, $(if ($results[$k]) { 'PASS' } else { 'FAIL' })); if (-not $results[$k]) { $fail++ } }

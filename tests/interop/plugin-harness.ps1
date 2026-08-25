@@ -9,7 +9,8 @@ param(
     [string]$Key = '',
     [int]$WaitMs = 20000,
     [string]$SendText = 'plugin-hello',
-    [string]$SendFile = ''
+    [string]$SendFile = '',
+    [switch]$Lan
 )
 $ErrorActionPreference = 'Stop'
 if ($Key -eq 'nokey') { $Key = '' }
@@ -22,5 +23,5 @@ if ($end -gt 0) { $cs = $cs.Substring(0, $end) }
 $driver = [IO.File]::ReadAllText($DriverPath, [Text.Encoding]::UTF8)
 Add-Type -TypeDefinition ($cs + "`n" + $driver) -ReferencedAssemblies System.Windows.Forms,System.Drawing,System.Net
 
-$lines = [ChatPluginDriver]::Run($BrokerUrl, $Room, $Nick, $Key, $WaitMs, $SendText, $SendFile)
+$lines = [ChatPluginDriver]::Run($BrokerUrl, $Room, $Nick, $Key, $WaitMs, $SendText, $SendFile, $Lan.IsPresent)
 $lines | ForEach-Object { $_ }

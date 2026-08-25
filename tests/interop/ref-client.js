@@ -1,12 +1,13 @@
 // itools-chat reference peer (PC/Android wire-compatible) for interop testing.
-// usage: node ref-client.js <relay|mqtt> <url> <room> <nick> <key|nokey> <listenMs> <sendText> [sendFilePath]
+// usage: node ref-client.js <relay|mqtt|lan> <url> <room> <nick> <key|nokey> <listenMs> <sendText> [sendFilePath]
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
 const [, , mode, baseUrl, room, nick, keyRaw, listenMsS, sendText, sendFilePath] = process.argv;
 const key = keyRaw === 'nokey' ? '' : keyRaw;
 const listenMs = parseInt(listenMsS, 10);
-const docId = 'node-' + Math.random().toString(36).slice(2, 10);
+const isLan = mode === 'lan';
+const docId = isLan ? 'lan-' + Date.now().toString(36) : 'node-' + Math.random().toString(36).slice(2, 10);
 const TOPIC = 'itools/chat/' + room;
 
 const aesKey = crypto.createHash('sha256').update(room + ':' + (key || room), 'utf8').digest();
@@ -45,12 +46,29 @@ function mqConnect(id) { return mqPkt(0x10, Buffer.concat([mqStr('MQTT'), Buffer
 function mqSubscribe(pid, topic) { return mqPkt(0x82, Buffer.concat([Buffer.from([pid >> 8, pid & 0xff]), mqStr(topic), Buffer.from([0])])); }
 function mqPublish(topic, payload) { return mqPkt(0x30, Buffer.concat([mqStr(topic), Buffer.from(payload, 'utf8')])); }
 
+// ---- transports ----
 let ws = null;
-function sendJson(obj) {
-  if (!ws || ws.readyState !== 1) return;
+let lanSock = null;
+function sendObj(obj) {
   const s = JSON.stringify(obj);
+  if (isLan) {
+    if (!lanSock) return;
+    const b = Buffer.from(s, 'utf8');
+    try { lanSock.send(b, 20003, '255.255.255.255'); } catch (e) {}
+    try { lanSock.send(b, 5353, '224.0.0.251'); } catch (e) {}
+    return;
+  }
+  if (!ws || ws.readyState !== 1) return;
   if (mode === 'relay') ws.send(s);
   else ws.send(mqPublish(TOPIC, s));
+}
+function sendChatMsg(txt, quote) {
+  if (isLan) {
+    sendObj({ type: 'lan-msg', room, nick, text: txt, ts: Date.now(), id: docId, quote: quote || null });
+  } else {
+    const payload = quote ? JSON.stringify({ t: txt, q: quote }) : txt;
+    sendObj({ type: 'chat', nick, text: enc(payload), enc: true, ts: Date.now(), id: docId });
+  }
 }
 
 // ---- file receive state ----
@@ -82,19 +100,21 @@ function sendFileNow(path) {
   const b64 = bytes.toString('base64');
   const name = path.split(/[\\/]/).pop();
   const fid = 'f' + Date.now().toString(36) + Math.floor(Math.random() * 99);
-  const chunkSize = 8000;
+  const chunkSize = isLan ? 3000 : 8000;
   const total = Math.ceil(b64.length / chunkSize);
-  sendJson({ type: 'file-start', nick, sid: docId, caption: '', name, size: bytes.length, id: fid, total });
+  const start = { type: 'file-start', nick, sid: docId, caption: '', name, size: bytes.length, id: fid, total };
+  sendObj(start);
+  if (isLan) { setTimeout(() => sendObj(start), 60); setTimeout(() => sendObj(start), 120); }
   let i = 0;
   const timer = setInterval(() => {
     if (i >= total) {
       clearInterval(timer);
-      sendJson({ type: 'file-end', id: fid, total, sid: docId });
+      if (!isLan) sendObj({ type: 'file-end', id: fid, total, sid: docId });
       log({ ev: 'file-sent', name, total });
       return;
     }
     const cd = b64.slice(i * chunkSize, (i + 1) * chunkSize);
-    sendJson({ type: 'file-chunk', id: fid, idx: i, seq: i, total, sid: docId, data: cd, len: cd.length });
+    sendObj({ type: 'file-chunk', id: fid, idx: i, seq: i, total, sid: docId, data: cd, len: cd.length });
     i++;
   }, 4);
 }
@@ -104,7 +124,7 @@ function handleJson(raw) {
   if (d.type === 'join') {
     if (d.id !== docId) {
       log({ ev: 'join', nick: d.nick });
-      sendJson({ type: 'online', nick, ts: Date.now(), id: docId });
+      sendObj({ type: 'online', nick, ts: Date.now(), id: docId });
     }
   } else if (d.type === 'leave') {
     log({ ev: 'leave', nick: d.nick });
@@ -117,7 +137,6 @@ function handleJson(raw) {
     log({ ev: 'online', nick: d.nick });
   } else if (d.type === 'file-start') handleFileStart(d);
   else if (d.type === 'file-chunk') handleFileChunk(d);
-  else if (d.type === 'file-end') { /* gap check omitted: chunk handler completes */ }
 }
 function handleMqtt(buf) {
   let pos = 0;
@@ -127,7 +146,7 @@ function handleMqtt(buf) {
     for (;;) { const b = buf[i++]; rem |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
     if (i + rem > buf.length) return;
     if (type === 0x20) {
-      if (buf[i + 1] === 0) { log({ ev: 'connack' }); ws.send(mqSubscribe(1, TOPIC)); ws.send(mqSubscribe(2, 'itools/registry/rooms')); sendJson({ type: 'join', nick, ts: Date.now(), id: docId }); log({ ev: 'joined' }); }
+      if (buf[i + 1] === 0) { log({ ev: 'connack' }); ws.send(mqSubscribe(1, TOPIC)); ws.send(mqSubscribe(2, 'itools/registry/rooms')); sendObj({ type: 'join', nick, ts: Date.now(), id: docId }); log({ ev: 'joined' }); }
     } else if ((type & 0xf0) === 0x30) {
       const qos = (head >> 1) & 3;
       const tl = (buf[i] << 8) | buf[i + 1];
@@ -137,40 +156,66 @@ function handleMqtt(buf) {
     pos = i + rem;
   }
 }
+function lanHandle(raw) {
+  let d; try { d = JSON.parse(raw); } catch (e) { return; }
+  if (d.type === 'lan-beacon') {
+    if (d.id !== docId && String(d.id).indexOf('scan-') !== 0) log({ ev: 'beacon', nick: d.nick, room: d.room });
+  } else if (d.type === 'lan-room-query') {
+    sendObj({ type: 'lan-beacon', room, nick, id: docId });
+  } else if (d.type === 'lan-msg') {
+    if (d.id === docId || d.room !== room) return;
+    log({ chat: d.nick, text: d.text, quote: !!d.quote, ts: d.ts });
+  } else if (d.type === 'file-start') handleFileStart(d);
+  else if (d.type === 'file-chunk') handleFileChunk(d);
+}
 
-const url = mode === 'relay' ? baseUrl.replace(/\/+$/, '') + '/room/' + encodeURIComponent(room)
-                             : baseUrl.replace(/\/+$/, '') + '/mqtt';
-ws = mode === 'relay' ? new WebSocket(url) : new WebSocket(url, 'mqtt');
-ws.binaryType = 'arraybuffer';
-
-ws.addEventListener('open', () => {
-  log({ ev: 'ws-open', url });
-  if (mode === 'relay') {
-    sendJson({ type: 'join', nick, ts: Date.now(), id: docId });
-    log({ ev: 'joined' });
-  } else {
-    ws.send(mqConnect(docId));
-  }
-});
-ws.addEventListener('message', (ev) => {
-  if (typeof ev.data === 'string') handleJson(ev.data);
-  else handleMqtt(Buffer.from(ev.data));
-});
-ws.addEventListener('error', (e) => { log({ ev: 'ws-error', msg: String(e.message || e) }); });
-ws.addEventListener('close', (e) => { log({ ev: 'ws-close', code: e.code }); });
+if (isLan) {
+  const dgram = require('dgram');
+  lanSock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  lanSock.on('message', (buf, rinfo) => lanHandle(buf.toString('utf8')));
+  lanSock.on('error', (e) => log({ ev: 'lan-error', msg: String(e) }));
+  lanSock.bind(20003, () => {
+    try { lanSock.setBroadcast(true); } catch (e) {}
+    try { lanSock.addMembership('224.0.0.251'); } catch (e) {}
+    log({ ev: 'lan-bound' });
+    const bj = { type: 'lan-beacon', room, nick, id: docId };
+    sendObj(bj);
+    setInterval(() => sendObj(bj), 2000);
+  });
+} else {
+  const url = mode === 'relay' ? baseUrl.replace(/\/+$/, '') + '/room/' + encodeURIComponent(room)
+                               : baseUrl.replace(/\/+$/, '') + '/mqtt';
+  ws = mode === 'relay' ? new WebSocket(url) : new WebSocket(url, 'mqtt');
+  ws.binaryType = 'arraybuffer';
+  ws.addEventListener('open', () => {
+    log({ ev: 'ws-open', url });
+    if (mode === 'relay') {
+      sendObj({ type: 'join', nick, ts: Date.now(), id: docId });
+      log({ ev: 'joined' });
+    } else {
+      ws.send(mqConnect(docId));
+    }
+  });
+  ws.addEventListener('message', (ev) => {
+    if (typeof ev.data === 'string') handleJson(ev.data);
+    else handleMqtt(Buffer.from(ev.data));
+  });
+  ws.addEventListener('error', (e) => { log({ ev: 'ws-error', msg: String(e.message || e) }); });
+  ws.addEventListener('close', (e) => { log({ ev: 'ws-close', code: e.code }); });
+}
 
 let sendN = 0;
 const sendTimer = setInterval(() => {
   sendN++;
-  let txt = sendN === 1 ? sendText : sendText + '#' + sendN;
-  if (sendN === 2) {
-    // quoted message: plaintext wrapped as {"t":..,"q":{nick,text}}
-    const payload = JSON.stringify({ t: txt, q: { nick: 'QuotedNick', text: 'quoted original text' } });
-    sendJson({ type: 'chat', nick, text: enc(payload), enc: true, ts: Date.now(), id: docId });
-  } else {
-    sendJson({ type: 'chat', nick, text: enc(txt), enc: true, ts: Date.now(), id: docId });
-  }
+  const txt = sendN === 1 ? sendText : sendText + '#' + sendN;
+  const quote = sendN === 2 ? { nick: 'QuotedNick', text: 'quoted original text' } : null;
+  sendChatMsg(txt, quote);
   log({ ev: 'sent', text: txt, quoted: sendN === 2 });
   if (sendN === 2 && sendFilePath) sendFileNow(sendFilePath);
 }, 5000);
-setTimeout(() => { clearInterval(sendTimer); try { ws.close(); } catch (e) {} process.exit(0); }, listenMs);
+setTimeout(() => {
+  clearInterval(sendTimer);
+  try { if (ws) ws.close(); } catch (e) {}
+  try { if (lanSock) lanSock.close(); } catch (e) {}
+  process.exit(0);
+}, listenMs);
