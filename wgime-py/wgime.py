@@ -59,7 +59,7 @@ import System.Windows.Forms as WF
 from WgBridge import KeyHook, CandForm, Injector, ImeBus
 
 sys.path.insert(0, BASE)
-from engine import Engine
+from engine import Engine, dynamic_candidates, vmode_candidates, is_all_cjk
 
 engine = Engine(DICT_DIR, DATA_DIR)
 cand_form = CandForm()
@@ -68,6 +68,7 @@ _h = cand_form.Handle   # 主线程上强制建句柄: 之后 BeginInvoke 都正
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA)
 MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+SENTENCE_ON = True
 
 
 class Ime:
@@ -78,6 +79,9 @@ class Ime:
     cands = []
     sel = 0
     page = 0
+    dyn_set = set()             # 动态候选 (rq/sj/xq/v 金额), 不学习
+    assoc_showing = False
+    last_commit = None
 
 
 ime = Ime()
@@ -86,7 +90,9 @@ ime = Ime()
 def show_page():
     header = '[%s] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
-    if ime.buf and page_c:
+    if ime.assoc_showing:
+        cand_form.ShowCands(header + '↪联想', '', System.Array[str](page_c), 0)
+    elif ime.buf and page_c:
         cand_form.ShowCands(header, ime.buf, System.Array[str](page_c), ime.sel)
     else:
         cand_form.HideBar()
@@ -99,7 +105,24 @@ def refresh():
         cand_form.HideBar()
         return
     cands, exact_wubi, extendable = engine.candidates(ime.buf, ime.mode)
+    # 造句 (一元格架): 拼音模式, 或混合模式且全拼长度>4
+    if SENTENCE_ON and (ime.mode == 1 or (ime.mode == 0 and len(ime.buf) > 4)):
+        sent = engine.best_sentence(ime.buf)
+        if sent and len(sent) > 1 and sent not in cands:
+            cands.insert(0, sent)
+    # 动态候选 (rq/sj/xq) + v 模式金额: 置顶, 不学习
+    ime.dyn_set = set()
+    if ime.mode < 3:
+        for s in reversed(dynamic_candidates(ime.buf)):
+            if s not in cands:
+                cands.insert(0, s)
+                ime.dyn_set.add(s)
+        for s in reversed(vmode_candidates(ime.buf)):       # [大写, 千分位] -> 大写在最前
+            if s not in cands:
+                cands.insert(0, s)
+                ime.dyn_set.add(s)
     ime.cands = cands
+    dbg('refresh buf=%s cands=%s' % (ime.buf, [ascii(c) for c in cands[:4]]))
     # 五笔约定: 唯一四码自动上屏 (仅纯五笔模式)
     if ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands:
         commit(0)
@@ -107,12 +130,49 @@ def refresh():
     show_page()
 
 
+def clear_assoc():
+    ime.assoc_showing = False
+    ime.last_commit = None
+
+
 def reset():
     ime.buf = ''
     ime.cands = []
     ime.page = 0
     ime.sel = 0
+    ime.dyn_set = set()
+    ime.assoc_showing = False
     cand_form.HideBar()
+
+
+def show_assoc():
+    if ime.last_commit and ime.mode < 3:
+        lst = engine.get_assoc(ime.last_commit)
+        if lst:
+            ime.assoc_showing = True
+            ime.cands = lst
+            ime.page = 0
+            show_page()
+            return
+    ime.assoc_showing = False
+
+
+def begin_assoc(w):
+    ime.last_commit = w if (w and len(w) <= 8 and is_all_cjk(w)) else None
+    show_assoc()
+
+
+def pick_assoc(i):
+    if not (0 <= i < len(ime.cands)):
+        clear_assoc()
+        cand_form.HideBar()
+        return
+    apick = ime.cands[i]
+    prev = ime.last_commit
+    engine.learn_assoc(prev, apick)
+    inject(apick)
+    ime.last_commit = apick
+    show_assoc()
 
 
 def inject(text):
@@ -125,9 +185,20 @@ def inject(text):
 def commit(i):
     if 0 <= i < len(ime.cands):
         text = ime.cands[i]
-        engine.learn(ime.buf, text, ime.mode)
+        learn_word = text if text not in ime.dyn_set else None
+        code = ime.buf
+        prev = ime.last_commit
         inject(text)
-    reset()
+        reset()
+        if learn_word:
+            engine.learn(code, learn_word, ime.mode)
+            if prev and len(learn_word) <= 8 and is_all_cjk(learn_word):
+                engine.learn_assoc(prev, learn_word)      # 连续上屏词对 -> 联想二元组
+            begin_assoc(learn_word)
+
+
+def digit_as_code():                             # v 模式: v 开头后数字续码
+    return ime.mode < 2 and ime.buf.startswith('v') and (ime.buf[1:].isdigit() if len(ime.buf) > 1 else len(ime.cands) == 0)
 
 
 def commit_char(idx):                            # [ = 首字, ] = 末字 (取首候选的单字)
@@ -150,6 +221,7 @@ def set_active(on):
 
 def handle(vk):
     """工作线程上的按键状态机 (事件来自 C# 实时层队列)。"""
+    dbg('vk=%02x active=%s buf=%s' % (vk, ime.active, ime.buf))
     if vk == VK['F8'] or vk == VK['TAP']:
         set_active(not ime.active)
         return
@@ -165,18 +237,37 @@ def handle(vk):
     if not ime.active:
         return
     if 0x41 <= vk <= 0x5A:                       # A-Z
+        if ime.assoc_showing:
+            clear_assoc()
         ime.buf += chr(vk + 32)
         if len(ime.buf) > 32:
             ime.buf = ime.buf[:32]
         refresh()
     elif vk == VK['SPACE']:
-        if ime.buf:
+        if ime.assoc_showing and not ime.buf:    # 联想行: 空格 = 真空格
+            clear_assoc()
+            cand_form.HideBar()
+            Injector.Text(' ')
+        elif ime.buf:
             commit(ime.sel)
-    elif 0x31 <= vk <= 0x39:                     # 1-9
-        if ime.buf and vk - 0x31 < len(ime.cands):
-            commit(ime.page * 9 + (vk - 0x31))
-        elif not ime.buf:
-            Injector.Text(str(vk - 0x30))        # 无缓冲: 数字原样上屏
+    elif 0x30 <= vk <= 0x39:                     # 0-9
+        d = vk - 0x30
+        if d == 0 and not ime.buf and not ime.assoc_showing:
+            Injector.Text('0')                   # 无缓冲: 0 原样上屏
+        elif ime.assoc_showing and not ime.buf:
+            pick_assoc(ime.page * 9 + d - 1)
+        elif digit_as_code():                    # v 模式续码
+            ime.buf += str(d)
+            refresh()
+        elif ime.buf:
+            idx = ime.page * 9 + (d - 1)
+            if 0 <= idx < len(ime.cands):
+                commit(idx)
+            elif (ime.mode < 2 and ime.buf[0] == 'v' and (len(ime.buf) == 1 or ime.buf[1:].isdigit())):
+                ime.buf += str(d)                # v 模式: 超出候选数的数字续码 (对齐 C# Hook_OnSpaced 回退)
+                refresh()
+        else:
+            Injector.Text(str(d))                # 无缓冲: 数字原样上屏
     elif vk == VK['LBRACKET']:
         commit_char(0)
     elif vk == VK['RBRACKET']:

@@ -160,3 +160,14 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **验收**（`wgime-py/tests/accept-test.ps1` 实机驱动记事本）：混合 zhongguo→中国、拼音 nihao→你好、五笔 wqvb→自动上屏你好、词典 apple→苹果、繁简中國、Shift 轻拍中英切换，全部通过
 
 **阶段 1 未做（留给后续）**：造句（BestSentence）、联想行（assoc）、rq/sj/xq 动态候选、vf 符号面板、v 模式金额、应用启动码、短语、五笔 z 通配、造词/用户词、config.txt、PasteCommit/UIPI 提权窗口、Qt stale-char keyfix、每应用模式、emoji 候选。
+
+---
+
+## 9. 阶段 2 第一批已完成（2026-08-26）
+
+- **造句**：一元格架（`pywfreq.txt` 71580 条词频抽自 `###PYWFREQ###` 数据段，`log(f+1) - edges*LogTotalW`），拼音模式/混合长码触发；实测 `zhonghuarenmingongheguo` → 首候选"中华人民共和国"
+- **动态候选**：rq（日期三格式）/sj/xq 置顶不入学习；**v 模式金额**（千分位 + 大写金额，与 C# `UpperAmount`/`Thousands` 逐行一致，含零分组规则）
+- **联想行**：连续上屏词对学二元组（RecordCommit 语义），上屏后出"↪联想"行，数字选、空格出真空格；`assoc.txt` 与 C# 同格式
+- **简拼按词频重排**（ApplySwap 的稳定降序）
+- **修坑**：① bridge `IsImeKey` 漏了数字 0（v 模式含 0 金额全乱）；② v 模式数字路由与 C# 完全一致——裸 'v' 有候选时数字选词、超出候选数才续码（wb.txt 里 'v 发' 有候选，所以 v2024 按 C# 语义就是选词——**这是 C# 现状的 quirk，不是移植 bug**）
+- 验收：六场景（混合/拼音/五笔/词典/繁简/Shift）+ 造句 + rq + 联想链（中国→美国 学习并出联想行）全部实机通过

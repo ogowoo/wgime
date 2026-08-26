@@ -8,6 +8,7 @@
 - 词频: FreqM[mode] 分桶 + Freq 合并视图; userdict_{mix,py,wb}.txt / lastpick_*.txt 与 C# 版同格式
 """
 import bisect
+import math
 import os
 import threading
 import time
@@ -16,6 +17,92 @@ CAND_CAP = 60
 PAGE_SIZE = 9
 MODE_SUFFIX = ('mix', 'py', 'wb')
 FUZZY_PAIRS = (('zh', 'z'), ('ch', 'c'), ('sh', 's'), ('ang', 'an'), ('eng', 'en'), ('ing', 'in'), ('n', 'l'))
+
+CN_DIGIT = '零壹贰叁肆伍陆柒捌玖'
+CN_UNIT4 = ('', '拾', '佰', '仟')
+CN_BIG = ('', '万', '亿', '兆', '京')
+
+
+def upper_amount(ds):
+    """1234 -> 壹仟贰佰叁拾肆元整 (与 C# UpperAmount 一致)"""
+    s = ds.lstrip('0')
+    if not s:
+        return '零元整'
+    if len(s) > 16:
+        return None
+    head = len(s) % 4 or 4
+    groups = (len(s) - head) // 4 + 1
+    sb = []
+    pending_zero = False
+    for g in range(groups):
+        start = 0 if g == 0 else head + (g - 1) * 4
+        ln = head if g == 0 else 4
+        grp = s[start:start + ln]
+        if all(c == '0' for c in grp):
+            pending_zero = True
+            continue
+        if g > 0 and pending_zero and sb:
+            sb.append('零')
+        pending_zero = False
+        grp_zero = False
+        for i, ch in enumerate(grp):
+            d = ord(ch) - 48
+            if d == 0:
+                grp_zero = True
+                continue
+            if grp_zero:
+                sb.append('零')
+                grp_zero = False
+            sb.append(CN_DIGIT[d])
+            sb.append(CN_UNIT4[len(grp) - 1 - i])
+        if g < groups - 1:
+            sb.append(CN_BIG[groups - 1 - g])
+    sb.append('元整')
+    return ''.join(sb)
+
+
+def thousands(ds):
+    """1234567 -> 1,234,567"""
+    s = ds.lstrip('0') or '0'
+    out = []
+    for i, ch in enumerate(s):
+        out.append(ch)
+        left = len(s) - 1 - i
+        if left > 0 and left % 3 == 0:
+            out.append(',')
+    return ''.join(out)
+
+
+def vmode_candidates(code):
+    """v+数字 -> [大写金额, 千分位] (与 AddVMode 一致: 大写在前)"""
+    if len(code) < 2 or code[0] != 'v':
+        return []
+    ds = code[1:]
+    if not ds.isdigit() or len(ds) > 16:
+        return []
+    out = []
+    up = upper_amount(ds)
+    if up is not None:
+        out.append(up)
+    out.append(thousands(ds))
+    return out
+
+
+def dynamic_candidates(code):
+    """rq/sj/xq 动态候选 (与 AddDynamic 一致)"""
+    n = time.localtime()
+    if code == 'rq':
+        return [time.strftime('%Y-%m-%d', n), '%d年%d月%d日' % (n.tm_year, n.tm_mon, n.tm_mday), time.strftime('%Y/%m/%d', n)]
+    if code == 'sj':
+        return [time.strftime('%H:%M', n), time.strftime('%H:%M:%S', n), time.strftime('%Y-%m-%d %H:%M', n)]
+    if code == 'xq':
+        w = '日一二三四五六'[(n.tm_wday + 1) % 7]
+        return ['星期' + w, '周' + w]
+    return []
+
+
+def is_all_cjk(s):
+    return all('\u4e00' <= c <= '\u9fff' for c in s)
 
 
 def parse_dict(path):
@@ -179,6 +266,33 @@ class Engine:
         self.freq_dirty = 0
         self.last_save = time.time()
         self._save_lock = threading.Lock()
+        # 简拼候选按词频重排 (ApplySwap: stable desc by combined freq)
+        for k in self.acro:
+            lst = self.acro[k]
+            if len(lst) > 1:
+                self.acro[k] = sorted(lst, key=lambda w: -self.freq.get(w, 0))
+        # 造句词频 (pywfreq.txt: word:freq)
+        self.word_freq = {}
+        wtot = 0
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pywfreq.txt'), encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    c = line.rfind(':')
+                    if c < 1:
+                        continue
+                    try:
+                        n = int(line[c + 1:])
+                    except ValueError:
+                        continue
+                    self.word_freq[line[:c]] = n
+                    wtot += n
+        except OSError:
+            pass
+        self.log_total_w = math.log(max(wtot, 1000))
+        # 联想 (commit 二元组)
+        self.assoc = {}
+        self._load_assoc()
         # 繁简
         self.trad_map = None
         tp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trad.txt')
@@ -244,6 +358,98 @@ class Engine:
             self.last_save = time.time()
             threading.Thread(target=self.save_freq, daemon=True).start()
 
+    # ---------- 造句 (BestSentence: 单字/词一元格架, score=sum(log(f+1))-edges*log_total) ----------
+    def best_sentence(self, code):
+        n = len(code)
+        if n < 4 or n > 32:
+            return None
+        NEG = float('-inf')
+        best = [0.0] + [NEG] * n
+        frm = [0] * (n + 1)
+        word = [''] * (n + 1)
+        for i in range(n):
+            if best[i] == NEG:
+                continue
+            for ln in range(1, min(12, n - i) + 1):
+                val = self.py.get(code[i:i + ln])
+                if val is None:
+                    continue
+                bw, bwf = None, -1
+                for t in val.split(' '):
+                    f = self.word_freq.get(t, 0)
+                    if f > bwf:
+                        bwf, bw = f, t
+                if bw is None:
+                    continue
+                sc = best[i] + math.log(bwf + 1) - self.log_total_w
+                if sc > best[i + ln]:
+                    best[i + ln] = sc
+                    frm[i + ln] = i
+                    word[i + ln] = bw
+        if best[n] == NEG:
+            return None
+        parts = []
+        p = n
+        while p > 0:
+            parts.append(word[p])
+            p = frm[p]
+        return ''.join(reversed(parts))
+
+    # ---------- 联想 (与 C# Assoc 一致: prev commit -> cur counts) ----------
+    def learn_assoc(self, prev, cur):
+        if not prev or not cur or prev == cur or len(prev) > 8 or len(cur) > 8:
+            return
+        if not is_all_cjk(prev) or not is_all_cjk(cur):
+            return
+        m = self.assoc.get(prev)
+        if m is None:
+            if len(self.assoc) >= 20000:
+                self.assoc.pop(next(iter(self.assoc)))
+            m = {}
+            self.assoc[prev] = m
+        m[cur] = m.get(cur, 0) + 1
+        if len(m) > 12:                              # 超上限: 丢最弱
+            weak = min(m, key=lambda k: m[k])
+            del m[weak]
+        self.freq_dirty += 1
+
+    def get_assoc(self, w, limit=9):
+        m = self.assoc.get(w)
+        if not m:
+            return []
+        return [k for k, _ in sorted(m.items(), key=lambda kv: -kv[1])[:limit]]
+
+    def _load_assoc(self):
+        try:
+            with open(os.path.join(self.data_dir, 'assoc.txt'), encoding='utf-8') as f:
+                for line in f:
+                    tab = line.find('\t')
+                    if tab < 1:
+                        continue
+                    m = {}
+                    for t in line[tab + 1:].strip().split(' '):
+                        c = t.rfind(':')
+                        if c < 1:
+                            continue
+                        try:
+                            m[t[:c]] = int(t[c + 1:])
+                        except ValueError:
+                            pass
+                    if m:
+                        self.assoc[line[:tab]] = m
+        except OSError:
+            pass
+
+    def _save_assoc(self):
+        try:
+            snap = sorted(self.assoc.items(), key=lambda kv: -sum(kv[1].values()))[:20000]
+            with open(os.path.join(self.data_dir, 'assoc.txt'), 'w', encoding='utf-8') as f:
+                for k, m in snap:
+                    tops = sorted(m.items(), key=lambda kv: -kv[1])[:8]
+                    f.write('%s\t%s\n' % (k, ' '.join('%s:%d' % (w, c) for w, c in tops)))
+        except OSError:
+            pass
+
     def save_freq(self):
         with self._save_lock:
             try:
@@ -256,6 +462,7 @@ class Engine:
                     with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
                         for k, v in lasts:
                             f.write('%s %s\n' % (k, v))
+                self._save_assoc()
             except OSError:
                 pass
 

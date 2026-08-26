@@ -19,7 +19,7 @@ public static class ImeBus
     public static bool IsImeKey(int vk)
     {
         if (vk >= 0x41 && vk <= 0x5A) return true;   // A-Z
-        if (vk >= 0x31 && vk <= 0x39) return true;   // 1-9
+        if (vk >= 0x30 && vk <= 0x39) return true;   // 0-9
         return vk == 0x20 || vk == 0x08 || vk == 0x1B || vk == 0x0D || vk == 0xBD || vk == 0xBB
             || vk == 0xDB || vk == 0xDD;             // space back esc enter - = [ ]
     }

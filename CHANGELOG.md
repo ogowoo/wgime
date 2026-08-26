@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-26 (wgime-py 阶段 2 第一批: 造句/联想/动态候选/v 金额)
+
+- 造句: 一元格架 (pywfreq.txt 7.1 万条词频), zhonghuarenmingongheguo → 中华人民共和国
+- rq/sj/xq 动态候选置顶不学习; v+数字出千分位+大写金额 (UpperAmount/Thousands 逐行对齐)
+- 联想行: 连续上屏学二元组, ↪联想 行数字选词, assoc.txt 与 C# 同格式; 简拼按词频重排
+- 修坑: IsImeKey 漏数字 0; v 模式数字路由与 C# 完全一致 (含裸 v 有候选时数字选词的 quirk)
+- 验收: 六场景 + 造句 + rq + 联想链实机全过
+
+---
+
 ## 2026-08-25 (wgime-py 阶段 1: IME 核心对齐 C# WordBoard)
 
 - 四模式(混合/拼音/五笔/词典) + Shift 轻拍开关 + Ctrl+\` 模式循环 + Ctrl+Shift+F 繁简(3602 对映射抽自 C# 内嵌表)
