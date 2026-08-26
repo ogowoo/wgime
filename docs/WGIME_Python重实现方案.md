@@ -194,3 +194,17 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **Qt stale-char keyfix**：全角标点后注入 X+Back 吸收擦除（微信 4.x 等 Qt 应用的吞字规避），per-app pin 可关
 - **钩子注入过滤**：自家 SendInput 事件带 `dwExtraInfo=0x5747494D('WGIM')` 标记，钩子见 `LLKHF_INJECTED+MAGIC` 直接放行——修掉"粘贴的 Ctrl+V 被自家钩子当字母 v 吞掉"的互踩；外部测试工具（SendKeys，无标记）仍可驱动
 - 托盘新增"当前程序：剪贴板上屏切换 / 标点吞字修复切换"
+
+---
+
+## 12. 阶段 3 第一批已完成（2026-08-26，外挂生态）
+
+- **插件系统**：`plugins\*.txt` 解析（code/name/desc 头 + 步骤 DSL 或 `[csharp]`）；`[csharp]` 走运行时 CodeDom 编译 + 专用 STA 线程（`PluginHost`：`Application.Run` + 定时器泵队列），错误落盘 + 弹窗；与 WgIme 宿主同契约——`lt` 选中 ▶聊天 即弹出真正的聊天窗（验证通过）
+- **步骤 DSL 执行器**（`plugins.py`）：msg/confirm/run/shell/shellx/open/kill/wait/reg-set/reg-del/file-del/mkdir + `[shell]/[powershell]/[shellx]/[psx]` 块（ANSI .cmd / UTF-8 BOM .ps1，临时文件）；失败记日志不中断、confirm 选否中止
+- **工具箱窗体**：`tools.txt` tab/cols/按钮解析 → TabControl + 按钮网格，点击后台执行对应步骤
+- **插件管理窗体**：列表 + 启用/禁用（`plugins-disabled.txt`）+ 重载
+- **剪贴板历史**：轮询剪贴板序列号，30 条历史，复制选中/粘贴上屏
+- **便签**：多行文本自动保存 `notes.txt`
+- **启动器整合**：候选条 ▶ 前缀合一（config app= / 插件 / 工具 code / 内置 itools·plugins·jlb·bj）
+- 关键修坑：pythonnet 内置窗体不能在工作线程建（无消息泵）——统一 `PluginHost.Post(System.Action(...))` 调度到 STA 线程；pythonnet 的 lambda 不能直接传 `Post(Action)`，需 `System.Action(...)` 显式包装
+- **遗留**：取色器、网络工具、emoji 图片版候选、打包发布（embeddable zip 内嵌 bat 或 PyInstaller）

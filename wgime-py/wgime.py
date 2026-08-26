@@ -10,7 +10,9 @@ import clr  # noqa: F401  (pythonnet 2.5.2 / .NET Framework 4.x)
 import hashlib
 import os
 import sys
+import os
 import subprocess
+import sys
 import threading
 import time
 
@@ -56,12 +58,14 @@ clr.AddReference(load_bridge_dll())
 clr.AddReference('System.Windows.Forms')
 clr.AddReference('System.Drawing')
 import System
+from System import Action as _Action
 import System.Windows.Forms as WF
-from WgBridge import KeyHook, CandForm, Injector, ImeBus
+from WgBridge import KeyHook, CandForm, Injector, ImeBus, PluginHost
 
 sys.path.insert(0, BASE)
 from engine import (Engine, dynamic_candidates, vmode_candidates, is_all_cjk,
                     load_config, shuangpin_expand, SYM_CAT_NAMES, SYM_CATS)
+import plugins as plugmod
 
 engine = Engine(DICT_DIR, DATA_DIR)
 cand_form = CandForm()
@@ -102,6 +106,108 @@ class Ime:
 
 ime = Ime()
 apply_config()
+PluginHost.Start()
+
+# ---------- 插件 / 工具箱 ----------
+PLUGINS = []
+TOOLS = []
+
+
+def reload_plugins():
+    global PLUGINS, TOOLS
+    PLUGINS, _ = plugmod.load_plugins(os.path.join(DICT_DIR, 'plugins'), DATA_DIR)
+    TOOLS = plugmod.load_tools(os.path.join(DICT_DIR, 'tools.txt'))
+
+
+def find_launcher(code):
+    """返回 (显示名, kind, payload) 或 None。kind: app/plugin/tool/builtin"""
+    if code in CFG['apps']:
+        name, cmd, args = CFG['apps'][code]
+        return (name, 'app', (cmd, args))
+    for p in PLUGINS:
+        if p.enabled and p.code == code:
+            return (p.name, 'plugin', p)
+    for tab in TOOLS:
+        for b in tab['buttons']:
+            if b['code'] == code:
+                return ('工具:' + b['name'], 'tool', b)
+    if code in ('itools', 'tools'):
+        return ('工具箱', 'builtin', 'toolbox')
+    if code in ('plugins', 'cjgl'):
+        return ('插件管理', 'builtin', 'pluginmgr')
+    if code in ('jlb', 'clip'):
+        return ('剪贴板历史', 'builtin', 'clipboard')
+    if code in ('bj', 'notes'):
+        return ('便签', 'builtin', 'notes')
+    return None
+
+
+def _step_log(m):
+    dbg('step: %s' % m)
+
+
+def _step_msgbox(title, text):
+    tray.ShowBalloonTip(2500, title, text, WF.ToolTipIcon.Info)
+
+
+def _step_confirm(text):
+    return WF.MessageBox.Show(text, '确认', WF.MessageBoxButtons.YesNo, WF.MessageBoxIcon.Question) == WF.DialogResult.Yes
+
+
+def run_steps_bg(body):
+    def work():
+        try:
+            fails = plugmod.run_steps(body, _step_log, _step_msgbox, _step_confirm)
+            tray.ShowBalloonTip(2000, '工具箱', '执行完成' + ('' if fails == 0 else ' (%d 步失败)' % fails), WF.ToolTipIcon.Info)
+        except Exception as ex:
+            dbg('steps err %r' % ex)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def run_launcher(l):
+    name, kind, payload = l
+    if kind == 'app':
+        launch_app_payload(payload)
+    elif kind == 'plugin':
+        p = payload
+        if p.kind == 'csharp':
+            err = PluginHost.CompileAndRun(p.body, DATA_DIR, plugmod.hashlib.md5(p.body.encode('utf-8')).hexdigest()[:8])
+            if err:
+                tray.ShowBalloonTip(3000, '插件编译失败', err, WF.ToolTipIcon.Error)
+        else:
+            run_steps_bg(p.body)
+    elif kind == 'tool':
+        run_steps_bg('\n'.join(payload['steps']))
+    elif kind == 'builtin':
+        _builtin_post(payload)
+
+
+def _builtin_post(payload):
+    PluginHost.Post(_Action(lambda p=payload: _show_builtin(p)))
+
+
+def _show_builtin(payload):
+    if payload == 'toolbox':
+        show_toolbox()
+    elif payload == 'pluginmgr':
+        show_plugin_mgr()
+    elif payload == 'clipboard':
+        show_clipboard()
+    elif payload == 'notes':
+        show_notes()
+
+
+def launch_app_payload(payload):
+    cmd, args = payload
+    try:
+        if '://' in cmd:
+            os.startfile(cmd)
+        elif args:
+            subprocess.Popen('"%s" %s' % (cmd, args), shell=True)
+        else:
+            os.startfile(cmd)
+    except Exception as ex:
+        tray.ShowBalloonTip(2000, '启动失败', str(ex), WF.ToolTipIcon.Error)
 
 
 def show_page():
@@ -145,11 +251,11 @@ def refresh():
             if s not in cands:
                 cands.insert(0, s)
                 ime.dyn_set.add(s)
-    # 应用启动码 (config.txt app=): 精确匹配置顶
+    # 启动器 (config app= / 插件 / 工具 code): 精确匹配置顶
     ime.app_cand = None
-    app = CFG['apps'].get(ime.buf)
-    if app:
-        cand = '▶' + app[0]
+    lch = find_launcher(ime.buf)
+    if lch:
+        cand = '▶' + lch[0]
         if cand in cands:
             cands.remove(cand)
         cands.insert(0, cand)
@@ -353,8 +459,10 @@ def record_commit(w, code):
 def commit(i):
     if 0 <= i < len(ime.cands):
         text = ime.cands[i]
-        if text == ime.app_cand:                 # 应用启动码: 启动, 不上屏不学习
-            launch_app(ime.buf)
+        if text == ime.app_cand:                 # 启动器候选: 执行, 不上屏不学习
+            lch = find_launcher(ime.buf)
+            if lch:
+                run_launcher(lch)
             reset()
             return
         learn_word = text if text not in ime.dyn_set else None
@@ -563,7 +671,193 @@ def on_closing():                                # 退出前落盘词频
         pass
 
 
-# ---------- tray ----------
+# ---------- 工具箱 / 插件管理 窗体 ----------
+C_BG = System.Drawing.Color.FromArgb(255, 232, 237, 245)
+C_SURFACE = System.Drawing.Color.White
+C_ACCENT = System.Drawing.Color.FromArgb(255, 0, 122, 255)
+C_TEXT = System.Drawing.Color.FromArgb(255, 29, 29, 31)
+
+
+def show_toolbox():
+    reload_plugins()
+    f = WF.Form()
+    f.Text = 'WgIme-Py 工具箱'
+    f.BackColor = C_BG
+    f.TopMost = True
+    f.StartPosition = WF.FormStartPosition.CenterScreen
+    tabs = WF.TabControl()
+    tabs.Dock = WF.DockStyle.Fill
+    for tab in TOOLS:
+        page = WF.TabPage(tab['name'])
+        fl = WF.FlowLayoutPanel()
+        fl.Dock = WF.DockStyle.Fill
+        fl.AutoScroll = True
+        fl.BackColor = C_BG
+        bw = 150 if tab['cols'] <= 2 else 90
+        for b in tab['buttons']:
+            btn = WF.Button()
+            btn.Text = b['name']
+            btn.Size = System.Drawing.Size(bw, 40)
+            btn.BackColor = C_SURFACE
+            btn.ForeColor = C_TEXT
+            btn.FlatStyle = WF.FlatStyle.Flat
+            steps = '\n'.join(b['steps'])
+            btn.Click += (lambda s, e, body=steps: run_steps_bg(body))
+            fl.Controls.Add(btn)
+        page.Controls.Add(fl)
+        tabs.TabPages.Add(page)
+    f.Controls.Add(tabs)
+    f.ClientSize = System.Drawing.Size(500, 420)
+    f.Show()
+
+
+def show_plugin_mgr():
+    reload_plugins()
+    f = WF.Form()
+    f.Text = 'WgIme-Py 插件管理'
+    f.BackColor = C_BG
+    f.TopMost = True
+    f.StartPosition = WF.FormStartPosition.CenterScreen
+    f.ClientSize = System.Drawing.Size(420, 380)
+    lst = WF.CheckedListBox()
+    lst.Dock = WF.DockStyle.Fill
+    lst.BackColor = C_SURFACE
+    for p in PLUGINS:
+        lst.Items.Add('%s (%s)  %s' % (p.name, p.code, os.path.basename(p.path)), p.enabled)
+    f.Controls.Add(lst)
+    bot = WF.Panel()
+    bot.Dock = WF.DockStyle.Bottom
+    bot.Height = 40
+    bot.BackColor = C_BG
+
+    def on_apply(s, e):
+        disabled = set()
+        for i in range(lst.Items.Count):
+            if not lst.GetItemChecked(i):
+                disabled.add(os.path.basename(PLUGINS[i].path))
+        plugmod.save_disabled(DATA_DIR, disabled)
+        reload_plugins()
+        tray.ShowBalloonTip(1500, '插件管理', '已应用并重载', WF.ToolTipIcon.Info)
+    ba = WF.Button()
+    ba.Text = '应用'
+    ba.Width = 80
+    ba.Left = 12
+    ba.Top = 7
+    ba.Click += on_apply
+    bot.Controls.Add(ba)
+    bo = WF.Button()
+    bo.Text = '打开目录'
+    bo.Width = 90
+    bo.Left = 104
+    bo.Top = 7
+    bo.Click += lambda s, e: os.startfile(os.path.join(DICT_DIR, 'plugins'))
+    bot.Controls.Add(bo)
+    f.Controls.Add(bot)
+    f.Show()
+
+
+# ---------- 剪贴板历史 / 便签 ----------
+CLIP_HISTORY = []
+
+
+def clip_poll():
+    """1s 轮询剪贴板序列号, 变化时入历史"""
+    from ctypes import windll, c_uint
+    GetSeq = windll.user32.GetClipboardSequenceNumber
+    act = GetSeq()
+    while True:
+        time.sleep(1)
+        try:
+            cur = GetSeq()
+            if cur != act:
+                act = cur
+                t = (Injector.ClipboardText() or '').strip()
+                if t and len(t) <= 5000 and (not CLIP_HISTORY or CLIP_HISTORY[0] != t):
+                    CLIP_HISTORY.insert(0, t)
+                    del CLIP_HISTORY[30:]
+        except Exception:
+            pass
+
+
+clip_poll_thread = threading.Thread(target=clip_poll, daemon=True)
+clip_poll_thread.start()
+
+
+def show_clipboard():
+    f = WF.Form()
+    f.Text = 'WgIme-Py 剪贴板历史'
+    f.BackColor = C_BG
+    f.TopMost = True
+    f.StartPosition = WF.FormStartPosition.CenterScreen
+    f.ClientSize = System.Drawing.Size(420, 420)
+    lst = WF.ListBox()
+    lst.Dock = WF.DockStyle.Fill
+    lst.BackColor = C_SURFACE
+    for t in CLIP_HISTORY:
+        lst.Items.Add(t.replace('\r', ' ').replace('\n', ' ')[:60])
+    # 双击/按钮 = 复制回剪贴板
+    def copy_selected(s, e):
+        i = lst.SelectedIndex
+        if 0 <= i < len(CLIP_HISTORY):
+            Injector.SetClipboardText(CLIP_HISTORY[i])
+    def paste_selected(s, e):
+        i = lst.SelectedIndex
+        if 0 <= i < len(CLIP_HISTORY):
+            Injector.SetClipboardText(CLIP_HISTORY[i])
+            time.sleep(0.15)
+            Injector.Paste(CLIP_HISTORY[i])
+    f.Controls.Add(lst)
+    bot = WF.Panel()
+    bot.Height = 40
+    bot.Dock = WF.DockStyle.Bottom
+    bot.BackColor = C_BG
+    bc = WF.Button()
+    bc.Text = '复制选中'
+    bc.Width = 90
+    bc.Left = 12
+    bc.Top = 7
+    bc.Click += copy_selected
+    bot.Controls.Add(bc)
+    bp = WF.Button()
+    bp.Text = '粘贴上屏'
+    bp.Width = 90
+    bp.Left = 112
+    bp.Top = 7
+    bp.Click += paste_selected
+    bot.Controls.Add(bp)
+    f.Controls.Add(bot)
+    f.Show()
+
+
+def show_notes():
+    f = WF.Form()
+    f.Text = 'WgIme-Py 便签'
+    f.BackColor = C_BG
+    f.TopMost = True
+    f.StartPosition = WF.FormStartPosition.CenterScreen
+    f.ClientSize = System.Drawing.Size(420, 300)
+    path = os.path.join(DATA_DIR, 'notes.txt')
+    tb = WF.TextBox()
+    tb.Multiline = True
+    tb.Dock = WF.DockStyle.Fill
+    tb.Font = System.Drawing.Font('Microsoft YaHei UI', 11)
+    tb.BackColor = C_SURFACE
+    tb.ForeColor = C_TEXT
+    tb.ScrollBars = WF.ScrollBars.Vertical
+    try:
+        tb.Text = open(path, encoding='utf-8').read()
+    except OSError:
+        tb.Text = ''
+    def on_close(s, e):
+        try:
+            open(path, 'w', encoding='utf-8').write(tb.Text)
+        except OSError:
+            pass
+    f.FormClosed += on_close
+    f.Controls.Add(tb)
+    f.Show()
+
+
 tray = WF.NotifyIcon()
 tray.Icon = System.Drawing.SystemIcons.Application
 menu = WF.ContextMenuStrip()
@@ -585,8 +879,14 @@ menu.Items.Add(mi_modes)
 mi_trad = WF.ToolStripMenuItem('繁体输出 (Ctrl+Shift+F)')
 mi_trad.Click += lambda s, e: setattr(ime, 'trad', not ime.trad)
 menu.Items.Add(mi_trad)
+mi_tools = WF.ToolStripMenuItem('工具箱')
+mi_tools.Click += lambda s, e: show_toolbox()
+menu.Items.Add(mi_tools)
+mi_pm = WF.ToolStripMenuItem('插件管理')
+mi_pm.Click += lambda s, e: show_plugin_mgr()
+menu.Items.Add(mi_pm)
 mi_reload = WF.ToolStripMenuItem('重载配置')
-mi_reload.Click += lambda s, e: apply_config()
+mi_reload.Click += lambda s, e: (apply_config(), reload_plugins())
 menu.Items.Add(mi_reload)
 mi_apppaste = WF.ToolStripMenuItem('当前程序: 剪贴板上屏切换')
 mi_apppaste.Click += lambda s, e: toggle_app_paste()
@@ -624,6 +924,7 @@ if not mutex.WaitOne(0):
 # ---------- hook thread (C# realtime layer) ----------
 hook = KeyHook()
 load_appmodes()
+reload_plugins()
 hook_thread = threading.Thread(target=lambda: (hook.Install(), KeyHook.Pump()), daemon=True)
 hook_thread.start()
 

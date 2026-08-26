@@ -239,6 +239,79 @@ public static class Injector
     }
 }
 
+// 插件宿主: 专用 STA 线程 + 消息泵, CodeDom 编译运行 [csharp] 插件 (与 WgIme 宿主同契约)
+public static class PluginHost
+{
+    static System.Collections.Concurrent.BlockingCollection<Action> q;
+    public static void Start()
+    {
+        if (q != null) return;
+        q = new System.Collections.Concurrent.BlockingCollection<Action>();
+        var t = new System.Threading.Thread(delegate() {
+            var ctx = new ApplicationContext();
+            var timer = new System.Windows.Forms.Timer { Interval = 50 };
+            timer.Tick += delegate {
+                Action a;
+                while (q.TryTake(out a)) {
+                    try { a(); }
+                    catch (Exception ex) {
+                        try { System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "wgpy-plugin-err.txt"), System.DateTime.Now.ToString("HH:mm:ss ") + ex.ToString() + "\r\n", System.Text.Encoding.UTF8); } catch {}
+                        MessageBox.Show(ex.ToString(), "WgIme-Py 插件错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            };
+            timer.Start();
+            Application.Run(ctx);
+        });
+        t.SetApartmentState(System.Threading.ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+    }
+    public static void Post(Action a) { if (q != null) q.Add(a); }
+
+    static readonly object compileLock = new object();
+    public static string CompileAndRun(string cs, string cacheDir, string cacheKey)   // null=成功, 否则错误文本
+    {
+        try {
+            System.Reflection.Assembly asm;
+            lock (compileLock) {
+                string dll = null;
+                if (cacheDir != null && cacheKey != null) {
+                    dll = System.IO.Path.Combine(cacheDir, "plugin-" + cacheKey + ".dll");
+                    if (System.IO.File.Exists(dll)) return RunAsm(System.Reflection.Assembly.LoadFrom(dll));
+                }
+                var cp = new Microsoft.CSharp.CSharpCodeProvider();
+                var par = new System.CodeDom.Compiler.CompilerParameters { GenerateExecutable = false };
+                if (dll != null) { par.GenerateInMemory = false; par.OutputAssembly = dll; }
+                else par.GenerateInMemory = true;
+                foreach (string r in new string[] { "System.dll", "System.Core.dll", "System.Data.dll", "System.Drawing.dll", "System.Windows.Forms.dll" })
+                    par.ReferencedAssemblies.Add(r);
+                foreach (string n in new string[] { "WindowsBase", "PresentationCore", "PresentationFramework" }) {   // WPF (GAC 全路径)
+                    try {
+                        var a2 = System.Reflection.Assembly.Load(new System.Reflection.AssemblyName(n + ", Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35"));
+                        if (a2 != null && a2.Location.Length > 0) par.ReferencedAssemblies.Add(a2.Location);
+                    } catch {}
+                }
+                var res = cp.CompileAssemblyFromSource(par, cs);
+                if (res.Errors.Count > 0) return "编译错误: " + res.Errors[0].ErrorText + " (行 " + res.Errors[0].Line + ")";
+                asm = res.CompiledAssembly;
+            }
+            return RunAsm(asm);
+        } catch (Exception ex) { return ex.Message; }
+    }
+    static string RunAsm(System.Reflection.Assembly asm)
+    {
+        foreach (var t in asm.GetTypes()) {
+            var m = t.GetMethod("Run", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (m != null) {
+                Post(delegate { m.Invoke(null, null); });
+                return null;
+            }
+        }
+        return "没有找到 public static void Run() 入口";
+    }
+}
+
 // 候选条: 无边框置顶圆角, 跟随前台光标 (GUIThreadInfo)
 public class CandForm : Form
 {

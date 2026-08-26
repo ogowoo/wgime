@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-26 (wgime-py 阶段 3 第一批: 插件系统/工具箱/剪贴板/便签)
+
+- 插件系统: plugins/*.txt 解析 + [csharp] 运行时 CodeDom + 专用 STA 线程 (PluginHost),
+  lt 选中 ▶聊天 弹出真实聊天窗 (验证); 步骤 DSL 执行器 (含 [shell]/[powershell] 块)
+- 工具箱窗体 (tools.txt tab/按钮), 插件管理窗体 (启用/禁用), 剪贴板历史 (序列号轮询), 便签 (自动保存)
+- 启动器 ▶ 候选合一 (app/插件/工具/内置 itools+plugins+jlb+bj)
+- 修坑: 内置窗体统一调度到 PluginHost STA 线程; pythonnet 需 System.Action 显式包装
+
+---
+
 ## 2026-08-26 (wgime-py 阶段 2 第三批: 上屏健壮性)
 
 - 上屏方式路由: paste=auto/on/off/key + 每程序 pin (pastemode.txt 同格式); auto 检测提权窗口自动改剪贴板粘贴 (UIPI)
