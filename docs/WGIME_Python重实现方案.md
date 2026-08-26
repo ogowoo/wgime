@@ -171,3 +171,16 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **简拼按词频重排**（ApplySwap 的稳定降序）
 - **修坑**：① bridge `IsImeKey` 漏了数字 0（v 模式含 0 金额全乱）；② v 模式数字路由与 C# 完全一致——裸 'v' 有候选时数字选词、超出候选数才续码（wb.txt 里 'v 发' 有候选，所以 v2024 按 C# 语义就是选词——**这是 C# 现状的 quirk，不是移植 bug**）
 - 验收：六场景（混合/拼音/五笔/词典/繁简/Shift）+ 造句 + rq + 联想链（中国→美国 学习并出联想行）全部实机通过
+
+---
+
+## 10. 阶段 2 第二批已完成（2026-08-26）
+
+- **config.txt 加载**（与 C# `LoadConfig` 同格式）：fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/app 条目全支持；托盘"重载配置"即时生效
+- **双拼三方案**（小鹤/自然码/微软，规则抽自 C# `SpRules` 的 rime preedit_format）：`SpSegment`/`ShuangpinExpand` 逐行移植，单测 nihc→nihao、ul→shuang、h;→hing 全对；微软方案 `;` 作 ing 码（bridge 按 `SemiAsCode` 门控吞键）
+- **vf 符号面板**：vf 出五分类（单位/标点/图形/数学/emoji），数字进分类、数字/空格选符号、退格回根、`=`/`-` 翻页；emoji 用文本渲染（C# 版的 Fluent PNG 是另一条路线，文本先用系统 emoji 字体）
+- **五笔 z 通配**：纯五笔模式下含 z 的码追加通配候选（不参与词频排序，与 C# 同序在最后）
+- **造词**：连续单字上屏（90s 内、2-4 字、全拼码可验证）自动造词；`Ctrl+Alt+C` 剪贴板造词；用户词进拼音表+五笔表双注册（`WubiCodeFor` 86 构词规则），`userwords.txt` 与 C# 同格式
+- **应用启动码**：config `app =` 条目中编码后出 ▶候选，选中即启动（URL/程序/带参命令）
+- **托盘菜单**：开关/四模式直选/繁简/重载配置/打开数据目录/退出
+- **验收**：vf 面板两级截图验证、Ctrl+Alt+C 造词落 userwords.txt、单字连打自动造词（什井→shenjing）、双拼单测全过

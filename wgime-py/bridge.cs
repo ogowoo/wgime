@@ -14,6 +14,7 @@ public class KeyEvt : EventArgs { public int Vk; public bool Down; public bool S
 public static class ImeBus
 {
     public static volatile bool Active;
+    public static volatile bool SemiAsCode;              // 微软双拼: ; 作 ing 码
     public static readonly System.Collections.Concurrent.ConcurrentQueue<KeyEvt> Q = new System.Collections.Concurrent.ConcurrentQueue<KeyEvt>();
     public static KeyEvt Next() { KeyEvt e; return Q.TryDequeue(out e) ? e : null; }
     public static bool IsImeKey(int vk)
@@ -21,12 +22,14 @@ public static class ImeBus
         if (vk >= 0x41 && vk <= 0x5A) return true;   // A-Z
         if (vk >= 0x30 && vk <= 0x39) return true;   // 0-9
         return vk == 0x20 || vk == 0x08 || vk == 0x1B || vk == 0x0D || vk == 0xBD || vk == 0xBB
-            || vk == 0xDB || vk == 0xDD;             // space back esc enter - = [ ]
+            || vk == 0xDB || vk == 0xDD              // space back esc enter - = [ ]
+            || (vk == 0xBA && SemiAsCode);           // ; (仅微软双拼)
     }
     public const int VK_TOGGLE = 0x77;               // F8 (硬开关)
     public const int VK_TAP = 0xF8;                  // 合成: Shift 轻拍 (中/英切换)
     public const int VK_MODE = 0xF9;                 // 合成: Ctrl+` (模式循环)
     public const int VK_TRAD = 0xFA;                 // 合成: Ctrl+Shift+F (繁简)
+    public const int VK_MAKEWORD = 0xFB;             // 合成: Ctrl+Alt+C (剪贴板造词)
 }
 
 public class KeyHook
@@ -58,8 +61,10 @@ public class KeyHook
                 // Ctrl+` 模式循环 / Ctrl+Shift+F 繁简 (组合键, 吞掉)
                 bool ctrl = (GetKeyState(0x11) & 0x8000) != 0;
                 bool shift = (GetKeyState(0x10) & 0x8000) != 0;
+                bool alt = (GetKeyState(0x12) & 0x8000) != 0;
                 if (ctrl && vk == 0xC0) { ImeBus.Q.Enqueue(new KeyEvt { Vk = ImeBus.VK_MODE, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
                 if (ctrl && shift && vk == 0x46) { ImeBus.Q.Enqueue(new KeyEvt { Vk = ImeBus.VK_TRAD, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
+                if (ctrl && alt && vk == 0x43) { ImeBus.Q.Enqueue(new KeyEvt { Vk = ImeBus.VK_MAKEWORD, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
                 if (vk == 0xA0 || vk == 0xA1) { shiftDownAt = DateTime.Now; dirtySinceShift = false; }
                 else if (vk == ImeBus.VK_TOGGLE) { ImeBus.Q.Enqueue(new KeyEvt { Vk = vk, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
                 else {
@@ -93,6 +98,15 @@ public static class Injector
         var sb = new System.Text.StringBuilder(256);
         GetClassName(h, sb, 256);
         return h.ToString("X") + ":" + sb;
+    }
+    public static string ClipboardText()           // STA 安全 (任意线程可调)
+    {
+        string t = null;
+        var th = new System.Threading.Thread(delegate() { try { t = Clipboard.GetText(); } catch {} });
+        th.SetApartmentState(System.Threading.ApartmentState.STA);
+        th.Start();
+        th.Join(1500);
+        return t;
     }
     [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr extra; }
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public KEYBDINPUT ki; public long pad; }  // x64: 4+4pad+24+8 = 40 = sizeof(INPUT)

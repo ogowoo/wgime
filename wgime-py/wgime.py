@@ -10,6 +10,7 @@ import clr  # noqa: F401  (pythonnet 2.5.2 / .NET Framework 4.x)
 import hashlib
 import os
 import sys
+import subprocess
 import threading
 import time
 
@@ -59,16 +60,28 @@ import System.Windows.Forms as WF
 from WgBridge import KeyHook, CandForm, Injector, ImeBus
 
 sys.path.insert(0, BASE)
-from engine import Engine, dynamic_candidates, vmode_candidates, is_all_cjk
+from engine import (Engine, dynamic_candidates, vmode_candidates, is_all_cjk,
+                    load_config, shuangpin_expand, SYM_CAT_NAMES, SYM_CATS)
 
 engine = Engine(DICT_DIR, DATA_DIR)
 cand_form = CandForm()
 _h = cand_form.Handle   # 主线程上强制建句柄: 之后 BeginInvoke 都正确封送到主线程泵
 
+CFG = {'sentence': True, 'assoc': True, 'trad': False, 'starton': True, 'shuangpin': 0, 'apps': {}, 'hideidle': True, 'showcode': False}
+
+
+def apply_config():
+    global CFG
+    CFG = load_config(os.path.join(DICT_DIR, 'config.txt'))
+    ImeBus.SemiAsCode = (CFG['shuangpin'] == 3)
+    ime.trad = CFG['trad']
+    import engine as _eng
+    _eng.FUZZY_PAIRS = tuple(tuple(p) for p in CFG['fuzzy'])   # 配置可覆盖模糊音对
+
+
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
-          LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA)
+          LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA)
 MODE_NAMES = ('混合', '拼音', '五笔', '词典')
-SENTENCE_ON = True
 
 
 class Ime:
@@ -82,9 +95,13 @@ class Ime:
     dyn_set = set()             # 动态候选 (rq/sj/xq/v 金额), 不学习
     assoc_showing = False
     last_commit = None
+    sym_cat = 0                 # vf 符号面板分类 (0=根)
+    recent = []                 # 连续单字上屏 (自动造词)
+    app_cand = None             # 当前应用启动候选 (▶...)
 
 
 ime = Ime()
+apply_config()
 
 
 def show_page():
@@ -104,10 +121,17 @@ def refresh():
     if not ime.buf:
         cand_form.HideBar()
         return
-    cands, exact_wubi, extendable = engine.candidates(ime.buf, ime.mode)
+    # vf 符号面板 (双拼下 vf 是真实音节, 禁用)
+    if CFG['shuangpin'] == 0 and ime.buf == 'vf':
+        ime.cands = list(SYM_CAT_NAMES) if ime.sym_cat == 0 else SYM_CATS[ime.sym_cat - 1].split(' ')
+        show_page()
+        return
+    # 双拼: 查 py 侧用展开后的全拼
+    py = shuangpin_expand(ime.buf, CFG['shuangpin']) if (CFG['shuangpin'] > 0 and ime.mode < 2) else ime.buf
+    cands, exact_wubi, extendable = engine.candidates(ime.buf, ime.mode, py)
     # 造句 (一元格架): 拼音模式, 或混合模式且全拼长度>4
-    if SENTENCE_ON and (ime.mode == 1 or (ime.mode == 0 and len(ime.buf) > 4)):
-        sent = engine.best_sentence(ime.buf)
+    if CFG['sentence'] and (ime.mode == 1 or (ime.mode == 0 and len(py) > 4)):
+        sent = engine.best_sentence(py.replace("'", ''))
         if sent and len(sent) > 1 and sent not in cands:
             cands.insert(0, sent)
     # 动态候选 (rq/sj/xq) + v 模式金额: 置顶, 不学习
@@ -121,8 +145,16 @@ def refresh():
             if s not in cands:
                 cands.insert(0, s)
                 ime.dyn_set.add(s)
+    # 应用启动码 (config.txt app=): 精确匹配置顶
+    ime.app_cand = None
+    app = CFG['apps'].get(ime.buf)
+    if app:
+        cand = '▶' + app[0]
+        if cand in cands:
+            cands.remove(cand)
+        cands.insert(0, cand)
+        ime.app_cand = cand
     ime.cands = cands
-    dbg('refresh buf=%s cands=%s' % (ime.buf, [ascii(c) for c in cands[:4]]))
     # 五笔约定: 唯一四码自动上屏 (仅纯五笔模式)
     if ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands:
         commit(0)
@@ -142,6 +174,8 @@ def reset():
     ime.sel = 0
     ime.dyn_set = set()
     ime.assoc_showing = False
+    ime.sym_cat = 0
+    ime.app_cand = None
     cand_form.HideBar()
 
 
@@ -182,9 +216,41 @@ def inject(text):
     dbg('inject %s sent=%s fg=%s' % (text, n, Injector.ForegroundInfo()))
 
 
+def record_commit(w, code):
+    """连续单字上屏 (90s 内, 码可验证) 2-4 字自动造词 (C# RecordCommit)"""
+    now = time.time()
+    if not w or len(w) > 4 or not is_all_cjk(w):
+        ime.recent = []
+        return
+    ime.recent.append((w, code, now))
+    if len(ime.recent) > 6:
+        ime.recent.pop(0)
+    if len(w) != 1:
+        return
+    run = 0
+    for word, cd, ts in reversed(ime.recent):
+        if len(word) == 1 and now - ts <= 90 and cd in (engine.char_py.get(word) or []):
+            run += 1
+        else:
+            break
+    if run < 2:
+        return
+    run = min(run, 4)
+    tail = ime.recent[-run:]
+    nw = ''.join(w for w, _, _ in tail)
+    nc = ''.join(c for _, c, _ in tail)
+    ime.recent = []
+    if engine.add_user_word(nw, nc):
+        tray.ShowBalloonTip(2000, '造词', '已造词: %s (%s)' % (nw, nc), WF.ToolTipIcon.Info)
+
+
 def commit(i):
     if 0 <= i < len(ime.cands):
         text = ime.cands[i]
+        if text == ime.app_cand:                 # 应用启动码: 启动, 不上屏不学习
+            launch_app(ime.buf)
+            reset()
+            return
         learn_word = text if text not in ime.dyn_set else None
         code = ime.buf
         prev = ime.last_commit
@@ -194,7 +260,25 @@ def commit(i):
             engine.learn(code, learn_word, ime.mode)
             if prev and len(learn_word) <= 8 and is_all_cjk(learn_word):
                 engine.learn_assoc(prev, learn_word)      # 连续上屏词对 -> 联想二元组
+            record_commit(learn_word, code)
             begin_assoc(learn_word)
+
+
+def launch_app(code):
+    app = CFG['apps'].get(code)
+    if not app:
+        return
+    name, cmd, args = app
+    try:
+        if '://' in cmd:
+            os.startfile(cmd)
+        elif args:
+            subprocess.Popen('"%s" %s' % (cmd, args), shell=True)
+        else:
+            os.startfile(cmd)
+        dbg('launch %s -> %s' % (code, cmd))
+    except Exception as ex:
+        tray.ShowBalloonTip(2000, '启动失败', '%s: %s' % (name, ex), WF.ToolTipIcon.Error)
 
 
 def digit_as_code():                             # v 模式: v 开头后数字续码
@@ -234,7 +318,68 @@ def handle(vk):
         ime.trad = not ime.trad
         dbg('trad=%s' % ime.trad)
         return
+    if vk == VK['MAKEWORD']:                     # Ctrl+Alt+C: 剪贴板造词
+        t = (Injector.ClipboardText() or '').strip()
+        if 2 <= len(t) <= 8 and is_all_cjk(t):
+            code = engine.code_for(t)
+            if code and engine.add_user_word(t, code):
+                tray.ShowBalloonTip(2000, '造词', '已造词: %s (%s)' % (t, code), WF.ToolTipIcon.Info)
+            else:
+                tray.ShowBalloonTip(2000, '造词', '已存在或缺码: %s' % t, WF.ToolTipIcon.Warning)
+        else:
+            tray.ShowBalloonTip(2000, '造词', '先复制 2-8 个汉字，再按 Ctrl+Alt+C', WF.ToolTipIcon.Warning)
+        return
     if not ime.active:
+        return
+    # vf 符号面板路由
+    if CFG['shuangpin'] == 0 and ime.buf == 'vf':
+        if 0x31 <= vk <= 0x39:                   # 数字: 根=选分类, 分类内=选符号
+            d = vk - 0x30
+            if ime.sym_cat == 0:
+                if 1 <= d <= len(SYM_CAT_NAMES):
+                    ime.sym_cat = d
+                    refresh()
+            else:
+                idx = ime.page * 9 + d - 1
+                if 0 <= idx < len(ime.cands):
+                    inject(ime.cands[idx])
+                    reset()
+                    ime.sym_cat = 0
+            return
+        if vk == VK['SPACE'] and ime.sym_cat > 0:
+            if ime.cands:
+                inject(ime.cands[ime.page * 9])
+                reset()
+                ime.sym_cat = 0
+            return
+        if vk == VK['BACK']:
+            if ime.sym_cat > 0:
+                ime.sym_cat = 0
+                refresh()
+            else:
+                ime.buf = 'v'                      # 面板根退格 -> 回到 v
+                refresh()
+            return
+        if vk == VK['ESC']:
+            reset()
+            ime.sym_cat = 0
+            return
+        if vk in (VK['MINUS'], VK['EQUALS']):    # 面板内翻页
+            tp = (len(ime.cands) + 8) // 9
+            if tp > 0:
+                ime.page = (ime.page + (1 if vk == VK['EQUALS'] else -1) + tp) % tp
+                show_page()
+            return
+        if vk == VK['ENTER']:
+            reset()
+            ime.sym_cat = 0
+            return
+        return                                   # 其它键忽略 (字母不进 vf)
+    if vk == VK['SEMI'] and CFG['shuangpin'] == 3:   # 微软双拼 ing 键
+        if ime.assoc_showing:
+            clear_assoc()
+        ime.buf += ';'
+        refresh()
         return
     if 0x41 <= vk <= 0x5A:                       # A-Z
         if ime.assoc_showing:
@@ -316,10 +461,31 @@ def on_closing():                                # 退出前落盘词频
 tray = WF.NotifyIcon()
 tray.Icon = System.Drawing.SystemIcons.Application
 menu = WF.ContextMenuStrip()
-mi_toggle = WF.ToolStripMenuItem('启用/禁用 (F8)')
+
+
+def set_mode(m):
+    ime.mode = m
+    reset()
+    update_tray()
+
+
+mi_toggle = WF.ToolStripMenuItem('启用/禁用 (Shift 轻拍)')
 mi_toggle.Click += lambda s, e: set_active(not ime.active)
-mi_quit = WF.ToolStripMenuItem('退出')
 menu.Items.Add(mi_toggle)
+mi_modes = WF.ToolStripMenuItem('模式')
+for _m in range(4):
+    mi_modes.DropDownItems.Add(WF.ToolStripMenuItem(MODE_NAMES[_m], None, (lambda s, e, m=_m: set_mode(m))))
+menu.Items.Add(mi_modes)
+mi_trad = WF.ToolStripMenuItem('繁体输出 (Ctrl+Shift+F)')
+mi_trad.Click += lambda s, e: setattr(ime, 'trad', not ime.trad)
+menu.Items.Add(mi_trad)
+mi_reload = WF.ToolStripMenuItem('重载配置')
+mi_reload.Click += lambda s, e: apply_config()
+menu.Items.Add(mi_reload)
+mi_open = WF.ToolStripMenuItem('打开数据目录')
+mi_open.Click += lambda s, e: os.startfile(DATA_DIR)
+menu.Items.Add(mi_open)
+mi_quit = WF.ToolStripMenuItem('退出')
 menu.Items.Add(mi_quit)
 tray.ContextMenuStrip = menu
 

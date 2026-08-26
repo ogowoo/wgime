@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-26 (wgime-py 阶段 2 第二批: config/双拼/vf 面板/造词/启动码)
+
+- config.txt 全键加载 (fuzzy/showcode/shuangpin/trad/sentence/assoc/starton/app), 托盘重载即时生效
+- 双拼三方案 (小鹤/自然码/微软, rime preedit_format 逐条移植; 微软 ; 作 ing 码)
+- vf 符号面板两级 (5 分类含 emoji); 五笔 z 通配; Ctrl+Alt+C 剪贴板造词 + 单字连打自动造词
+  (拼音五笔双注册, userwords.txt 与 C# 同格式); config app= 启动码 (▶候选)
+- 托盘菜单: 开关/模式直选/繁简/重载/数据目录/退出
+- 验收: vf 两级面板/热键造词/自动造词/双拼单测全过
+
+---
+
 ## 2026-08-26 (wgime-py 阶段 2 第一批: 造句/联想/动态候选/v 金额)
 
 - 造句: 一元格架 (pywfreq.txt 7.1 万条词频), zhonghuarenmingongheguo → 中华人民共和国

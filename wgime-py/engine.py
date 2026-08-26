@@ -10,6 +10,7 @@
 import bisect
 import math
 import os
+import re
 import threading
 import time
 
@@ -17,6 +18,87 @@ CAND_CAP = 60
 PAGE_SIZE = 9
 MODE_SUFFIX = ('mix', 'py', 'wb')
 FUZZY_PAIRS = (('zh', 'z'), ('ch', 'c'), ('sh', 's'), ('ang', 'an'), ('eng', 'en'), ('ing', 'in'), ('n', 'l'))
+
+# ---------- vf 符号面板数据 (抽自 C# SymCats) ----------
+SYM_CAT_NAMES = ['单位符号', '标点符号', '图形符号', '数学符号', '表情emoji']
+SYM_CATS = [
+    '℃ ℉ ° ′ ″ ‰ ㎎ ㎏ ㎜ ㎝ ㎞ ㎡ ㎥ ㏄ №',
+    '… — ～ · § ※ 《 》 〈 〉 「 」 『 』 〔 〕 〖 〗 【 】 ￥',
+    '★ ☆ ● ○ ◆ ◇ ■ □ ▲ △ ► ◄ ♥ ♣ ♠ ♦ ♪ ♫ ♀ ♂ ☀ ☁ ☂ ☃ ☺ ☹ ✓ ✔ ✕ ✖ ☑ ➜ → ← ↑ ↓ ↔',
+    '± × ÷ ≤ ≥ ≠ ≈ ∞ √ ∑ ∫ ∮ ∂ ∇ ∈ ∉ ⊂ ⊃ ⊆ ∪ ∩ ∅ ∴ ∵ α β γ δ θ λ μ π σ φ ω',
+    '😀 😁 😂 🤣 😊 😍 😘 😎 🤔 😴 😢 😭 😡 👍 👎 👌 ✌ 🤝 🙏 💪 👀 🎉 ❤️ 💔 💯 🔥 ⭐ 🚀 🌈 🍀 ⚡ 🌙 ☕',
+]
+
+# ---------- 双拼规则 (抽自 C# SpRules; rime preedit_format, $1 -> \g<1>) ----------
+def _R(rules):
+    return [(re.compile(p), r.replace('$1', '\\g<1>').replace('$2', '\\g<2>')) for p, r in rules]
+
+SP_RULES = [
+    _R([  # 1: 小鹤 (flypy)
+        (r'([bpmfdtnljqx])n', '$1iao'), (r'(\w)g', '$1eng'), (r'(\w)q', '$1iu'),
+        (r'(\w)w', '$1ei'), (r'([dtnlgkhjqxyvuirzcs])r', '$1uan'), (r'(\w)t', '$1ve'),
+        (r'(\w)y', '$1un'), (r'([dtnlgkhvuirzcs])o', '$1uo'), (r'(\w)p', '$1ie'),
+        (r'([jqx])s', '$1iong'), (r'(\w)s', '$1ong'), (r'(\w)d', '$1ai'),
+        (r'(\w)f', '$1en'), (r'(\w)h', '$1ang'), (r'(\w)j', '$1an'),
+        (r'([gkhvuirzcs])k', '$1uai'), (r'(\w)k', '$1ing'), (r'([jqxnl])l', '$1iang'),
+        (r'(\w)l', '$1uang'), (r'(\w)z', '$1ou'), (r'([gkhvuirzcs])x', '$1ua'),
+        (r'(\w)x', '$1ia'), (r'(\w)c', '$1ao'), (r'([dtgkhvuirzcs])v', '$1ui'),
+        (r'(\w)b', '$1in'), (r'(\w)m', '$1ian'), (r'([aoe])\1(\w)', '$1$2'),
+        (r'^v', 'zh'), (r'^i', 'ch'), (r'^u', 'sh'),
+        (r'([jqxy])v', '$1u'), (r'([nl])v', '$1ü'),
+    ]),
+    _R([  # 2: 自然码
+        (r'([bpmnljqxy])n', '$1in'), (r'(\w)g', '$1eng'), (r'(\w)q', '$1iu'),
+        (r'([gkhvuirzcs])w', '$1ua'), (r'(\w)w', '$1ia'), (r'([dtnlgkhjqxyvuirzcs])r', '$1uan'),
+        (r'(\w)t', '$1ve'), (r'([gkhvuirzcs])y', '$1uai'), (r'(\w)y', '$1ing'),
+        (r'([dtnlgkhvuirzcs])o', '$1uo'), (r'(\w)p', '$1un'), (r'([jqx])s', '$1iong'),
+        (r'(\w)s', '$1ong'), (r'([jqxnl])d', '$1iang'), (r'(\w)d', '$1uang'),
+        (r'(\w)f', '$1en'), (r'(\w)h', '$1ang'), (r'(\w)j', '$1an'),
+        (r'(\w)k', '$1ao'), (r'(\w)l', '$1ai'), (r'(\w)z', '$1ei'),
+        (r'(\w)x', '$1ie'), (r'(\w)c', '$1iao'), (r'([dtgkhvuirzcs])v', '$1ui'),
+        (r'(\w)b', '$1ou'), (r'(\w)m', '$1ian'), (r'([aoe])\1(\w)', '$1$2'),
+        (r'^v', 'zh'), (r'^i', 'ch'), (r'^u', 'sh'),
+        (r'([jqxy])v', '$1u'), (r'([nl])v', '$1ü'),
+    ]),
+    _R([  # 3: 微软 (ing 在 ; 键)
+        (r'([aoe])(\w)', '0$2'), (r'([bpmnljqxy])n', '$1in'), (r'(\w)g', '$1eng'),
+        (r'(\w)q', '$1iu'), (r'([gkhvuirzcs])w', '$1ua'), (r'(\w)w', '$1ia'),
+        (r'([dtnlgkhjqxyvuirzcs])r', '$1uan'), (r'0r', 'er'), (r'([dtgkhvuirzcs])v', '$1ui'),
+        (r'(\w)v', '$1ve'), (r'(\w)t', '$1ve'), (r'([gkhvuirzcs])y', '$1uai'),
+        (r'(\w)y', '$1v'), (r'([dtnlgkhvuirzcs])o', '$1uo'), (r'(\w)p', '$1un'),
+        (r'([jqx])s', '$1iong'), (r'(\w)s', '$1ong'), (r'([jqxnl])d', '$1iang'),
+        (r'(\w)d', '$1uang'), (r'(\w)f', '$1en'), (r'(\w)h', '$1ang'),
+        (r'(\w)j', '$1an'), (r'(\w)k', '$1ao'), (r'(\w)l', '$1ai'),
+        (r'(\w)z', '$1ei'), (r'(\w)x', '$1ie'), (r'(\w)c', '$1iao'),
+        (r'(\w)b', '$1ou'), (r'(\w)m', '$1ian'), (r'(\w);', '$1ing'),
+        (r'0(\w)', '$1'), (r'^v', 'zh'), (r'^i', 'ch'),
+        (r'^u', 'sh'), (r'([jqxy])v', '$1u'), (r'([nl])v', '$1ü'),
+    ]),
+]
+
+
+def sp_segment(seg, scheme):
+    """一个两键音节 -> 全拼 (与 C# SpSegment 一致)"""
+    for pat, rep in SP_RULES[scheme - 1]:
+        seg = pat.sub(rep, seg)
+    if len(seg) == 2 and seg[0] == seg[1] and seg[0] in 'aoe':
+        seg = seg[:1]                                # 零声母单韵母: aa/oo/ee -> a/o/e
+    if scheme != 1 and seg == 'r':
+        seg = 'er'                                   # 自然码/微软: er 单击 r
+    return seg.replace('üe', 'ue').replace('ü', 'v')  # 码表约定: lü->lv
+
+
+def shuangpin_expand(keys, scheme):
+    """双拼键串 -> 全拼前缀 (与 C# ShuangpinExpand 一致)"""
+    if scheme < 1 or scheme > 3 or not keys:
+        return keys
+    sb = []
+    i = 0
+    while i < len(keys):
+        n = 2 if i + 1 < len(keys) else 1
+        sb.append(sp_segment(keys[i:i + n], scheme))
+        i += n
+    return ''.join(sb)
 
 CN_DIGIT = '零壹贰叁肆伍陆柒捌玖'
 CN_UNIT4 = ('', '拾', '佰', '仟')
@@ -103,6 +185,66 @@ def dynamic_candidates(code):
 
 def is_all_cjk(s):
     return all('\u4e00' <= c <= '\u9fff' for c in s)
+
+
+# ---------- config.txt (与 C# LoadConfig 同格式) ----------
+def load_config(path):
+    """返回 dict: fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps"""
+    cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
+               trad=False, sentence=True, assoc=True, starton=True, apps={})
+    try:
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                t = raw.strip()
+                if not t or t[0] in '#;':
+                    continue
+                eq = t.find('=')
+                if eq < 1:
+                    continue
+                k = t[:eq].strip().lower()
+                v = t[eq + 1:].strip()
+                if k == 'fuzzy':
+                    if not v or v in ('none', 'off'):
+                        cfg['fuzzy'] = []
+                    else:
+                        pairs = []
+                        for pair in v.split(','):
+                            d = pair.find('-')
+                            if 0 < d < len(pair) - 1:
+                                pairs.append((pair[:d].strip(), pair[d + 1:].strip()))
+                        if pairs:
+                            cfg['fuzzy'] = pairs
+                elif k == 'showcode':
+                    cfg['showcode'] = v in ('1', 'on', 'true')
+                elif k == 'hideidle':
+                    cfg['hideidle'] = v in ('1', 'on', 'true')
+                elif k == 'shuangpin':
+                    cfg['shuangpin'] = {'xiaohe': 1, '小鹤': 1, 'flypy': 1, 'ziranma': 2, '自然码': 2,
+                                        'zrm': 2, 'ms': 3, '微软': 3, 'mspy': 3}.get(v, 0)
+                elif k == 'trad':
+                    cfg['trad'] = v in ('1', 'on', 'true')
+                elif k == 'sentence':
+                    cfg['sentence'] = v not in ('0', 'off', 'false')
+                elif k == 'assoc':
+                    cfg['assoc'] = v not in ('0', 'off', 'false')
+                elif k == 'starton':
+                    cfg['starton'] = v in ('1', 'on', 'true')
+                elif k == 'app':
+                    ap = v.split('\t')
+                    if len(ap) >= 3:
+                        code, name, cmd = ap[0], ap[1], ap[2]
+                        args = ap[3] if len(ap) > 3 else ''
+                    else:
+                        m = re.match(r'^(\S+)\s+(\S+)\s+("(?:[^"]*)"|\'[^\']*\'|\S+)(?:\s+(.*))?$', v)
+                        if not m:
+                            continue
+                        code, name, cmd, args = m.group(1), m.group(2), m.group(3).strip('"\''), m.group(4) or ''
+                    code = code.strip().lower()
+                    if code:
+                        cfg['apps'][code] = (name.strip(), os.path.expandvars(cmd.strip()), os.path.expandvars(args.strip()))
+    except OSError:
+        pass
+    return cfg
 
 
 def parse_dict(path):
@@ -266,6 +408,24 @@ class Engine:
         self.freq_dirty = 0
         self.last_save = time.time()
         self._save_lock = threading.Lock()
+        # 用户词 (五笔反查字表: 最长码)
+        self.user_words = self.load_user_words()
+        if self.user_words:
+            for w, c in self.user_words.items():
+                cur = self.py.get(c)
+                if cur:
+                    if (' ' + cur + ' ').find(' ' + w + ' ') < 0:
+                        self.py[c] = cur + ' ' + w
+                else:
+                    self.py[c] = w
+            self.pk, self.pv = build_sorted(self.py)
+        self.char_wb = {}
+        for code in sorted(self.wb.keys()):
+            if len(code) < 2:
+                continue
+            for w in self.wb[code].split(' '):
+                if len(w) == 1 and (w not in self.char_wb or len(code) > len(self.char_wb[w])):
+                    self.char_wb[w] = code
         # 简拼候选按词频重排 (ApplySwap: stable desc by combined freq)
         for k in self.acro:
             lst = self.acro[k]
@@ -467,8 +627,11 @@ class Engine:
                 pass
 
     # ---------- candidate assembly (对齐 ShowCharatar) ----------
-    def candidates(self, keys, mode):
-        """返回 (cands, exact_wubi, extendable). 不含: 造句/动态rq/vf/应用启动/短语/通配 (后续阶段)."""
+    def candidates(self, keys, mode, py_code=None):
+        """返回 (cands, exact_wubi, extendable). py_code: 双拼展开后的全拼 (mode<2 拼音侧用).
+        造句/动态rq/vf/应用启动/短语在 wgime.py refresh 层."""
+        if py_code is None:
+            py_code = keys
         cands = []
         exact_wubi = [False]
         extendable = [False]
@@ -501,9 +664,9 @@ class Engine:
             return cands, False, False
         if mode == 0:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
-            add_from_dict(self.py, self.pk, self.pv, False, keys)
+            add_from_dict(self.py, self.pk, self.pv, False, py_code)
         elif mode == 1:
-            add_from_dict(self.py, self.pk, self.pv, False, keys)
+            add_from_dict(self.py, self.pk, self.pv, False, py_code)
         elif mode == 2:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
         else:
@@ -532,13 +695,13 @@ class Engine:
                 if en:
                     add(en)
         if mode < 2:
-            for w in self.acro.get(keys, []):
+            for w in self.acro.get(py_code, []):
                 if len(cands) >= CAND_CAP:
                     break
-                if len(keys) >= 2 and w not in cands:
+                if len(py_code) >= 2 and w not in cands:
                     cands.append(w)
             if len(cands) < PAGE_SIZE:
-                for v in fuzzy_variants(keys):
+                for v in fuzzy_variants(py_code):
                     exact = self.py.get(v)
                     if exact:
                         add(exact)
@@ -553,9 +716,114 @@ class Engine:
             if lp and lp in cands:
                 cands.remove(lp)
                 cands.insert(0, lp)
+        # 五笔 z 通配 (仅纯五笔模式, 追加在最后, 不参与排序)
+        if mode == 2 and 'z' in keys:
+            for k in self.wk:
+                if len(cands) >= CAND_CAP:
+                    break
+                if len(k) != len(keys):
+                    continue
+                ok = True
+                for i, ch in enumerate(k):
+                    if keys[i] != 'z' and ch != keys[i]:
+                        ok = False
+                        break
+                if ok:
+                    for t in self.wb[k].split(' '):
+                        if len(cands) >= CAND_CAP:
+                            break
+                        if t and t not in cands:
+                            cands.append(t)
         return cands, exact_wubi[0], extendable[0]
 
     def to_trad(self, s, enabled):
         if not enabled or not self.trad_map or not s:
             return s
         return ''.join(self.trad_map.get(c, c) for c in s)
+
+    # ---------- 用户词 (与 C# AddUserWord/LoadUserWords 同格式) ----------
+    def load_user_words(self):
+        uw = {}
+        try:
+            with open(os.path.join(self.data_dir, 'userwords.txt'), encoding='utf-8') as f:
+                for raw in f:
+                    t = raw.strip()
+                    sp = t.find(' ')
+                    if sp < 1:
+                        continue
+                    for w in t[sp + 1:].split(' '):
+                        if w:
+                            uw[w] = t[:sp]
+        except OSError:
+            pass
+        return uw
+
+    def save_user_words(self):
+        try:
+            by_code = {}
+            for w, c in self.user_words.items():
+                by_code.setdefault(c, []).append(w)
+            with open(os.path.join(self.data_dir, 'userwords.txt'), 'w', encoding='utf-8') as f:
+                for c, ws in by_code.items():
+                    f.write('%s %s\n' % (c, ' '.join(ws)))
+        except OSError:
+            pass
+
+    def code_for(self, w):
+        """全拼码 (CodeFor: 每字取第一个拼音)"""
+        out = []
+        for ch in w:
+            ps = self.char_py.get(ch)
+            if not ps:
+                return None
+            out.append(ps[0])
+        return ''.join(out)
+
+    def wubi_code_for(self, w):
+        """五笔 86 构词码 (WubiCodeFor)"""
+        n = len(w)
+        if n < 2:
+            return None
+        cs = []
+        for ch in w:
+            c = self.char_wb.get(ch)
+            if not c:
+                return None
+            cs.append(c)
+        if n == 2:
+            return cs[0][:2] + cs[1][:2]
+        if n == 3:
+            return cs[0][0] + cs[1][0] + cs[2][:2]
+        return cs[0][0] + cs[1][0] + cs[2][0] + cs[n - 1][0]
+
+    def add_user_word(self, word, code):
+        """造词: 进拼音表 + 排序数组重建 + 简拼索引 + 五笔表 (双注册)"""
+        if not code or word in self.user_words:
+            return False
+        cur = self.py.get(code)
+        if cur and (' ' + cur + ' ').find(' ' + word + ' ') >= 0:
+            return False
+        self.user_words[word] = code
+        self.py[code] = (cur + ' ' + word) if cur else word
+        self.pk, self.pv = build_sorted(self.py)
+        wbc = self.wubi_code_for(word)
+        if wbc:
+            curw = self.wb.get(wbc)
+            if not (curw and (' ' + curw + ' ').find(' ' + word + ' ') >= 0):
+                self.wb[wbc] = (curw + ' ' + word) if curw else word
+                self.wk, self.wv = build_sorted(self.wb)
+        ini = []
+        ok = True
+        for ch in word:
+            ps = self.char_py.get(ch)
+            if ps:
+                ini.append(ps[0][0])
+            else:
+                ok = False
+                break
+        if ok:
+            lst = self.acro.setdefault(''.join(ini), [])
+            if word not in lst:
+                lst.append(word)
+        self.save_user_words()
+        return True
