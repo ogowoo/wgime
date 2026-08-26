@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-26 (wgime-py 阶段 3 收尾: 取色器/网络工具/免安装单文件)
+
+- 取色器(跟随光标放大镜, 点击复制 hex); 网络工具(ping/tracert/nslookup 深色控制台)
+- 打包: build-wgime-py.ps1 生成 dist/wgime.py.bat (42.5MB 免安装单文件); 内嵌 Python embeddable +
+  pythonnet + 码表; cmd 引导按标记 base64 解压到 %LOCALAPPDATA%\wgime-py\runtime (版本缓存);
+  端到端验证 IME 启动
+- 打包踩坑记录: PS 函数调用数组陷阱/LastIndexOf 标记/.NET Framework 无 bool Extract/
+  8.3 短路径子串/单行+单引号
+
+---
+
 ## 2026-08-26 (wgime-py 阶段 3 第一批: 插件系统/工具箱/剪贴板/便签)
 
 - 插件系统: plugins/*.txt 解析 + [csharp] 运行时 CodeDom + 专用 STA 线程 (PluginHost),

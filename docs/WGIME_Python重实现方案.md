@@ -208,3 +208,16 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **启动器整合**：候选条 ▶ 前缀合一（config app= / 插件 / 工具 code / 内置 itools·plugins·jlb·bj）
 - 关键修坑：pythonnet 内置窗体不能在工作线程建（无消息泵）——统一 `PluginHost.Post(System.Action(...))` 调度到 STA 线程；pythonnet 的 lambda 不能直接传 `Post(Action)`，需 `System.Action(...)` 显式包装
 - **遗留**：取色器、网络工具、emoji 图片版候选、打包发布（embeddable zip 内嵌 bat 或 PyInstaller）
+
+---
+
+## 13. 阶段 3 第二/三批已完成（2026-08-26，窗体套件 + 免安装单文件打包）
+
+- **取色器**：跟随光标无边框放大镜，实时显示颜色值，点击复制 hex + 气泡
+- **网络工具**：ping/tracert/nslookup 深色控制台窗体（后台 Popen 流式输出）
+- **免安装单文件打包**（`build-wgime-py.ps1` → `dist\wgime.py.bat`，42.5MB）：
+  - 结构仿 wgime.bat：cmd 引导 → 按 `###PYZIP###/###APP###/###DICTS###` 标记（**base64**）→ PowerShell 解压到 `%LOCALAPPDATA%\wgime-py\runtime`（版本标记 `.ok` 缓存）→ `python.exe wgime.py`
+  - 内嵌：Python 3.8 embeddable + pythonnet 2.5.2（扁平 clr.pyd/Python.Runtime.dll）+ 应用脚本 + 小数据（trad/pywfreq/config/tools/plugins）+ 全部码表（py/wb/ec/import）
+  - 实测端到端：双击 bat → 首次解压 → IME 托盘启动（`started, dict 9s` 冷解析，后续走 pickle 缓存）
+- **打包踩坑（记录）**：① PowerShell 函数调用 `f('a','b','c')` 是**单个数组参数**——必须 `f 'a' 'b' 'c'` 空格分隔；② 标记在解压脚本里也出现——提取用 `LastIndexOf`；③ `.NET Framework` 的 `ZipFile.ExtractToDirectory` 无 bool 重载；④ `$env:TEMP` 是 8.3 短路径而 `FileInfo.FullName` 是长路径——相对路径子串要用 `[IO.Path]::GetFullPath` 归一化；⑤ cmd 不解析 `$`，powerShell 块要压成单行 + 单引号保持字面量
+- **打包遗留**：emoji 图片版候选（当前文本渲染）、码表选配（可去掉 23MB ec.txt 减包）

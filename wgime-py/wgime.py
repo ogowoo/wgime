@@ -139,6 +139,10 @@ def find_launcher(code):
         return ('剪贴板历史', 'builtin', 'clipboard')
     if code in ('bj', 'notes'):
         return ('便签', 'builtin', 'notes')
+    if code in ('ys', 'color'):
+        return ('颜色拾取', 'builtin', 'color')
+    if code in ('net', 'wlgj'):
+        return ('网络工具', 'builtin', 'nettools')
     return None
 
 
@@ -195,6 +199,10 @@ def _show_builtin(payload):
         show_clipboard()
     elif payload == 'notes':
         show_notes()
+    elif payload == 'color':
+        show_color()
+    elif payload == 'nettools':
+        show_nettools()
 
 
 def launch_app_payload(payload):
@@ -855,6 +863,120 @@ def show_notes():
             pass
     f.FormClosed += on_close
     f.Controls.Add(tb)
+    f.Show()
+
+
+# ---------- 取色器 (跟随光标, 点击复制 hex) / 网络工具 ----------
+def show_color():
+    from ctypes import windll, Structure, byref, c_long
+
+    class POINT(Structure):
+        _fields_ = [('x', c_long), ('y', c_long)]
+
+    f = WF.Form()
+    f.FormBorderStyle = getattr(WF.FormBorderStyle, 'None')
+    f.TopMost = True
+    f.StartPosition = WF.FormStartPosition.CenterScreen
+    f.ClientSize = System.Drawing.Size(180, 180)
+    f.BackColor = System.Drawing.Color.Black
+    lbl = WF.Label()
+    lbl.Dock = WF.DockStyle.Bottom
+    lbl.Height = 30
+    lbl.TextAlign = WF.ContentAlignment.MiddleCenter
+    lbl.ForeColor = System.Drawing.Color.White
+    lbl.BackColor = System.Drawing.Color.Black
+    f.Controls.Add(lbl)
+    state = {'hex': '000000'}
+
+    def tick():
+        p = POINT()
+        windll.user32.GetCursorPos(byref(p))
+        if f.Bounds.Contains(p.x, p.y):
+            return
+        hdc = windll.user32.GetDC(0)
+        px = windll.gdi32.GetPixel(hdc, p.x, p.y)
+        windll.user32.ReleaseDC(0, hdc)
+        r, g, b = px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF
+        state['hex'] = '%02X%02X%02X' % (r, g, b)
+        f.BackColor = System.Drawing.Color.FromArgb(r, g, b)
+        lbl.Text = '#' + state['hex'] + '  (%d,%d)' % (p.x, p.y)
+
+    def on_click(s, e):
+        Injector.SetClipboardText('#' + state['hex'])
+        tray.ShowBalloonTip(1500, '取色器', '已复制 #' + state['hex'], WF.ToolTipIcon.Info)
+        f.Close()
+
+    f.MouseClick += on_click
+    tm = WF.Timer()
+    tm.Interval = 60
+    tm.Tick += lambda s, e: tick()
+    f.Show()
+    tm.Start()
+
+
+def show_nettools():
+    f = WF.Form()
+    f.Text = 'WgIme-Py 网络工具'
+    f.BackColor = C_BG
+    f.TopMost = True
+    f.StartPosition = WF.FormStartPosition.CenterScreen
+    f.ClientSize = System.Drawing.Size(460, 340)
+    tb = WF.TextBox()
+    tb.Multiline = True
+    tb.ReadOnly = True
+    tb.Dock = WF.DockStyle.Fill
+    tb.Font = System.Drawing.Font('Consolas', 9)
+    tb.BackColor = System.Drawing.Color.FromArgb(255, 46, 48, 64)
+    tb.ForeColor = System.Drawing.Color.FromArgb(255, 214, 217, 226)
+    tb.ScrollBars = WF.ScrollBars.Vertical
+    f.Controls.Add(tb)
+    top = WF.Panel()
+    top.Dock = WF.DockStyle.Top
+    top.Height = 44
+    top.BackColor = C_BG
+    host = WF.TextBox()
+    host.Text = 'www.baidu.com'
+    host.Left = 12
+    host.Top = 10
+    host.Width = 160
+    top.Controls.Add(host)
+
+    def run_cmd(cmd):
+        tb.Clear()
+        def work():
+            try:
+                for line in subprocess.run(cmd, shell=True, capture_output=True, timeout=60).stdout.decode('utf-8', errors='replace').splitlines():
+                    pass
+                # stream-style: use Popen with line reads
+            except Exception as ex:
+                pass
+
+        def work2():
+            try:
+                p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='replace')
+                for line in iter(p.stdout.readline, ''):
+                    tb.Invoke((lambda t=line: tb.AppendText(t)))
+                p.stdout.close()
+                p.wait()
+            except Exception as ex:
+                try:
+                    tb.Invoke((lambda t=('ERR ' + str(ex) + '\r\n'): tb.AppendText(t)))
+                except Exception:
+                    pass
+        threading.Thread(target=work2, daemon=True).start()
+
+    def add_btn(text, x, cmd):
+        b = WF.Button()
+        b.Text = text
+        b.Left = x
+        b.Top = 9
+        b.Width = 76
+        b.Click += (lambda s, e, c=cmd: run_cmd(c))
+        top.Controls.Add(b)
+    add_btn('Ping', 184, 'ping -n 4 ' + host.Text)
+    add_btn('Tracert', 268, 'tracert -d ' + host.Text)
+    add_btn('NSLookup', 352, 'nslookup ' + host.Text)
+    f.Controls.Add(top)
     f.Show()
 
 
