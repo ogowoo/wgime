@@ -144,3 +144,19 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 4. **pythonnet 命名空间**：运行时编译的程序集要放在命名空间里（如 `namespace WgBridge`）才能 `from WgBridge import ...`；全局命名空间的类型拿不到。
 5. **out 参数**：Python 侧别用——C# 侧包一个 `Next()` 返回 null 的方法更省事。
 6. pip 安装要绕本机系统代理：`NO_PROXY=*`；embeddable Python 装 pip 直接解压 wheel 到 `Lib\site-packages` 并在 `._pth` 里加该行。
+
+---
+
+## 8. 阶段 1 已完成（2026-08-25，IME 核心对齐）
+
+逐行对照 C# WordBoard 移植（`wgime-py/engine.py` + `wgime.py` + `bridge.cs`）：
+
+- **四模式**：0=混合(五笔先) 1=拼音 2=五笔 3=词典(英汉+汉反查)；`Ctrl+\`` 循环、Shift 轻拍开关、`Ctrl+Shift+F` 繁简（3602 对映射抽自 C# 内嵌表 → `trad.txt`）
+- **候选组装**与 `ShowCharatar` 同序：精确匹配 → 前缀单字（bisect 走排序数组）→ 简拼 → 模糊音（7 对单替换，上限 16）→ 词频稳定排序（分模式桶）→ lastpick 置顶；`CandCap=60`/`PageSize=9` 一致
+- **五笔四码唯一自动上屏**（仅纯五笔模式，与 C# 一致）；`[`/`]` 取首候选首/末字
+- **词频学习**：分模式桶 + 合并视图，`userdict_{mix,py,wb}.txt`/`lastpick_*.txt` 与 C# 版**同格式可互换**，50 次或 5s 后台落盘、退出同步落盘
+- **码表缓存**：pickle（含排序数组/简拼/反查索引，按输入文件 size+mtime 签名失效）——冷启动 7.3s → **热启动 1.35s**（含 ec.txt 65.8 万条 + 汉英反查 70.2 万条），已与 C# 版缓存命中同级
+- **注入竞态修复**：注入前 30ms 沉降（被吞按键的 keyup 排空后再 SendInput）——此前快速连打 6 次只落 1 次，修后 6/6
+- **验收**（`wgime-py/tests/accept-test.ps1` 实机驱动记事本）：混合 zhongguo→中国、拼音 nihao→你好、五笔 wqvb→自动上屏你好、词典 apple→苹果、繁简中國、Shift 轻拍中英切换，全部通过
+
+**阶段 1 未做（留给后续）**：造句（BestSentence）、联想行（assoc）、rq/sj/xq 动态候选、vf 符号面板、v 模式金额、应用启动码、短语、五笔 z 通配、造词/用户词、config.txt、PasteCommit/UIPI 提权窗口、Qt stale-char keyfix、每应用模式、emoji 候选。

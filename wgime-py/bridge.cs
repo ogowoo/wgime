@@ -20,9 +20,13 @@ public static class ImeBus
     {
         if (vk >= 0x41 && vk <= 0x5A) return true;   // A-Z
         if (vk >= 0x31 && vk <= 0x39) return true;   // 1-9
-        return vk == 0x20 || vk == 0x08 || vk == 0x1B || vk == 0x0D || vk == 0xBD || vk == 0xBB;  // space back esc enter - =
+        return vk == 0x20 || vk == 0x08 || vk == 0x1B || vk == 0x0D || vk == 0xBD || vk == 0xBB
+            || vk == 0xDB || vk == 0xDD;             // space back esc enter - = [ ]
     }
-    public const int VK_TOGGLE = 0x77;               // F8
+    public const int VK_TOGGLE = 0x77;               // F8 (硬开关)
+    public const int VK_TAP = 0xF8;                  // 合成: Shift 轻拍 (中/英切换)
+    public const int VK_MODE = 0xF9;                 // 合成: Ctrl+` (模式循环)
+    public const int VK_TRAD = 0xFA;                 // 合成: Ctrl+Shift+F (繁简)
 }
 
 public class KeyHook
@@ -30,10 +34,13 @@ public class KeyHook
     [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hInstance, int threadId);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr idHook);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr idHook, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern short GetKeyState(int vk);
     delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     IntPtr hhook = IntPtr.Zero;
     HookProc del;                                        // 防 GC 回收
+    DateTime shiftDownAt = DateTime.MinValue;
+    bool dirtySinceShift = true;                         // shift 按下后有其它键介入 -> 不算轻拍
 
     public void Install()                                // 必须在将跑消息循环的线程上调用
     {
@@ -45,13 +52,29 @@ public class KeyHook
     {
         if (nCode >= 0) {
             int m = wParam.ToInt32();
-            if (m == 0x100 || m == 0x104) {              // keydown only
-                int vk = Marshal.ReadInt32(lParam);
-                if (vk == ImeBus.VK_TOGGLE || (ImeBus.Active && ImeBus.IsImeKey(vk))) {
-                    var e = new KeyEvt { Vk = vk, Down = true };
-                    ImeBus.Q.Enqueue(e);
-                    return (IntPtr)1;                    // 吞键
+            int vk = Marshal.ReadInt32(lParam);
+            bool down = (m == 0x100 || m == 0x104);
+            if (down) {
+                // Ctrl+` 模式循环 / Ctrl+Shift+F 繁简 (组合键, 吞掉)
+                bool ctrl = (GetKeyState(0x11) & 0x8000) != 0;
+                bool shift = (GetKeyState(0x10) & 0x8000) != 0;
+                if (ctrl && vk == 0xC0) { ImeBus.Q.Enqueue(new KeyEvt { Vk = ImeBus.VK_MODE, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
+                if (ctrl && shift && vk == 0x46) { ImeBus.Q.Enqueue(new KeyEvt { Vk = ImeBus.VK_TRAD, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
+                if (vk == 0xA0 || vk == 0xA1) { shiftDownAt = DateTime.Now; dirtySinceShift = false; }
+                else if (vk == ImeBus.VK_TOGGLE) { ImeBus.Q.Enqueue(new KeyEvt { Vk = vk, Down = true }); dirtySinceShift = true; return (IntPtr)1; }
+                else {
+                    if (shiftDownAt != DateTime.MinValue) dirtySinceShift = true;
+                    if (ImeBus.Active && ImeBus.IsImeKey(vk)) {
+                        ImeBus.Q.Enqueue(new KeyEvt { Vk = vk, Down = true });
+                        return (IntPtr)1;                // 吞键
+                    }
                 }
+            } else if (m == 0x101 || m == 0x105) {       // keyup: Shift 轻拍检测
+                if ((vk == 0xA0 || vk == 0xA1) && !dirtySinceShift && shiftDownAt != DateTime.MinValue
+                    && (DateTime.Now - shiftDownAt).TotalMilliseconds < 400) {
+                    ImeBus.Q.Enqueue(new KeyEvt { Vk = ImeBus.VK_TAP, Down = true });
+                }
+                if (vk == 0xA0 || vk == 0xA1) shiftDownAt = DateTime.MinValue;
             }
         }
         return CallNextHookEx(hhook, nCode, wParam, lParam);
@@ -106,6 +129,7 @@ public class CandForm : Form
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int left, top, right, bottom; }
     [StructLayout(LayoutKind.Sequential)] struct GUITHREADINFO { public int cbSize; public uint flags; public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; public RECT rcCaret; }
 
+    string head = "";                                      // 模式标签, 如 [拼音]
     string code = "";
     string[] cands = new string[0];
     int sel = 0;
@@ -132,10 +156,10 @@ public class CandForm : Form
         }
     }
 
-    public void ShowCands(string code, string[] cands, int sel)
+    public void ShowCands(string head, string code, string[] cands, int sel)
     {
-        if (InvokeRequired) { BeginInvoke(new Action<string, string[], int>(ShowCands), code, cands, sel); return; }
-        this.code = code; this.cands = cands; this.sel = sel;
+        if (InvokeRequired) { BeginInvoke(new Action<string, string, string[], int>(ShowCands), head, code, cands, sel); return; }
+        this.head = head; this.code = code; this.cands = cands; this.sel = sel;
         LocateCaret();
         Measure();
         Invalidate();
@@ -149,7 +173,7 @@ public class CandForm : Form
     void Measure()
     {
         using (var g = CreateGraphics()) {
-            int w = 20 + (int)g.MeasureString(code, fCode).Width;
+            int w = 20 + (int)g.MeasureString(head + code, fCode).Width;
             for (int i = 0; i < cands.Length; i++) w += (int)g.MeasureString((i + 1) + "." + cands[i], fCand).Width + 16;
             Size = new Size(Math.Max(w, 90), 56);
         }
@@ -175,7 +199,10 @@ public class CandForm : Form
         var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var pen = new Pen(Color.FromArgb(255, 195, 204, 221), 1))
         using (var path = Round(new Rectangle(0, 0, Width - 1, Height - 1), 7)) g.DrawPath(pen, path);
-        g.DrawString(code, fCode, Brushes.Gray, 10, 6);
+        using (var br = new SolidBrush(Color.FromArgb(255, 0, 122, 255)))
+            g.DrawString(head, fCode, br, 10, 6);
+        int hw = string.IsNullOrEmpty(head) ? 0 : (int)g.MeasureString(head, fCode).Width;
+        g.DrawString(code, fCode, Brushes.Gray, 10 + hw, 6);
         int x = 10;
         for (int i = 0; i < cands.Length; i++) {
             string s = (i + 1) + "." + cands[i];

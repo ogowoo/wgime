@@ -61,15 +61,19 @@ from WgBridge import KeyHook, CandForm, Injector, ImeBus
 sys.path.insert(0, BASE)
 from engine import Engine
 
-engine = Engine(DICT_DIR)
+engine = Engine(DICT_DIR, DATA_DIR)
 cand_form = CandForm()
 _h = cand_form.Handle   # 主线程上强制建句柄: 之后 BeginInvoke 都正确封送到主线程泵
 
-VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB)
+VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
+          LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA)
+MODE_NAMES = ('混合', '拼音', '五笔', '词典')
 
 
 class Ime:
     active = False
+    mode = 0                    # 0=混合 1=拼音 2=五笔 3=词典
+    trad = False
     buf = ''
     cands = []
     sel = 0
@@ -80,10 +84,10 @@ ime = Ime()
 
 
 def show_page():
-    all_c = engine.py.get(ime.buf) or []
-    ime.cands = all_c[ime.page * 9:(ime.page + 1) * 9]
-    if ime.buf and ime.cands:
-        cand_form.ShowCands(ime.buf, System.Array[str](ime.cands), ime.sel)
+    header = '[%s] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')
+    page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
+    if ime.buf and page_c:
+        cand_form.ShowCands(header, ime.buf, System.Array[str](page_c), ime.sel)
     else:
         cand_form.HideBar()
 
@@ -91,6 +95,15 @@ def show_page():
 def refresh():
     ime.page = 0
     ime.sel = 0
+    if not ime.buf:
+        cand_form.HideBar()
+        return
+    cands, exact_wubi, extendable = engine.candidates(ime.buf, ime.mode)
+    ime.cands = cands
+    # 五笔约定: 唯一四码自动上屏 (仅纯五笔模式)
+    if ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands:
+        commit(0)
+        return
     show_page()
 
 
@@ -102,11 +115,28 @@ def reset():
     cand_form.HideBar()
 
 
+def inject(text):
+    text = engine.to_trad(text, ime.trad)
+    time.sleep(0.03)                             # 让被吞按键的 keyup 先排空, 避免注入事件与在途消息交叠丢失
+    n = Injector.Text(text)
+    dbg('inject %s sent=%s fg=%s' % (text, n, Injector.ForegroundInfo()))
+
+
 def commit(i):
     if 0 <= i < len(ime.cands):
         text = ime.cands[i]
-        n = Injector.Text(text)
-        dbg('commit %s sent=%s fg=%s' % (text, n, Injector.ForegroundInfo()))
+        engine.learn(ime.buf, text, ime.mode)
+        inject(text)
+    reset()
+
+
+def commit_char(idx):                            # [ = 首字, ] = 末字 (取首候选的单字)
+    if not ime.cands:
+        return
+    w = ime.cands[0]
+    c = w if len(w) == 1 else (w[0] if idx == 0 else w[-1])
+    engine.learn(ime.buf, c, ime.mode)
+    inject(c)
     reset()
 
 
@@ -119,23 +149,38 @@ def set_active(on):
 
 
 def handle(vk):
-    """工作线程上的按键状态机。"""
-    if vk == VK['F8']:
+    """工作线程上的按键状态机 (事件来自 C# 实时层队列)。"""
+    if vk == VK['F8'] or vk == VK['TAP']:
         set_active(not ime.active)
+        return
+    if vk == VK['MODE']:
+        ime.mode = (ime.mode + 1) % 4
+        reset()
+        dbg('mode=%s' % MODE_NAMES[ime.mode])
+        return
+    if vk == VK['TRAD']:
+        ime.trad = not ime.trad
+        dbg('trad=%s' % ime.trad)
         return
     if not ime.active:
         return
     if 0x41 <= vk <= 0x5A:                       # A-Z
         ime.buf += chr(vk + 32)
+        if len(ime.buf) > 32:
+            ime.buf = ime.buf[:32]
         refresh()
     elif vk == VK['SPACE']:
         if ime.buf:
             commit(ime.sel)
     elif 0x31 <= vk <= 0x39:                     # 1-9
         if ime.buf and vk - 0x31 < len(ime.cands):
-            commit(vk - 0x31)
+            commit(ime.page * 9 + (vk - 0x31))
         elif not ime.buf:
             Injector.Text(str(vk - 0x30))        # 无缓冲: 数字原样上屏
+    elif vk == VK['LBRACKET']:
+        commit_char(0)
+    elif vk == VK['RBRACKET']:
+        commit_char(1)
     elif vk == VK['BACK']:
         if ime.buf:
             ime.buf = ime.buf[:-1]
@@ -144,15 +189,15 @@ def handle(vk):
         reset()
     elif vk == VK['ENTER']:
         if ime.buf:
-            Injector.Text(ime.buf)
+            inject(ime.buf)
         reset()
     elif vk in (VK['MINUS'], VK['EQUALS']):      # 翻页
-        total = len(engine.py.get(ime.buf) or [])
-        if vk == VK['EQUALS'] and (ime.page + 1) * 9 < total:
-            ime.page += 1
-            show_page()
-        elif vk == VK['MINUS'] and ime.page > 0:
-            ime.page -= 1
+        tp = (len(ime.cands) + 8) // 9
+        if tp > 0:
+            if vk == VK['EQUALS']:
+                ime.page = (ime.page + 1) % tp
+            else:
+                ime.page = (ime.page - 1 + tp) % tp
             show_page()
 
 
@@ -167,6 +212,13 @@ def worker_loop():
         except Exception as ex:
             dbg('worker err %r' % ex)
         time.sleep(0.002)
+
+
+def on_closing():                                # 退出前落盘词频
+    try:
+        engine.save_freq()
+    except Exception:
+        pass
 
 
 # ---------- tray ----------
@@ -188,6 +240,7 @@ def update_tray():
 def on_quit(s, e):
     cand_form.HideBar()
     tray.Visible = False
+    on_closing()
     WF.Application.Exit()
 
 
@@ -208,6 +261,6 @@ threading.Thread(target=worker_loop, daemon=True).start()
 
 update_tray()
 tray.Visible = True
-tray.ShowBalloonTip(2000, 'WgIme-Py', '阶段0骨架已启动 (字典加载 %.0fms), F8 开关' % engine.load_ms, WF.ToolTipIcon.Info)
+tray.ShowBalloonTip(2000, 'WgIme-Py', '阶段1已启动 (字典 %.0fms) — Shift 开关 / Ctrl+` 模式 / Ctrl+Shift+F 繁简' % engine.load_ms, WF.ToolTipIcon.Info)
 dbg('started, dict %.0fms' % engine.load_ms)
 WF.Application.Run()

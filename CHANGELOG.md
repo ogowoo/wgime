@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-25 (wgime-py 阶段 1: IME 核心对齐 C# WordBoard)
+
+- 四模式(混合/拼音/五笔/词典) + Shift 轻拍开关 + Ctrl+\` 模式循环 + Ctrl+Shift+F 繁简(3602 对映射抽自 C# 内嵌表)
+- 候选组装与 ShowCharatar 同序: 精确→前缀单字→简拼→模糊音→词频稳定排序(分模式桶)→lastpick 置顶; 五笔四码唯一自动上屏; [ ] 取首/末字
+- 词频学习: userdict/lastpick 与 C# 版同格式可互换, 后台落盘
+- 码表缓存: pickle + 签名失效, 启动 7.3s→1.35s
+- 注入竞态修复: 注入前 30ms 沉降(吞键 keyup 排空), 连打 6/6 全落
+- 验收 accept-test.ps1 实机六场景全过(混合/拼音/五笔自动上屏/词典/繁简/Shift 切换)
+
+---
+
 ## 2026-08-25 (wgime-py 阶段 0: pythonnet 骨架实机打通)
 
 - 新增 `wgime-py/`:方案 B 双轨骨架——`wgime.py`(状态机/托盘/单实例) + `bridge.cs`(C# 实时层,运行时 CodeDom 编译+md5 缓存) + `engine.py`(码表引擎)。环境:Python 3.8 embeddable + pythonnet 2.5.2 + .NET Framework 4.x(用户零依赖)
