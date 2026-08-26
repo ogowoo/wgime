@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-26 (wgime-py 阶段 2 第三批: 上屏健壮性)
+
+- 上屏方式路由: paste=auto/on/off/key + 每程序 pin (pastemode.txt 同格式); auto 检测提权窗口自动改剪贴板粘贴 (UIPI)
+- PasteCommit 全套: 保存/恢复原剪贴板, 实测粘贴上屏后剪贴板原样恢复
+- Qt stale-char keyfix (全角标点后 X+Back 吸收) + per-app pin
+- 钩子注入过滤: 自家 SendInput 带 dwExtraInfo='WGIM' 标记直接放行, 修掉 Ctrl+V 被自家钩子误吞
+- 托盘: 当前程序剪贴板/标点修复 pin 切换
+
+---
+
 ## 2026-08-26 (wgime-py 阶段 2 第二批: config/双拼/vf 面板/造词/启动码)
 
 - config.txt 全键加载 (fuzzy/showcode/shuangpin/trad/sentence/assoc/starton/app), 托盘重载即时生效

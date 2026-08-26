@@ -1,6 +1,7 @@
 // wgime-py bridge: Win32 interop layer compiled at runtime via CodeDom (.NET Framework 4.x).
 // Python owns all IME logic; this layer owns: keyboard hook, SendInput, caret-follow candidate bar.
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -54,6 +55,10 @@ public class KeyHook
     IntPtr Proc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0) {
+            int flags = Marshal.ReadInt32(lParam, 8);
+            IntPtr extra = Marshal.ReadIntPtr(lParam, 16);
+            if ((flags & 0x10) != 0 && extra == Injector.MAGIC)       // 自家注入: 放行不处理 (LLKHF_INJECTED)
+                return CallNextHookEx(hhook, nCode, wParam, lParam);
             int m = wParam.ToInt32();
             int vk = Marshal.ReadInt32(lParam);
             bool down = (m == 0x100 || m == 0x104);
@@ -108,14 +113,117 @@ public static class Injector
         th.Join(1500);
         return t;
     }
+    public static void SetClipboardText(string s)  // STA 安全
+    {
+        var th = new System.Threading.Thread(delegate() { try { Clipboard.SetText(s); } catch {} });
+        th.SetApartmentState(System.Threading.ApartmentState.STA);
+        th.Start();
+        th.Join(1500);
+    }
+
+    // ---------- 提权检测 (UIPI: 向管理员窗口注入需要剪贴板粘贴) ----------
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("advapi32.dll")] static extern bool OpenProcessToken(IntPtr h, uint access, out IntPtr tok);
+    [DllImport("advapi32.dll")] static extern bool GetTokenInformation(IntPtr tok, int cls, out int info, int len, out int retLen);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out int pid);
+    public static bool SelfElevated()
+    {
+        try {
+            using (var id = System.Security.Principal.WindowsIdentity.GetCurrent())
+                return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        } catch { return false; }
+    }
+    public static bool ForegroundElevated()
+    {
+        try {
+            int pid;
+            GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+            IntPtr h = OpenProcess(0x1000, false, pid);
+            if (h == IntPtr.Zero) return false;
+            try {
+                IntPtr tok;
+                if (!OpenProcessToken(h, 0x8, out tok)) return false;
+                try {
+                    int elev, size;
+                    return GetTokenInformation(tok, 20, out elev, 4, out size) && elev != 0;   // TokenElevation
+                } finally { CloseHandle(tok); }
+            } finally { CloseHandle(h); }
+        } catch { return false; }
+    }
+    public static string ForegroundProcessName()
+    {
+        try {
+            int pid;
+            GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+            using (var p = System.Diagnostics.Process.GetProcessById(pid)) return p.ProcessName.ToLower();
+        } catch { return ""; }
+    }
+
+    // ---------- Qt stale-char fix (微信4.x 等全角标点后吞下一字符: X 吸收 + Back 擦除) ----------
+    static bool StaleTrigger(char c)
+    {
+        if (c < 0x3000) return false;
+        if (c >= 0x4E00 && c <= 0x9FFF) return false;
+        if (c >= 0x3400 && c <= 0x4DBF) return false;
+        if (c >= 0xF900 && c <= 0xFAFF) return false;
+        return true;
+    }
+    public static uint TextQtFix(string s)
+    {
+        var list = new List<INPUT>();
+        foreach (char c in s) {
+            INPUT d = new INPUT(), u = new INPUT();
+            d.type = 1; d.ki.wScan = c; d.ki.dwFlags = 0x4;
+            u.type = 1; u.ki.wScan = c; u.ki.dwFlags = 0x4 | 0x2;
+            list.Add(d); list.Add(u);
+            if (StaleTrigger(c)) {
+                INPUT xd = new INPUT(), xu = new INPUT(), bd = new INPUT(), bu = new INPUT();
+                xd.type = 1; xd.ki.wScan = 'X'; xd.ki.dwFlags = 0x4;
+                xu.type = 1; xu.ki.wScan = 'X'; xu.ki.dwFlags = 0x4 | 0x2;
+                bd.type = 1; bd.ki.wVk = 0x08;
+                bu.type = 1; bu.ki.wVk = 0x08; bu.ki.dwFlags = 0x2;
+                list.Add(xd); list.Add(xu); list.Add(bd); list.Add(bu);
+            }
+        }
+        if (list.Count == 0) return 0;
+        for (int i = 0; i < list.Count; i++) { var e = list[i]; e.ki.extra = MAGIC; list[i] = e; }
+        return SendInput((uint)list.Count, list.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    // ---------- 剪贴板粘贴上屏 (提权窗口回退; 保存/恢复原剪贴板) ----------
+    public static void Paste(string text)
+    {
+        string prev = ClipboardText();
+        if (prev != null && prev.Length == 0) prev = null;   // 空原文不恢复
+        SetClipboardText(text);
+        System.Threading.Thread.Sleep(60);                   // 让剪贴板监视器读完
+        var ins = new INPUT[4];
+        for (int i = 0; i < 4; i++) { ins[i].type = 1; ins[i].ki.extra = MAGIC; }
+        ins[0].ki.wVk = 0x11; ins[1].ki.wVk = 0x56;
+        ins[2].ki.wVk = 0x56; ins[2].ki.dwFlags = 2;
+        ins[3].ki.wVk = 0x11; ins[3].ki.dwFlags = 2;
+        SendInput(4, ins, Marshal.SizeOf(typeof(INPUT)));
+        System.Threading.Thread.Sleep(150);
+        if (prev != null) {
+            var t = new System.Threading.Thread(delegate() {
+                System.Threading.Thread.Sleep(300);
+                try { if (ClipboardText() == text) SetClipboardText(prev); } catch {}
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+    }
     [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr extra; }
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public KEYBDINPUT ki; public long pad; }  // x64: 4+4pad+24+8 = 40 = sizeof(INPUT)
+    public static readonly IntPtr MAGIC = new IntPtr(0x5747494D);   // 'WGIM': 自家注入事件的 dwExtraInfo 标记 (钩子据此放行)
     public static uint Text(string s)
     {
         var arr = new INPUT[s.Length * 2];
         for (int i = 0; i < s.Length; i++) {
             arr[2 * i].type = 1; arr[2 * i].ki.wScan = s[i]; arr[2 * i].ki.dwFlags = 0x4;              // UNICODE down
             arr[2 * i + 1].type = 1; arr[2 * i + 1].ki.wScan = s[i]; arr[2 * i + 1].ki.dwFlags = 0x4 | 0x2; // up
+            arr[2 * i].ki.extra = MAGIC; arr[2 * i + 1].ki.extra = MAGIC;
         }
         return SendInput((uint)arr.Length, arr, Marshal.SizeOf(typeof(INPUT)));
     }
@@ -125,6 +233,7 @@ public static class Injector
         for (int i = 0; i < n; i++) {
             arr[2 * i].type = 1; arr[2 * i].ki.wVk = 0x08; arr[2 * i].ki.dwFlags = 0;
             arr[2 * i + 1].type = 1; arr[2 * i + 1].ki.wVk = 0x08; arr[2 * i + 1].ki.dwFlags = 0x2;
+            arr[2 * i].ki.extra = MAGIC; arr[2 * i + 1].ki.extra = MAGIC;
         }
         SendInput((uint)arr.Length, arr, Marshal.SizeOf(typeof(INPUT)));
     }

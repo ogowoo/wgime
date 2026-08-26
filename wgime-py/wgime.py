@@ -154,6 +154,12 @@ def refresh():
             cands.remove(cand)
         cands.insert(0, cand)
         ime.app_cand = cand
+    # 短语 (config phrase=): 置顶
+    ph = CFG.get('phrases', {}).get(ime.buf)
+    if ph:
+        if ph in cands:
+            cands.remove(ph)
+        cands.insert(0, ph)
     ime.cands = cands
     # 五笔约定: 唯一四码自动上屏 (仅纯五笔模式)
     if ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands:
@@ -211,9 +217,109 @@ def pick_assoc(i):
 
 def inject(text):
     text = engine.to_trad(text, ime.trad)
+    m = effective_paste_mode()
+    if m == 1:
+        Injector.Paste(text)
+        dbg('paste %s fg=%s' % (text, Injector.ForegroundInfo()))
+        return
+    if m == 2:
+        WF.SendKeys.Send(sanitize_sendkeys(text))
+        return
     time.sleep(0.03)                             # 让被吞按键的 keyup 先排空, 避免注入事件与在途消息交叠丢失
-    n = Injector.Text(text)
+    if effective_keyfix():
+        n = Injector.TextQtFix(text)
+    else:
+        n = Injector.Text(text)
     dbg('inject %s sent=%s fg=%s' % (text, n, Injector.ForegroundInfo()))
+
+
+def sanitize_sendkeys(s):
+    out = []
+    for ch in s:
+        if ch in '+^%~(){}[]':
+            out.append('{' + ch + '}')
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+APPMODES = {}
+APPMODE_NAMES = {1: 'clipboard', 2: 'sendkeys', 3: 'key', 4: 'keyfix', 5: 'keyplain'}
+
+
+def load_appmodes():
+    global APPMODES
+    APPMODES = {}
+    try:
+        with open(os.path.join(DATA_DIR, 'pastemode.txt'), encoding='utf-8') as f:
+            for raw in f:
+                t = raw.strip()
+                if not t or t[0] == '#':
+                    continue
+                sp = t.find('=')
+                if sp < 1:
+                    continue
+                name, mode = t[:sp].strip().lower(), t[sp + 1:].strip().lower()
+                APPMODES[name] = {'clipboard': 1, 'on': 1, 'off': 2, 'sendkeys': 2, 'keyfix': 4, 'keyplain': 5}.get(mode, 3)
+    except OSError:
+        pass
+
+
+def save_appmodes():
+    try:
+        with open(os.path.join(DATA_DIR, 'pastemode.txt'), 'w', encoding='utf-8') as f:
+            for k, v in APPMODES.items():
+                f.write('%s=%s\n' % (k, APPMODE_NAMES.get(v, 'key')))
+    except OSError:
+        pass
+
+
+def effective_paste_mode():
+    name = Injector.ForegroundProcessName()
+    if name in APPMODES and APPMODES[name] in (1, 2, 3):
+        return APPMODES[name]
+    m = CFG.get('paste', 3)
+    if m == 0:                                   # auto: 提权窗口用剪贴板
+        if not Injector.SelfElevated() and Injector.ForegroundElevated():
+            return 1
+        return 3
+    return m
+
+
+def effective_keyfix():
+    name = Injector.ForegroundProcessName()
+    o = APPMODES.get(name)
+    if o == 4:
+        return True
+    if o == 5:
+        return False
+    return CFG.get('keyfix', True)
+
+
+def toggle_app_paste():
+    name = Injector.ForegroundProcessName()
+    if not name:
+        return
+    if APPMODES.get(name) == 1:
+        del APPMODES[name]
+        tray.ShowBalloonTip(2000, '上屏方式', name + ' 已恢复默认上屏', WF.ToolTipIcon.Info)
+    else:
+        APPMODES[name] = 1
+        tray.ShowBalloonTip(2000, '上屏方式', name + ' 改用剪贴板上屏', WF.ToolTipIcon.Info)
+    save_appmodes()
+
+
+def toggle_app_keyfix():
+    name = Injector.ForegroundProcessName()
+    if not name:
+        return
+    if APPMODES.get(name) in (4, 5):
+        del APPMODES[name]
+        tray.ShowBalloonTip(2000, '标点吞字修复', name + ' 已恢复全局默认', WF.ToolTipIcon.Info)
+    else:
+        APPMODES[name] = 5 if CFG.get('keyfix', True) else 4
+        tray.ShowBalloonTip(2000, '标点吞字修复', name + (' 已单独关闭' if CFG.get('keyfix', True) else ' 已单独开启'), WF.ToolTipIcon.Info)
+    save_appmodes()
 
 
 def record_commit(w, code):
@@ -482,6 +588,12 @@ menu.Items.Add(mi_trad)
 mi_reload = WF.ToolStripMenuItem('重载配置')
 mi_reload.Click += lambda s, e: apply_config()
 menu.Items.Add(mi_reload)
+mi_apppaste = WF.ToolStripMenuItem('当前程序: 剪贴板上屏切换')
+mi_apppaste.Click += lambda s, e: toggle_app_paste()
+menu.Items.Add(mi_apppaste)
+mi_appfix = WF.ToolStripMenuItem('当前程序: 标点吞字修复切换')
+mi_appfix.Click += lambda s, e: toggle_app_keyfix()
+menu.Items.Add(mi_appfix)
 mi_open = WF.ToolStripMenuItem('打开数据目录')
 mi_open.Click += lambda s, e: os.startfile(DATA_DIR)
 menu.Items.Add(mi_open)
@@ -511,6 +623,7 @@ if not mutex.WaitOne(0):
 
 # ---------- hook thread (C# realtime layer) ----------
 hook = KeyHook()
+load_appmodes()
 hook_thread = threading.Thread(target=lambda: (hook.Install(), KeyHook.Pump()), daemon=True)
 hook_thread.start()
 

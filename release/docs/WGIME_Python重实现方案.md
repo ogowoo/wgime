@@ -184,3 +184,13 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **应用启动码**：config `app =` 条目中编码后出 ▶候选，选中即启动（URL/程序/带参命令）
 - **托盘菜单**：开关/四模式直选/繁简/重载配置/打开数据目录/退出
 - **验收**：vf 面板两级截图验证、Ctrl+Alt+C 造词落 userwords.txt、单字连打自动造词（什井→shenjing）、双拼单测全过
+
+---
+
+## 11. 阶段 2 第三批已完成（2026-08-26，上屏健壮性）
+
+- **上屏方式路由**（`EffectiveMode` 语义）：paste=auto/on/off/key + 每程序 pin（`pastemode.txt` 同格式）；auto 模式下检测前台提权窗口（UIPI）自动改剪贴板粘贴
+- **PasteCommit**：保存原剪贴板 → SetText → 60ms 沉降 → 注入 Ctrl+V → 150ms → 300ms 后恢复原剪贴板（未被改动才恢复）；实测 notepad pin 到 clipboard 后"你好"正确上屏且剪贴板原样恢复
+- **Qt stale-char keyfix**：全角标点后注入 X+Back 吸收擦除（微信 4.x 等 Qt 应用的吞字规避），per-app pin 可关
+- **钩子注入过滤**：自家 SendInput 事件带 `dwExtraInfo=0x5747494D('WGIM')` 标记，钩子见 `LLKHF_INJECTED+MAGIC` 直接放行——修掉"粘贴的 Ctrl+V 被自家钩子当字母 v 吞掉"的互踩；外部测试工具（SendKeys，无标记）仍可驱动
+- 托盘新增"当前程序：剪贴板上屏切换 / 标点吞字修复切换"

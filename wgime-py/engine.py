@@ -191,7 +191,8 @@ def is_all_cjk(s):
 def load_config(path):
     """返回 dict: fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps"""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
-               trad=False, sentence=True, assoc=True, starton=True, apps={})
+               trad=False, sentence=True, assoc=True, starton=True, apps={},
+               paste=3, keyfix=True)
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -229,6 +230,16 @@ def load_config(path):
                     cfg['assoc'] = v not in ('0', 'off', 'false')
                 elif k == 'starton':
                     cfg['starton'] = v in ('1', 'on', 'true')
+                elif k == 'paste':
+                    cfg['paste'] = {'on': 1, 'always': 1, 'off': 2, 'key': 3, 'unicode': 3}.get(v, 0)
+                elif k == 'keyfix':
+                    cfg['keyfix'] = v in ('1', 'on', 'true')
+                elif k == 'phrase':
+                    sp = v.find('\t')
+                    if sp < 1:
+                        sp = v.find(' ')
+                    if sp > 0:
+                        cfg.setdefault('phrases', {})[v[:sp].strip().lower()] = v[sp + 1:].strip()
                 elif k == 'app':
                     ap = v.split('\t')
                     if len(ap) >= 3:
