@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-08-25 (评估: Python 重实现方案 + 可行性 spike)
+
+- 新增 `docs\WGIME_Python重实现方案.md`:现状盘点(500KB C# 组件清单)、三选型对比(stdlib+tkinter / pythonnet+WinForms / PySide6)、四阶段迁移路线、风险清单
+- 新增 `tests\python-spike\`:纯标准库可行性验证——ctypes 全局键盘钩子(坑:hMod 必须 NULL)、py.txt 169k 条 212ms 加载/微秒级查找、SendInput UNICODE 中文上屏,全部实测通过
+
+---
+
 ## 2026-08-25 (chat 插件: 界面现代化重构)
 
 - **聊天气泡**:消息列表改 OwnerDraw 自绘——自己的消息右侧 systemBlue 蓝底白字、对方左侧白卡描边、事件居中灰条;引用显示为气泡内首行小字 `↩`;文件消息气泡内含实时状态行(接收中 x/y → ✓ 双击保存/查看 → ✗ 接收失败)
