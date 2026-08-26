@@ -90,10 +90,10 @@ public class ChatPlugin
 
     // ---------- quote / file / history state ----------
     class Quote { public string nick; public string text; public Quote q; }
-    class MsgMeta { public string nick; public string text; public FileRecv file; }   // 与 msgList.Items 平行
+    class MsgMeta { public string nick, time, text, quoteText; public FileRecv file; }   // nick==null = 事件行
     class FileRecv
     {
-        public string id, name, sid, sender, caption, dispBase;
+        public string id, name, sid, sender, caption;
         public long size; public int total, received, retries;
         public string[] chunks; public DateTime t0;
         public bool done, failed; public byte[] data;
@@ -1003,6 +1003,7 @@ public class ChatPlugin
     class RoundedEdit : Panel
     {
         public TextBox Tb;
+        public string Cue = "";                              // 占位符 (EM_SETCUEBANNER)
         public RoundedEdit()
         {
             BackColor = C_BG;
@@ -1011,6 +1012,7 @@ public class ChatPlugin
             Controls.Add(Tb);
             Tb.GotFocus += delegate { Invalidate(); };
             Tb.LostFocus += delegate { Invalidate(); };
+            Tb.HandleCreated += delegate { if (Cue.Length > 0) SendMessageW(Tb.Handle, 0x1501, (IntPtr)1, Cue); };
         }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1023,9 +1025,9 @@ public class ChatPlugin
             }
         }
     }
-    static TextBox MkEdit(Form f, string text, int x, int y, int w, int h, float fontSize, bool password)
+    static TextBox MkEdit(Form f, string text, int x, int y, int w, int h, float fontSize, bool password, string cue)
     {
-        var p = new RoundedEdit { Location = new Point(x, y), Size = new Size(w, h) };
+        var p = new RoundedEdit { Location = new Point(x, y), Size = new Size(w, h), Cue = cue ?? "" };
         p.Tb.Text = text; p.Tb.Font = F(fontSize, FontStyle.Regular);
         if (password) p.Tb.UseSystemPasswordChar = true;
         f.Controls.Add(p);
@@ -1041,6 +1043,7 @@ public class ChatPlugin
     }
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ReleaseCapture();
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern IntPtr SendMessageW(IntPtr h, int msg, IntPtr w, string l);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
     [System.Runtime.InteropServices.DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
     static void DragMove(Form f) { ReleaseCapture(); SendMessage(f.Handle, 0xA1, (IntPtr)0x2, IntPtr.Zero); }
@@ -1096,39 +1099,38 @@ public class ChatPlugin
         head.Paint += delegate(object s, PaintEventArgs e) { using (var pen = new Pen(C_BORDER, 1)) e.Graphics.DrawLine(pen, 0, head.Height - 1, head.Width, head.Height - 1); };
         f.Controls.Add(head);
 
-        int ty = 52;
-        edNick = MkEdit(f, nick, 16, ty, 110, 30, 9.5F, false);
-        edRoom = MkEdit(f, room, 134, ty, 112, 30, 9.5F, false);
-        var diceBtn = new FlatBtn { Text = "随", Font = F(9F, FontStyle.Bold), Location = new Point(252, ty), Size = new Size(24, 30), Bg = C_SURF2 };
+        edNick = MkEdit(f, nick, 16, 48, 100, 32, 9.5F, false, "昵称");
+        edRoom = MkEdit(f, room, 124, 48, 112, 32, 9.5F, false, "房间名");
+        var diceBtn = new FlatBtn { Text = "随", Font = F(9F, FontStyle.Bold), Location = new Point(242, 48), Size = new Size(26, 32), Bg = C_SURF2 };
         tt.SetToolTip(diceBtn, "随机房间名 (word-word-数字, 与 PC 端一致)");
         diceBtn.Click += delegate { edRoom.Text = RandomRoom(); };
         f.Controls.Add(diceBtn);
-        edKey = MkEdit(f, customKey, 282, ty, 90, 30, 9.5F, true);
-        joinBtn = new FlatBtn { Text = "加入", Font = F(9.5F, FontStyle.Bold), Location = new Point(382, ty), Size = new Size(80, 34), Primary = true };
+        edKey = MkEdit(f, customKey, 276, 48, 96, 32, 9.5F, true, "");
+        tt.SetToolTip(edKey, "密钥 (空 = 用房间名派生)");
+        joinBtn = new FlatBtn { Text = "加入", Font = F(9.5F, FontStyle.Bold), Location = new Point(464, 48), Size = new Size(80, 32), Primary = true };
         joinBtn.Click += delegate { ToggleJoin(); };
         f.Controls.Add(joinBtn);
-        f.Controls.Add(MkLabel("昵称", F(8F, FontStyle.Regular), C_SUB, 16, ty - 16, 60, 14, ContentAlignment.MiddleLeft));
-        f.Controls.Add(MkLabel("房间名", F(8F, FontStyle.Regular), C_SUB, 134, ty - 16, 80, 14, ContentAlignment.MiddleLeft));
-        f.Controls.Add(MkLabel("密钥(空=房间名)", F(8F, FontStyle.Regular), C_SUB, 282, ty - 16, 130, 14, ContentAlignment.MiddleLeft));
 
-        edBroker = new ComboBox { Location = new Point(16, ty + 42), Size = new Size(270, 26), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, Text = brokerSel };
+        edBroker = new ComboBox { Location = new Point(16, 86), Size = new Size(268, 26), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, Text = brokerSel };
         edBroker.Items.Add("auto");
         foreach (string u in BrokerUrls) edBroker.Items.Add(u);
-        f.Controls.Add(MkLabel("Broker (auto = 自动兜底)", F(8F, FontStyle.Regular), C_SUB, 16, ty + 28, 200, 14, ContentAlignment.MiddleLeft));
+        tt.SetToolTip(edBroker, "Broker: auto = 自动兜底 (Cloudflare → HiveMQ → EMQX → Mosquitto)");
         f.Controls.Add(edBroker);
-        lanChk = new CheckBox { Text = "LAN", Font = F(8.5F, FontStyle.Regular), ForeColor = C_SUB, Location = new Point(294, ty + 44), Size = new Size(52, 22), BackColor = Color.Transparent };
+        lanChk = new CheckBox { Text = "LAN", Font = F(8.5F, FontStyle.Regular), ForeColor = C_SUB, Location = new Point(292, 88), Size = new Size(50, 20), BackColor = Color.Transparent };
         tt.SetToolTip(lanChk, "纯局域网模式: 不连任何服务器, 消息明文, 同子网互通 (与 PC/Android 的 LAN Only 一致)");
         lanChk.CheckedChanged += delegate { edBroker.Enabled = !lanChk.Checked; };
         f.Controls.Add(lanChk);
-
-        statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, ty + 76, 360, 18, ContentAlignment.MiddleLeft);
-        f.Controls.Add(statusLbl);
-        onlineLbl = MkLabel("在线 0 人", F(8.5F, FontStyle.Bold), C_GREEN, 452, ty + 76, 92, 18, ContentAlignment.MiddleLeft);
+        onlineLbl = MkLabel("在线 0 人", F(8.5F, FontStyle.Bold), C_GREEN, 430, 88, 114, 16, ContentAlignment.MiddleRight);
         f.Controls.Add(onlineLbl);
-        typingLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_SUB, 16, ty + 94, 360, 16, ContentAlignment.MiddleLeft);
+
+        statusLbl = MkLabel("未连接", F(8.5F, FontStyle.Regular), C_SUB, 16, 118, 300, 16, ContentAlignment.MiddleLeft);
+        f.Controls.Add(statusLbl);
+        typingLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_SUB, 320, 118, 224, 16, ContentAlignment.MiddleRight);
         f.Controls.Add(typingLbl);
 
-        msgList = new ListBox { Location = new Point(16, ty + 114), Size = new Size(358, 348), Font = F(9.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        msgList = new ListBox { Location = new Point(16, 140), Size = new Size(360, 446), Font = F(9.5F, FontStyle.Regular), BackColor = C_CANVAS, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false, DrawMode = DrawMode.OwnerDrawVariable };
+        msgList.MeasureItem += MeasureMsg;
+        msgList.DrawItem += DrawMsg;
         msgList.DoubleClick += delegate {
             int idx = msgList.SelectedIndex;
             if (idx < 0 || idx >= msgMeta.Count) return;
@@ -1142,14 +1144,14 @@ public class ChatPlugin
         };
         f.Controls.Add(msgList);
 
-        f.Controls.Add(MkLabel("在线", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 114, 100, 16, ContentAlignment.MiddleLeft));
-        userList = new ListBox { Location = new Point(382, ty + 132), Size = new Size(162, 154), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        f.Controls.Add(MkLabel("在线", F(8.5F, FontStyle.Bold), C_SUB, 384, 140, 160, 14, ContentAlignment.MiddleLeft));
+        userList = new ListBox { Location = new Point(384, 156), Size = new Size(160, 190), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
         f.Controls.Add(userList);
 
-        var roomsLbl = MkLabel("活跃房间 (双击加入)", F(8.5F, FontStyle.Bold), C_SUB, 382, ty + 292, 162, 16, ContentAlignment.MiddleLeft);
+        var roomsLbl = MkLabel("活跃房间 (双击加入)", F(8.5F, FontStyle.Bold), C_SUB, 384, 352, 160, 14, ContentAlignment.MiddleLeft);
         tt.SetToolTip(roomsLbl, "仅 MQTT 模式有房间注册表; 双击切换房间");
         f.Controls.Add(roomsLbl);
-        roomList = new ListBox { Location = new Point(382, ty + 310), Size = new Size(162, 170), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
+        roomList = new ListBox { Location = new Point(384, 368), Size = new Size(160, 218), Font = F(8.5F, FontStyle.Regular), BackColor = C_SURFACE, ForeColor = C_TEXT, BorderStyle = BorderStyle.None, IntegralHeight = false };
         roomList.DoubleClick += delegate {
             int idx = roomList.SelectedIndex;
             if (idx < 0 || idx >= roomNames.Count) return;
@@ -1160,21 +1162,21 @@ public class ChatPlugin
         };
         f.Controls.Add(roomList);
 
-        quoteLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_ACCENT, 16, ty + 466, 358, 16, ContentAlignment.MiddleLeft);
+        quoteLbl = MkLabel("", F(8.5F, FontStyle.Italic), C_ACCENT, 16, 572, 360, 14, ContentAlignment.MiddleLeft);
         quoteLbl.Visible = false; quoteLbl.Cursor = Cursors.Hand;
         tt.SetToolTip(quoteLbl, "点击取消引用");
         quoteLbl.Click += delegate { currentQuote = null; UpdateQuoteBar(); };
         f.Controls.Add(quoteLbl);
 
-        inputBox = MkEdit(f, "", 16, ty + 492, 358, 32, 10F, false);
+        inputBox = MkEdit(f, "", 16, 592, 360, 34, 10F, false, "输入消息, 回车发送…");
         inputBox.KeyDown += delegate(object s, KeyEventArgs e) {
             if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SendCurrent(); }
             else if (running) { NotifyTypingSelf(); }
         };
-        var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(382, ty + 492), Size = new Size(80, 32), Primary = true };
+        var send = new FlatBtn { Text = "发送", Font = F(10F, FontStyle.Bold), Location = new Point(384, 592), Size = new Size(76, 34), Primary = true };
         send.Click += delegate { SendCurrent(); };
         f.Controls.Add(send);
-        var fileBtn = new FlatBtn { Text = "文件", Font = F(9F, FontStyle.Bold), Location = new Point(470, ty + 492), Size = new Size(74, 32) };
+        var fileBtn = new FlatBtn { Text = "文件", Font = F(9F, FontStyle.Bold), Location = new Point(468, 592), Size = new Size(76, 34) };
         tt.SetToolTip(fileBtn, "发送文件/图片 (无直连通道, 上限 2MB)");
         fileBtn.Click += delegate {
             if (!running) return;
@@ -1183,10 +1185,10 @@ public class ChatPlugin
         };
         f.Controls.Add(fileBtn);
 
-        onEvent = delegate(string s) { AddMsgLine("· " + s + "  " + DateTime.Now.ToString("HH:mm"), null); };
+        onEvent = delegate(string s) { AddMsg(new MsgMeta { text = "· " + s + "  " + DateTime.Now.ToString("HH:mm") }); };
         onMessage = delegate(string n, string t, string ts, Quote q) {
             long ms2; string tm = (ts != null && long.TryParse(ts, out ms2)) ? DateTimeOffset.FromUnixTimeMilliseconds(ms2).LocalDateTime.ToString("HH:mm") : DateTime.Now.ToString("HH:mm");
-            AddMsgLine(n + "  " + tm + "  " + (q != null ? "↩" + QuoteText(q) + " ｜ " : "") + t, new MsgMeta { nick = n, text = t });
+            AddMsg(new MsgMeta { nick = n, time = tm, text = t, quoteText = q != null ? QuoteText(q) : null });
             HistAdd(room, n, ts != null ? ts : DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), t);
             if (!f.Focused) FlashTitle(f);
         };
@@ -1194,16 +1196,13 @@ public class ChatPlugin
             int idx = -1;
             for (int i = 0; i < msgMeta.Count; i++) { var m = msgMeta[i]; if (m != null && m.file == fr) { idx = i; break; } }
             if (idx < 0) {
-                string kb2 = fr.size < 1048576 ? (fr.size / 1024) + "KB" : (fr.size / 1048576.0).ToString("0.0") + "MB";
                 bool img = IsImageName(fr.name);
-                fr.dispBase = fr.sender + "  " + DateTime.Now.ToString("HH:mm") + "  " + (img ? "[图片] " : "[文件] ") + fr.name + " (" + kb2 + ")" + (fr.caption != null && fr.caption.Length > 0 ? " — " + fr.caption : "");
-                AddMsgLine(fr.dispBase + " 接收中…", new MsgMeta { nick = fr.sender, text = (img ? "[图片] " : "[文件] ") + fr.name, file = fr });
+                AddMsg(new MsgMeta { nick = fr.sender, time = DateTime.Now.ToString("HH:mm"), text = (img ? "[图片] " : "[文件] ") + fr.name, file = fr });
                 HistAdd(room, fr.sender, DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), (img ? "[图片] " : "[文件] ") + fr.name);
                 if (!f.Focused) FlashTitle(f);
                 return;
             }
-            if (fr.done) msgList.Items[idx] = fr.dispBase + (IsImageName(fr.name) ? " ✓ 双击查看" : " ✓ 双击保存");
-            else if (fr.failed) msgList.Items[idx] = fr.dispBase + " ✗ 接收失败";
+            msgList.Invalidate();                            // 状态变化(done/failed)由 DrawMsg 读 fr 实时绘制
         };
         onTyping = delegate(string s) { typingLbl.Text = s; };
         onUsers = delegate {
@@ -1248,12 +1247,74 @@ public class ChatPlugin
 
     static void FlashTitle(Form f) { try { f.Text = "● 新消息 - " + f.Text.Replace("● 新消息 - ", ""); } catch {} }
 
-    // ---------- UI-thread helpers: 消息行 + 引用条 + 历史 ----------
-    static void AddMsgLine(string line, MsgMeta meta)
+    // ---------- UI-thread helpers: 气泡消息 + 引用条 + 历史 ----------
+    static Color C_CANVAS = Color.FromArgb(255, 244, 247, 251);      // 消息区画布 (比白卡浅一档)
+    static Color C_MINE_SUB = Color.FromArgb(255, 214, 234, 255);    // 自己气泡里的次要文字
+    static void AddMsg(MsgMeta m)
     {
-        msgList.Items.Add(line);
-        msgMeta.Add(meta);
+        msgMeta.Add(m);                                              // 先 meta 后 Items (MeasureItem 按索引取)
+        msgList.Items.Add("");
         msgList.TopIndex = msgList.Items.Count - 1;
+    }
+    static string FileSizeText(long size) { return size < 1048576 ? (size / 1024) + "KB" : (size / 1048576.0).ToString("0.0") + "MB"; }
+    static void MeasureMsg(object sender, MeasureItemEventArgs e)
+    {
+        e.ItemHeight = 22;
+        if (e.Index < 0 || e.Index >= msgMeta.Count) return;
+        var m = msgMeta[e.Index];
+        if (m == null || m.nick == null) { e.ItemHeight = 22; return; }         // 事件行
+        e.ItemHeight = 14 + 5 + (m.quoteText != null ? 13 : 0) + 16 + (m.file != null ? 13 : 0) + 5 + 6;
+    }
+    static void DrawMsg(object sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= msgMeta.Count) return;
+        var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+        var m = msgMeta[e.Index];
+        using (var cb = new SolidBrush(C_CANVAS)) g.FillRectangle(cb, e.Bounds);
+        if (m == null || m.nick == null) {                                       // 事件行: 居中灰字
+            TextRenderer.DrawText(g, m == null ? "" : (m.text ?? ""), F(7.5F, FontStyle.Regular), e.Bounds, C_SUB,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            return;
+        }
+        bool isMe = m.nick == nick;
+        int pad = 10;
+        Font fCap = F(7.5F, FontStyle.Regular), fMain = F(9.5F, FontStyle.Regular);
+        var capR = new Rectangle(e.Bounds.X + pad + 2, e.Bounds.Y, e.Bounds.Width - 2 * pad - 4, 14);
+        TextRenderer.DrawText(g, m.nick + "  " + m.time, fCap, capR, C_SUB,
+            (isMe ? TextFormatFlags.Right : TextFormatFlags.Left) | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        // 主文本
+        string main = m.file != null ? (IsImageName(m.file.name) ? "[图片] " : "[文件] ") + m.file.name + "  (" + FileSizeText(m.file.size) + ")" : (m.text ?? "");
+        // 气泡尺寸
+        int by = e.Bounds.Y + 14;
+        int maxW = (int)(e.Bounds.Width * 0.80);
+        int textW = TextRenderer.MeasureText(g, main, fMain, new Size(maxW - 20, 100), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+        int bw = Math.Max(56, Math.Min(maxW, textW + 20));
+        int bh = 5 + (m.quoteText != null ? 13 : 0) + 16 + (m.file != null ? 13 : 0) + 5;
+        int bx = isMe ? e.Bounds.Right - pad - bw : e.Bounds.X + pad;
+        using (var path = Round(new Rectangle(bx, by, bw, bh), 8))
+        using (var br2 = new SolidBrush(isMe ? C_ACCENT : Color.White)) g.FillPath(br2, path);
+        if (!isMe) {
+            using (var pen = new Pen(C_BORDER, 1))
+            using (var path2 = Round(new Rectangle(bx, by, bw - 1, bh - 1), 8)) g.DrawPath(pen, path2);
+        }
+        int ty2 = by + 5;
+        if (m.quoteText != null) {
+            TextRenderer.DrawText(g, "↩ " + m.quoteText, fCap, new Rectangle(bx + 10, ty2, bw - 20, 13), isMe ? C_MINE_SUB : C_SUB,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            ty2 += 13;
+        }
+        TextRenderer.DrawText(g, main, fMain, new Rectangle(bx + 10, ty2, bw - 20, 16), isMe ? Color.White : C_TEXT,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        if (m.file != null) {
+            ty2 += 16;
+            var fr = m.file;
+            string st; Color sc;
+            if (fr.done) { st = IsImageName(fr.name) ? "✓ 双击查看" : "✓ 双击保存"; sc = isMe ? C_MINE_SUB : C_GREEN; }
+            else if (fr.failed) { st = "✗ 接收失败"; sc = Color.FromArgb(255, 200, 60, 70); }
+            else { st = "接收中… " + fr.received + "/" + fr.total; sc = isMe ? C_MINE_SUB : C_SUB; }
+            TextRenderer.DrawText(g, st, fCap, new Rectangle(bx + 10, ty2, bw - 20, 13), sc,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        }
     }
     static void UpdateQuoteBar()
     {
@@ -1265,7 +1326,7 @@ public class ChatPlugin
     {
         List<string> l;
         if (!history.TryGetValue(room, out l) || l.Count == 0) return;
-        AddMsgLine("· —— 历史消息 ——", null);
+        AddMsg(new MsgMeta { text = "· —— 历史消息 ——" });
         int from = l.Count > 80 ? l.Count - 80 : 0;
         for (int i = from; i < l.Count; i++) {
             string line = l[i];
@@ -1276,7 +1337,7 @@ public class ChatPlugin
             string txt;
             try { txt = Encoding.UTF8.GetString(Convert.FromBase64String(line.Substring(p2 + 1))); } catch { continue; }
             long msl; string tm = long.TryParse(ts, out msl) ? DateTimeOffset.FromUnixTimeMilliseconds(msl).LocalDateTime.ToString("MM-dd HH:mm") : "";
-            AddMsgLine(n + "  " + tm + "  " + txt, new MsgMeta { nick = n, text = txt });
+            AddMsg(new MsgMeta { nick = n, time = tm, text = txt });
         }
     }
     static void OpenFileRecv(FileRecv fr)
@@ -1378,7 +1439,7 @@ public class ChatPlugin
         currentQuote = null; UpdateQuoteBar();
         if (lanOnly) LanSendChat(t, q); else SendChat2(t, q);
         inputBox.Text = "";
-        AddMsgLine(nick + "  " + DateTime.Now.ToString("HH:mm") + "  " + (q != null ? "↩" + QuoteText(q) + " ｜ " : "") + t, new MsgMeta { nick = nick, text = t });
+        AddMsg(new MsgMeta { nick = nick, time = DateTime.Now.ToString("HH:mm"), text = t, quoteText = q != null ? QuoteText(q) : null });
         HistAdd(room, nick, DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString(), t);
     }
 

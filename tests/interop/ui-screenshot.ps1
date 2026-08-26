@@ -2,7 +2,8 @@
 # CopyFromScreen, saves PNG + pixel-checks rounded corners. Requires interactive desktop.
 param(
     [string]$PluginPath = "$PSScriptRoot\..\..\plugins\chat.txt",
-    [string]$Out = "$PSScriptRoot\uishot.png"
+    [string]$Out = "$PSScriptRoot\uishot.png",
+    [switch]$Demo
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -19,6 +20,7 @@ Add-Type -TypeDefinition ($cs + "`n" + $driver) -ReferencedAssemblies System.Win
 $deadline = (Get-Date).AddSeconds(15)
 while (-not [ChatUiShot]::FormShown -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
 if (-not [ChatUiShot]::FormShown) { Write-Host ("FAIL: form not shown. " + [ChatUiShot]::Err); exit 1 }
+if ($Demo) { [ChatUiShot]::InjectDemo(); if ([ChatUiShot]::Err) { Write-Host ("DEMO-ERR: " + [ChatUiShot]::Err) } }
 Start-Sleep -Milliseconds 1500   # let it fully paint
 
 $x = [ChatUiShot]::FormX; $y = [ChatUiShot]::FormY; $w = [ChatUiShot]::FormW; $h = [ChatUiShot]::FormH
@@ -37,11 +39,12 @@ function Eq($a, $b) { return ($a.R -eq $b.R -and $a.G -eq $b.G -and $a.B -eq $b.
 $tl = $bmp.GetPixel(1, 1); $tr = $bmp.GetPixel($w - 2, 1); $bl = $bmp.GetPixel(1, $h - 2); $br = $bmp.GetPixel($w - 2, $h - 2)
 $hdr = $bmp.GetPixel([int]($w / 2), 19)
 $card = $bmp.GetPixel(180, 300)
+$canvas = [System.Drawing.Color]::FromArgb(255, 244, 247, 251)
 Write-Host ("corner TL=" + $tl.ToArgb() + " TR=" + $tr.ToArgb() + " BL=" + $bl.ToArgb() + " BR=" + $br.ToArgb())
 $roundOk = (-not (Eq $tl $cbg)) -and (-not (Eq $tr $cbg)) -and (-not (Eq $bl $cbg)) -and (-not (Eq $br $cbg))
 Write-Host ("rounded corners: " + $(if ($roundOk) { 'OK' } else { 'FAIL (corners still bg-colored)' }))
 Write-Host ("header color: " + $(if (Eq $hdr $chdr) { 'OK' } else { 'FAIL ' + $hdr.ToArgb() }))
-Write-Host ("card color: " + $(if ((Eq $card ([System.Drawing.Color]::White))) { 'OK' } else { 'FAIL ' + $card.ToArgb() }))
+Write-Host ("canvas color: " + $(if ((Eq $card $canvas)) { 'OK' } else { 'FAIL ' + $card.ToArgb() }))
 [ChatUiShot]::Close()
 Start-Sleep -Milliseconds 500
 $bmp.Dispose()

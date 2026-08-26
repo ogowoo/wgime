@@ -32,6 +32,47 @@ public static class ChatUiShot
         } catch {}
     }
 
+    // 注入演示消息 (事件/对方/自己/引用/文件) 用于气泡视觉验证
+    public static void InjectDemo()
+    {
+        try {
+            var T = typeof(ChatPlugin);
+            var F2 = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            var f = (System.Windows.Forms.Form)T.GetField("chatForm", F2).GetValue(null);
+            f.Invoke(new System.Action(delegate {
+                string nick = (string)T.GetField("nick", F2).GetValue(null);
+                long now = System.DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                var onEvent = (System.Delegate)T.GetField("onEvent", F2).GetValue(null);
+                var onMessage = (System.Delegate)T.GetField("onMessage", F2).GetValue(null);
+                var onFile = (System.Delegate)T.GetField("onFile", F2).GetValue(null);
+                onEvent.DynamicInvoke("已进入房间 [demo] (Cloudflare 中继)");
+                onMessage.DynamicInvoke("Alice", "你好！这是对方发来的消息气泡。", (now - 50000).ToString(), null);
+                onMessage.DynamicInvoke(nick, "这是我自己的消息，右侧蓝色气泡。", (now - 40000).ToString(), null);
+                var qt = T.GetNestedType("Quote", System.Reflection.BindingFlags.NonPublic);
+                var q = System.Activator.CreateInstance(qt);
+                qt.GetField("nick").SetValue(q, "Alice");
+                qt.GetField("text").SetValue(q, "被引用的原消息内容…");
+                onMessage.DynamicInvoke("Alice", "这是带引用的回复消息。", (now - 30000).ToString(), q);
+                var ft = T.GetNestedType("FileRecv", System.Reflection.BindingFlags.NonPublic);
+                var fr = System.Activator.CreateInstance(ft);
+                ft.GetField("name").SetValue(fr, "报告.pdf");
+                ft.GetField("size").SetValue(fr, 204800L);
+                ft.GetField("total").SetValue(fr, 34);
+                ft.GetField("received").SetValue(fr, 34);
+                ft.GetField("done").SetValue(fr, true);
+                ft.GetField("sender").SetValue(fr, "Alice");
+                onFile.DynamicInvoke(fr);
+                var fr2 = System.Activator.CreateInstance(ft);
+                ft.GetField("name").SetValue(fr2, "大数据.zip");
+                ft.GetField("size").SetValue(fr2, 1835008L);
+                ft.GetField("total").SetValue(fr2, 306);
+                ft.GetField("received").SetValue(fr2, 141);
+                ft.GetField("sender").SetValue(fr2, "Alice");
+                onFile.DynamicInvoke(fr2);
+            }));
+        } catch (System.Exception ex) { Err = ex.Message; }
+    }
+
     // 真实键盘输入测试: 激活窗体 → 聚焦字段 → SendKeys → 读回 Text
     public static string TypeInto(string field, string text)
     {
@@ -52,3 +93,4 @@ public static class ChatUiShot
         } catch (System.Exception ex) { return "ERR: " + ex.Message; }
     }
 }
+
