@@ -125,3 +125,22 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 1. **可行**——最危险的钩子/性能/上屏三点已实机验证（`tests/python-spike/spike.py`）。
 2. **值不值**取决于动机：若痛点是维护性，先做"纯 C# 项目化"（方案 D 变体）代价最小；若就是要 Python 生态，走方案 B 能保住插件与 UI 资产。
 3. 建议第一步：阶段 0 双轨骨架（纯 ctypes+tkinter 或 pythonnet 均可），一周内能打出"能用的拼音输入法"，再决定是否全量迁移。
+
+---
+
+## 7. 阶段 0 已完成（2026-08-25，方案 B 骨架）
+
+`wgime-py/`（仓库根目录）：`wgime.py`（主程序/状态机/托盘）+ `bridge.cs`（C# 实时层，运行时 CodeDom 编译、md5 缓存 DLL）+ `engine.py`（码表引擎）。
+
+**运行环境**：Python 3.8 embeddable + pythonnet 2.5.2 + .NET Framework 4.x（Windows 自带，用户零依赖）。功能：F8 开关、托盘（启用/退出）、单实例、拼音整码输入（缓冲/选词/翻页/退格/Esc/回车上屏原文）、跟随光标的圆角候选条。字典加载 ~250ms。
+
+**实机验证**：记事本内 `zhongguo` → 候选条 `1.中国 2.众过 3.忠果 4.重国` → 空格上屏"中国"；注入目标窗口确认为前台 Notepad。
+
+**踩坑记录（后续阶段必读）**：
+
+1. **钩子回调不能跨进 Python**：LL 钩子有 LowLevelHooksTimeout，Python 处理慢/抖动会被系统静默摘钩（实测出现"偶发不拦截"）。解法：C# 侧做吞键判定（激活态+键类白名单），事件入 `ConcurrentQueue`，Python 工作线程消费——关键路径零 GIL。
+2. **SendInput 的 INPUT 结构必须恰好 40 字节（x64）**：多一个 long 垫片（48 字节）会导致 `SendInput` 返回 0 静默失败，或布局错位注入乱码。
+3. **WinForms 控件句柄必须在泵线程创建**：候选条先在主线程取一次 `.Handle`，否则首次 `InvokeRequired` 判定为 false，在非泵线程建句柄后 BeginInvoke 全部卡住（实测队列延迟 ~15s）。
+4. **pythonnet 命名空间**：运行时编译的程序集要放在命名空间里（如 `namespace WgBridge`）才能 `from WgBridge import ...`；全局命名空间的类型拿不到。
+5. **out 参数**：Python 侧别用——C# 侧包一个 `Next()` 返回 null 的方法更省事。
+6. pip 安装要绕本机系统代理：`NO_PROXY=*`；embeddable Python 装 pip 直接解压 wheel 到 `Lib\site-packages` 并在 `._pth` 里加该行。

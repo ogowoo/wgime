@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-25 (wgime-py 阶段 0: pythonnet 骨架实机打通)
+
+- 新增 `wgime-py/`:方案 B 双轨骨架——`wgime.py`(状态机/托盘/单实例) + `bridge.cs`(C# 实时层,运行时 CodeDom 编译+md5 缓存) + `engine.py`(码表引擎)。环境:Python 3.8 embeddable + pythonnet 2.5.2 + .NET Framework 4.x(用户零依赖)
+- 实机验证:记事本 zhongguo → 候选条(跟随光标/圆角/高亮) → 空格上屏"中国";字典加载 ~250ms
+- 关键架构决策:**钩子实时层必须在 C# 侧**(激活态+键类白名单吞键+入队),Python 工作线程消费——实测跨 GIL 的钩子回调会被系统 LowLevelHooksTimeout 静默摘钩
+- 踩坑记入 `docs\WGIME_Python重实现方案.md` §7:SendInput INPUT 结构必须 40 字节(x64)、WinForms 句柄必须在泵线程预建、pythonnet 需命名空间、embeddable Python 装 pip 的代理/解包技巧
+
+---
+
 ## 2026-08-25 (评估: Python 重实现方案 + 可行性 spike)
 
 - 新增 `docs\WGIME_Python重实现方案.md`:现状盘点(500KB C# 组件清单)、三选型对比(stdlib+tkinter / pythonnet+WinForms / PySide6)、四阶段迁移路线、风险清单
