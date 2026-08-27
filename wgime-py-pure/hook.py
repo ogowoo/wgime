@@ -72,35 +72,37 @@ def _proc(nCode, wParam, lParam):
         m = int(wParam)
         vk = int(kbd.vkCode)
         if m == WM_KEYDOWN or m == WM_SYSKEYDOWN:
+            if vk == VK_TOGGLE:                            # F8 硬开关: 未激活也可唤醒/关闭
+                EVENTS.put(VK_TOGGLE)
+                return 1
+            if not ACTIVE[0]:                              # 未激活: 完全惰性, 全放行
+                return user32.CallNextHookEx(None, nCode, wParam, lParam)
             ctrl = _key_state(0x11)
             shift = _key_state(0x10)
             alt = _key_state(0x12)
-            if ctrl and vk == 0xC0:                       # Ctrl+` 模式
+            if ctrl and vk == 0xC0:                        # Ctrl+` 模式
                 EVENTS.put(VK_MODE)
                 return 1
-            if ctrl and shift and vk == 0x46:             # Ctrl+Shift+F 繁简
+            if ctrl and shift and vk == 0x46:              # Ctrl+Shift+F 繁简
                 EVENTS.put(VK_TRAD)
                 return 1
-            if ctrl and alt and vk == 0x43:               # Ctrl+Alt+C 造词
+            if ctrl and alt and vk == 0x43:                # Ctrl+Alt+C 造词
                 EVENTS.put(VK_MAKEWORD)
                 return 1
-            if vk == VK_TOGGLE:                           # F8
-                EVENTS.put(VK_TOGGLE)
-                return 1
-            if vk in (0xA0, 0xA1):                        # Shift down: 记录轻拍起点
+            if vk in (0xA0, 0xA1):                         # Shift down: 记录轻拍起点
                 _tap_time[0] = time.time()
                 _tap_dirty[0] = False
             else:
                 if _tap_time[0] is not None:
-                    _tap_dirty[0] = True                  # 有其它键介入, 不算轻拍
-                if ACTIVE[0] and _is_ime_key(vk):
+                    _tap_dirty[0] = True                   # 有其它键介入, 不算轻拍
+                if _is_ime_key(vk):                        # 激活态吞 IME 键
                     EVENTS.put(vk)
                     return 1
         elif m == WM_KEYUP or m == WM_SYSKEYUP:
             if vk in (0xA0, 0xA1):
-                if (_tap_time[0] is not None and not _tap_dirty[0]
-                        and time.time() - _tap_time[0] < 0.4):
-                    EVENTS.put(VK_TAP)
+                if ACTIVE[0] and _tap_time[0] is not None and not _tap_dirty[0] \
+                        and time.time() - _tap_time[0] < 0.4:
+                    EVENTS.put(VK_TAP)                     # 激活态: Shift 轻拍关闭
                 _tap_time[0] = None
     return user32.CallNextHookEx(None, nCode, wParam, lParam)
 

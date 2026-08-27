@@ -263,3 +263,4 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **单文件验证**：notepad `nihao`→`你好` 上屏；`sk`→▶时钟→空格弹出时钟窗，均通过
 - **关键坑**：① `pprint.pformat` 按字母序排 dict 键导致依赖序错——必须用 `repr` 保持插入序；② engine 读 trad/pywfreq 原用 `__file__`，单文件下模块目录无此文件——改为从 `dict_dir` 读（`self.dict_dir`）；③ 单文件模块要设 `__file__/__name__`
 - **运行**：`python wgime-py-pure\dist\wgime-py.py`（单文件、免安装、零 .NET，需 Python 3.12 + tkinter + cryptography；码表/配置从 `C:\Tools\wgime` 读）
+- **未激活即惰性**（用户反馈"启动即拦截"）：启动读 `config.txt` 的 `starton`（默认 0 = 关）；**未激活时钩子完全惰性**——Shift 轻拍/Ctrl+`/Ctrl+Shift+F/Ctrl+Alt+C 全部透传，仅 F8（硬开关）和托盘能唤醒；激活态才吞 IME 键 + 组合键。实测日志：启动 `active=False` 无拦截，F8 到 `kb 77` 才切换
