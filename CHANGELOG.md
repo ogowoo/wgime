@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-26 (wgime-py-pure: chat 插件纯 Python 迁移 + 互通)
+
+- 插件 API: plugins/*.py 定义 CODE/NAME/run(); 主程序 load_py_plugins() 扫描加载
+- wspy.py: 最小同步 WebSocket 客户端 (标准库 socket+ssl, RFC 6455), relay 文本帧 + MQTT 二进制帧
+- chat.py: [csharp] 版重写为纯 Python (AES-256-CBC+HMAC via cryptography, relay/MQTT 二选一,
+  join/online/leave/chat, auto-reconnect, tkinter 窗 + 网络后台线程 + 队列回主线程)
+- 互操作验证: 与 Node 参考端同一 relay 房间互通, 插件正确解密显示, INTEROP PASS
+- 踩坑: tkinter 变量不能跨线程读 (join 主线程固化配置)
+
+---
+
 ## 2026-08-26 (wgime-py-pure 启动: 纯 Python 版, 零 .NET)
 
 - 动机: 3.8 版本锁来自 pythonnet 轮子, 放弃 .NET 后任意新版 Python 可用 (Python 3.12 + ctypes + tkinter)

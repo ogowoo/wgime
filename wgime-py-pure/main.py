@@ -7,6 +7,8 @@ import sys
 import threading
 import time
 import tkinter as tk
+import importlib
+import importlib.util
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DICT_DIR = os.environ.get('WGIME_DICT_DIR', r'C:\Tools\wgime')
@@ -312,6 +314,12 @@ def set_active(on):
 
 def run_launcher(l):
     name, kind, payload = l
+    if kind == 'plugin':
+        try:
+            payload.run()
+        except Exception as ex:
+            _dfn('plugin run err %r' % ex)
+        return
     if kind == 'app':
         cmd, args = payload
         try:
@@ -465,6 +473,7 @@ def handle(vk):
 
 # ---------- 主循环: 轮询钩子事件 ----------
 reload_plugins()
+load_py_plugins()
 load_appmodes()
 
 

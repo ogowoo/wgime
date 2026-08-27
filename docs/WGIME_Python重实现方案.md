@@ -240,3 +240,14 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 **踩坑**：① ctypes 回调返回 `CallNextHookEx` 必须声明 argtypes（64 位指针参数默认 32 位会 OverflowError）；② ctypes `SendInput` 的 INPUT 需 pointer-sized `dwExtraInfo`；③ `import tkinter.font as tkfont`（`tk.font` 不自动加载）。
 
 **待迁移**：插件系统改 Python 插件 API（chat/clock/calc 重写，协议层 Python 更顺）；工具箱/剪贴板/便签/取色器/网络工具改 tkinter；托盘（pystray）；粘贴/提权关键路径（纯 ctypes 已备）。
+
+---
+
+## 15. 纯 Python chat 插件已迁移并互通（2026-08-26）
+
+- **插件 API**：`plugins\*.py` 定义 `CODE/NAME/DESC + run()`（无 .NET）；主程序 `load_py_plugins()` 扫描加载，启动器 code 命中即 `run()`
+- **最小同步 WebSocket 客户端**（`wspy.py`，标准库 socket+ssl，RFC 6455）：HTTP 升级 / 掩码帧 / 分片聚合 / ping-pong 应答，文本帧（relay）与二进制帧（MQTT-over-WS）通用
+- **chat.py**：`[csharp]` 版完整重写为纯 Python——AES-256-CBC + HMAC-SHA256(`cryptography`)，relay 文本帧 / MQTT-over-WS 二选一，join/online/leave/chat，auto-reconnect；tkinter 聊天窗，网络后台线程 + 队列回主线程
+- **互操作验证**（与 Node 参考端同一 relay 房间）：Node 发 `hello-from-python-pure` → 插件**正确解密并显示**（`NodeRef  hello-from-python-pure`）；Node 端看到 PyChat 的 join/online。**INTEROP PASS**
+- **踩坑**：tkinter 变量（Entry/StringVar）不能跨线程读——join() 在主线程固化配置，网络线程只用快照
+- **依赖**：`cryptography`（AES，pypi），`websockets`（可选，纯版未用——自写 ws）；其余纯标准库
