@@ -251,3 +251,15 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **互操作验证**（与 Node 参考端同一 relay 房间）：Node 发 `hello-from-python-pure` → 插件**正确解密并显示**（`NodeRef  hello-from-python-pure`）；Node 端看到 PyChat 的 join/online。**INTEROP PASS**
 - **踩坑**：tkinter 变量（Entry/StringVar）不能跨线程读——join() 在主线程固化配置，网络线程只用快照
 - **依赖**：`cryptography`（AES，pypi），`websockets`（可选，纯版未用——自写 ws）；其余纯标准库
+
+---
+
+## 16. 纯 Python 版全部迁移 + 单文件化（2026-08-26）
+
+- **其余插件**：`clock`（置顶时钟）、`calc`（安全表达式计算器）、`chat` 均为纯 Python + tkinter
+- **内置工具**（`tools.py`，tkinter）：工具箱（`tools.txt` tab/按钮 → 步骤 DSL）、剪贴板历史、便签（自动保存）、取色器（跟随光标采样+复制 hex）、网络工具（ping/tracert/nslookup）
+- **单文件化**（`build-wgime-pure.py` → `dist\wgime-py.py`，105KB）：所有模块+插件源 __repr__ 内嵌，按依赖序 exec 进 `sys.modules`（真实 `import win/hook/...` 仍可用），插件注册为 `plug_*`，最后把 main.py 源 exec 进 `__main__`。就一个文件，仿 wgime.bat 载荷形态
+- **启动器码**：`lt`→聊天、`sk`→时钟、`js`→计算器、`itools`→工具箱、`jlb`→剪贴板、`bj`→便签、`ys`→取色器、`net`→网络工具
+- **单文件验证**：notepad `nihao`→`你好` 上屏；`sk`→▶时钟→空格弹出时钟窗，均通过
+- **关键坑**：① `pprint.pformat` 按字母序排 dict 键导致依赖序错——必须用 `repr` 保持插入序；② engine 读 trad/pywfreq 原用 `__file__`，单文件下模块目录无此文件——改为从 `dict_dir` 读（`self.dict_dir`）；③ 单文件模块要设 `__file__/__name__`
+- **运行**：`python wgime-py-pure\dist\wgime-py.py`（单文件、免安装、零 .NET，需 Python 3.12 + tkinter + cryptography；码表/配置从 `C:\Tools\wgime` 读）

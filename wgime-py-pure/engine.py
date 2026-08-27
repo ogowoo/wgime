@@ -361,9 +361,10 @@ class Engine:
     def __init__(self, dict_dir, data_dir):
         t0 = time.time()
         self.data_dir = data_dir
+        self.dict_dir = dict_dir
         os.makedirs(data_dir, exist_ok=True)
         paths = [os.path.join(dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt')]
-        paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trad.txt'))
+        paths.append(os.path.join(dict_dir, 'trad.txt'))
         if not self._load_cache(paths):
             self.py = parse_dict(paths[0])
             self.wb = parse_dict(paths[1])
@@ -446,7 +447,7 @@ class Engine:
         self.word_freq = {}
         wtot = 0
         try:
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pywfreq.txt'), encoding='utf-8') as f:
+            with open(os.path.join(self.dict_dir, 'pywfreq.txt'), encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
                     c = line.rfind(':')
@@ -466,7 +467,7 @@ class Engine:
         self._load_assoc()
         # 繁简
         self.trad_map = None
-        tp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trad.txt')
+        tp = os.path.join(self.dict_dir, 'trad.txt')
         try:
             lines = open(tp, encoding='utf-8').read().split('\n')
             self.trad_map = {}

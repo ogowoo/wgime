@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-27 (wgime-py-pure: 全部迁移 + 单文件化)
+
+- 其余插件: clock(置顶时钟)/calc(安全计算器)/chat 纯 Python + tkinter
+- 内置工具(tools.py, tkinter): 工具箱(tools.txt 步骤 DSL)/剪贴板历史/便签/取色器/网络工具
+- 单文件化: build-wgime-pure.py -> dist/wgime-py.py(105KB), 模块+插件源内嵌 exec 进 sys.modules,
+  插件注册 plug_*, 最后 main exec 进 __main__; 单文件验证 nihao->你好 + sk->时钟窗通过
+- 坑: pprint 字母序排 dict 键破依赖序(改 repr); engine trad/pywfreq 改从 dict_dir 读(去 __file__)
+- 启动器码: lt/sk/js/itools/jlb/bj/ys/net
+
+---
+
 ## 2026-08-26 (wgime-py-pure: chat 插件纯 Python 迁移 + 互通)
 
 - 插件 API: plugins/*.py 定义 CODE/NAME/run(); 主程序 load_py_plugins() 扫描加载

@@ -18,6 +18,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 sys.path.insert(0, BASE)
 import win
 import hook
+import tools
 from engine import (Engine, dynamic_candidates, vmode_candidates, is_all_cjk,
                     load_config, shuangpin_expand, SYM_CAT_NAMES, SYM_CATS)
 import plugins as plugmod
@@ -74,10 +75,44 @@ def reload_plugins():
     TOOLS = plugmod.load_tools(os.path.join(DICT_DIR, 'tools.txt'))
 
 
+def load_py_plugins():
+    global PLUGINS
+    PLUGINS = []
+    if '_EMBEDDED_PLUGINS' in globals():                    # 单文件版: 用内嵌插件模块
+        for key in _EMBEDDED_PLUGINS:
+            PLUGINS.append(_EMBEDDED_PLUGINS[key])
+        return
+    pdir = os.path.join(BASE, 'plugins')                    # 开发版: 扫描 plugins/*.py
+    if not os.path.isdir(pdir):
+        return
+    for fn in sorted(os.listdir(pdir)):
+        if not fn.endswith('.py'):
+            continue
+        modname = 'plug_' + fn[:-3]
+        try:
+            spec = importlib.util.spec_from_file_location(modname, os.path.join(pdir, fn))
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            if hasattr(m, 'CODE') and hasattr(m, 'run'):
+                PLUGINS.append(m)
+        except Exception as e:
+            _dfn('plugin load err %s %r' % (fn, e))
+
+
 def find_launcher(code):
     if code in CFG['apps']:
         name, cmd, args = CFG['apps'][code]
         return (name, 'app', (cmd, args))
+    for m in PLUGINS:
+        if getattr(m, 'CODE', None) == code:
+            return (getattr(m, 'NAME', code), 'plugin', m)
+    b = {'itools': ('工具箱', 'toolbox'), 'tools': ('工具箱', 'toolbox'),
+         'jlb': ('剪贴板历史', 'clipboard'), 'clip': ('剪贴板历史', 'clipboard'),
+         'bj': ('便签', 'notes'), 'notes': ('便签', 'notes'),
+         'ys': ('取色器', 'color'), 'color': ('取色器', 'color'),
+         'net': ('网络工具', 'nettools'), 'wlgj': ('网络工具', 'nettools')}
+    if code in b:
+        return (b[code][0], 'builtin', b[code][1])
     return None
 
 
@@ -320,6 +355,9 @@ def run_launcher(l):
         except Exception as ex:
             _dfn('plugin run err %r' % ex)
         return
+    if kind == 'builtin':
+        _show_builtin(payload)
+        return
     if kind == 'app':
         cmd, args = payload
         try:
@@ -332,6 +370,22 @@ def run_launcher(l):
                 os.startfile(cmd)
         except Exception as ex:
             _dfn('launch err %r' % ex)
+
+
+def _show_builtin(kind):
+    try:
+        if kind == 'toolbox':
+            tools.show_toolbox(TOOLS, DICT_DIR)
+        elif kind == 'clipboard':
+            tools.show_clipboard()
+        elif kind == 'notes':
+            tools.show_notes(DATA_DIR)
+        elif kind == 'color':
+            tools.show_color()
+        elif kind == 'nettools':
+            tools.show_nettools()
+    except Exception as ex:
+        _dfn('builtin err %s %r' % (kind, ex))
 
 
 def makeword_clipboard():
