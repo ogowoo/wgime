@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-26 (wgime-py-pure 启动: 纯 Python 版, 零 .NET)
+
+- 动机: 3.8 版本锁来自 pythonnet 轮子, 放弃 .NET 后任意新版 Python 可用 (Python 3.12 + ctypes + tkinter)
+- 架构: hook.py (ctypes WH_KEYBOARD_LL 吞键+入队, MAGIC dwExtraInfo 放行自家注入) +
+  win.py (SendInput UNICODE/光标跟随/剪贴板) + bar.py (tkinter 无边框 Canvas 候选条跟随光标) +
+  main.py (状态机, 复用纯标准库 engine/plugins)
+- 实机验证: zhongguo → tkinter 候选条 1.中国→空格上屏 中国 → 联想行
+- 踩坑: ctypes 回调 CallNextHookEx 需声明 argtypes (64 位指针 32 位溢出); SendInput INPUT 指针宽
+  dwExtraInfo; import tkinter.font as tkfont
+- 待迁移: 插件系统改 Python API (chat/clock/calc 重写); 工具箱/剪贴板/便签/取色器/网络工具改 tkinter; 托盘
+
+---
+
 ## 2026-08-26 (wgime-py 阶段 3 收尾: 取色器/网络工具/免安装单文件)
 
 - 取色器(跟随光标放大镜, 点击复制 hex); 网络工具(ping/tracert/nslookup 深色控制台)

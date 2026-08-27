@@ -221,3 +221,22 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
   - 实测端到端：双击 bat → 首次解压 → IME 托盘启动（`started, dict 9s` 冷解析，后续走 pickle 缓存）
 - **打包踩坑（记录）**：① PowerShell 函数调用 `f('a','b','c')` 是**单个数组参数**——必须 `f 'a' 'b' 'c'` 空格分隔；② 标记在解压脚本里也出现——提取用 `LastIndexOf`；③ `.NET Framework` 的 `ZipFile.ExtractToDirectory` 无 bool 重载；④ `$env:TEMP` 是 8.3 短路径而 `FileInfo.FullName` 是长路径——相对路径子串要用 `[IO.Path]::GetFullPath` 归一化；⑤ cmd 不解析 `$`，powerShell 块要压成单行 + 单引号保持字面量
 - **打包遗留**：emoji 图片版候选（当前文本渲染）、码表选配（可去掉 23MB ec.txt 减包）
+
+---
+
+## 14. 纯 Python 版已启动（2026-08-26，`wgime-py-pure/`，方案 A）
+
+**动机**：3.8 版本锁来自 pythonnet（.NET 桥）轮子上限，而需 .NET 的唯一强需求是 CodeDom 编译 `[csharp]` 插件 + .NET Framework 免安装。放弃这两者后，任意新版 Python 都能用。
+
+**架构**（Python 3.12 + ctypes + tkinter，零 .NET）：
+- `hook.py` — ctypes `WH_KEYBOARD_LL`，回调只做吞键判定+入队（关键路径快）；自家注入按 `dwExtraInfo=0x5747494D` 放行；Shift 轻拍/Ctrl+`/Ctrl+Shift+F/Ctrl+Alt+C 合成事件
+- `win.py` — ctypes `SendInput(UNICODE)` / `GUIThreadInfo` 光标跟随 / 剪贴板（powershell 兜底）
+- `bar.py` — tkinter 无边框置顶候选条（Canvas 自绘圆角，跟随光标）
+- `main.py` — 状态机复用 `wgime.py`（pythonnet 版）逻辑，UI/注入换纯 Python；engine/plugins 纯标准库直接复用
+- 复用：`engine.py`、`plugins.py`（本就是纯标准库）
+
+**实机验证**：notepad 中 `zhongguo` → 候选条 `1.中国 2.众过 3.忠果 4.重国 5.宗国`（tkinter 自绘，跟随光标）→ 空格上屏"中国"，并自动出联想行（↪联想 你好）。
+
+**踩坑**：① ctypes 回调返回 `CallNextHookEx` 必须声明 argtypes（64 位指针参数默认 32 位会 OverflowError）；② ctypes `SendInput` 的 INPUT 需 pointer-sized `dwExtraInfo`；③ `import tkinter.font as tkfont`（`tk.font` 不自动加载）。
+
+**待迁移**：插件系统改 Python 插件 API（chat/clock/calc 重写，协议层 Python 更顺）；工具箱/剪贴板/便签/取色器/网络工具改 tkinter；托盘（pystray）；粘贴/提权关键路径（纯 ctypes 已备）。
