@@ -7,7 +7,7 @@ import os
 import pprint
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ['win', 'hook', 'bar', 'wspy', 'engine', 'plugins', 'tools']
+MODULES = ['win', 'hook', 'bar', 'wspy', 'engine', 'plugins', 'tools', 'tray']
 OUT = os.path.join(BASE, 'dist', 'wgime-py.py')
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 

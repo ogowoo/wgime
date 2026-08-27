@@ -15,6 +15,15 @@ DICT_DIR = os.environ.get('WGIME_DICT_DIR', r'C:\Tools\wgime')
 DATA_DIR = os.path.join(os.environ['LOCALAPPDATA'], 'wgime-py')
 os.makedirs(DATA_DIR, exist_ok=True)
 
+
+def _dfn(text):
+    try:
+        with open(os.path.join(DATA_DIR, 'debug.log'), 'a', encoding='utf-8') as f:
+            f.write('%.3f %s\n' % (time.time(), text))
+    except Exception:
+        pass
+
+
 sys.path.insert(0, BASE)
 import win
 import hook
@@ -65,6 +74,20 @@ root = tk.Tk()
 root.withdraw()
 bar = CandBar(root)
 
+try:
+    import tray as _tray_mod
+    _tray = _tray_mod.Tray(root, {
+        'toggle': lambda: set_active(not ime.active),
+        'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
+        'trad': lambda: (setattr(ime, 'trad', not ime.trad), reset()),
+        'quit': root.destroy,
+        'is_active': lambda: ime.active,
+        'get_mode': lambda: ime.mode,
+    })
+    _tray.start()
+except Exception as e:
+    _dfn('tray start err %r' % e)
+
 PLUGINS = []
 TOOLS = []
 
@@ -114,14 +137,6 @@ def find_launcher(code):
     if code in b:
         return (b[code][0], 'builtin', b[code][1])
     return None
-
-
-def _dfn(text):
-    try:
-        open(os.path.join(DATA_DIR, 'debug.log'), 'a', encoding='utf-8').write(
-            '%.3f %s\n' % (time.time(), text))
-    except Exception:
-        pass
 
 
 # ---------- 显示 ----------
