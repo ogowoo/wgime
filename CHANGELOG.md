@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-28 (wgime-py-pure: 第三方库内嵌, 单文件零 pip 依赖)
+
+- **背景**:现代应用(Edge/新记事本)光标跟随需要 UI Automation,纯 Python 侧用 `uiautomation`(纯 Python,基于 `comtypes`)
+- **方案选型**:零第三方方案(ctypes 直调 `UIAutomationCore` COM)需手写 120+ 个 vtable 方法占位 + SAFEARRAY 处理,易错、难维护 → 放弃;改用**内嵌**
+- **内嵌实现**:`build-wgime-pure.py` 在构建时收集 comtypes + uiautomation 的纯 Python 源码(71 个模块,排除 test),打包 zip 内嵌进单文件;运行时解压到 `%LOCALAPPDATA%\wgime-py\site\thirdparty.zip` 并 `zipimport`(标准 import 机制,包结构/相对导入天然正确)
+- **效果**:单文件 ~148KB → ~487KB(zip 压缩后),目标机器零 pip 依赖;本机构建仍须 `pip install uiautomation`(构建脚本要从已装包读源码)
+- **踩坑**:comtypes 的 `_post_coinit` 是"同名模块+包共存",收集时须用 `m.ispkg` 区分——包写 `__init__.py`、模块写 `.py`,否则 zipimport 报 "is not a package"
+
+---
+
 ## 2026-08-28 (丢弃 pythonnet 双轨版本)
 
 - 删除 `wgime-py/`（pythonnet + WinForms 双轨方案，已被纯 Python 版完全取代）
