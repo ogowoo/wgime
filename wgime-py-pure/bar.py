@@ -53,24 +53,24 @@ class CandBar:
         c.delete('all')
         # 候选显示截断: 超长词(整句/长词)截断 + 省略号, 避免候选条无限宽
         wa = win.screen_workarea()
-        # 候选条最大宽度: 不再铺满整屏, 封顶 min(屏幕宽-24, 720px); ≥240
-        max_w = max(240, min((wa.right - wa.left) - 24, 720))
+        # 候选条最大宽度: 不铺满屏, 封顶 min(屏幕宽-24, 880px); ≥240
+        max_w = max(240, min((wa.right - wa.left) - 24, 880))
         def clip(s, n):
             return s if len(s) <= n else s[:n] + '…'
         line1 = self._pad + self._fc.measure(header) + self._fc.measure(code)
         page_ind = '◀ %d/%d ▶' % (page + 1, total) if total > 1 else ''
         ind_w = self._fc.measure(page_ind) if page_ind else 0
-        # 动态收紧候选截断: 候选总宽超 max_w 时, 逐步缩短每个候选(24→4), 直到候选条不铺满屏,
+        # 动态收紧候选截断: 候选总宽超 max_w 时, 逐步缩短每个候选(24→8), 直到候选条不铺满屏,
         # 且每个候选仍可见(都剪短, 数字键/翻页可选); 到最小仍超则窗口封顶 max_w 自动裁
         cands = list(cands or [])
         clipped = cands
         line2 = self._pad
-        for n in range(24, 3, -2):
+        for n in range(24, 7, -2):
             clipped = [clip(x, n) for x in cands]
             line2 = self._pad
             for i2, cnd in enumerate(clipped):
                 line2 += self._fd.measure('%d.%s' % (i2 + 1, cnd)) + 16
-            if line2 <= max_w or n <= 4:
+            if line2 <= max_w or n <= 8:
                 break
         cands = clipped
         w = max(line1 + ind_w + 18, line2 + self._pad, 120)
@@ -132,8 +132,20 @@ class CandBar:
             ra = win.screen_workarea()
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.right - w - 16, ra.bottom - h - 8))
         else:
-            # 固定模式(用户可拖动): 只设尺寸, 保持既有位置
-            self.top.geometry('%dx%d' % (w, h))
+            # 固定模式(用户可拖动): 保持当前位置, 但候选变宽/高时 clamp 到工作区, 避免超屏看不到
+            ra = win.screen_workarea()
+            cx, cy = self.top.winfo_x(), self.top.winfo_y()
+            if not cx and not cy:
+                cx, cy = ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40
+            if cx + w > ra.right:
+                cx = ra.right - w
+            if cx < ra.left:
+                cx = ra.left
+            if cy + h > ra.bottom:
+                cy = ra.bottom - h
+            if cy < ra.top:
+                cy = ra.top
+            self.top.geometry('%dx%d+%d+%d' % (w, h, cx, cy))
         self.top.deiconify()
         win.set_topmost(self.top.winfo_id())   # 强制提到 topmost z-order 最顶(Win11 开始菜单不压住候选框)
 
