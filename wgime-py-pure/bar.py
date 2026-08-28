@@ -52,8 +52,9 @@ class CandBar:
             line2 += self._measure('%d.%s' % (i + 1, cand), self.f_cand) + 16
         w = max(line1 + ind_w + 18, line2, 120)
         h = 54
-        # 圆角底
-        self._round_rect(c, 0, 0, w - 1, h - 1, 10, fill=BG, outline=BORDER)
+        # 窗口已被 SetWindowRgn 裁成圆角: Canvas 铺白底(不留角), 只画内缩 1px 描边 (fill='' 无填充)
+        c.configure(bg=BG)
+        self._round_rect(c, 1, 1, w - 2, h - 2, 10, outline=BORDER, fill='')
         # header + code (行1)
         y = 6
         x = self._pad
