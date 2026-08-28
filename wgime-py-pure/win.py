@@ -3,7 +3,6 @@
 import ctypes
 import ctypes.wintypes as w
 import os
-import subprocess
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -38,19 +37,22 @@ class INPUT(ctypes.Structure):
 
 
 def send_unicode(text, magic=MAGIC):
-    """per-char sendunicode; return count sent."""
+    """per-char sendunicode; 按 UTF-16 码元注入(支持 astral/emoji 代理对, 不再截断); return count sent."""
     text = text or ''
-    n = len(text) * 2
+    units = text.encode('utf-16-le', 'surrogatepass')   # 每 2 字节一个 UTF-16 码元
+    nunits = len(units) // 2
+    n = nunits * 2
     if n == 0:
         return 0
     arr = (INPUT * n)()
-    for i, ch in enumerate(text):
+    for i in range(nunits):
+        code = units[2 * i] | (units[2 * i + 1] << 8)
         lo = 2 * i
         arr[lo].type = 1
-        arr[lo].u.ki.wScan = ord(ch)
+        arr[lo].u.ki.wScan = code
         arr[lo].u.ki.dwFlags = 0x4                                   # KEYEVENTF_UNICODE down
         arr[lo + 1].type = 1
-        arr[lo + 1].u.ki.wScan = ord(ch)
+        arr[lo + 1].u.ki.wScan = code
         arr[lo + 1].u.ki.dwFlags = 0x4 | 0x2                         # UNICODE + KEYUP
         arr[lo].u.ki.dwExtraInfo = magic
         arr[lo + 1].u.ki.dwExtraInfo = magic
@@ -58,13 +60,15 @@ def send_unicode(text, magic=MAGIC):
 
 
 def send_unicode_qtfix(text, magic=MAGIC):
-    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避)."""
+    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避). 按 UTF-16 码元注入, 标点判断仅对 BMP."""
     items = []
-    for ch in text:
-        items.append(('uk', ord(ch)))
-        items.append(('ku', ord(ch)))
-        if ch >= '\u3000' and not (0x4E00 <= ord(ch) <= 0x9FFF) and not (0x3400 <= ord(ch) <= 0x4DBF) \
-                and not (0xF900 <= ord(ch) <= 0xFAFF):
+    units = text.encode('utf-16-le', 'surrogatepass')
+    for i in range(len(units) // 2):
+        code = units[2 * i] | (units[2 * i + 1] << 8)
+        items.append(('uk', code))
+        items.append(('ku', code))
+        if 0x3000 <= code <= 0xFFFF and not (0x4E00 <= code <= 0x9FFF) and not (0x3400 <= code <= 0x4DBF) \
+                and not (0xF900 <= code <= 0xFAFF):
             items.append(('uk', ord('X')))
             items.append(('ku', ord('X')))
             items.append(('dn', 0x08))
@@ -104,11 +108,16 @@ def send_key_backspace(magic=MAGIC):
     return user32.SendInput(2, arr, ctypes.sizeof(INPUT))
 
 
+_paste_gen = [0]   # 剪贴板粘贴代际: 连续粘贴时旧恢复线程不覆盖新内容
+
+
 def paste_text(text, magic=MAGIC):
-    """剪贴板粘贴 (提权窗口回退): 保存/恢复原剪贴板."""
+    """剪贴板粘贴 (提权窗口回退): 保存/恢复原剪贴板; 代际+读回校验防竞态覆盖."""
     prev = clipboard_text()
     if prev is not None and len(prev) == 0:
         prev = None                                            # 空原文不恢复
+    _paste_gen[0] += 1
+    gen = _paste_gen[0]
     clipboard_set(text)
     import time
     time.sleep(0.06)
@@ -127,27 +136,68 @@ def paste_text(text, magic=MAGIC):
     time.sleep(0.15)
     if prev:
         import threading
-        threading.Thread(target=lambda: (time.sleep(0.3), clipboard_set(prev)), daemon=True).start()
+        def restore():
+            time.sleep(0.3)
+            if _paste_gen[0] == gen and clipboard_text() == text:   # 无新粘贴且剪贴板仍是我们设的值才恢复
+                clipboard_set(prev)
+        threading.Thread(target=restore, daemon=True).start()
+
+
+# ---------- 剪贴板 (ctypes 原生, 零子进程/零编码问题) ----------
+user32.OpenClipboard.restype = w.BOOL
+user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+user32.GetClipboardData.restype = ctypes.c_void_p
+user32.GetClipboardData.argtypes = [w.UINT]
+user32.SetClipboardData.restype = ctypes.c_void_p
+user32.SetClipboardData.argtypes = [w.UINT, ctypes.c_void_p]
+user32.EmptyClipboard.restype = w.BOOL
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalAlloc.argtypes = [w.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 
 
 def clipboard_text():
-    try:
-        return subprocess.run(['powershell.exe', '-NoProfile', '-Command', 'Get-Clipboard'],
-                              capture_output=True, encoding='utf-8', creationflags=0x08000000).stdout.rstrip('\r\n')
-    except Exception:
+    """读剪贴板文本 (ctypes 原生, 零子进程/零编码问题); 非文本/失败返回 None."""
+    if not user32.OpenClipboard(0):
         return None
+    try:
+        h = user32.GetClipboardData(13)            # CF_UNICODETEXT
+        if not h:
+            return None
+        p = kernel32.GlobalLock(h)
+        if not p:
+            return None
+        try:
+            return ctypes.wstring_at(p)
+        finally:
+            kernel32.GlobalUnlock(h)
+    finally:
+        user32.CloseClipboard()
 
 
 def clipboard_set(text):
+    """写剪贴板文本 (ctypes 原生); 失败静默."""
+    if text is None:
+        text = ''
     try:
-        subprocess.run(['powershell.exe', '-NoProfile', '-Command', 'Set-Clipboard -Value %s' % _ps_quote(text)],
-                       capture_output=True, encoding='utf-8', creationflags=0x08000000)
+        user32.OpenClipboard(0)
     except Exception:
-        pass
-
-
-def _ps_quote(s):
-    return "'" + s.replace("'", "''") + "'"
+        return
+    try:
+        user32.EmptyClipboard()
+        data = (str(text) + '\0').encode('utf-16-le')
+        h = kernel32.GlobalAlloc(0x0002, len(data))   # GMEM_MOVEABLE
+        if not h:
+            return
+        p = kernel32.GlobalLock(h)
+        if p:
+            ctypes.memmove(p, data, len(data))
+            kernel32.GlobalUnlock(h)
+            user32.SetClipboardData(13, h)            # CF_UNICODETEXT
+    finally:
+        user32.CloseClipboard()
 
 
 # ---------- 光标跟随 ----------

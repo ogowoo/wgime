@@ -89,6 +89,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 
 ## 8. 当前状态速览
 
+- **已完成一次全面体检(review)并修复高危+中危问题**（2026-08-29，覆盖 main/engine/win/tools/hook/plugins/ui 七模块）：详见 CHANGELOG 对应条目。核心：词频保存线程竞争已用 RLock 状态锁修复；剪贴板改 ctypes 原生（零子进程）；`send_unicode` 按 UTF-16 码元注入（支持 emoji）；hook 修 Shift 轻拍/F8 修饰键/数字键/注入键/异常保护。
 - 最近工作：码表数据块化（`###WGIME_DATA###`，消除启动时 PS 解析大 here-string）、固化码表写数据块 + 预生成 `.mb` 缓存（下次启动跳过 ~10s 冷重建）、词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、**chat 插件重写（2026-08-25：relay 裸 JSON + 真 MQTT 双模式、auto 兜底、Active Rooms、6s×3 重连，修复与 PC/Android 双向不互通的致命缺陷；新增 `tests\chat-protocol-smoke.ps1` 联网协议验证）**、clock 多提醒、文档同步、**纯 Python 版托盘菜单分组 + 中英双语（按 `GetUserDefaultUILanguage` 判定，与 C# 版 `CultureInfo` 一致）**。
 - 纯 Python 版托盘菜单：分组=开关/模式/选项{繁体输出, 跟随光标, 主题}/词库{造词, 导入码表}/这个程序{剪贴板上屏, 标点吞字修复}/退出；标签经 `tray.L(zh,en)` 双语化，造词走 `api['makeword']` → `makeword_clipboard()`。
 - chat 插件要点：relay=`chat.seee.uno` 走裸 JSON 文本帧，其余 broker 走 MQTT over WS（`/mqtt` 路径 + **必须 `mqtt` 子协议**，否则 EMQX 400/Mosquitto 断连）；TLS 需 1.2+。详见 `docs\WGIME_CHAT_技术文档.md` §8。

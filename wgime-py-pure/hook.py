@@ -50,19 +50,6 @@ user32.GetKeyState.restype = ctypes.c_short
 user32.GetKeyState.argtypes = [ctypes.c_int]
 
 
-def _is_ime_key(vk):
-    if 0x41 <= vk <= 0x5A:
-        return True
-    if 0x30 <= vk <= 0x39:
-        return True
-    return vk in (0x20, 0x08, 0x1B, 0x0D, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA)   # space back esc enter - = [ ] ;
-
-
-def _is_compose_key(vk):
-    """开始/延续拼音缓冲的键: 字母/数字 (激活即吞)."""
-    return 0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39
-
-
 _CTRL_KEYS = {0x20, 0x08, 0x1B, 0x0D, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA}   # 空格/退格/esc/回车/-/=/[/]/; : 仅缓冲有效时吞
 
 
@@ -74,57 +61,71 @@ _hook = [None]
 
 
 def _proc(nCode, wParam, lParam):
-    if nCode >= 0:
-        kbd = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-        # 自家注入 (MAGIC dwExtraInfo) → 直接放行
-        if (kbd.flags & LLKHF_INJECTED) and kbd.dwExtraInfo == 0x5747494D:
-            return user32.CallNextHookEx(None, nCode, wParam, lParam)
-        m = int(wParam)
-        vk = int(kbd.vkCode)
-        if m == WM_KEYDOWN or m == WM_SYSKEYDOWN:
-            if vk == VK_TOGGLE:                            # F8 硬开关: 未激活也可唤醒/关闭
-                EVENTS.put(VK_TOGGLE)
-                return 1
-            if _key_state(0x11) and _key_state(0x12) and vk == 0x51:   # Ctrl+Alt+Q 退出 (任意状态)
-                EVENTS.put(VK_QUIT)
-                return 1
-            ctrl = _key_state(0x11)
-            shift = _key_state(0x10)
-            alt = _key_state(0x12)
-            if vk in (0xA0, 0xA1):                         # Shift down: 记录轻拍起点 (激活与否都判)
-                _tap_time[0] = time.time()
-                _tap_dirty[0] = False
-            else:
-                if _tap_time[0] is not None:
-                    _tap_dirty[0] = True                   # 有其它键介入, 不算轻拍
-                if ACTIVE[0]:
-                    if ctrl and vk == 0xC0:                # Ctrl+` 模式 (激活态)
-                        EVENTS.put(VK_MODE)
-                        return 1
-                    if ctrl and shift and vk == 0x46:      # Ctrl+Shift+F 繁简 (激活态)
-                        EVENTS.put(VK_TRAD)
-                        return 1
-                    if ctrl and alt and vk == 0x43:        # Ctrl+Alt+C 造词 (激活态)
-                        EVENTS.put(VK_MAKEWORD)
-                        return 1
-                    winkey = _key_state(0x5B) or _key_state(0x5C)
-                    if ctrl or alt or winkey:              # 带 Ctrl/Alt/Win 的快捷键: 透传 (Ctrl+S/Alt+Tab/Win+Shift+S 等)
+    try:
+        if nCode >= 0:
+            kbd = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            # 所有注入键(第三方宏/AHK/远程桌面)一律放行不吞, 与 C# 版对齐
+            if (kbd.flags & LLKHF_INJECTED):
+                return user32.CallNextHookEx(None, nCode, wParam, lParam)
+            m = int(wParam)
+            vk = int(kbd.vkCode)
+            if m == WM_KEYDOWN or m == WM_SYSKEYDOWN:
+                if vk == VK_TOGGLE:                            # F8 硬开关: 带修饰键则透传(不劫持 Ctrl+F8/Shift+F8 等)
+                    if (_key_state(0x11) or _key_state(0x12) or _key_state(0x10)
+                            or _key_state(0x5B) or _key_state(0x5C)):
                         return user32.CallNextHookEx(None, nCode, wParam, lParam)
-                    if shift:                              # Shift 修正键: 透传 (Shift+Enter/Space/字母等)
-                        return user32.CallNextHookEx(None, nCode, wParam, lParam)
-                    if _is_compose_key(vk):                # 裸字母/数字: 吞 (开始拼音)
-                        EVENTS.put(vk)
-                        return 1
-                    if vk in _CTRL_KEYS and COMPOSING[0]:  # 空格/退格/回车等: 仅缓冲有效时吞
-                        EVENTS.put(vk)
-                        return 1
-                    # 其余键透传 (无缓冲时空格/退格/回车交给应用)
-        elif m == WM_KEYUP or m == WM_SYSKEYUP:
-            if vk in (0xA0, 0xA1):
-                if _tap_time[0] is not None and not _tap_dirty[0] \
-                        and time.time() - _tap_time[0] < 0.4:
-                    EVENTS.put(VK_TAP)                     # 孤立快速 Shift 轻拍: 切换 (激活/关闭)
-                _tap_time[0] = None
+                    EVENTS.put(VK_TOGGLE)
+                    return 1
+                if _key_state(0x11) and _key_state(0x12) and vk == 0x51:   # Ctrl+Alt+Q 退出
+                    EVENTS.put(VK_QUIT)
+                    return 1
+                ctrl = _key_state(0x11)
+                shift = _key_state(0x10)
+                alt = _key_state(0x12)
+                if vk in (0xA0, 0xA1):                         # Shift down
+                    # 带 Ctrl/Alt/Win 时不武装轻拍(避免 Ctrl+Shift/Alt+Shift 误触发开关)
+                    if ctrl or alt or _key_state(0x5B) or _key_state(0x5C):
+                        _tap_time[0] = None
+                        _tap_dirty[0] = True
+                    else:
+                        _tap_time[0] = time.time()
+                        _tap_dirty[0] = False
+                else:
+                    if _tap_time[0] is not None:
+                        _tap_dirty[0] = True                   # 有其它键介入, 不算轻拍
+                    if ACTIVE[0]:
+                        if ctrl and vk == 0xC0:                # Ctrl+` 模式 (激活态)
+                            EVENTS.put(VK_MODE)
+                            return 1
+                        if ctrl and shift and vk == 0x46:      # Ctrl+Shift+F 繁简 (激活态)
+                            EVENTS.put(VK_TRAD)
+                            return 1
+                        if ctrl and alt and vk == 0x43:        # Ctrl+Alt+C 造词 (激活态)
+                            EVENTS.put(VK_MAKEWORD)
+                            return 1
+                        winkey = _key_state(0x5B) or _key_state(0x5C)
+                        if ctrl or alt or winkey:              # 带 Ctrl/Alt/Win 的快捷键: 透传
+                            return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                        if shift:                              # Shift 修正键: 透传
+                            return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                        if 0x41 <= vk <= 0x5A:                 # 裸字母: 吞 (开始拼音)
+                            EVENTS.put(vk)
+                            return 1
+                        if 0x30 <= vk <= 0x39 and COMPOSING[0]:   # 数字: 仅组字/联想时吞(候选选择/v模式), 裸数字透传(C# 对齐)
+                            EVENTS.put(vk)
+                            return 1
+                        if vk in _CTRL_KEYS and COMPOSING[0]:  # 空格/退格/回车等: 仅缓冲有效时吞
+                            EVENTS.put(vk)
+                            return 1
+                        # 其余键透传 (无缓冲时空格/退格/回车交给应用)
+            elif m == WM_KEYUP or m == WM_SYSKEYUP:
+                if vk in (0xA0, 0xA1):
+                    if _tap_time[0] is not None and not _tap_dirty[0] \
+                            and time.time() - _tap_time[0] < 0.4:
+                        EVENTS.put(VK_TAP)                     # 孤立快速 Shift 轻拍: 切换 (激活/关闭)
+                    _tap_time[0] = None
+    except Exception:
+        return user32.CallNextHookEx(None, nCode, wParam, lParam)
     return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
 
@@ -139,7 +140,13 @@ def _pump():
         user32.DispatchMessageW(ctypes.byref(msg))
 
 
+_started = [False]
+
+
 def start():
+    if _started[0]:
+        return
+    _started[0] = True
     _hook[0] = HOOKPROC(_proc)
     th = threading.Thread(target=lambda: (user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook[0], None, 0), _pump()), daemon=True)
     th.start()

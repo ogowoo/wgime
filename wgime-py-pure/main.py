@@ -520,6 +520,10 @@ def quit_app():
     except Exception:
         pass
     try:
+        engine.save_freq()                              # 同步落盘词频/LastPick/联想 (等价 C# SaveFreqSync)
+    except Exception:
+        pass
+    try:
         root.destroy()
     except Exception:
         pass
@@ -665,6 +669,10 @@ def run_steps_bg(body):
 
 
 _PY_RUNNER = '''import sys, json
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 _ctxs = """__CTX__"""
 ctx = json.loads(_ctxs) if _ctxs else {}
 def _emit(obj):
@@ -721,6 +729,27 @@ def _run_python_block(body, code, name, ctx, timeout=60):
     return actions
 
 
+def _run_python_plugin_actions(payload, ctx):
+    """后台线程: 跑 [python] 块子进程 + 执行返回动作; msg/log 经 root.after marshal 回主线程."""
+    from tkinter import messagebox as _mb
+    try:
+        actions = _run_python_block(payload.body, payload.code, payload.name, ctx)
+    except Exception as e:
+        _dfn('py-plugin err %r' % e)
+        return
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        act = a.get('action')
+        if act == 'msg':
+            try:
+                root.after(0, lambda a=a: _mb.showinfo(payload.name or '插件', str(a.get('text', ''))))
+            except Exception:
+                pass
+        elif act == 'log':
+            _dfn('plugin-log %s' % a.get('text'))
+
+
 def _confirm_plugin(payload):
     """② 插件权限确认: 声明了高权限(联网/执行命令/注册表/破坏性)的插件, 运行前弹确认."""
     meta = plugmod.plugin_meta(payload)
@@ -748,17 +777,9 @@ def run_launcher(l):
     if kind == 'step':                                     # 步骤 DSL 插件 (plugins/*.txt)
         run_steps_bg(payload.body)
         return
-    if kind == 'python':                                   # [python] 块插件: 子进程+超时熔断 + JSON IPC(handle(ctx)->actions)
+    if kind == 'python':                                   # [python] 块插件: 子进程+超时熔断 + JSON IPC; 后台线程跑, 不阻塞主线程打字
         ctx = {'code': payload.code, 'name': payload.name, 'buff': ime.buf, 'mode': ime.mode}
-        for a in _run_python_block(payload.body, payload.code, payload.name, ctx):
-            if not isinstance(a, dict):
-                continue
-            act = a.get('action')
-            if act == 'msg':
-                from tkinter import messagebox as _mb
-                _mb.showinfo(payload.name or '插件', str(a.get('text', '')))
-            elif act == 'log':
-                _dfn('plugin-log %s' % a.get('text'))
+        threading.Thread(target=_run_python_plugin_actions, args=(payload, ctx), daemon=True).start()
         return
     if kind == 'csharp':                                   # [csharp] 插件: sidecar PowerShell + CodeDom
         runner = os.path.join(BASE, 'run-csharp-plugin.ps1')
@@ -901,8 +922,17 @@ def handle(vk):
             commit(ime.sel)
     elif 0x30 <= vk <= 0x39:
         d = vk - 0x30
-        if d == 0 and not ime.buf and not ime.assoc_showing:
-            win.send_unicode('0')
+        if d == 0:
+            # 0 不参与候选选择(候选是 1-9): 修复原 d-1 越界 / 多页按0误选上一页末位
+            if ime.buf and digit_as_code():
+                ime.buf += '0'
+                refresh()
+            elif ime.assoc_showing:
+                clear_assoc()                                   # 0 非联想候选选择, 结束联想并上屏 0
+                win.send_unicode('0')
+            elif not ime.buf:
+                win.send_unicode('0')
+            # 组字中(非 v 模式)按 0: 忽略, 不打乱组字
         elif ime.assoc_showing and not ime.buf:
             pick_assoc(ime.page * 9 + d - 1)
         elif digit_as_code():

@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 全面体检高危+中危修复)
+
+- **main**:退出同步落盘词频(`quit_app` 调 `engine.save_freq`);数字键 0 候选 off-by-one 修复;`[python]` 块插件改后台线程执行(不再冻结主线程最长 60s)+子进程 IPC 中文乱码(UTF-8 配置);修 `commit()` is_dyn 在 reset 后判断的回归
+- **engine**:词频保存线程竞争修复(用 RLock 状态锁, 锁内快照/锁外写盘, 不再抛 dictionary changed size);`reload()` 导入码表后重放用户词(不再丢已造词);双拼 üe 映射修正(`üe->ue` 错误会撞 lue 码, 改 `ü->v` 得 lve/nve, 打得出略/虐)
+- **win**:`send_unicode`/`qtfix` 按 UTF-16 码元注入(支持 astral/emoji 代理对, 不再截断);剪贴板改 ctypes 原生实现(零子进程/零编码问题), `paste` 恢复加代际+读回校验防竞态覆盖;删死 import `subprocess` 与 `_ps_quote`
+- **tools**:剪贴板轮询线程加启动守卫(防多开叠加);工具步骤后台线程执行(msgbox/confirm 线程安全, 不再阻塞输入法);取色轮询调度链保持(光标入窗不中断);导入码表对话框点 X 关窗=取消(不再误导入)
+- **hook**:Shift 轻拍带修饰键(Ctrl/Alt/Win)不武装(修 Ctrl+Shift/Alt+Shift 误触发);F8 带修饰键透传(不劫持 Ctrl+F8/Shift+F8);数字键仅组字/联想时吞(裸数字透传, C# 对齐);放行所有注入键(不吞第三方宏/AHK/远程桌面);钩子回调异常保护;`start()` 重入守卫;删死代码 `_is_ime_key`/`_is_compose_key`
+- **plugins**:`kill` 校验 image 名(修 shell 注入)+列表参数不 shell;`file-del` 盘根/UNC 根防护加固(去 glob 元字符后判);`reg-set`/`reg-del` 用 `with` 自动 CloseKey 防句柄泄漏;`[cmd]` 块结束标记修正
+- **ui**:`font()` 用 `tkfont.families` 检测系统可用字体(修死代码);`_round_region` 补 ctypes 签名+失败时 `DeleteObject` 防句柄泄漏;`close()` finally destroy;标题栏文字可拖动
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 插件隔离熔断 + 统一 JSON IPC)
 
 - **③ 隔离与超时熔断(中价值)**:`[python]` 块插件改为**子进程运行**(超时 60s, 崩溃/卡死只记日志, 不影响输入法打字);步骤 DSL 的 `run`/`shell` 超时 3600→120s、静默脚本块超时 3600→300s(可见交互块保留);`[csharp]` 保持 sidecar 独立进程

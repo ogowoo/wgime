@@ -209,7 +209,7 @@ def run_steps(body, log, msgbox, confirm):
         if bm:
             tag = bm.group(1).lower()
             block = []
-            end_tag = {'shell': '[/shell]', 'cmd': '[/shell]', 'powershell': '[/powershell]', 'ps': '[/powershell]',
+            end_tag = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/powershell]',
                        'shellx': '[/shellx]', 'psx': '[/psx]'}[tag]
             while i < len(lines) and lines[i].strip() != end_tag:
                 block.append(lines[i])
@@ -257,15 +257,19 @@ def _run_verb(verb, arg, log, msgbox, confirm):
     elif verb == 'open':
         os.startfile(os.path.expandvars(arg))
     elif verb == 'kill':
-        subprocess.run('taskkill /f /im "%s.exe"' % arg, shell=True, capture_output=True)
+        img = arg.replace('"', '').replace('&', '').replace('|', '').replace('<', '').replace('>', '').replace('^', '')
+        if not re.match(r'^[\w. -]+$', img):
+            raise RuntimeError('bad image name: %s' % arg)
+        subprocess.run(['taskkill', '/f', '/im', img + '.exe'], capture_output=True, timeout=60)
     elif verb == 'wait':
         time.sleep(int(arg) / 1000.0)
     elif verb == 'mkdir':
         os.makedirs(os.path.expandvars(arg), exist_ok=True)
     elif verb == 'file-del':
         target = os.path.expandvars(arg)
-        if re.match(r'^[A-Za-z]:[\\/]?$', target):
-            raise RuntimeError('refuse drive root')
+        base = re.split(r'[*?\[]', target)[0].rstrip('\\/ ')   # 去掉 glob 元字符后再判根
+        if re.match(r'^[A-Za-z]:$', base) or re.match(r'^\\\\[^\\]+\\[^\\]+$', base):
+            raise RuntimeError('refuse drive/UNC root')
         for p in glob.glob(target):
             try:
                 if os.path.isdir(p):
@@ -278,29 +282,27 @@ def _run_verb(verb, arg, log, msgbox, confirm):
         parts = tokenize(arg)
         if len(parts) >= 4:
             hive, sub = parts[0].split('\\', 1)
-            key = winreg.CreateKey(REG_HIVES[hive.upper()], sub)
             name = None if parts[1] == '-' else parts[1]
             typ = parts[2].lower()
             data = parts[3]
-            if typ == 'dword':
-                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
-            elif typ == 'qword':
-                winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
-            elif typ == 'expand':
-                winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
-            elif typ == 'multi':
-                winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
-            else:
-                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
-            winreg.CloseKey(key)
+            with winreg.CreateKey(REG_HIVES[hive.upper()], sub) as key:   # with 自动 CloseKey, 防句柄泄漏
+                if typ == 'dword':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
+                elif typ == 'qword':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
+                elif typ == 'expand':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
+                elif typ == 'multi':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
+                else:
+                    winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
     elif verb == 'reg-del':
         parts = tokenize(arg)
         if parts:
             hive, sub = parts[0].split('\\', 1)
             if len(parts) > 1:
-                key = winreg.OpenKey(REG_HIVES[hive.upper()], sub, 0, winreg.KEY_SET_VALUE)
-                winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
-                winreg.CloseKey(key)
+                with winreg.OpenKey(REG_HIVES[hive.upper()], sub, 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
             else:
                 winreg.DeleteKey(REG_HIVES[hive.upper()], sub)
     else:

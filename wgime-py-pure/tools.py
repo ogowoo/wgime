@@ -16,11 +16,37 @@ def _bg(fn):
 
 
 def _msgbox(title, text):
-    messagebox.showinfo(title, text)
+    """线程安全弹窗: 后台线程调用经 tk default root marshal 回主线程."""
+    try:
+        r = getattr(tk, '_default_root', None)
+        if r:
+            r.after(0, lambda: messagebox.showinfo(title, text))
+        else:
+            messagebox.showinfo(title, text)
+    except Exception:
+        pass
 
 
 def _confirm(text):
-    return messagebox.askyesno('确认', text)
+    """线程安全确认: 主线程 askyesno, 后台线程阻塞等待结果."""
+    ev = threading.Event()
+    res = [False]
+    try:
+        r = getattr(tk, '_default_root', None)
+        if r:
+            def ask():
+                try:
+                    res[0] = messagebox.askyesno('确认', text)
+                except Exception:
+                    pass
+                ev.set()
+            r.after(0, ask)
+            ev.wait()
+        else:
+            return messagebox.askyesno('确认', text)
+    except Exception:
+        return False
+    return res[0]
 
 
 # ---------- 工具箱 (tools.txt tab/按钮 -> 步骤 DSL; 自绘标签页) ----------
@@ -59,21 +85,25 @@ def show_toolbox(tools, dict_dir):
 
 
 def _run_tool_steps(steps):
-    try:
-        fails = plugmod.run_steps(steps, lambda m: print('[tool]', m), _msgbox, _confirm)
-        if fails:
-            _msgbox('工具箱', '部分步骤失败 (%d)' % fails)
-    except Exception as ex:
-        _msgbox('工具箱', '失败: %s' % ex)
+    """后台线程执行工具步骤, msgbox/confirm 经 marshal 回主线程, 不阻塞工具箱/输入法."""
+    def work():
+        try:
+            fails = plugmod.run_steps(steps, lambda m: print('[tool]', m), _msgbox, _confirm)
+            if fails:
+                _msgbox('工具箱', '部分步骤失败 (%d)' % fails)
+        except Exception as ex:
+            _msgbox('工具箱', '失败: %s' % ex)
+    threading.Thread(target=work, daemon=True).start()
 
 
 # ---------- 剪贴板历史 ----------
 _CLIPT = []
+_clip_started = [False]
 
 
 def _clip_poll():
     last = None
-    while True:
+    while True:                                        # daemon 线程, 进程退出自动停
         time.sleep(1.0)
         try:
             t = w32.clipboard_text()
@@ -87,7 +117,9 @@ def _clip_poll():
 
 
 def show_clipboard():
-    _bg(_clip_poll)
+    if not _clip_started[0]:                            # 守卫: 轮询线程只启动一次(防多开叠加)
+        _clip_started[0] = True
+        _bg(_clip_poll)
     win, content = ui.make_window('WgIme 剪贴板历史', 420, 400)
     lst = tk.Listbox(content, font=ui.font(9.5), bg=ui.CARD, fg=ui.TEXT, bd=0,
                      highlightthickness=1, highlightbackground=ui.BORDER, selectbackground=ui.ACCENT)
@@ -151,6 +183,7 @@ def show_color():
     def tick():
         x, y = w32.cursor_pos()
         if win.winfo_x() <= x <= win.winfo_x() + win.winfo_width() and win.winfo_y() <= y <= win.winfo_y() + win.winfo_height():
+            win.after(60, tick)     # 光标在窗口内: 跳过采样但保持调度链, 否则移出后不再取色
             return
         r, g, b = w32.get_pixel(x, y)
         state['hex'] = '#%02X%02X%02X' % (r, g, b)
@@ -396,6 +429,8 @@ def _import_dialog(target, detected):
     def cancel():
         result['cancel'] = True
         win.destroy()
+
+    win.protocol('WM_DELETE_WINDOW', cancel)   # 点标题栏 X = 取消(否则被当"确定"导致误导入)
 
     btns = tk.Frame(win, bg=ui.BG)
     btns.grid(row=4, column=0, columnspan=3, pady=14)

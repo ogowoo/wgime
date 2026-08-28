@@ -87,7 +87,7 @@ def sp_segment(seg, scheme):
         seg = seg[:1]                                # 零声母单韵母: aa/oo/ee -> a/o/e
     if scheme != 1 and seg == 'r':
         seg = 'er'                                   # 自然码/微软: er 单击 r
-    return seg.replace('üe', 'ue').replace('ü', 'v')  # 码表约定: lü->lv
+    return seg.replace('ü', 'v')   # 码表约定: lü->lv, lüe->lve (略/虐); 不要 'üe->ue'(会撞 lue 蓼/庐 码)
 
 
 def shuangpin_expand(keys, scheme):
@@ -598,9 +598,23 @@ class Engine:
         self.load_ms = (time.time() - t0) * 1000
         self._init_state()
 
+    def _merge_user_words(self):
+        """把 userwords.txt 合并进 self.py 并重建索引 (启动/热重载共用, 避免导入码表后丢用户词)."""
+        if not self.user_words:
+            return
+        for w, c in self.user_words.items():
+            cur = self.py.get(c)
+            if cur:
+                if (' ' + cur + ' ').find(' ' + w + ' ') < 0:
+                    self.py[c] = cur + ' ' + w
+            else:
+                self.py[c] = w
+        self.pk, self.pv = build_sorted(self.py)
+
     def reload(self):
-        """导入码表后热重载: 重建索引 + 刷新缓存."""
+        """导入码表后热重载: 重建索引 + 刷新缓存 + 重放用户词(否则已造用户词丢失)."""
         self._build()
+        self._merge_user_words()
         self._save_cache(self._paths())
 
     def _cache_sig(self, paths):
@@ -646,18 +660,10 @@ class Engine:
         self._load_freq()
         self.freq_dirty = 0
         self.last_save = time.time()
-        self._save_lock = threading.Lock()
+        self._save_lock = threading.RLock()   # 词频/联想/近期状态锁(可重入): learn+save_freq 共用, 防保存线程遍历活 dict 时被写侧打断
         # 用户词 (五笔反查字表: 最长码)
         self.user_words = self.load_user_words()
-        if self.user_words:
-            for w, c in self.user_words.items():
-                cur = self.py.get(c)
-                if cur:
-                    if (' ' + cur + ' ').find(' ' + w + ' ') < 0:
-                        self.py[c] = cur + ' ' + w
-                else:
-                    self.py[c] = w
-            self.pk, self.pv = build_sorted(self.py)
+        self._merge_user_words()
         self.char_wb = {}
         for code in sorted(self.wb.keys()):
             if len(code) < 2:
@@ -738,23 +744,27 @@ class Engine:
     def learn(self, code, w, mode):
         if not w:
             return
-        self.freq[w] = self.freq.get(w, 0) + 1
-        if len(self.freq) > 90000:
-            self.freq.pop(next(iter(self.freq)))
-        if 0 <= mode < 3:
-            fb = self.freq_m[mode]
-            fb[w] = fb.get(w, 0) + 1
-            if len(fb) > 30000:
-                fb.pop(next(iter(fb)))
-            if code:
-                lb = self.lastpick_m[mode]
-                lb[code] = w
-                if len(lb) > 30000:
-                    lb.pop(next(iter(lb)))
-        self.freq_dirty += 1
-        if self.freq_dirty >= 50 or time.time() - self.last_save >= 5:
-            self.freq_dirty = 0
-            self.last_save = time.time()
+        spawn = False
+        with self._save_lock:
+            self.freq[w] = self.freq.get(w, 0) + 1
+            if len(self.freq) > 90000:
+                self.freq.pop(next(iter(self.freq)))
+            if 0 <= mode < 3:
+                fb = self.freq_m[mode]
+                fb[w] = fb.get(w, 0) + 1
+                if len(fb) > 30000:
+                    fb.pop(next(iter(fb)))
+                if code:
+                    lb = self.lastpick_m[mode]
+                    lb[code] = w
+                    if len(lb) > 30000:
+                        lb.pop(next(iter(lb)))
+            self.freq_dirty += 1
+            if self.freq_dirty >= 50 or time.time() - self.last_save >= 5:
+                self.freq_dirty = 0
+                self.last_save = time.time()
+                spawn = True
+        if spawn:
             threading.Thread(target=self.save_freq, daemon=True).start()
 
     # ---------- 近期热度 (滑动窗口) + 误学回滚 ----------
@@ -762,30 +772,32 @@ class Engine:
         """近期热度: 上屏即计一次; recent_log 超 RE_CAP 时溢出最旧, 自动过期."""
         if mode >= 3 or not w:
             return
-        self.recent_log.append((mode, w))
-        fr = self.freq_recent[mode]
-        fr[w] = fr.get(w, 0) + 1
-        if len(self.recent_log) > RE_CAP:
-            om, ow = self.recent_log.popleft()
-            n = self.freq_recent[om].get(ow, 0)
-            if n <= 1:
-                self.freq_recent[om].pop(ow, None)
-            else:
-                self.freq_recent[om][ow] = n - 1
+        with self._save_lock:
+            self.recent_log.append((mode, w))
+            fr = self.freq_recent[mode]
+            fr[w] = fr.get(w, 0) + 1
+            if len(self.recent_log) > RE_CAP:
+                om, ow = self.recent_log.popleft()
+                n = self.freq_recent[om].get(ow, 0)
+                if n <= 1:
+                    self.freq_recent[om].pop(ow, None)
+                else:
+                    self.freq_recent[om][ow] = n - 1
 
     def _untouch_recent(self, mode, w):
         """误学回滚: 从近期窗口移除该词一次."""
         if mode >= 3 or not w:
             return
-        try:
-            self.recent_log.remove((mode, w))
-        except ValueError:
-            pass
-        n = self.freq_recent[mode].get(w, 0)
-        if n <= 1:
-            self.freq_recent[mode].pop(w, None)
-        else:
-            self.freq_recent[mode][w] = n - 1
+        with self._save_lock:
+            try:
+                self.recent_log.remove((mode, w))
+            except ValueError:
+                pass
+            n = self.freq_recent[mode].get(w, 0)
+            if n <= 1:
+                self.freq_recent[mode].pop(w, None)
+            else:
+                self.freq_recent[mode][w] = n - 1
 
     def unlearn(self, w, code, mode):
         """误学回滚: 撤销一次主动学习 (learn 的逆操作) + 近期窗口回滚."""
@@ -797,14 +809,15 @@ class Engine:
                 d.pop(k, None)
             else:
                 d[k] = n - 1
-        dec(self.freq, w)
-        if 0 <= mode < 3:
-            dec(self.freq_m[mode], w)
-            lb = self.lastpick_m[mode]
-            if code in lb:
-                lb.pop(code, None)
-            self._untouch_recent(mode, w)
-        self.freq_dirty += 1   # 消费掉回滚, 触发后续落盘
+        with self._save_lock:
+            dec(self.freq, w)
+            if 0 <= mode < 3:
+                dec(self.freq_m[mode], w)
+                lb = self.lastpick_m[mode]
+                if code in lb:
+                    lb.pop(code, None)
+                self._untouch_recent(mode, w)
+            self.freq_dirty += 1   # 消费掉回滚, 触发后续落盘
 
     # ---------- 造句 (BestSentence: 单字/词一元格架, score=sum(log(f+1))-edges*log_total) ----------
     def best_sentence(self, code):
@@ -849,17 +862,18 @@ class Engine:
             return
         if not is_all_cjk(prev) or not is_all_cjk(cur):
             return
-        m = self.assoc.get(prev)
-        if m is None:
-            if len(self.assoc) >= 20000:
-                self.assoc.pop(next(iter(self.assoc)))
-            m = {}
-            self.assoc[prev] = m
-        m[cur] = m.get(cur, 0) + 1
-        if len(m) > 12:                              # 超上限: 丢最弱
-            weak = min(m, key=lambda k: m[k])
-            del m[weak]
-        self.freq_dirty += 1
+        with self._save_lock:
+            m = self.assoc.get(prev)
+            if m is None:
+                if len(self.assoc) >= 20000:
+                    self.assoc.pop(next(iter(self.assoc)))
+                m = {}
+                self.assoc[prev] = m
+            m[cur] = m.get(cur, 0) + 1
+            if len(m) > 12:                              # 超上限: 丢最弱
+                weak = min(m, key=lambda k: m[k])
+                del m[weak]
+            self.freq_dirty += 1
 
     def get_assoc(self, w, limit=9):
         m = self.assoc.get(w)
@@ -899,20 +913,31 @@ class Engine:
             pass
 
     def save_freq(self):
-        with self._save_lock:
-            try:
+        # 锁内做快照(防 UI 线程 learn/learn_assoc 并发写被打断), 锁外写盘(写盘不阻塞学习)
+        try:
+            with self._save_lock:
+                snaps = []
+                lasts = []
                 for m in range(3):
-                    snaps = sorted(self.freq_m[m].items(), key=lambda kv: -kv[1])[:20000]
-                    with open(os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
-                        for k, v in snaps:
-                            f.write('%s %d\n' % (k, v))
-                    lasts = list(self.lastpick_m[m].items())[:20000]
-                    with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
-                        for k, v in lasts:
-                            f.write('%s %s\n' % (k, v))
-                self._save_assoc()
-            except OSError:
-                pass
+                    snaps.append(sorted(self.freq_m[m].items(), key=lambda kv: -kv[1])[:20000])
+                    lasts.append(list(self.lastpick_m[m].items())[:20000])
+                assoc_snap = sorted(self.assoc.items(), key=lambda kv: -sum(kv[1].values()))[:20000]
+        except (OSError, RuntimeError, ValueError):
+            return
+        try:
+            for m in range(3):
+                with open(os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
+                    for k, v in snaps[m]:
+                        f.write('%s %d\n' % (k, v))
+                with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
+                    for k, v in lasts[m]:
+                        f.write('%s %s\n' % (k, v))
+            with open(os.path.join(self.data_dir, 'assoc.txt'), 'w', encoding='utf-8') as f:
+                for k, m in assoc_snap:
+                    tops = sorted(m.items(), key=lambda kv: -kv[1])[:8]
+                    f.write('%s\t%s\n' % (k, ' '.join('%s:%d' % (w, c) for w, c in tops)))
+        except OSError:
+            pass
 
     # ---------- candidate assembly (对齐 ShowCharatar) ----------
     def candidates(self, keys, mode, py_code=None):
