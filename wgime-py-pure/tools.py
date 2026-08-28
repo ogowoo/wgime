@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools.py — 纯 tkinter 内置工具窗体: 工具箱/剪贴板历史/便签/取色器/网络工具."""
+"""tools.py — 纯 tkinter 内置工具窗体, 遵循 docs/WGIME_窗体设计语言.md (浅蓝灰底+白卡片+深色控制台+圆角)."""
 import os
 import threading
 import time
@@ -8,6 +8,7 @@ from tkinter import messagebox
 
 import plugins as plugmod
 import win as w32
+import ui
 
 
 def _bg(fn):
@@ -22,78 +23,48 @@ def _confirm(text):
     return messagebox.askyesno('确认', text)
 
 
-# ---------- 工具箱 (tools.txt tab/按钮 -> 步骤 DSL) ----------
+# ---------- 工具箱 (tools.txt tab/按钮 -> 步骤 DSL; 自绘标签页) ----------
 def show_toolbox(tools, dict_dir):
     if not tools:
-        messagebox.showinfo('工具箱', 'tools.txt 无内容')
+        _msgbox('工具箱', 'tools.txt 无内容')
         return
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.title('工具箱')
-    win.attributes('-topmost', True)
-    win.geometry('520x420')
-    nb = ttk_Notebook(win)
-    nb.pack(fill='both', expand=True)
-    for tab in tools:
-        frame = tk.Frame(nb)
-        nb.add(frame, text=tab['name'])
-        cols = tab.get('cols', 2)
-        for i, b in enumerate(tab['buttons']):
-            btn = tk.Button(frame, text=b['name'], width=18 if cols <= 2 else 9, height=2,
-                            command=lambda s=('\n'.join(b['steps'])): _run_tool_steps(s))
-            btn.grid(row=i // cols, column=i % cols, padx=4, pady=4, sticky='nsew')
-        for r in range((len(tab['buttons']) + cols - 1) // cols):
-            frame.rowconfigure(r, weight=1)
-        for c in range(cols):
-            frame.columnconfigure(c, weight=1)
+    win, content = ui.make_window('WgIme 工具箱', 520, 420)
+    W, H = 520, 420
+    tabbar = tk.Frame(content, bg=ui.BG)
+    tabbar.place(x=10, y=8, width=W - 20, height=34)
+    body = tk.Frame(content, bg=ui.BG)
+    body.place(x=10, y=48, width=W - 20, height=H - 48 - 14)
+    pages = []
+    tabbtns = []
+
+    def show_tab(i):
+        for j, p in enumerate(pages):
+            p.place_forget()
+        pages[i].place(x=0, y=0, width=W - 20, height=H - 62)
+        for j, b in enumerate(tabbtns):
+            b.configure(fg=ui.ACCENT if j == i else ui.SUB)
+
+    for i, tab in enumerate(tools):
+        tb = ui.flat_button(tabbar, tab['name'], (lambda i=i: show_tab(i)), x=i * 92, y=0, w=84, h=28)
+        tabbtns.append(tb)
+        page = tk.Frame(body, bg=ui.BG)
+        cols = max(1, min(6, tab.get('cols', 2)))
+        btns = tab['buttons']
+        for bi, b in enumerate(btns):
+            bw = (W - 20 - (cols - 1) * 8) // cols
+            btn = ui.flat_button(page, b['name'], (lambda s='\n'.join(b['steps']): _run_tool_steps(s)),
+                                 x=(bi % cols) * (bw + 8), y=(bi // cols) * 46, w=bw, h=38)
+        pages.append(page)
+    show_tab(0)
 
 
 def _run_tool_steps(steps):
     try:
         fails = plugmod.run_steps(steps, lambda m: print('[tool]', m), _msgbox, _confirm)
         if fails:
-            messagebox.showinfo('工具箱', '部分步骤失败 (%d)' % fails)
+            _msgbox('工具箱', '部分步骤失败 (%d)' % fails)
     except Exception as ex:
-        messagebox.showinfo('工具箱', '失败: %s' % ex)
-
-
-def ttk_Notebook(parent):
-    try:
-        from tkinter import ttk
-        return ttk.Notebook(parent)
-    except Exception:
-        return _SimpleTabs(parent)
-
-
-class _SimpleTabs(tk.Frame):
-    """ttk 不可用时的兜底 (极少见)."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self._pages = []
-        self._header = tk.Frame(self)
-        self._header.pack(fill='x')
-        self._body = tk.Frame(self)
-        self._body.pack(fill='both', expand=True)
-
-    def add(self, frame, text):
-        self._pages.append((frame, text))
-        frame.pack_forget()
-
-    def refresh(self):
-        for w in self._header.winfo_children():
-            w.destroy()
-        for i, (frame, text) in enumerate(self._pages):
-            tk.Button(self._header, text=text, command=lambda f=frame, p=self._pages: self._show(f, p)).pack(side='left')
-
-    def _show(self, frame, pages):
-        for f, _ in pages:
-            f.pack_forget()
-        frame.pack(fill='both', expand=True)
-
-    def pack(self, *a, **k):
-        super().pack(*a, **k)
-        self.after(50, self.refresh)
+        _msgbox('工具箱', '失败: %s' % ex)
 
 
 # ---------- 剪贴板历史 ----------
@@ -117,15 +88,10 @@ def _clip_poll():
 
 def show_clipboard():
     _bg(_clip_poll)
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.title('剪贴板历史')
-    win.attributes('-topmost', True)
-    win.geometry('420x400')
-    lst = tk.Listbox(win, font=('Microsoft YaHei UI', 10))
-    lst.pack(fill='both', expand=True)
-    btnrow = tk.Frame(win)
-    btnrow.pack(fill='x')
+    win, content = ui.make_window('WgIme 剪贴板历史', 420, 400)
+    lst = tk.Listbox(content, font=ui.font(9.5), bg=ui.CARD, fg=ui.TEXT, bd=0,
+                     highlightthickness=1, highlightbackground=ui.BORDER, selectbackground=ui.ACCENT)
+    lst.place(x=10, y=10, width=400, height=320)
 
     def refresh():
         lst.delete(0, 'end')
@@ -144,21 +110,20 @@ def show_clipboard():
             win.clipboard_clear()
             win.clipboard_append(_CLIPT[i[0]])
             _bg(lambda: (time.sleep(0.12), w32.paste_text(_CLIPT[i[0]])))
-    tk.Button(btnrow, text='复制选中', command=copy).pack(side='left', padx=4, pady=4)
-    tk.Button(btnrow, text='粘贴上屏', command=paste).pack(side='left', padx=4)
-    tk.Button(btnrow, text='刷新', command=refresh).pack(side='left', padx=4)
+    ui.flat_button(content, '复制选中', copy, x=10, y=342, w=90, h=30)
+    ui.flat_button(content, '粘贴上屏', paste, primary=True, x=110, y=342, w=90, h=30)
+    ui.flat_button(content, '刷新', refresh, x=210, y=342, w=70, h=30)
     refresh()
 
 
 # ---------- 便签 ----------
 def show_notes(data_dir):
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.title('便签')
-    win.attributes('-topmost', True)
-    win.geometry('420x300')
+    win, content = ui.make_window('WgIme 便签', 420, 320)
     path = os.path.join(data_dir, 'notes.txt')
-    tb = tk.Text(win, font=('Microsoft YaHei UI', 11))
+    frame = tk.Frame(content, bg=ui.CARD, highlightthickness=1, highlightbackground=ui.BORDER)
+    frame.place(x=10, y=10, width=400, height=270)
+    tb = tk.Text(frame, font=ui.font(11), bg=ui.CARD, fg=ui.TEXT, bd=0, highlightthickness=0,
+                 padx=8, pady=8, wrap='word')
     tb.pack(fill='both', expand=True)
     try:
         tb.insert('1.0', open(path, encoding='utf-8').read())
@@ -176,13 +141,11 @@ def _save(tb, path):
 
 # ---------- 取色器 ----------
 def show_color():
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.overrideredirect(True)
-    win.attributes('-topmost', True)
-    win.geometry('200x200')
-    lbl = tk.Label(win, text='', font=('Consolas', 12, 'bold'), bg='#000', fg='#fff')
-    lbl.pack(fill='both', expand=True)
+    win, content = ui.make_window('WgIme 取色器', 220, 200)
+    prev = tk.Frame(content, bg='#000')
+    prev.place(x=10, y=10, width=200, height=120)
+    lbl = tk.Label(content, text='', bg=ui.BG, fg=ui.TEXT, font=ui.font(12, bold=True))
+    lbl.place(x=10, y=138, width=200, height=24)
     state = {'hex': '#000000'}
 
     def tick():
@@ -191,71 +154,57 @@ def show_color():
             return
         r, g, b = w32.get_pixel(x, y)
         state['hex'] = '#%02X%02X%02X' % (r, g, b)
-        win.configure(bg=state['hex'])
-        lbl.config(text='%s (%d,%d)' % (state['hex'], x, y))
+        prev.configure(bg=state['hex'])
+        lbl.config(text='%s  (%d,%d)' % (state['hex'], x, y))
         win.after(60, tick)
 
-    def click(_):
+    def copy(_):
         win.clipboard_clear()
         win.clipboard_append(state['hex'])
-        win.destroy()
-    win.bind('<Button-1>', click)
+        lbl.config(text='已复制 ' + state['hex'])
+    prev.bind('<Button-1>', copy)
+    lbl.bind('<Button-1>', copy)
     tick()
 
 
 # ---------- 网络工具 ----------
 def show_nettools():
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.title('网络工具')
-    win.attributes('-topmost', True)
-    win.geometry('460x340')
-    tb = tk.Text(win, font=('Consolas', 9), bg='#2E3040', fg='#D6D9E2')
-    tb.pack(fill='both', expand=True)
-    top = tk.Frame(win)
-    top.pack(fill='x')
-    host = tk.Entry(top)
-    host.insert(0, 'www.baidu.com')
-    host.pack(side='left', fill='x', expand=True, padx=4, pady=4)
+    win, content = ui.make_window('WgIme 网络工具', 480, 360)
+    W = 480
+    H_OUT = 360 - 50 - 14
+    host = ui.rounded_entry(content, x=10, y=10, w=240, h=32, initial='www.baidu.com')
+    out = ui.console_text(content, x=10, y=50, w=W - 20, h=H_OUT)
 
     def run(cmd):
-        tb.insert('end', '> ' + cmd + '\n')
-        tb.see('end')
-        _bg(lambda: _stream(cmd, tb))
+        out.insert('end', '> ' + cmd + '\n')
+        out.see('end')
+        _bg(lambda: _stream(cmd))
 
-    def _stream(cmd, tb):
+    def _stream(cmd):
         try:
             p = __import__('subprocess').Popen(cmd, shell=True, stdout=-1, stderr=-1, universal_newlines=True)
             for line in p.stdout:
-                win.after(0, lambda l=line: (tb.insert('end', l), tb.see('end')))
+                win.after(0, lambda l=line: (out.insert('end', l), out.see('end')))
             p.stdout.close()
             p.wait()
-            win.after(0, lambda: tb.insert('end', '-- done --\n'))
+            win.after(0, lambda: out.insert('end', '-- done --\n'))
         except Exception as ex:
-            win.after(0, lambda: tb.insert('end', 'ERR %s\n' % ex))
-    tk.Button(top, text='Ping', command=lambda: run('ping -n 4 ' + host.get())).pack(side='left', padx=4)
-    tk.Button(top, text='Tracert', command=lambda: run('tracert -d ' + host.get())).pack(side='left', padx=4)
-    tk.Button(top, text='NSLookup', command=lambda: run('nslookup ' + host.get())).pack(side='left', padx=4)
+            win.after(0, lambda: out.insert('end', 'ERR %s\n' % ex))
+
+    ui.flat_button(content, 'Ping', lambda: run('ping -n 4 ' + host.get()), primary=True, x=258, y=10, w=64, h=32)
+    ui.flat_button(content, 'Tracert', lambda: run('tracert -d ' + host.get()), x=330, y=10, w=70, h=32)
+    ui.flat_button(content, 'NSLookup', lambda: run('nslookup ' + host.get()), x=408, y=10, w=64, h=32)
 
 
-# ---------- 插件管理 ----------
+# ---------- 造词对话框 ----------
 def show_makeword(data_dir, engine, prefill=''):
-    """造词对话框: 词语 + 编码 (留空自动推导), 确认造词."""
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.title('造词')
-    win.attributes('-topmost', True)
-    win.geometry('360x190')
-    win.configure(bg='#F4F7FB')
-    tk.Label(win, text='词语 (2-8 字)', bg='#F4F7FB').pack(anchor='w', padx=10, pady=(10, 0))
-    wentry = tk.Entry(win, font=('Microsoft YaHei UI', 12))
-    wentry.pack(fill='x', padx=10, pady=4)
-    wentry.insert(0, prefill)
-    tk.Label(win, text='编码 (留空自动推导)', bg='#F4F7FB').pack(anchor='w', padx=10)
-    centry = tk.Entry(win, font=('Consolas', 11))
-    centry.pack(fill='x', padx=10, pady=4)
-    status = tk.Label(win, text='', bg='#F4F7FB', fg='#666')
-    status.pack(anchor='w', padx=10)
+    win, content = ui.make_window('WgIme 造词', 380, 200)
+    tk.Label(content, text='词语 (2-8 字)', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5)).place(x=14, y=10)
+    wentry = ui.rounded_entry(content, x=14, y=30, w=352, h=32, initial=prefill)
+    tk.Label(content, text='编码 (留空自动推导)', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5)).place(x=14, y=68)
+    centry = ui.rounded_entry(content, x=14, y=88, w=352, h=32)
+    status = tk.Label(content, text='', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5))
+    status.place(x=14, y=126)
 
     def autofill(*_a):
         if not centry.get().strip():
@@ -270,33 +219,28 @@ def show_makeword(data_dir, engine, prefill=''):
         w = wentry.get().strip()
         c = centry.get().strip()
         if not (2 <= len(w) <= 8):
-            status.config(text='词语需 2-8 字')
+            status.config(text='词语需 2-8 字', fg=ui.RED)
             return
         if not c:
             c = engine.code_for(w)
         if not c:
-            status.config(text='无法推导编码')
+            status.config(text='无法推导编码', fg=ui.RED)
             return
         if engine.add_user_word(w, c):
-            status.config(text='已造词: %s (%s)' % (w, c), fg='#1a8f3c')
+            status.config(text='已造词: %s (%s)' % (w, c), fg=ui.GREEN)
             win.after(900, win.destroy)
         else:
-            status.config(text='已存在: %s' % w, fg='#c0392b')
-    btnrow = tk.Frame(win, bg='#F4F7FB')
-    btnrow.pack(pady=6)
-    tk.Button(btnrow, text='造词', command=do_make, width=8).pack(side='left', padx=4)
-    tk.Button(btnrow, text='取消', command=win.destroy, width=8).pack(side='left', padx=4)
+            status.config(text='已存在: %s' % w, fg=ui.RED)
+    ui.flat_button(content, '造词', do_make, primary=True, x=14, y=152, w=100, h=32)
+    ui.flat_button(content, '取消', win.destroy, x=120, y=152, w=90, h=32)
     wentry.focus_set()
 
 
+# ---------- 插件管理 ----------
 def show_plugin_mgr(plugins, data_dir, reload_fn):
-    root = tk._default_root
-    win = tk.Toplevel(root)
-    win.title('插件管理')
-    win.attributes('-topmost', True)
-    win.geometry('400x320')
-    frame = tk.Frame(win)
-    frame.pack(fill='both', expand=True, padx=8, pady=8)
+    win, content = ui.make_window('WgIme 插件管理', 400, 320)
+    frame = tk.Frame(content, bg=ui.BG)
+    frame.place(x=12, y=10, width=376, height=270)
     vars_ = []
     try:
         disabled = set(l.strip() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
@@ -306,11 +250,10 @@ def show_plugin_mgr(plugins, data_dir, reload_fn):
         code = getattr(m, 'CODE', '?')
         name = getattr(m, 'NAME', code)
         v = tk.BooleanVar(value=(code not in disabled))
-        cb = tk.Checkbutton(frame, text='%s (%s)  %s' % (name, code, getattr(m, 'DESC', '')), variable=v, anchor='w')
+        cb = tk.Checkbutton(frame, text='%s (%s)  %s' % (name, code, getattr(m, 'DESC', '')), variable=v,
+                            anchor='w', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5), activebackground=ui.BG)
         cb.pack(fill='x')
         vars_.append((code, v))
-    btnrow = tk.Frame(win)
-    btnrow.pack(fill='x', padx=8, pady=8)
 
     def apply():
         dis = set(code for code, v in vars_ if not v.get())
@@ -319,5 +262,5 @@ def show_plugin_mgr(plugins, data_dir, reload_fn):
         except OSError:
             pass
         reload_fn()
-        messagebox.showinfo('插件管理', '已应用并重载')
-    tk.Button(btnrow, text='应用', command=apply).pack(side='left', padx=4)
+        _msgbox('插件管理', '已应用并重载')
+    ui.flat_button(content, '应用', apply, primary=True, x=12, y=282, w=90, h=30)
