@@ -76,6 +76,8 @@ class Tray:
                                                     checked=lambda _it, m=m: self.api['get_mode']() == m)
                                    for m in range(4)))),
             pystray.MenuItem('繁体输出 (Ctrl+Shift+F)', self._on(self.api['trad'])),
+            pystray.MenuItem('跟随光标', self._on(self.api['followcaret']),
+                             checked=lambda _it: self.api['get_followcaret']()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('当前程序: 剪贴板上屏切换', self._on(self.api['apppaste'])),
             pystray.MenuItem('当前程序: 标点吞字修复切换', self._on(self.api['appkeyfix'])),

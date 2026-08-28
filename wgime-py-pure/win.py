@@ -245,6 +245,24 @@ def screen_workarea():
     return r
 
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [('cbSize', w.DWORD), ('rcMonitor', RECT), ('rcWork', RECT), ('dwFlags', w.DWORD)]
+
+
+def workarea_at(x, y):
+    """返回 (x,y) 所在显示器的工作区 (多屏正确)."""
+    try:
+        pt = POINT(int(x), int(y))
+        hmon = user32.MonitorFromPoint(pt, 2)                # MONITOR_DEFAULTTONEAREST
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return mi.rcWork
+    except Exception:
+        pass
+    return screen_workarea()
+
+
 class CURSORINFO(ctypes.Structure):
     _fields_ = [('cbSize', w.DWORD), ('flags', w.DWORD), ('hCursor', ctypes.c_void_p), ('ptScreenPos', POINT)]
 

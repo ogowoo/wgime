@@ -114,6 +114,8 @@ try:
         'get_mode': lambda: ime.mode,
         'apppaste': lambda: toggle_app_paste(),
         'appkeyfix': lambda: toggle_app_keyfix(),
+        'followcaret': lambda: toggle_followcaret(),
+        'get_followcaret': lambda: CFG.get('followcaret', True),
     })
 except Exception as e:
     _dfn('tray start err %r' % e)
@@ -182,11 +184,12 @@ def show_page():
     header = '[%s] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
     total = (len(ime.cands) + 8) // 9
+    follow = CFG.get('followcaret', True)
     if ime.assoc_showing:
-        bar.show(header + '↪联想', '', page_c, 0, ime.page, total)
+        bar.show(header + '↪联想', '', page_c, 0, ime.page, total, follow)
     elif ime.buf:
         # 缓冲非空即显示 (即使无候选) —— 无候选时也能看到已输入的编码, 不会"消失"
-        bar.show(header, ime.buf, page_c, ime.sel, ime.page, total)
+        bar.show(header, ime.buf, page_c, ime.sel, ime.page, total, follow)
     else:
         bar.hide()
 
@@ -378,6 +381,26 @@ def inject(text):
 
 
 # ---------- 状态机 ----------
+def toggle_followcaret():
+    CFG['followcaret'] = not CFG.get('followcaret', True)
+    _dfn('followcaret=%s' % CFG['followcaret'])
+    # 写回 config.txt (followcaret 行)
+    try:
+        path = os.path.join(DICT_DIR, 'config.txt')
+        lines = open(path, encoding='utf-8').read().split('\n')
+        found = False
+        for i, l in enumerate(lines):
+            if l.strip().lower().startswith('followcaret'):
+                lines[i] = 'followcaret = %s' % ('1' if CFG['followcaret'] else '0')
+                found = True
+                break
+        if not found:
+            lines.append('followcaret = %s' % ('1' if CFG['followcaret'] else '0'))
+        open(path, 'w', encoding='utf-8').write('\n'.join(lines))
+    except OSError:
+        pass
+
+
 def quit_app():
     try:
         if 'TRAY' in globals() and TRAY and getattr(TRAY, 'icon', None):
