@@ -76,7 +76,7 @@ bar = CandBar(root)
 
 try:
     import tray as _tray_mod
-    _tray = _tray_mod.Tray(root, {
+    TRAY = _tray_mod.Tray(root, {
         'toggle': lambda: set_active(not ime.active),
         'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
         'trad': lambda: (setattr(ime, 'trad', not ime.trad), reset()),
@@ -84,9 +84,10 @@ try:
         'is_active': lambda: ime.active,
         'get_mode': lambda: ime.mode,
     })
-    _tray.start()
+    TRAY.start()
 except Exception as e:
     _dfn('tray start err %r' % e)
+    TRAY = None
 
 PLUGINS = []
 TOOLS = []
@@ -186,6 +187,7 @@ def refresh():
         cands.insert(0, cand)
         ime.app_cand = cand
     ime.cands = cands
+    hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
     _dfn('refresh buf=%s cands=%s' % (ime.buf, [repr(c) for c in cands[:4]]))
     if ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands:
         commit(0)
@@ -196,6 +198,7 @@ def refresh():
 def clear_assoc():
     ime.assoc_showing = False
     ime.last_commit = None
+    hook.COMPOSING[0] = bool(ime.buf)
 
 
 def reset():
@@ -207,6 +210,7 @@ def reset():
     ime.assoc_showing = False
     ime.sym_cat = 0
     ime.app_cand = None
+    hook.COMPOSING[0] = False
     bar.hide()
 
 
@@ -359,6 +363,11 @@ def set_active(on):
     ime.active = on
     hook.set_active(on)
     reset()
+    if 'TRAY' in globals() and TRAY:
+        try:
+            TRAY._refresh()
+        except Exception:
+            pass
     _dfn('active=%s' % on)
 
 
@@ -555,6 +564,7 @@ def poll():
                 break
             handle(vk)
     finally:
+        hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
         if root.winfo_exists():
             root.after(15, poll)
 

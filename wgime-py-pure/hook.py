@@ -25,7 +25,8 @@ VK_MODE = 0xF9          # 合成: Ctrl+`
 VK_TRAD = 0xFA          # 合成: Ctrl+Shift+F
 VK_MAKEWORD = 0xFB      # 合成: Ctrl+Alt+C
 
-ACTIVE = [False]        # 输入法是否启用 (小写写入钩子线程判定)
+ACTIVE = [False]        # 输入法是否启用 (主线程写入, 钩子线程判定)
+COMPOSING = [False]     # 是否有拼音缓冲/联想 (主线程写入; 空缓冲时空格/退格/回车透传)
 
 EVENTS = queue.Queue()
 
@@ -56,6 +57,14 @@ def _is_ime_key(vk):
     return vk in (0x20, 0x08, 0x1B, 0x0D, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA)   # space back esc enter - = [ ] ;
 
 
+def _is_compose_key(vk):
+    """开始/延续拼音缓冲的键: 字母/数字 (激活即吞)."""
+    return 0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39
+
+
+_CTRL_KEYS = {0x20, 0x08, 0x1B, 0x0D, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA}   # 空格/退格/esc/回车/-/=/[/]/; : 仅缓冲有效时吞
+
+
 def _key_state(vk):
     return (user32.GetKeyState(vk) & 0x8000) != 0
 
@@ -78,33 +87,37 @@ def _proc(nCode, wParam, lParam):
             ctrl = _key_state(0x11)
             shift = _key_state(0x10)
             alt = _key_state(0x12)
-            if ACTIVE[0]:                                  # 激活态组合键 (未激活透传, 不干扰 Ctrl 快捷键)
-                if ctrl and vk == 0xC0:                    # Ctrl+` 模式
-                    EVENTS.put(VK_MODE)
-                    return 1
-                if ctrl and shift and vk == 0x46:          # Ctrl+Shift+F 繁简
-                    EVENTS.put(VK_TRAD)
-                    return 1
-                if ctrl and alt and vk == 0x43:            # Ctrl+Alt+C 造词
-                    EVENTS.put(VK_MAKEWORD)
-                    return 1
             if vk in (0xA0, 0xA1):                         # Shift down: 记录轻拍起点 (激活与否都判)
                 _tap_time[0] = time.time()
                 _tap_dirty[0] = False
             else:
                 if _tap_time[0] is not None:
-                    _tap_dirty[0] = True                   # 有其它键介入 (如大写 Shift+字母), 不算轻拍
-                if ACTIVE[0] and _is_ime_key(vk):          # 激活态吞 IME 键
-                    EVENTS.put(vk)
-                    return 1
+                    _tap_dirty[0] = True                   # 有其它键介入, 不算轻拍
+                if ACTIVE[0]:
+                    if ctrl and vk == 0xC0:                # Ctrl+` 模式 (激活态)
+                        EVENTS.put(VK_MODE)
+                        return 1
+                    if ctrl and shift and vk == 0x46:      # Ctrl+Shift+F 繁简 (激活态)
+                        EVENTS.put(VK_TRAD)
+                        return 1
+                    if ctrl and alt and vk == 0x43:        # Ctrl+Alt+C 造词 (激活态)
+                        EVENTS.put(VK_MAKEWORD)
+                        return 1
+                    if shift and vk in _CTRL_KEYS:          # Shift+Enter/Space/退格 修正键: 透传
+                        return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                    if _is_compose_key(vk):                # 字母/数字: 激活即吞 (开始拼音)
+                        EVENTS.put(vk)
+                        return 1
+                    if vk in _CTRL_KEYS and COMPOSING[0]:  # 空格/退格/回车等: 仅缓冲有效时吞
+                        EVENTS.put(vk)
+                        return 1
+                    # 其余键透传 (无缓冲时空格/退格/回车交给应用)
         elif m == WM_KEYUP or m == WM_SYSKEYUP:
             if vk in (0xA0, 0xA1):
                 if _tap_time[0] is not None and not _tap_dirty[0] \
                         and time.time() - _tap_time[0] < 0.4:
                     EVENTS.put(VK_TAP)                     # 孤立快速 Shift 轻拍: 切换 (激活/关闭)
                 _tap_time[0] = None
-            elif ACTIVE[0] and _is_ime_key(vk):
-                pass                                       # IME 键 keyup 已吞; 不需处理
     return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
 

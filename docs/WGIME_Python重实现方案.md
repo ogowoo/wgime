@@ -265,3 +265,4 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **运行**：`python wgime-py-pure\dist\wgime-py.py`（单文件、免安装、零 .NET，需 Python 3.12 + tkinter + cryptography；码表/配置从 `C:\Tools\wgime` 读）
 - **未激活即惰性**（用户反馈"启动即拦截"）：启动读 `config.txt` 的 `starton`（默认 0 = 关）；**未激活时钩子完全惰性**——Shift 轻拍/Ctrl+`/Ctrl+Shift+F/Ctrl+Alt+C 全部透传，仅 F8（硬开关）和托盘能唤醒；激活态才吞 IME 键 + 组合键。实测日志：启动 `active=False` 无拦截，F8 到 `kb 77` 才切换
 - **Shift 轻拍唤醒（最终版）**：Shift 轻拍（<400ms 的**孤立**单次 Shift，中间没夹其它键——正常打大写"Shift+字母"不算轻拍）**激活与关闭都生效**，未激活时也能用它轻松唤起；但**组合键仅激活态生效**（未激活时 Ctrl+` 等透传，不干扰日常快捷键）。实测：`abc你好xyz`——notepad 未激活打 `abc` 透传 → Shift 轻拍唤醒 → `nihao` 上屏 `你好` → Shift 轻拍关闭 → `xyz` 透传，全部正确（`shift-test.ps1`）
+- **激活态日常键透传（用户反馈）**：① **Shift+Enter/空格/退格等修正键透传**（Shift 按住时这些控制键交给应用，不再当 IME 提交/删除）；② **空拼音缓冲时空格/退格/回车透传**（`COMPOSING` 标志随 `reset/refresh` 立即同步，无 15ms 竞态）——否则激活时打不了空格/删不了字；③ **托盘图标随状态刷新**（`set_active` 时刷新，蓝=激活/灰=未激活）。实测：`你好` 上屏、Shift+Enter 不再产生 `kb 0d`、空缓冲空格/退格透传（`runtime-test.ps1`）
