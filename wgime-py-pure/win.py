@@ -179,7 +179,8 @@ def get_caret_uia():
         el = auto.GetFocusedControl()
         if not el:
             return None
-        # 精确光标: ITextPattern.GetSelection()
+        # 精确光标: ITextPattern.GetSelection(); caret 是细矩形(高 4~200, 宽<=200),
+        # 太宽 = 整行/段落(某些 Chromium 字段) -> 不信任, 回退到控件边界
         try:
             tp = el.GetPattern(auto.PatternId.TextPattern)
             if tp:
@@ -188,7 +189,10 @@ def get_caret_uia():
                     rects = sel[0].GetBoundingRectangles()
                     if rects:
                         r = rects[0]
-                        return (int(r.left), int(r.bottom))
+                        w = r.right - r.left
+                        h = r.bottom - r.top
+                        if 0 < w <= 200 and 4 <= h <= 200:
+                            return (int(r.left), int(r.bottom))
         except Exception:
             pass
         # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
