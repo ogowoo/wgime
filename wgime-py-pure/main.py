@@ -410,8 +410,13 @@ def inject(text):
     if m == 2:                                       # SendKeys 兜底: 无 .NET, 退回 key 注入
         pass
     time.sleep(0.03)                                 # 让被吞按键的 keyup 先排空
-    if effective_keyfix():
-        n = win.send_unicode_qtfix(text)             # Qt 吞字修复: 全角标点后 X+Back
+    fix = effective_keyfix()
+    if fix and not win.self_elevated() and win.foreground_elevated():
+        win.paste_text(text)                          # UIPI 回退: SendInput 注入不了提权窗口(与 C# auto/keyfix 一致)
+        _dfn('paste(uipi) %r' % text)
+        return
+    if fix:
+        n = win.send_unicode_qtfix(text)              # Qt 吞字修复: 全角标点后 X+Back
     else:
         n = win.send_unicode(text)
     _dfn('inject %r sent=%s' % (text, n))
