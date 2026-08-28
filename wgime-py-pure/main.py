@@ -527,12 +527,11 @@ def toggle_showcode():
 
 
 def toggle_hideidle():
-    """空闲隐藏开关: 空闲时隐藏候选窗(0=常驻)."""
+    """空闲隐藏开关: 空闲时隐藏候选窗(0=常驻). 切后直接 show_page(按 hideidle 立即常驻/隐藏)."""
     CFG['hideidle'] = not CFG.get('hideidle', True)
     _dfn('hideidle=%s' % CFG['hideidle'])
     _write_config('hideidle', '1' if CFG['hideidle'] else '0')
-    if ime.buf:
-        refresh()
+    show_page()
 
 
 def toggle_sentence():
