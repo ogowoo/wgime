@@ -11,6 +11,7 @@ import bisect
 import math
 import os
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -606,6 +607,12 @@ class Engine:
         self.acro = build_acro(self.py, self.char_py)
         self.ce = build_reverse(self.ec)
 
+    def _build_wb_len(self):
+        """五笔码按长度分桶(用于 z 通配等长查询, 替代全表线性扫描)."""
+        self.wb_by_len = {}
+        for k in self.wb:
+            self.wb_by_len.setdefault(len(k), []).append(k)
+
     def __init__(self, dict_dir, data_dir):
         t0 = time.time()
         self.data_dir = data_dir
@@ -635,6 +642,7 @@ class Engine:
     def reload(self):
         """导入码表后热重载: 重建索引 + 刷新缓存 + 重放用户词(否则已造用户词丢失)."""
         self._build()
+        self._build_wb_len()
         self._merge_user_words()
         self._save_cache(self._paths())
 
@@ -646,11 +654,16 @@ class Engine:
 
     def _load_cache(self, paths):
         try:
-            import pickle
+            import pickle, hashlib
             with open(self._cache_path(), 'rb') as f:
                 obj = pickle.load(f)
             if obj.get('ver') != self.CACHE_VER or obj.get('sig') != self._cache_sig(paths):
                 return False
+            if obj.get('md5'):   # 完整性校验: data 字节变化则重建(防外部篡改/损坏导致静默异常)
+                dblob = pickle.dumps(obj['data'], protocol=pickle.HIGHEST_PROTOCOL)
+                if hashlib.md5(dblob).hexdigest() != obj['md5']:
+                    print('[wgime] dict-cache md5 mismatch, rebuild', file=sys.stderr)
+                    return False
             (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
              self.ek, self.ev, self.char_py, self.acro, self.ce) = obj['data']
             return True
@@ -660,10 +673,12 @@ class Engine:
 
     def _save_cache(self, paths):
         try:
-            import pickle
+            import pickle, hashlib
+            data = (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
+                    self.ek, self.ev, self.char_py, self.acro, self.ce)
+            dblob = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
             obj = {'ver': self.CACHE_VER, 'sig': self._cache_sig(paths),
-                   'data': (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
-                            self.ek, self.ev, self.char_py, self.acro, self.ce)}
+                   'md5': hashlib.md5(dblob).hexdigest(), 'data': data}
             tmp = self._cache_path() + '.tmp'
             with open(tmp, 'wb') as f:
                 pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -693,11 +708,8 @@ class Engine:
             for w in self.wb[code].split(' '):
                 if len(w) == 1 and (w not in self.char_wb or len(code) > len(self.char_wb[w])):
                     self.char_wb[w] = code
-        # 简拼候选按词频重排 (ApplySwap: stable desc by combined freq)
-        for k in self.acro:
-            lst = self.acro[k]
-            if len(lst) > 1:
-                self.acro[k] = sorted(lst, key=lambda w: -self.freq.get(w, 0))
+        self._build_wb_len()   # 五笔 z 通配: 按码长分桶索引(替代全表线性扫描)
+        # 简拼候选顺序由 candidates() 的统一词频排序决定, 不再预排(避免与排序键不一致)
         # 造句词频 (pywfreq.txt: word:freq)
         self.word_freq = {}
         wtot = 0
@@ -1059,13 +1071,11 @@ class Engine:
             if lp and lp in cands:
                 cands.remove(lp)
                 cands.insert(0, lp)
-        # 五笔 z 通配 (仅纯五笔模式, 追加在最后, 不参与排序)
+        # 五笔 z 通配 (仅纯五笔模式, 追加在最后, 不参与排序) —— 用码长分桶索引, 只扫等长桶
         if mode == 2 and 'z' in keys:
-            for k in self.wk:
+            for k in self.wb_by_len.get(len(keys), []):
                 if len(cands) >= CAND_CAP:
                     break
-                if len(k) != len(keys):
-                    continue
                 ok = True
                 for i, ch in enumerate(k):
                     if keys[i] != 'z' and ch != keys[i]:

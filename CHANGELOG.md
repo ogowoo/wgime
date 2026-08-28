@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 剩余低危 — pickle 校验 / z通配分桶 / 简拼顺序)
+
+- **dict-cache pickle 完整性校验**:保存时写 `md5` 字段(对 data), 加载时校验 bytes 一致才用; 缓存被篡改/损坏时检测并重建(留痕日志), 不再静默崩/加载错; 顺带补 `engine.py` 的 `import sys`(此前日志用到却未导入)
+- **五笔 z 通配改码长分桶索引**:新增 `_build_wb_len()` 构建 `wb_by_len`(按码长分桶), z 通配只扫等长桶, 替代原来 `for k in self.wk` 全表线性扫描; `_init_state`/`reload()` 均重建该索引
+- **简拼候选去掉启动预排**:原来按 `self.freq` 预排 acro 列表(与候选排序键不一致), 现改为由 `candidates()` 的统一词频排序决定顺序, 消除不一致
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 低危清理 — 死代码/无 with/硬编码/常量/原子写)
 
 - **main**:删冗余 `import importlib`;删死代码 `APPMODE_NAMES`;`load_appmodes`/config 读写改 `with`;抽 `_write_config`(config 原子+正则精确改写, 修 `startswith` 误匹配/BOM);硬编码路径 `C:\Tools\wgime` 改回 BASE;`[python]` 块子进程加 `CREATE_NO_WINDOW`(防闪控制台)
