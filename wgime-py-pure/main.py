@@ -21,7 +21,26 @@ except Exception:
         pass
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DICT_DIR = os.environ.get('WGIME_DICT_DIR', r'C:\Tools\wgime')
+
+
+def _find_dict_dir():
+    """词库目录: WGIME_DICT_DIR 环境变量 > 单文件/脚本旁的 dicts\ > 仓库默认."""
+    env = os.environ.get('WGIME_DICT_DIR')
+    if env and os.path.exists(os.path.join(env, 'py.txt')):
+        return env
+    candidates = [BASE]
+    try:
+        candidates.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
+    except Exception:
+        pass
+    for b in candidates:
+        d = os.path.join(b, 'dicts')
+        if os.path.exists(os.path.join(d, 'py.txt')):
+            return d
+    return r'C:\Tools\wgime'
+
+
+DICT_DIR = _find_dict_dir()
 DATA_DIR = os.path.join(os.environ['LOCALAPPDATA'], 'wgime-py')
 os.makedirs(DATA_DIR, exist_ok=True)
 
