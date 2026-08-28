@@ -91,6 +91,19 @@ def send_unicode_qtfix(text, magic=MAGIC):
     return user32.SendInput(n, arr, ctypes.sizeof(INPUT))
 
 
+def send_key_backspace(magic=MAGIC):
+    """向应用注入一个退格键 (VK 0x08 down+up, MAGIC 标记自家注入)."""
+    arr = (INPUT * 2)()
+    arr[0].type = 1
+    arr[0].u.ki.wVk = 0x08
+    arr[0].u.ki.dwExtraInfo = magic
+    arr[1].type = 1
+    arr[1].u.ki.wVk = 0x08
+    arr[1].u.ki.dwFlags = 0x2
+    arr[1].u.ki.dwExtraInfo = magic
+    return user32.SendInput(2, arr, ctypes.sizeof(INPUT))
+
+
 def paste_text(text, magic=MAGIC):
     """剪贴板粘贴 (提权窗口回退): 保存/恢复原剪贴板."""
     prev = clipboard_text()
@@ -172,6 +185,25 @@ def screen_workarea():
     r = RECT()
     sm.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)
     return r
+
+
+class CURSORINFO(ctypes.Structure):
+    _fields_ = [('cbSize', w.DWORD), ('flags', w.DWORD), ('hCursor', ctypes.c_void_p), ('ptScreenPos', POINT)]
+
+
+def cursor_pos():
+    p = POINT()
+    user32.GetCursorPos(ctypes.byref(p))
+    return p.x, p.y
+
+
+def get_pixel(x, y):
+    hdc = user32.GetDC(0)
+    try:
+        px = gdi32.GetPixel(hdc, x, y)
+    finally:
+        user32.ReleaseDC(0, hdc)
+    return px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF
 
 
 def foreground_process_name():

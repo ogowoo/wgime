@@ -677,8 +677,10 @@ class Engine:
         if mode == 0:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
             add_from_dict(self.py, self.pk, self.pv, False, py_code)
+            add_from_dict(self.ec, self.ek, self.ev, False, keys)   # 英汉 (vest->背心)
         elif mode == 1:
             add_from_dict(self.py, self.pk, self.pv, False, py_code)
+            add_from_dict(self.ec, self.ek, self.ev, False, keys)   # 英汉
         elif mode == 2:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
         else:

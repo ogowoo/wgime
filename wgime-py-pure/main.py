@@ -200,6 +200,7 @@ def clear_assoc():
     ime.assoc_showing = False
     ime.last_commit = None
     hook.COMPOSING[0] = bool(ime.buf)
+    bar.hide()
 
 
 def reset():
@@ -534,7 +535,10 @@ def handle(vk):
     elif vk == VK['RBRACKET']:
         commit_char(1)
     elif vk == VK['BACK']:
-        if ime.buf:
+        if ime.assoc_showing and not ime.buf:
+            clear_assoc()                            # 联想态退格: 退出联想
+            win.send_key_backspace()                 # 并把退格交给应用 (删刚上屏的字)
+        elif ime.buf:
             ime.buf = ime.buf[:-1]
             refresh()
     elif vk == VK['ESC']:
