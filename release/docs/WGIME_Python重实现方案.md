@@ -283,3 +283,5 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **托盘退出修复（用户反馈"退出用不了"）**：pystray 的 `_run_detached` 线程**非 daemon**，`root.destroy()` 后进程挂住（窗口没了图标还在）——`quit_app` 先 `icon.stop()` 再 `root.destroy()` 最后 `os._exit(0)` 强制结束；补 `Ctrl+Alt+Q` 键盘退出（钩子加 `VK_QUIT`，注意 **VK_QUIT 必须在 hook.py 里定义**，否则 NameError）。实测 Ctrl+Alt+Q → 进程干净退出 (exit 0)
 - **UIA 光标跟随（用户反馈"窗口最左方"）**：Edge/Explorer 这类 Chromium/多线程 UI `GetGUIThreadInfo` 探测不到光标，旧回退落到窗口左上/屏幕底部。改为：GetGUIThreadInfo → **UI Automation**（`uiautomation` 包，ITextPattern.GetSelection 精确光标，聚焦控件边界做小控件回退）→ 上次有效位缓存 → 前台窗口客户区。需 `pip install uiautomation`
 - Alt+D 等组合键实测透传正常（日志无 `kb 44`）；之前是托盘崩溃+光标错位造成的误解
+- **UIA Rect 索引坑**：`uiautomation` 的 `BoundingRectangle`/`GetBoundingRectangles` 返回 `Rect` 对象，**不能下标索引**（`r[0]` 报错），要用 `.left/.top/.right/.bottom` 属性。修后 UIA 能拿到聚焦控件位置（探针：Tk 文本框 UIA=(308,431)），GUIThreadInfo 优先精确值，UIA 回退，现代应用（Edge/Explorer）候选框跟随到地址栏/输入框
+- **托盘图标与 C# 版一致**：圆角方形(squircle)+模式汉字镂空(中/拼/五/译)+Win11 强调色(蓝#0078D4/青#00B7C3/橙#CA5010/紫#881798)，未激活灰色#BEB9B3——Pillow 复刻，模式+激活态联动刷新

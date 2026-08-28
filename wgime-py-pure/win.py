@@ -188,13 +188,15 @@ def get_caret_uia():
                     rects = sel[0].GetBoundingRectangles()
                     if rects:
                         r = rects[0]
-                        return (int(r[0]), int(r[3]))
+                        return (int(r.left), int(r.bottom))
         except Exception:
             pass
         # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
         r = el.BoundingRectangle
-        if r and 0 < (r[2] - r[0]) < 2000 and (r[3] - r[1]) < 400:
-            return (int(r[0]), int(r[3]))
+        w = r.right - r.left
+        h = r.bottom - r.top
+        if r and 0 < w < 2000 and h < 400:
+            return (int(r.left), int(r.bottom))
     except Exception:
         pass
     return None
