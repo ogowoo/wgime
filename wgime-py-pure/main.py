@@ -41,6 +41,9 @@ def _find_dict_dir():
 
 
 DICT_DIR = _find_dict_dir()
+# 应用根(配置/插件/工具箱/run-csharp-plugin.ps1): 单文件版 = dicts 的父目录(package 根),
+# 开发版 = DICT_DIR 本身(仓库根, 码表与 config/tools/plugins 平级)。
+APP_DIR = os.path.dirname(DICT_DIR) if os.path.basename(DICT_DIR).lower() == 'dicts' else DICT_DIR
 DATA_DIR = os.path.join(os.environ['LOCALAPPDATA'], 'wgime-py')
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -70,7 +73,7 @@ CFG = {'sentence': True, 'assoc': True, 'trad': False, 'starton': True, 'shuangp
 
 def apply_config():
     global CFG
-    CFG = load_config(os.path.join(DICT_DIR, 'config.txt'))
+    CFG = load_config(os.path.join(APP_DIR, 'config.txt'))
     engine.FUZZY_PAIRS = tuple(tuple(p) for p in CFG['fuzzy'])
     ime.trad = CFG['trad']
 
@@ -131,8 +134,8 @@ TOOLS = []
 
 def reload_plugins():
     global STEP_PLUGINS, TOOLS
-    STEP_PLUGINS, _ = plugmod.load_plugins(os.path.join(DICT_DIR, 'plugins'), DATA_DIR)
-    TOOLS = plugmod.load_tools(os.path.join(DICT_DIR, 'tools.txt'))
+    STEP_PLUGINS, _ = plugmod.load_plugins(os.path.join(APP_DIR, 'plugins'), DATA_DIR)
+    TOOLS = plugmod.load_tools(os.path.join(APP_DIR, 'tools.txt'))
 
 
 def load_py_plugins():
@@ -419,7 +422,7 @@ def toggle_followcaret():
     _dfn('followcaret=%s' % CFG['followcaret'])
     # 写回 config.txt (followcaret 行)
     try:
-        path = os.path.join(DICT_DIR, 'config.txt')
+        path = os.path.join(APP_DIR, 'config.txt')
         lines = open(path, encoding='utf-8').read().split('\n')
         found = False
         for i, l in enumerate(lines):
@@ -440,7 +443,7 @@ def set_theme(name):
     _dfn('theme=%s' % name)
     # 写回 config.txt (theme 行)
     try:
-        path = os.path.join(DICT_DIR, 'config.txt')
+        path = os.path.join(APP_DIR, 'config.txt')
         lines = open(path, encoding='utf-8').read().split('\n')
         found = False
         for i, l in enumerate(lines):
@@ -598,7 +601,7 @@ def run_launcher(l):
     if kind == 'csharp':                                   # [csharp] 插件: sidecar PowerShell + CodeDom
         runner = os.path.join(BASE, 'run-csharp-plugin.ps1')
         if not os.path.exists(runner):
-            runner = os.path.join(DICT_DIR, 'run-csharp-plugin.ps1')
+            runner = os.path.join(APP_DIR, 'run-csharp-plugin.ps1')
         try:
             import subprocess
             subprocess.Popen(['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
@@ -626,7 +629,7 @@ def run_launcher(l):
 def _show_builtin(kind):
     try:
         if kind == 'toolbox':
-            tools.show_toolbox(TOOLS, DICT_DIR)
+            tools.show_toolbox(TOOLS, APP_DIR)
         elif kind == 'clipboard':
             tools.show_clipboard()
         elif kind == 'notes':

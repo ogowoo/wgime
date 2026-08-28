@@ -288,6 +288,21 @@ def build_sorted(d):
     return ks, [d[k] for k in ks]
 
 
+def overlay_import(target, imp):
+    """C# OverlayImport 语义: 已有候选保持优先, 新候选追加去重 (import_*.txt 叠加)."""
+    for k, v in imp.items():
+        cur = target.get(k)
+        if cur is None:
+            target[k] = v
+        else:
+            existing = set(cur.split(' '))
+            for w in v.split(' '):
+                if w and w not in existing:
+                    cur = cur + ' ' + w
+                    existing.add(w)
+            target[k] = cur
+
+
 def build_char_py(py):
     """char -> [pinyin...] (按 key 排序遍历, 与 BuildCharPy 一致)"""
     char_py = {}
@@ -369,10 +384,14 @@ class Engine:
         os.makedirs(data_dir, exist_ok=True)
         paths = [os.path.join(dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt')]
         paths.append(os.path.join(dict_dir, 'trad.txt'))
+        paths += [os.path.join(dict_dir, n) for n in ('import_py.txt', 'import_wb.txt', 'import_ec.txt')]
         if not self._load_cache(paths):
             self.py = parse_dict(paths[0])
             self.wb = parse_dict(paths[1])
             self.ec = parse_dict(paths[2])
+            overlay_import(self.py, parse_dict(paths[4]))
+            overlay_import(self.wb, parse_dict(paths[5]))
+            overlay_import(self.ec, parse_dict(paths[6]))
             self.pk, self.pv = build_sorted(self.py)
             self.wk, self.wv = build_sorted(self.wb)
             self.ek, self.ev = build_sorted(self.ec)
