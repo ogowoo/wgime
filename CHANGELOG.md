@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-28 (wgime-py-pure: 新记事本自动豁免 keyfix + 候选条长度限制 + 内嵌 pystray)
+
+- **新记事本(UWP)上屏乱码修复**:keyfix 的 X+Back 自我中和只在 Win32 EDIT 成立,新记事本是 UWP 控件、不自我中和 → 全角标点后乱码。`effective_keyfix` 加内置白名单 `_KEYFIX_INCOMPATIBLE={'notepad'}`,自动关闭 keyfix;用户 pastemode.txt/托盘切换优先级更高,可显式覆盖
+- **候选条长度限制**:候选显示截断(超长词 >24 字符 + `…`)+ 候选条宽度钳制到屏幕工作区,不再无限长
+- **内嵌 pystray**:纯 Python 依赖内嵌列表加 pystray(托盘),单文件 ~487KB → ~525KB;PIL/cryptography 是二进制扩展(.pyd),无法 zip 内嵌,保持 pip 可选依赖
+
+---
+
 ## 2026-08-28 (wgime-py-pure: 第三方库内嵌, 单文件零 pip 依赖)
 
 - **背景**:现代应用(Edge/新记事本)光标跟随需要 UI Automation,纯 Python 侧用 `uiautomation`(纯 Python,基于 `comtypes`)
