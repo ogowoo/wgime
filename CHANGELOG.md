@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 字频[candidate 排序]延续 python 版更优逻辑)
+
+- **对比 C# 版字频机制**:C# 候选排序只按学习词频 `fb[w]` 降序(语料词频 `WordFreq` 仅用于造句, 不参与候选排序);python 版用 `语料基础词频 + 学习词频×5000`,常见词天然靠前 + 用户常用词被顶上来
+- **结论**:权衡后**保留 python 版**(结合语料先验, 更合理),不改成 C# 版纯学习词频排序;源码注释补充该决策说明
+- 其余字频机制(学习递增 `+1`/上限 90000/30000、保存取前 20000、50 次或 5s flush、LastPick 置顶、简拼按综合词频排序)两端本已一致,无需改动
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 修复 Store 版 Python 把 %LOCALAPPDATA% 虚拟化导致数据目录不可见)
 
 - **根因**:用户机器 `python` 命令命中 Microsoft Store 版 Python 3.13(运行在 AppContainer 沙箱), 它对 `%LOCALAPPDATA%` 的写入被 Windows **重定向(虚拟化)** 到 `Packages\...\LocalCache\Local\`, 导致真实 `C:\Users\<user>\AppData\Local\wgime-py` **不存在**、用户词库/配置/导入码表不可见也无法管理(资源管理器找不到)。C# 版无此问题(非 Store 应用)。

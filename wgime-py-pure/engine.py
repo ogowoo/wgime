@@ -930,7 +930,8 @@ class Engine:
                         add(exact)
                     if len(cands) >= CAND_CAP:
                         break
-        # 词频排序 (稳定): 语料基础词频 (pywfreq) + 学习词频 (每次提交 +5000) → 常见词天然靠前
+        # 字频排序 (稳定, python 版更优, 保留): 语料基础词频 (pywfreq) + 学习词频 (每次提交 +5000)
+        # → 常见词天然靠前, 学习词频把用户常用词往上顶; 相比 C# 版(只按学习词频) 结合了语料先验
         fb = self.freq_m[mode] if mode < 3 else self.freq
         if len(cands) > 1 and (fb or self.word_freq):
             cands = sorted(cands, key=lambda w: -(self.word_freq.get(w, 0) + fb.get(w, 0) * 5000))
