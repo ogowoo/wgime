@@ -654,16 +654,13 @@ class Engine:
 
     def _load_cache(self, paths):
         try:
-            import pickle, hashlib
+            import pickle
             with open(self._cache_path(), 'rb') as f:
                 obj = pickle.load(f)
+            # 完整性由 sig(码表 mtime/size) + pickle 加载异常保底;
+            # 之前对 95MB data 全量 pickle.dumps 算 md5 严重拖慢启动(~1s+), 已移除
             if obj.get('ver') != self.CACHE_VER or obj.get('sig') != self._cache_sig(paths):
                 return False
-            if obj.get('md5'):   # 完整性校验: data 字节变化则重建(防外部篡改/损坏导致静默异常)
-                dblob = pickle.dumps(obj['data'], protocol=pickle.HIGHEST_PROTOCOL)
-                if hashlib.md5(dblob).hexdigest() != obj['md5']:
-                    print('[wgime] dict-cache md5 mismatch, rebuild', file=sys.stderr)
-                    return False
             (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
              self.ek, self.ev, self.char_py, self.acro, self.ce) = obj['data']
             return True
@@ -673,12 +670,10 @@ class Engine:
 
     def _save_cache(self, paths):
         try:
-            import pickle, hashlib
-            data = (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
-                    self.ek, self.ev, self.char_py, self.acro, self.ce)
-            dblob = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+            import pickle
             obj = {'ver': self.CACHE_VER, 'sig': self._cache_sig(paths),
-                   'md5': hashlib.md5(dblob).hexdigest(), 'data': data}
+                   'data': (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
+                            self.ek, self.ev, self.char_py, self.acro, self.ce)}
             tmp = self._cache_path() + '.tmp'
             with open(tmp, 'wb') as f:
                 pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
