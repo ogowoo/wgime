@@ -51,6 +51,13 @@ C# 代码插件 (要窗体就用它):
   示例: clock.txt (输入 sz 弹现代风悬浮时钟: 时钟/闹钟/倒计时/秒表计次/番茄统计)
         chat.txt  (输入 lt 弹局域网聊天: 与 itools-chat (chat.bat) 互通, 无需服务器)
 
+Python 代码插件 + JSON IPC (子进程隔离, 超时熔断) (python 版 wgime-py-pure):
+  [python] ... [/python]            内嵌 Python 源码, 子进程运行 (崩溃/超时不影响输入法打字)
+  两种契约: 定义 run() 作普通脚本; 或定义 handle(ctx)->actions 走 JSON IPC:
+    handle(ctx): ctx = {code,name,buff,mode}; 返回动作列表, 示例:
+      return [{"action":"msg","text":"结果"}, {"action":"log","text":"..."}]
+  支持的宿主动作: msg=弹窗提示, log=记日志; 可自行扩展 (commit 上屏等)
+
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
 完整规范见仓库 docs\WGIME_插件规范.md; 窗体设计语言见 docs\WGIME_窗体设计语言.md。
 

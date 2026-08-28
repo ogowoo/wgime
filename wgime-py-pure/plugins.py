@@ -246,10 +246,10 @@ def _run_verb(verb, arg, log, msgbox, confirm):
     elif verb == 'run':
         parts = tokenize(arg)
         if parts:
-            r = subprocess.run(parts, capture_output=True, timeout=3600)
+            r = subprocess.run(parts, capture_output=True, timeout=120)
             log('run %s -> %s' % (parts[0], r.returncode))
     elif verb == 'shell':
-        r = subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True, capture_output=True, timeout=3600)
+        r = subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True, capture_output=True, timeout=120)
         log('shell -> %s' % r.returncode)
     elif verb == 'shellx':
         subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True,
@@ -326,7 +326,7 @@ def _run_block(tag, content, log):
                 else 'cmd /c start "wgpy" /wait cmd /k "%s %s & echo. & echo [按任意键关闭] & pause>nul"' % (cmdline, path)
             subprocess.run(cmd, shell=True, timeout=86400)
         else:
-            r = subprocess.run('%s "%s"' % (cmdline, path), shell=True, capture_output=True, timeout=3600)
+            r = subprocess.run('%s "%s"' % (cmdline, path), shell=True, capture_output=True, timeout=300)
             log('block -> %s' % r.returncode)
     finally:
         try:

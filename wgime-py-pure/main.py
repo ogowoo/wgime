@@ -664,6 +664,63 @@ def run_steps_bg(body):
     threading.Thread(target=work, daemon=True).start()
 
 
+_PY_RUNNER = '''import sys, json
+_ctxs = """__CTX__"""
+ctx = json.loads(_ctxs) if _ctxs else {}
+def _emit(obj):
+    sys.stdout.write("@wgime " + json.dumps(obj, ensure_ascii=False) + "\\n")
+    sys.stdout.flush()
+__CODE__
+if callable(globals().get("handle")):
+    try:
+        _emit({"ok": True, "actions": handle(ctx) or []})
+    except Exception as e:
+        _emit({"ok": False, "error": repr(e)})
+elif callable(globals().get("run")):
+    try:
+        run()
+        _emit({"ok": True})
+    except Exception as e:
+        _emit({"ok": False, "error": repr(e)})
+else:
+    _emit({"ok": True})
+'''
+
+
+def _run_python_block(body, code, name, ctx, timeout=60):
+    """④ [python] 块子进程运行(隔离+超时熔断), 支持 JSON IPC 契约(handle(ctx)->actions).
+    返回解析到的动作 dict 列表; 崩溃/超时只记日志, 不影响输入法."""
+    import subprocess, tempfile, json, sys
+    runner = (_PY_RUNNER
+              .replace('__CTX__', json.dumps(ctx, ensure_ascii=False))
+              .replace('__CODE__', body))
+    fd, tmp = tempfile.mkstemp(suffix='.py', prefix='wgplug-')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(runner)
+    actions = []
+    try:
+        r = subprocess.run([sys.executable, tmp], timeout=timeout, capture_output=True,
+                           text=True, encoding='utf-8', errors='replace')
+        for line in r.stdout.splitlines():
+            if line.startswith('@wgime '):
+                try:
+                    obj = json.loads(line[7:])
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    actions += obj.get('actions', []) or []
+                    if obj.get('error'):
+                        _dfn('python-block err %r' % obj['error'])
+    except subprocess.TimeoutExpired:
+        _dfn('python-block timeout (%ss) [%s]' % (timeout, name))
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return actions
+
+
 def _confirm_plugin(payload):
     """② 插件权限确认: 声明了高权限(联网/执行命令/注册表/破坏性)的插件, 运行前弹确认."""
     meta = plugmod.plugin_meta(payload)
@@ -691,15 +748,17 @@ def run_launcher(l):
     if kind == 'step':                                     # 步骤 DSL 插件 (plugins/*.txt)
         run_steps_bg(payload.body)
         return
-    if kind == 'python':                                   # [python] 块插件 (plugins/*.txt)
-        try:
-            import types
-            m = types.ModuleType('plugtxt_' + (payload.code or 'x'))
-            exec(compile(payload.body, payload.path, 'exec'), m.__dict__)
-            if hasattr(m, 'run'):
-                m.run()
-        except Exception as ex:
-            _dfn('python plugin err %r' % ex)
+    if kind == 'python':                                   # [python] 块插件: 子进程+超时熔断 + JSON IPC(handle(ctx)->actions)
+        ctx = {'code': payload.code, 'name': payload.name, 'buff': ime.buf, 'mode': ime.mode}
+        for a in _run_python_block(payload.body, payload.code, payload.name, ctx):
+            if not isinstance(a, dict):
+                continue
+            act = a.get('action')
+            if act == 'msg':
+                from tkinter import messagebox as _mb
+                _mb.showinfo(payload.name or '插件', str(a.get('text', '')))
+            elif act == 'log':
+                _dfn('plugin-log %s' % a.get('text'))
         return
     if kind == 'csharp':                                   # [csharp] 插件: sidecar PowerShell + CodeDom
         runner = os.path.join(BASE, 'run-csharp-plugin.ps1')

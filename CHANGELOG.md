@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 插件隔离熔断 + 统一 JSON IPC)
+
+- **③ 隔离与超时熔断(中价值)**:`[python]` 块插件改为**子进程运行**(超时 60s, 崩溃/卡死只记日志, 不影响输入法打字);步骤 DSL 的 `run`/`shell` 超时 3600→120s、静默脚本块超时 3600→300s(可见交互块保留);`[csharp]` 保持 sidecar 独立进程
+- **④ 统一 JSON IPC(中价值)**:`[python]` 块支持 `handle(ctx)->actions` JSON 契约(子进程 stdout `@wgime <json>` 行协议, stdin 不依赖;宿主动作 `msg`/`log` 已接入,可扩展 `commit` 上屏);跨语言/脚本插件可遵循此统一协议
+- 文档:plugins/README 更新 `[python]` JSON IPC 契约与 manifest/权限说明
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 插件 Manifest 化 + 权限确认)
 
 - **① 插件 Manifest(高价值)**:plugins/*.txt 头部新增 `version/author/requires/perm` 键;plugins/*.py 模块级 `VERSION/AUTHOR/REQUIRES/PERM` 属性;新增 `plugins.py plugin_meta()` 统一读取(兼容 .py 模块与 .txt Plugin 对象)
