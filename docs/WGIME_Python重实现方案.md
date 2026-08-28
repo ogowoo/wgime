@@ -268,3 +268,6 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **激活态日常键透传（用户反馈）**：① **Shift+Enter/空格/退格等修正键透传**（Shift 按住时这些控制键交给应用，不再当 IME 提交/删除）；② **空拼音缓冲时空格/退格/回车透传**（`COMPOSING` 标志随 `reset/refresh` 立即同步，无 15ms 竞态）——否则激活时打不了空格/删不了字；③ **托盘图标随状态刷新**（`set_active` 时刷新，蓝=激活/灰=未激活）。实测：`你好` 上屏、Shift+Enter 不再产生 `kb 0d`、空缓冲空格/退格透传（`runtime-test.ps1`）
 - **修饰键组合透传 + 候选框修正（用户反馈）**：① **带 Ctrl/Alt/Win 的快捷键透传**（`Win+Shift+S`、`Ctrl+S`、`Alt+Tab` 等不再被吞）；② 候选框 `canvas.pack(fill/expand)` 修复两侧灰底；③ 宽度按两行最大值正确计算；④ **分页指示** `◀1/7▶`，`=`/`-` 翻页。实测：`z` 出 7 页候选，`Ctrl+S` 不产生 `kb 53`（`modifier-test.ps1`）
 - **英汉候选补进混合/拼音模式 + 联想退格（用户反馈）**：① 混合/拼音模式之前不查英汉字典（只词典模式查），`vest` 候选为空、候选框消失——补上 `add_from_dict(ec)`，`vest → 1.背心 2.汗背心 3.使穿衣服 4.授予`；② **联想态退格**：退出联想并把退格交给应用（删刚上屏的字）+ `clear_assoc` 隐藏候选条（之前只改状态不隐藏）。实测：`你好`→联想态→退格→`你` 且联想条消失（`vest-assoc-test.ps1`）
+- **收尾补齐（对照 pythonnet 版）**：① 注入恢复完整路由（paste 粘贴/提权 UIPI 回退 + Qt 吞字 qtfix + per-app `pastemode.txt` 模式）；② 托盘加"当前程序: 剪贴板上屏切换 / 标点吞字修复切换"；③ **插件管理窗体**（`plugins`/`cjgl` 启动器，勾选启停 + `plugins-disabled.txt` + 重载）。托盘块移到主循环前（函数定义后），回调用 lambda 延迟求值。实测：`plugins` → ▶插件管理 弹窗列出 3 插件
+
+> 剩余非阻塞项：emoji 候选目前文本渲染（C# 版用 Fluent PNG）；造词对话框（C# 有，可用 Ctrl+Alt+C 剪贴板造词替代）

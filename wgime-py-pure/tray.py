@@ -49,6 +49,9 @@ class Tray:
                                    for m in range(4)))),
             pystray.MenuItem('繁体输出 (Ctrl+Shift+F)', self._on(self.api['trad'])),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem('当前程序: 剪贴板上屏切换', self._on(self.api['apppaste'])),
+            pystray.MenuItem('当前程序: 标点吞字修复切换', self._on(self.api['appkeyfix'])),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem('退出', self._on(self.api['quit'])),
         )
         self.icon = pystray.Icon('WgIme-Pure', _icon_img(True), 'WgIme-Pure', menu)

@@ -83,8 +83,9 @@ try:
         'quit': root.destroy,
         'is_active': lambda: ime.active,
         'get_mode': lambda: ime.mode,
+        'apppaste': lambda: toggle_app_paste(),
+        'appkeyfix': lambda: toggle_app_keyfix(),
     })
-    TRAY.start()
 except Exception as e:
     _dfn('tray start err %r' % e)
     TRAY = None
@@ -102,9 +103,15 @@ def reload_plugins():
 def load_py_plugins():
     global PLUGINS
     PLUGINS = []
+    try:
+        disabled = set(l.strip() for l in open(os.path.join(DATA_DIR, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
+    except OSError:
+        disabled = set()
     if '_EMBEDDED_PLUGINS' in globals():                    # 单文件版: 用内嵌插件模块
         for key in _EMBEDDED_PLUGINS:
-            PLUGINS.append(_EMBEDDED_PLUGINS[key])
+            m = _EMBEDDED_PLUGINS[key]
+            if getattr(m, 'CODE', None) not in disabled:
+                PLUGINS.append(m)
         return
     pdir = os.path.join(BASE, 'plugins')                    # 开发版: 扫描 plugins/*.py
     if not os.path.isdir(pdir):
@@ -117,7 +124,7 @@ def load_py_plugins():
             spec = importlib.util.spec_from_file_location(modname, os.path.join(pdir, fn))
             m = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(m)
-            if hasattr(m, 'CODE') and hasattr(m, 'run'):
+            if hasattr(m, 'CODE') and hasattr(m, 'run') and m.CODE not in disabled:
                 PLUGINS.append(m)
         except Exception as e:
             _dfn('plugin load err %s %r' % (fn, e))
@@ -134,7 +141,8 @@ def find_launcher(code):
          'jlb': ('剪贴板历史', 'clipboard'), 'clip': ('剪贴板历史', 'clipboard'),
          'bj': ('便签', 'notes'), 'notes': ('便签', 'notes'),
          'ys': ('取色器', 'color'), 'color': ('取色器', 'color'),
-         'net': ('网络工具', 'nettools'), 'wlgj': ('网络工具', 'nettools')}
+         'net': ('网络工具', 'nettools'), 'wlgj': ('网络工具', 'nettools'),
+         'plugins': ('插件管理', 'pluginmgr'), 'cjgl': ('插件管理', 'pluginmgr')}
     if code in b:
         return (b[code][0], 'builtin', b[code][1])
     return None
@@ -268,6 +276,38 @@ def load_appmodes():
         pass
 
 
+def save_appmodes():
+    names = {1: 'clipboard', 2: 'sendkeys', 3: 'key', 4: 'keyfix', 5: 'keyplain'}
+    try:
+        with open(os.path.join(DATA_DIR, 'pastemode.txt'), 'w', encoding='utf-8') as f:
+            for k, v in APPMODES.items():
+                f.write('%s=%s\n' % (k, names.get(v, 'key')))
+    except OSError:
+        pass
+
+
+def toggle_app_paste():
+    name = win.foreground_process_name()
+    if not name:
+        return
+    if APPMODES.get(name) == 1:
+        del APPMODES[name]
+    else:
+        APPMODES[name] = 1
+    save_appmodes()
+
+
+def toggle_app_keyfix():
+    name = win.foreground_process_name()
+    if not name:
+        return
+    if APPMODES.get(name) in (4, 5):
+        del APPMODES[name]
+    else:
+        APPMODES[name] = 5 if CFG.get('keyfix', True) else 4
+    save_appmodes()
+
+
 def effective_paste_mode():
     name = win.foreground_process_name()
     if name in APPMODES and APPMODES[name] in (1, 2, 3):
@@ -292,8 +332,18 @@ def effective_keyfix():
 
 def inject(text):
     text = engine.to_trad(text, ime.trad)
-    time.sleep(0.03)
-    n = win.send_unicode(text)
+    m = effective_paste_mode()
+    if m == 1:                                       # 剪贴板粘贴 (提权/UIPI 回退)
+        win.paste_text(text)
+        _dfn('paste %r' % text)
+        return
+    if m == 2:                                       # SendKeys 兜底: 无 .NET, 退回 key 注入
+        pass
+    time.sleep(0.03)                                 # 让被吞按键的 keyup 先排空
+    if effective_keyfix():
+        n = win.send_unicode_qtfix(text)             # Qt 吞字修复: 全角标点后 X+Back
+    else:
+        n = win.send_unicode(text)
     _dfn('inject %r sent=%s' % (text, n))
 
 
@@ -410,6 +460,8 @@ def _show_builtin(kind):
             tools.show_color()
         elif kind == 'nettools':
             tools.show_nettools()
+        elif kind == 'pluginmgr':
+            tools.show_plugin_mgr(PLUGINS, DATA_DIR, load_py_plugins)
     except Exception as ex:
         _dfn('builtin err %s %r' % (kind, ex))
 
@@ -558,6 +610,11 @@ def handle(vk):
 reload_plugins()
 load_py_plugins()
 load_appmodes()
+try:
+    if TRAY:
+        TRAY.start()
+except Exception as e:
+    _dfn('tray start err %r' % e)
 
 
 def poll():

@@ -236,3 +236,38 @@ def show_nettools():
     tk.Button(top, text='Ping', command=lambda: run('ping -n 4 ' + host.get())).pack(side='left', padx=4)
     tk.Button(top, text='Tracert', command=lambda: run('tracert -d ' + host.get())).pack(side='left', padx=4)
     tk.Button(top, text='NSLookup', command=lambda: run('nslookup ' + host.get())).pack(side='left', padx=4)
+
+
+# ---------- 插件管理 ----------
+def show_plugin_mgr(plugins, data_dir, reload_fn):
+    root = tk._default_root
+    win = tk.Toplevel(root)
+    win.title('插件管理')
+    win.attributes('-topmost', True)
+    win.geometry('400x320')
+    frame = tk.Frame(win)
+    frame.pack(fill='both', expand=True, padx=8, pady=8)
+    vars_ = []
+    try:
+        disabled = set(l.strip() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
+    except OSError:
+        disabled = set()
+    for m in plugins:
+        code = getattr(m, 'CODE', '?')
+        name = getattr(m, 'NAME', code)
+        v = tk.BooleanVar(value=(code not in disabled))
+        cb = tk.Checkbutton(frame, text='%s (%s)  %s' % (name, code, getattr(m, 'DESC', '')), variable=v, anchor='w')
+        cb.pack(fill='x')
+        vars_.append((code, v))
+    btnrow = tk.Frame(win)
+    btnrow.pack(fill='x', padx=8, pady=8)
+
+    def apply():
+        dis = set(code for code, v in vars_ if not v.get())
+        try:
+            open(os.path.join(data_dir, 'plugins-disabled.txt'), 'w', encoding='utf-8').write('\n'.join(sorted(dis)))
+        except OSError:
+            pass
+        reload_fn()
+        messagebox.showinfo('插件管理', '已应用并重载')
+    tk.Button(btnrow, text='应用', command=apply).pack(side='left', padx=4)
