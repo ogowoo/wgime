@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""watch-package.py — 监视源文件变化, 自动重建单文件 + 刷新 package\.
+"""watch-package.py — 监视源文件变化, 自动重建单文件 + 刷新 package 目录.
 轮询 (无依赖). 跑一次即常驻: python watch-package.py
 """
 import glob
