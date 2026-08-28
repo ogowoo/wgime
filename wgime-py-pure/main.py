@@ -582,9 +582,9 @@ def commit(i):
             return
         code = ime.buf
         prev = ime.last_commit
+        is_dyn = text in ime.dyn_set     # 必须在 reset() 前捕获: reset() 会清空 dyn_set
         inject(text)
         reset()
-        is_dyn = text in ime.dyn_set
         if is_dyn:
             _last_learn = None
             return
