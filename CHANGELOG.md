@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 修复 Store 版 Python 把 %LOCALAPPDATA% 虚拟化导致数据目录不可见)
+
+- **根因**:用户机器 `python` 命令命中 Microsoft Store 版 Python 3.13(运行在 AppContainer 沙箱), 它对 `%LOCALAPPDATA%` 的写入被 Windows **重定向(虚拟化)** 到 `Packages\...\LocalCache\Local\`, 导致真实 `C:\Users\<user>\AppData\Local\wgime-py` **不存在**、用户词库/配置/导入码表不可见也无法管理(资源管理器找不到)。C# 版无此问题(非 Store 应用)。
+- **修复**:`main.py` 启动时用探针(在 `%LOCALAPPDATA%\wgime-py` 下建目录, 看 `realpath` 是否被重定向到 `\packages\` + `\localcache\`)检测 Store 版虚拟化; 若命中, 把 `DATA_DIR` 切到真实 `C:\Users\<user>\wgime-py`(USERPROFILE, 不被虚拟化), 并把虚拟化位置已有数据(userdict/词频/联想/导入码表/dict-cache/site)搬到新目录, 避免丢失
+- 单文件 preamble(`_third_dir`)同样处理, thirdparty.zip 也落到真实位置; 非 Store 版 Python(python.org 官方安装) 走 `_appdata_virtualized=False` 分支, 仍用 `%LOCALAPPDATA%\wgime-py`, 行为不变
+- 当前这台机器数据已自动迁移到 `C:\Users\watl\wgime-py`
+
+---
+
 ## 2026-08-28 (wgime-py-pure: 托盘菜单分组 + 中英双语)
 
 - **菜单分组**:托盘菜单按 C# 版结构分组——开关 / 模式 / 选项{繁体输出, 候选窗跟随光标, 主题} / 词库{造词, 导入码表} / 这个程序{改用剪贴板上屏, 标点吞字修复} / 退出,扁平项收进子菜单

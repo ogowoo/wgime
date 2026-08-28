@@ -44,8 +44,41 @@ DICT_DIR = _find_dict_dir()
 # 应用根(配置/插件/工具箱/run-csharp-plugin.ps1): 单文件版 = dicts 的父目录(package 根),
 # 开发版 = DICT_DIR 本身(仓库根, 码表与 config/tools/plugins 平级)。
 APP_DIR = os.path.dirname(DICT_DIR) if os.path.basename(DICT_DIR).lower() == 'dicts' else DICT_DIR
-DATA_DIR = os.path.join(os.environ['LOCALAPPDATA'], 'wgime-py')
-os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _appdata_virtualized(path):
+    """Store 版 Python (Microsoft Store, AppContainer 沙箱) 会把 %LOCALAPPDATA% 的写
+    重定向(虚拟化)到 Packages\\...\\LocalCache\\Local\\, 导致真实路径不存在, 用户无法
+    管理词库/配置/导入码表. 用探针(在 path 下建目录, 看 realpath 是否被重定向)检测."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        rep = os.path.realpath(path).lower()
+        return '\\packages\\' in rep and '\\localcache\\' in rep
+    except Exception:
+        return False
+
+
+_DATA_LA = os.path.join(os.environ['LOCALAPPDATA'], 'wgime-py')
+if _appdata_virtualized(_DATA_LA):
+    # Store 版 python: %LOCALAPPDATA% 被虚拟化 -> 把数据目录切到真实 USERPROFILE\\wgime-py,
+    # 并把虚拟化位置(A 目录, 可读)里的旧用户数据搬过来, 避免词库/配置/导入码表丢失.
+    import shutil
+    DATA_DIR = os.path.join(os.path.expanduser('~'), 'wgime-py')
+    os.makedirs(DATA_DIR, exist_ok=True)
+    for _n in os.listdir(_DATA_LA):
+        _src = os.path.join(_DATA_LA, _n)
+        _dst = os.path.join(DATA_DIR, _n)
+        if not os.path.exists(_dst):
+            try:
+                if os.path.isdir(_src):
+                    shutil.copytree(_src, _dst)
+                else:
+                    shutil.copy2(_src, _dst)
+            except Exception:
+                pass
+else:
+    DATA_DIR = _DATA_LA
+    os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def _dfn(text):
