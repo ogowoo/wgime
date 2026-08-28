@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-29 (C# wgime.bat: 双拼 üe 映射修复, 与 python 版对齐)
+
+- **SpSegment** 的 `Replace("üe","ue")` 改为仅 `Replace("ü","v")`:原 `üe->ue` 会撞码表 `lue`(蓼/庐等), 打不出 **略/虐**(lve/nve); 与 python 版 engine 的修复对齐(两版同源 bug 一并消除)
+- **连锁动作**:重编译 wgime.bat 瘦 DLL(556KB, bat 3.3MB) + WgIme.ps1(含完整 DLL, 39MB) + WgTray 三版(wgtray.bat/WgTray.ps1/wgtray-nopayload.bat); 同步 release/ 与 wg-all/
+- **修测试脚本 bug**:`tests\wgime-ps1.tests.ps1` 的 `$dllDir` 使用顺序错(第47行用、第48行才定义), 导致 Join-Path null 中断测试; 已修正
+- **测试**:`wgime-ps1.tests.ps1` **15/15 PASS** (含 runtime smoke: 启动/解 DLL/无FATAL/缓存命中)
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 剩余低危 — pickle 校验 / z通配分桶 / 简拼顺序)
 
 - **dict-cache pickle 完整性校验**:保存时写 `md5` 字段(对 data), 加载时校验 bytes 一致才用; 缓存被篡改/损坏时检测并重建(留痕日志), 不再静默崩/加载错; 顺带补 `engine.py` 的 `import sys`(此前日志用到却未导入)
