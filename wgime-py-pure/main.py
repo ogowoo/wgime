@@ -160,6 +160,12 @@ try:
         'get_followcaret': lambda: CFG.get('followcaret', True),
         'toggleshowcode': lambda: toggle_showcode(),
         'get_showcode': lambda: CFG.get('showcode', False),
+        'togglesentence': lambda: toggle_sentence(),
+        'get_sentence': lambda: CFG.get('sentence', True),
+        'toggleassoc': lambda: toggle_assoc(),
+        'get_assoc': lambda: CFG.get('assoc', True),
+        'togglehideidle': lambda: toggle_hideidle(),
+        'get_hideidle': lambda: CFG.get('hideidle', True),
         'set_theme': lambda name: set_theme(name),
         'get_theme': lambda: CFG.get('theme', 'dark'),
         'import_table': lambda: tools.show_import(engine, DICT_DIR),
@@ -518,6 +524,31 @@ def toggle_showcode():
     _write_config('showcode', '1' if CFG['showcode'] else '0')   # 写回 config.txt
     if ime.buf:
         refresh()                                                # 立即刷新候选(显示/隐藏编码)
+
+
+def toggle_hideidle():
+    """空闲隐藏开关: 空闲时隐藏候选窗(0=常驻)."""
+    CFG['hideidle'] = not CFG.get('hideidle', True)
+    _dfn('hideidle=%s' % CFG['hideidle'])
+    _write_config('hideidle', '1' if CFG['hideidle'] else '0')
+    if ime.buf:
+        refresh()
+
+
+def toggle_sentence():
+    """整句输入开关: 全拼连打按词频搜最佳路径."""
+    CFG['sentence'] = not CFG.get('sentence', True)
+    _dfn('sentence=%s' % CFG['sentence'])
+    _write_config('sentence', '1' if CFG['sentence'] else '0')
+    if ime.buf:
+        refresh()
+
+
+def toggle_assoc():
+    """联想开关: 上屏后出联想候选."""
+    CFG['assoc'] = not CFG.get('assoc', True)
+    _dfn('assoc=%s' % CFG['assoc'])
+    _write_config('assoc', '1' if CFG['assoc'] else '0')
 
 
 def set_theme(name):

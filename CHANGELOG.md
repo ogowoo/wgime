@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 托盘"选项"补全其余开关)
+
+- **托盘"选项"子菜单补全**:整句输入(`sentence`)/联想(`assoc`)/空闲隐藏(`hideidle`)勾选开关(反查编码/繁体/跟随光标/主题已有)
+- `main.py` 新增 `toggle_sentence()`/`toggle_assoc()`/`toggle_hideidle()` + api 对应 `get`/`toggle`(sentence 单独 api, assoc/hideidle 同理); 切换写回 `config.txt`, 组字中即时刷新
+- `config.txt` 新增 `sentence`/`assoc` 注释项(`hideidle` 已有)
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 反查编码开关 + 托盘菜单项)
 
 - **托盘"选项"子菜单新增"反查编码"开关**(勾选态), 切换即生效, 并写回 config.txt 的 `showcode`(候选上显示反查编码, 五笔用五笔码否则拼音)

@@ -16,6 +16,10 @@ recentk = 200
 followcaret = 1
 ; hideidle: 空闲时隐藏候选窗 (1/0, 默认1; 只在组字时显示; 0=常驻)
 hideidle = 1
+; sentence: 拼音整句连续输入 (1/0, 默认1; 全拼连打按词频搜最佳路径)
+sentence = 1
+; assoc: 联想 (1/0, 默认1; 上屏后出联想候选)
+assoc = 1
 ; phrase: 自定义短语, 编码<TAB>文本 (文本可含空格)
 ; phrase = dz	地址: 某某路5号
 ; phrase = em	user@example.com
