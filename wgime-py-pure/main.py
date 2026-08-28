@@ -24,7 +24,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _find_dict_dir():
-    """词库目录: WGIME_DICT_DIR 环境变量 > 单文件/脚本旁的 dicts\ > 仓库默认."""
+    """词库目录: WGIME_DICT_DIR 环境变量 > 单文件/脚本旁的 dicts 目录 > 仓库默认."""
     env = os.environ.get('WGIME_DICT_DIR')
     if env and os.path.exists(os.path.join(env, 'py.txt')):
         return env
