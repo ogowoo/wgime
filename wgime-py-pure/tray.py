@@ -78,6 +78,12 @@ class Tray:
             pystray.MenuItem('繁体输出 (Ctrl+Shift+F)', self._on(self.api['trad'])),
             pystray.MenuItem('跟随光标', self._on(self.api['followcaret']),
                              checked=lambda _it: self.api['get_followcaret']()),
+            pystray.MenuItem('主题',
+                             pystray.Menu(
+                                 pystray.MenuItem('深色 (C# 款)', self._on(lambda: self.api['set_theme']('dark')),
+                                                  checked=lambda _it: self.api['get_theme']() == 'dark'),
+                                 pystray.MenuItem('浅色', self._on(lambda: self.api['set_theme']('light')),
+                                                  checked=lambda _it: self.api['get_theme']() == 'light'))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('当前程序: 剪贴板上屏切换', self._on(self.api['apppaste'])),
             pystray.MenuItem('当前程序: 标点吞字修复切换', self._on(self.api['appkeyfix'])),

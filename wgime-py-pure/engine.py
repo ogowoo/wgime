@@ -192,7 +192,7 @@ def load_config(path):
     """返回 dict: fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps"""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
-               paste=3, keyfix=True, followcaret=True)
+               paste=3, keyfix=True, followcaret=True, theme='dark')
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -236,6 +236,8 @@ def load_config(path):
                     cfg['keyfix'] = v in ('1', 'on', 'true')
                 elif k == 'followcaret':
                     cfg['followcaret'] = v not in ('0', 'off', 'false')
+                elif k == 'theme':
+                    cfg['theme'] = 'light' if v.lower() in ('light', '浅色', '白') else 'dark'
                 elif k == 'phrase':
                     sp = v.find('\t')
                     if sp < 1:

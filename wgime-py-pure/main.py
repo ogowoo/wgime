@@ -102,6 +102,7 @@ apply_config()
 root = tk.Tk()
 root.withdraw()
 bar = CandBar(root)
+bar.set_theme(CFG.get('theme', 'dark'))
 
 try:
     import tray as _tray_mod
@@ -116,6 +117,8 @@ try:
         'appkeyfix': lambda: toggle_app_keyfix(),
         'followcaret': lambda: toggle_followcaret(),
         'get_followcaret': lambda: CFG.get('followcaret', True),
+        'set_theme': lambda name: set_theme(name),
+        'get_theme': lambda: CFG.get('theme', 'dark'),
     })
 except Exception as e:
     _dfn('tray start err %r' % e)
@@ -401,6 +404,27 @@ def toggle_followcaret():
         pass
 
 
+def set_theme(name):
+    CFG['theme'] = name
+    bar.set_theme(name)
+    _dfn('theme=%s' % name)
+    # 写回 config.txt (theme 行)
+    try:
+        path = os.path.join(DICT_DIR, 'config.txt')
+        lines = open(path, encoding='utf-8').read().split('\n')
+        found = False
+        for i, l in enumerate(lines):
+            if l.strip().lower().startswith('theme'):
+                lines[i] = 'theme = %s' % name
+                found = True
+                break
+        if not found:
+            lines.append('theme = %s' % name)
+        open(path, 'w', encoding='utf-8').write('\n'.join(lines))
+    except OSError:
+        pass
+
+
 def quit_app():
     try:
         if 'TRAY' in globals() and TRAY and getattr(TRAY, 'icon', None):
@@ -559,8 +583,8 @@ def handle(vk):
         return
     if not ime.active:
         return
-    # vf 符号面板
-    if CFG['shuangpin'] == 0 and ime.buf == 'vf':
+    # vf 符号面板 (字母键不拦截, 继续组字 -> 退出面板)
+    if CFG['shuangpin'] == 0 and ime.buf == 'vf' and not (0x41 <= vk <= 0x5A):
         if 0x31 <= vk <= 0x39:
             d = vk - 0x30
             if ime.sym_cat == 0:
