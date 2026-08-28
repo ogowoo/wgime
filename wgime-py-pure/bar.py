@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""bar.py — tkinter 无边框置顶候选条 (Canvas 自绘, 跟随光标, 分页指示)."""
+"""bar.py — tkinter 无边框置顶候选条 (Canvas 自绘, 跟随光标, 分页指示, SetWindowRgn 圆角)."""
+import ctypes
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -10,6 +11,15 @@ BORDER = '#C3CCDD'
 ACCENT = '#007AFF'
 TEXT = '#1D1D1F'
 SUB = '#6E7485'
+
+
+def _round(hwnd, w, h, r=10):
+    """SetWindowRgn 给窗口本身裁圆角 (否则 Canvas 圆角外四角露出窗口方底)."""
+    try:
+        rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+        ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
+    except Exception:
+        pass
 
 
 class CandBar:
@@ -80,6 +90,8 @@ class CandBar:
         else:
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40))
         self.top.deiconify()
+        self.top.update_idletasks()
+        _round(self.top.winfo_id(), w, h)
 
     def hide(self):
         self.top.withdraw()
