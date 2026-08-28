@@ -515,6 +515,7 @@ def toggle_followcaret():
     CFG['followcaret'] = not CFG.get('followcaret', True)
     _dfn('followcaret=%s' % CFG['followcaret'])
     _write_config('followcaret', '1' if CFG['followcaret'] else '0')   # 写回 config.txt
+    show_page()   # 立即用新 followcaret 重定位候选框(组字/常驻), 否则"点了没反应"
 
 
 def toggle_showcode():
@@ -522,8 +523,7 @@ def toggle_showcode():
     CFG['showcode'] = not CFG.get('showcode', False)
     _dfn('showcode=%s' % CFG['showcode'])
     _write_config('showcode', '1' if CFG['showcode'] else '0')   # 写回 config.txt
-    if ime.buf:
-        refresh()                                                # 立即刷新候选(显示/隐藏编码)
+    show_page()   # 立即按新 showcode 刷新候选(显示/隐藏编码)
 
 
 def toggle_hideidle():

@@ -73,6 +73,7 @@ class Tray:
     def _refresh(self):
         try:
             self.icon.icon = _icon_img(self.api['get_mode'](), self.api['is_active']())
+            self.icon.update_menu()   # 刷新菜单勾选态(checked 重求值), 否则切换后勾选不变、看起来"没反应"
         except Exception:
             pass
 

@@ -4,6 +4,17 @@
 
 ---
 
+---
+
+## 2026-08-29 (wgime-py-pure: 托盘选项即时生效 + 常驻候选窗优化)
+
+- **托盘"选项"勾选态修复**:`_refresh()` 加 `icon.update_menu()`(`checked` 重求值); 原来只更新图标不重建菜单 → 切换后勾选态不变、看起来"点了没反应"(实际 CFG 已改)。验证 `pystray.Icon.update_menu()` 存在
+- **切换即时反馈**:`toggle_followcaret`/`toggle_showcode` 切后调 `show_page()`, 立即用新设置重定位/刷新候选框(否则组字中无可见变化)
+- **常驻候选窗优化**:`hideidle=0`(关空闲隐藏)时常驻框**固定屏幕右下角贴任务栏**, 不跟随; `toggle_hideidle` 切后直接 `show_page()`(之前空缓冲不刷新导致常驻框不出现); `bar.show` 加 `fixed` 参数(坐标 / `'bottom-right'` / `'bottom-center'`)
+- 覆盖此前的"修复关掉空闲隐藏后常驻框不出现"(bef5903)、"常驻候选窗固定位置右下角"(9462009)两轮
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 托盘"选项"补全其余开关)
 
 - **托盘"选项"子菜单补全**:整句输入(`sentence`)/联想(`assoc`)/空闲隐藏(`hideidle`)勾选开关(反查编码/繁体/跟随光标/主题已有)
