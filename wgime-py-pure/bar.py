@@ -121,10 +121,10 @@ class CandBar:
                 ra = win.screen_workarea()
                 self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40))
         elif _shell:
-            # 开始菜单/搜索类 UI: 固定屏幕右下角(避开 Win11 开始菜单浮窗, 不遮挡中央视野)
+            # 开始菜单/搜索类 UI: 固定屏幕右下角并贴着任务栏上方(避开浮窗, 不遮挡中央)
             ra = win.screen_workarea()
             x = ra.right - w - 16
-            y = ra.bottom - h - 40
+            y = ra.bottom - h - 8
             self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
         else:
             # 固定模式(用户可拖动): 只设尺寸, 保持既有位置
