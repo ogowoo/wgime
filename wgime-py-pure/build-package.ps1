@@ -22,6 +22,10 @@ foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'confi
     $p = Join-Path $src $n
     if (Test-Path $p) { Copy-Item $p $dicts -Force } else { Write-Warning "missing $n in $src" }
 }
+# plugins\*.txt (C# plugins / step DSL / [python]) -> dicts\plugins\
+$pd = Join-Path $dicts 'plugins'
+New-Item -ItemType Directory -Force $pd | Out-Null
+Copy-Item (Join-Path $src 'plugins\*.txt') $pd -Force -ErrorAction SilentlyContinue
 
 $size = [math]::Round((Get-ChildItem -Recurse $pkg | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host ('package ready: ' + $pkg + ' (' + $size + ' MB)')
