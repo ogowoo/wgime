@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""bar.py — tkinter 无边框置顶候选条 (Canvas 自绘, 跟随光标)."""
+"""bar.py — tkinter 无边框置顶候选条 (Canvas 自绘, 跟随光标, 分页指示)."""
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -7,11 +7,9 @@ import win
 
 BG = '#FFFFFF'
 BORDER = '#C3CCDD'
-CANVAS = '#F4F7FB'
 ACCENT = '#007AFF'
 TEXT = '#1D1D1F'
 SUB = '#6E7485'
-MINE = '#D6EAFF'
 
 
 class CandBar:
@@ -21,8 +19,8 @@ class CandBar:
         self.top.overrideredirect(True)
         self.top.attributes('-topmost', True)
         self.top.attributes('-toolwindow', True)
-        self.canvas = tk.Canvas(self.top, bg=BG, highlightthickness=0)
-        self.canvas.pack()
+        self.canvas = tk.Canvas(self.top, bg=BG, highlightthickness=0, bd=0)
+        self.canvas.pack(fill='both', expand=True)          # 铺满, 避免 Toplevel 灰底外露
         self.f_code = ('Microsoft YaHei UI', 9)
         self.f_cand = ('Microsoft YaHei UI', 11)
         self._pad = 10
@@ -30,26 +28,28 @@ class CandBar:
     def _measure(self, text, font):
         return tkfont.Font(family=font[0], size=font[1]).measure(text)
 
-    def show(self, header, code, cands, sel):
-        import tkinter.font as tkfont
+    def show(self, header, code, cands, sel, page=0, total=1):
         c = self.canvas
         c.delete('all')
-        # 度量宽度
-        w = self._pad * 2 + self._measure(header, self.f_code) + self._measure(code, self.f_code)
+        line1 = self._pad + self._measure(header, self.f_code) + self._measure(code, self.f_code)
+        page_ind = '◀ %d/%d ▶' % (page + 1, total) if total > 1 else ''
+        ind_w = self._measure(page_ind, self.f_code) if page_ind else 0
+        line2 = self._pad
         for i, cand in enumerate(cands):
-            w += self._measure('%d.%s' % (i + 1, cand), self.f_cand) + 16
-        w = max(w, 120)
+            line2 += self._measure('%d.%s' % (i + 1, cand), self.f_cand) + 16
+        w = max(line1 + ind_w + 18, line2, 120)
         h = 54
-        self.top.geometry('%dx%d+%d+%d' % (w, h, 0, 0))
-        # 圆角
+        # 圆角底
         self._round_rect(c, 0, 0, w - 1, h - 1, 10, fill=BG, outline=BORDER)
-        # header + code
+        # header + code (行1)
         y = 6
         x = self._pad
         c.create_text(x, y, anchor='nw', text=header, fill=ACCENT, font=self.f_code)
         x += self._measure(header, self.f_code)
         c.create_text(x, y, anchor='nw', text=code, fill=SUB, font=self.f_code)
-        # candidates
+        if page_ind:
+            c.create_text(w - self._pad, y, anchor='ne', text=page_ind, fill=SUB, font=self.f_code)
+        # candidates (行2)
         y = 26
         x = self._pad
         for i, cand in enumerate(cands):

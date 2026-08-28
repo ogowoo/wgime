@@ -103,9 +103,12 @@ def _proc(nCode, wParam, lParam):
                     if ctrl and alt and vk == 0x43:        # Ctrl+Alt+C 造词 (激活态)
                         EVENTS.put(VK_MAKEWORD)
                         return 1
-                    if shift and vk in _CTRL_KEYS:          # Shift+Enter/Space/退格 修正键: 透传
+                    winkey = _key_state(0x5B) or _key_state(0x5C)
+                    if ctrl or alt or winkey:              # 带 Ctrl/Alt/Win 的快捷键: 透传 (Ctrl+S/Alt+Tab/Win+Shift+S 等)
                         return user32.CallNextHookEx(None, nCode, wParam, lParam)
-                    if _is_compose_key(vk):                # 字母/数字: 激活即吞 (开始拼音)
+                    if shift:                              # Shift 修正键: 透传 (Shift+Enter/Space/字母等)
+                        return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                    if _is_compose_key(vk):                # 裸字母/数字: 吞 (开始拼音)
                         EVENTS.put(vk)
                         return 1
                     if vk in _CTRL_KEYS and COMPOSING[0]:  # 空格/退格/回车等: 仅缓冲有效时吞

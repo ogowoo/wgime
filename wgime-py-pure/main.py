@@ -144,10 +144,11 @@ def find_launcher(code):
 def show_page():
     header = '[%s] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
+    total = (len(ime.cands) + 8) // 9
     if ime.assoc_showing:
-        bar.show(header + '↪联想', '', page_c, 0)
+        bar.show(header + '↪联想', '', page_c, 0, ime.page, total)
     elif ime.buf and page_c:
-        bar.show(header, ime.buf, page_c, ime.sel)
+        bar.show(header, ime.buf, page_c, ime.sel, ime.page, total)
     else:
         bar.hide()
 
