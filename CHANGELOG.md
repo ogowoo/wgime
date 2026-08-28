@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: chat 插件 UI 参考窗体设计规范重做)
+
+- **chat.py 的 ChatUI 改用 `ui.py` 设计系统**(原来是一坨裸 tkinter #F4F7FB/tk.Button/tk.Label, 风格不合规范):
+  - `ui.make_window`(无边框圆角 + 自绘标题栏 + 浅蓝灰底色板)
+  - 消息区 → **深色控制台** `ui.console_text`(#2E3040 底/Consolas)
+  - 昵称/房间/密钥/输入 → **白卡圆角输入** `ui.rounded_entry`
+  - Broker 选择 → **flat 按钮行**(选中 accent 高亮, `_pick_broker`); 加入/离开、发送 → `ui.flat_button`(primary)
+  - 状态栏(status/online) → 主题色 Label
+- **功能逻辑不变**(AES-256/MQTT/relay/收发/在线数), 只重做 UI 布局与控件; 删死代码 `quit()`, 新增 `_on_close`(断网)/`_pick_broker`; `join()` 改读 `_sel_broker`
+- 验证: ChatUI 布局测试通过(深色控制台/圆角输入/flat 按钮高亮切换/控件齐全)
+
+---
+
 ## 2026-08-29 (C# wgime.bat: 双拼 üe 映射修复, 与 python 版对齐)
 
 - **SpSegment** 的 `Replace("üe","ue")` 改为仅 `Replace("ü","v")`:原 `üe->ue` 会撞码表 `lue`(蓼/庐等), 打不出 **略/虐**(lve/nve); 与 python 版 engine 的修复对齐(两版同源 bug 一并消除)

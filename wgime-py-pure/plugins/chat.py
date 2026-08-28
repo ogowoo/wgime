@@ -105,50 +105,59 @@ def run():
 
 class ChatUI:
     def __init__(self):
-        self.root = tk._default_root
-        self.win = tk.Toplevel(self.root)
-        self.win.title('WgIme-Py 聊天')
-        self.win.attributes('-topmost', True)
-        self.win.geometry('480x360')
+        self.win = None
         self.q = queue.Queue()
-        self.state = {'running': False, 'mode': 'relay', 'ws': None}
+        self.state = {'running': False, 'ws': None}
         self.docid = 'py-' + os.urandom(5).hex()
         self.last_ts = {}
+        self._sel_broker = BROKERS[0]
+        self._broker_btns = []
 
-    # ---- UI ----
+    def _on_close(self):
+        """断网(不销毁窗口, 由 make_window 的 close 负责 destroy)."""
+        self.state['running'] = False
+        try:
+            if self.state['ws']:
+                self.state['ws'].close()
+        except Exception:
+            pass
+
+    def _pick_broker(self, i):
+        import ui
+        self._sel_broker = BROKERS[i]
+        for j, b in enumerate(self._broker_btns):
+            b.configure(bg=ui.ACCENT if j == i else ui.CARD, fg='white' if j == i else ui.TEXT)
+
+    # ---- UI (规范风: 浅蓝灰底 + 白卡 + 深色控制台 + 圆角 + 自绘标题栏 + flat 按钮) ----
     def start(self):
-        w = self.win
-        self.msg = tk.Text(w, height=14, wrap='word', state='disabled', bg='#F4F7FB')
-        self.msg.pack(fill='both', expand=True, padx=6, pady=(6, 2))
-        row = tk.Frame(w)
-        row.pack(fill='x', padx=6, pady=2)
-        tk.Label(row, text='昵称').pack(side='left')
-        self.nick = tk.Entry(row, width=10)
-        self.nick.insert(0, 'User_' + os.urandom(3).hex())
-        self.nick.pack(side='left', padx=4)
-        tk.Label(row, text='房间').pack(side='left')
-        self.room = tk.Entry(row, width=12)
-        self.room.insert(0, 'T_Fuck')
-        self.room.pack(side='left', padx=4)
-        tk.Label(row, text='密钥').pack(side='left')
-        self.key = tk.Entry(row, width=8)
-        self.key.pack(side='left', padx=4)
-        self.btn = tk.Button(row, text='加入', command=self.toggle)
-        self.btn.pack(side='left', padx=6)
-        self.status = tk.Label(w, text='未连接', fg='#666', anchor='w')
-        self.status.pack(fill='x', padx=6)
-        tk.Label(w, text='Broker').pack(anchor='w', padx=6)
-        self.broker = tk.StringVar(value=BROKERS[0])
-        tk.OptionMenu(w, self.broker, *BROKERS).pack(fill='x', padx=6, pady=2)
-        self.online = tk.Label(w, text='在线 0', fg='green', anchor='e')
-        self.online.pack(fill='x', padx=6)
-        inrow = tk.Frame(w)
-        inrow.pack(fill='x', padx=6, pady=6)
-        self.input = tk.Entry(inrow)
-        self.input.pack(side='left', fill='x', expand=True)
+        import ui
+        w, content = ui.make_window('WgIme 聊天', 520, 460, on_close=self._on_close)   # 无边框圆角+自绘标题栏
+        self.win = w
+        BG, SUB, GREEN = ui.BG, ui.SUB, ui.GREEN
+        # 消息区: 深色控制台
+        self.msg = ui.console_text(content, 10, 8, 500, 240)
+        # 配置行: 昵称 / 房间 / 密钥 (白卡圆角输入)
+        for txt, x in (('昵称', 10), ('房间', 140), ('密钥', 270)):
+            tk.Label(content, text=txt, bg=BG, fg=SUB, font=ui.font(8.5)).place(x=x, y=254)
+        self.nick = ui.rounded_entry(content, 10, 272, 120, 32, initial='User_' + os.urandom(3).hex())
+        self.room = ui.rounded_entry(content, 140, 272, 120, 32, initial='T_Fuck')
+        self.key = ui.rounded_entry(content, 270, 272, 90, 32)
+        # broker 选择: flat 按钮行 + 加入/离开
+        for i, b in enumerate(BROKERS):
+            nm = b.split('//')[-1].split(':')[0].split('.')[0]   # 中继/hivemq/emqx/mosquitto/broker
+            self._broker_btns.append(
+                ui.flat_button(content, nm, (lambda i=i: self._pick_broker(i)), x=10 + i * 84, y=312, w=80, h=30))
+        self._pick_broker(0)
+        self.btn = ui.flat_button(content, '加入', self.toggle, primary=True, x=410, y=312, w=92, h=30)
+        # 输入行: 输入框 + 发送
+        self.input = ui.rounded_entry(content, 10, 350, 420, 32)
         self.input.bind('<Return>', self.send)
-        tk.Button(inrow, text='发送', command=self.send).pack(side='left', padx=4)
-        self.win.protocol('WM_DELETE_WINDOW', self.quit)
+        ui.flat_button(content, '发送', self.send, primary=True, x=436, y=350, w=74, h=32)
+        # 状态栏
+        self.status = tk.Label(content, text='未连接', bg=BG, fg=SUB, anchor='w', font=ui.font(8.5))
+        self.status.place(x=10, y=390, width=220, height=20)
+        self.online = tk.Label(content, text='在线 0', bg=BG, fg=GREEN, anchor='e', font=ui.font(8.5))
+        self.online.place(x=390, y=390, width=120, height=20)
         self._poll_ui()
         self.users = set()
 
@@ -189,7 +198,7 @@ class ChatUI:
         self.state['nick'] = self.nick.get().strip() or 'User'
         self.state['room'] = self.room.get().strip() or 'T_Fuck'
         self.state['key'] = self.key.get().strip()
-        self.state['broker'] = self.broker.get().strip()
+        self.state['broker'] = self._sel_broker
         threading.Thread(target=self._net_loop, daemon=True).start()
 
     def leave(self):
@@ -201,15 +210,6 @@ class ChatUI:
             pass
         self.btn.config(text='加入')
         self.ui(lambda: self.set_status('未连接'))
-
-    def quit(self):
-        self.state['running'] = False
-        try:
-            if self.state['ws']:
-                self.state['ws'].close()
-        except Exception:
-            pass
-        self.win.destroy()
 
     def _broker_info(self):
         url = self.state.get('broker', BROKERS[0])
