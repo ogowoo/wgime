@@ -352,6 +352,182 @@ def build_reverse(ec):
     return {k: ' '.join(v) for k, v in rev.items()}
 
 
+# ---------- 码表导入 (转换常见码表 -> import_py/wb/ec.txt, 对齐 C# ImportCodeTable) ----------
+def is_pure_ascii(s):
+    return bool(s) and all(ord(c) <= 0x7F for c in s)
+
+
+def is_all_digits(s):
+    return bool(s) and all('0' <= c <= '9' for c in s)
+
+
+def valid_code(s):
+    """^[a-z][a-z0-9']{0,31}$"""
+    if not s or len(s) > 32 or not ('a' <= s[0] <= 'z'):
+        return False
+    return all(('a' <= c <= 'z') or ('0' <= c <= '9') or c == "'" for c in s[1:])
+
+
+def skip_line(t):
+    """空 / # ; // --- ... / yaml 'key: value' 头"""
+    t = t.strip()
+    if not t:
+        return True
+    if t[0] in ('#', ';') or t.startswith('//') or t.startswith('---') or t.startswith('...'):
+        return True
+    ci = t.find(':')
+    return ci > 0 and (ci + 1 == len(t) or t[ci + 1] in (' ', '\t'))
+
+
+def read_import_text(path):
+    """读文件: UTF-8 -> GB18030 -> GBK; >64MB 返回 None"""
+    try:
+        b = open(path, 'rb').read()
+        if len(b) > 64 * 1024 * 1024:
+            return None
+        for enc in ('utf-8', 'gb18030', 'gbk'):
+            try:
+                return b.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                continue
+        return b.decode('utf-8', 'replace')
+    except OSError:
+        return None
+
+
+def detect_format(lines):
+    """1 = 词在前(Rime), 2 = 码在前, 0 = 未检测"""
+    word_first = code_first = seen = 0
+    for raw in lines:
+        if seen >= 200:
+            break
+        t = raw.strip()
+        if not t or skip_line(t):
+            continue
+        seen += 1
+        if '\t' in t:
+            word_first += 1
+            continue
+        sp = t.find(' ')
+        if sp < 1:
+            continue
+        if is_pure_ascii(t[:sp]):
+            code_first += 1
+        else:
+            word_first += 1
+    if word_first == 0 and code_first == 0:
+        return 0
+    return 1 if word_first >= code_first else 2
+
+
+def convert_file(text, fmt, acc):
+    """转换并追加到 acc {code: [words]}; 返回 (skipped, trunc_codes, trunc_total)"""
+    skipped = trunc_codes = trunc_total = 0
+    for raw in text.split('\n'):
+        t = raw.strip()
+        if not t or skip_line(t):
+            continue
+        tab = '\t' in t
+        fs = [f.strip() for f in (t.split('\t') if tab else t.split(' ')) if f.strip()]
+        if len(fs) < 2:
+            skipped += 1
+            continue
+        if is_all_digits(fs[-1]):
+            fs = fs[:-1]                                # 尾权重字段
+        if len(fs) < 2:
+            skipped += 1
+            continue
+        code = None
+        words = []
+        if fmt == 1:                                    # 词在前: word code [weight]
+            cd = fs[1].strip().lower()
+            if valid_code(cd):
+                code = cd
+                words.append(fs[0])
+            elif is_pure_ascii(fs[0]) and valid_code(fs[0].lower()):   # EN word + CN meanings
+                code = fs[0].strip().lower()
+                words = [w for w in fs[1:] if w]
+            else:
+                skipped += 1
+                continue
+        else:                                           # 码在前: code word word ...
+            cd = fs[0].strip().lower()
+            if not valid_code(cd):
+                skipped += 1
+                continue
+            code = cd
+            words = [w for w in fs[1:] if w]
+        if code is None or not words:
+            skipped += 1
+            continue
+        lst = acc.get(code)
+        if lst is None:
+            if len(acc) >= 500000:
+                trunc_total += 1
+                continue
+            lst = []
+            acc[code] = lst
+        for w in words:
+            if not w or w in lst:
+                continue
+            if ' ' in w:
+                skipped += 1
+                continue
+            if len(lst) >= 300:
+                trunc_codes += 1
+                break
+            lst.append(w)
+    return skipped, trunc_codes, trunc_total
+
+
+def load_import_base(path):
+    """读现有 import 文件 -> {code: [words]} (重导入幂等)"""
+    acc = {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                t = raw.strip()
+                if len(t) < 3:
+                    continue
+                sp = t.find(' ')
+                if sp < 1:
+                    continue
+                k = t[:sp].strip().lower()
+                lst = []
+                for w in t[sp + 1:].split(' '):
+                    if w and w not in lst:
+                        lst.append(w)
+                if k and lst:
+                    acc[k] = lst
+    except OSError:
+        pass
+    return acc
+
+
+def write_import_file(path, acc):
+    """写 import 文件: 'code w1 w2 ...' 每行, 按 code 排序, UTF-8 无 BOM"""
+    with open(path, 'w', encoding='utf-8') as f:
+        for k in sorted(acc.keys()):
+            f.write(k)
+            for w in acc[k]:
+                f.write(' ' + w)
+            f.write('\n')
+
+
+def suggest_target(file_name):
+    """0=五笔 1=拼音 2=英汉"""
+    n = (file_name or '').lower()
+    if 'wubi' in n or '五笔' in n or n.startswith('wb') or '_wb' in n or '-wb' in n:
+        return 0
+    if 'english' in n or '英汉' in n or n.startswith('ec') or '_ec' in n or '-ec' in n:
+        return 2
+    if 'pinyin' in n or '拼音' in n or '双拼' in n or '全拼' in n or n.startswith('py') or '_py' in n or '-py' in n:
+        return 1
+    if n.endswith('.yaml') or n.endswith('.yml') or n.endswith('.dict'):
+        return 0
+    return 1
+
+
 def fuzzy_variants(code):
     """单替换模糊音, 上限 16 (与 FuzzyVariants 一致)"""
     seen = set()
@@ -377,30 +553,40 @@ def fuzzy_variants(code):
 class Engine:
     CACHE_VER = 1
 
+    def _paths(self):
+        ps = [os.path.join(self.dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt')]
+        ps += [os.path.join(self.dict_dir, n) for n in ('import_py.txt', 'import_wb.txt', 'import_ec.txt')]
+        return ps
+
+    def _build(self):
+        self.py = parse_dict(os.path.join(self.dict_dir, 'py.txt'))
+        self.wb = parse_dict(os.path.join(self.dict_dir, 'wb.txt'))
+        self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
+        overlay_import(self.py, parse_dict(os.path.join(self.dict_dir, 'import_py.txt')))
+        overlay_import(self.wb, parse_dict(os.path.join(self.dict_dir, 'import_wb.txt')))
+        overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
+        self.pk, self.pv = build_sorted(self.py)
+        self.wk, self.wv = build_sorted(self.wb)
+        self.ek, self.ev = build_sorted(self.ec)
+        self.char_py = build_char_py(self.py)
+        self.acro = build_acro(self.py, self.char_py)
+        self.ce = build_reverse(self.ec)
+
     def __init__(self, dict_dir, data_dir):
         t0 = time.time()
         self.data_dir = data_dir
         self.dict_dir = dict_dir
         os.makedirs(data_dir, exist_ok=True)
-        paths = [os.path.join(dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt')]
-        paths.append(os.path.join(dict_dir, 'trad.txt'))
-        paths += [os.path.join(dict_dir, n) for n in ('import_py.txt', 'import_wb.txt', 'import_ec.txt')]
-        if not self._load_cache(paths):
-            self.py = parse_dict(paths[0])
-            self.wb = parse_dict(paths[1])
-            self.ec = parse_dict(paths[2])
-            overlay_import(self.py, parse_dict(paths[4]))
-            overlay_import(self.wb, parse_dict(paths[5]))
-            overlay_import(self.ec, parse_dict(paths[6]))
-            self.pk, self.pv = build_sorted(self.py)
-            self.wk, self.wv = build_sorted(self.wb)
-            self.ek, self.ev = build_sorted(self.ec)
-            self.char_py = build_char_py(self.py)
-            self.acro = build_acro(self.py, self.char_py)
-            self.ce = build_reverse(self.ec)
-            self._save_cache(paths)
+        if not self._load_cache(self._paths()):
+            self._build()
+            self._save_cache(self._paths())
         self.load_ms = (time.time() - t0) * 1000
         self._init_state()
+
+    def reload(self):
+        """导入码表后热重载: 重建索引 + 刷新缓存."""
+        self._build()
+        self._save_cache(self._paths())
 
     def _cache_sig(self, paths):
         return [(os.path.getsize(p), int(os.path.getmtime(p))) if os.path.exists(p) else None for p in paths]

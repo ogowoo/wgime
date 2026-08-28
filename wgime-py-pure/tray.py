@@ -85,6 +85,8 @@ class Tray:
                                  pystray.MenuItem('浅色', self._on(lambda: self.api['set_theme']('light')),
                                                   checked=lambda _it: self.api['get_theme']() == 'light'))),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem('导入码表…', self._on(self.api['import_table'])),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem('当前程序: 剪贴板上屏切换', self._on(self.api['apppaste'])),
             pystray.MenuItem('当前程序: 标点吞字修复切换', self._on(self.api['appkeyfix'])),
             pystray.Menu.SEPARATOR,

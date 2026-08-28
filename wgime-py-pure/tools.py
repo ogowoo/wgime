@@ -353,3 +353,87 @@ def show_plugin_mgr(plugins, data_dir, reload_fn):
         reload_fn()
         _msgbox('插件管理', '已应用并重载')
     ui.flat_button(content, '应用', apply, primary=True, x=12, y=282, w=90, h=30)
+
+
+# ---------- 导入码表 (转换常见码表 -> import_py/wb/ec.txt) ----------
+def _import_dialog(target, detected):
+    """目标(五笔/拼音/英汉) + 格式(自动/词在前/码在前)确认; 返回 (target, fmt) 或 None."""
+    import engine as engmod
+    win = tk.Toplevel()
+    win.title('导入码表')
+    win.attributes('-topmost', True)
+    win.resizable(False, False)
+    win.configure(bg=ui.BG)
+    result = {'target': target, 'fmt': 0, 'cancel': False}
+
+    tk.Label(win, text='目标词库', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5)).grid(
+        row=0, column=0, columnspan=3, sticky='w', padx=14, pady=(12, 2))
+    tvar = tk.IntVar(value=target)
+    for i, n in enumerate(('五笔', '拼音', '英汉')):
+        tk.Radiobutton(win, text=n, variable=tvar, value=i, bg=ui.BG, fg=ui.TEXT,
+                       selectcolor=ui.BG, activebackground=ui.BG, font=ui.font(9.5)).grid(
+            row=1, column=i, padx=10, pady=4)
+
+    tk.Label(win, text='格式', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5)).grid(
+        row=2, column=0, columnspan=3, sticky='w', padx=14, pady=(10, 2))
+    fvar = tk.IntVar(value=0)
+    for i, (n, v) in enumerate((('自动', 0), ('词在前', 1), ('码在前', 2))):
+        tk.Radiobutton(win, text=n, variable=fvar, value=v, bg=ui.BG, fg=ui.TEXT,
+                       selectcolor=ui.BG, activebackground=ui.BG, font=ui.font(9.5)).grid(
+            row=3, column=i, padx=10, pady=4)
+
+    def ok():
+        result['target'] = tvar.get()
+        result['fmt'] = fvar.get()
+        win.destroy()
+
+    def cancel():
+        result['cancel'] = True
+        win.destroy()
+
+    btns = tk.Frame(win, bg=ui.BG)
+    btns.grid(row=4, column=0, columnspan=3, pady=14)
+    tk.Button(btns, text='确定', command=ok, width=8).pack(side='left', padx=6)
+    tk.Button(btns, text='取消', command=cancel, width=8).pack(side='left', padx=6)
+    win.wait_window()
+    if result['cancel']:
+        return None
+    return result['target'], result['fmt']
+
+
+def show_import(engine, dict_dir):
+    """导入码表: 选文件 -> 检测 -> 确认 -> 转换写 import_*.txt -> 热重载."""
+    from tkinter import filedialog
+    import engine as engmod
+
+    path = filedialog.askopenfilename(
+        title='选择要导入的码表',
+        filetypes=[('码表文件', '*.txt *.dict *.yaml *.yml'), ('所有文件', '*.*')])
+    if not path:
+        return
+    text = engmod.read_import_text(path)
+    if text is None:
+        _msgbox('导入失败', '文件超过 64MB 或无法读取')
+        return
+    detected = engmod.detect_format(text.split('\n'))
+    target = engmod.suggest_target(os.path.basename(path))
+    r = _import_dialog(target, detected)
+    if r is None:
+        return
+    target, fmt = r
+    if fmt == 0:
+        fmt = detected if detected else 2                      # 自动 -> 检测结果(默认码在前)
+    import_path = os.path.join(dict_dir, ('import_wb.txt' if target == 0 else ('import_py.txt' if target == 1 else 'import_ec.txt')))
+    try:
+        acc = engmod.load_import_base(import_path)
+        base_words = sum(len(v) for v in acc.values())
+        skipped, trunc_codes, trunc_total = engmod.convert_file(text, fmt, acc)
+        new_words = sum(len(v) for v in acc.values()) - base_words
+        if new_words <= 0:
+            _msgbox('导入', '没有新增词条')
+            return
+        engmod.write_import_file(import_path, acc)
+        engine.reload()
+        _msgbox('导入完成', '新增 %d 词条 (跳过 %d 行, 截断 %d 码)' % (new_words, skipped, trunc_codes))
+    except Exception as ex:
+        _msgbox('导入失败', str(ex))

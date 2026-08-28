@@ -10,9 +10,9 @@ $dicts = Join-Path $pkg 'dicts'
 python (Join-Path $here 'build-wgime-pure.py')
 if (-not (Test-Path (Join-Path $dist 'wgime-py.py'))) { throw 'dist\wgime-py.py missing after build' }
 
-# 2. refresh package (先清空再重建, 避免旧结构残留)
-if (Test-Path $pkg) { Remove-Item $pkg -Recurse -Force }
+# 2. refresh package (清空内容再重建; 目录本身可能被某进程 cwd 占用, 不删目录只清内容)
 New-Item -ItemType Directory -Force $pkg | Out-Null
+Get-ChildItem $pkg -Recurse -Force | Remove-Item -Recurse -Force -EA SilentlyContinue
 New-Item -ItemType Directory -Force $dicts | Out-Null
 Copy-Item (Join-Path $dist 'wgime-py.py') $pkg -Force
 Copy-Item (Join-Path $here 'run-csharp-plugin.ps1') $pkg -Force   # [csharp] sidecar
