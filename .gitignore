@@ -18,6 +18,9 @@ plugins/lt.txt
 
 /tray_cs.cs
 
+# build-package.ps1 output: ready-to-copy package folder (regenerated from dist + repo dicts)
+/wgime-py-pure/package/
+
 tests/interop/*.log
 
 tests/interop/*.png

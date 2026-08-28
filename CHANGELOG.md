@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-08-28 (丢弃 pythonnet 双轨版本)
+
+- 删除 `wgime-py/`（pythonnet + WinForms 双轨方案，已被纯 Python 版完全取代）
+- `trad.txt`（简繁表）与 `pywfreq.txt`（语料词频表）移到仓库根——纯 Python 版 `build-package.ps1` 从仓库根取这两个文件
+
+---
+
 ## 2026-08-27 (wgime-py-pure: 全部迁移 + 单文件化)
 
 - 其余插件: clock(置顶时钟)/calc(安全计算器)/chat 纯 Python + tkinter

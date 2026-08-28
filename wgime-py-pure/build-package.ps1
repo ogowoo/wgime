@@ -16,8 +16,8 @@ New-Item -ItemType Directory -Force $dicts | Out-Null
 Copy-Item (Join-Path $dist 'wgime-py.py') $pkg -Force
 Copy-Item (Join-Path $here 'run-csharp-plugin.ps1') $pkg -Force   # [csharp] sidecar
 
-# 3. refresh dicts from the repo (C:\Tools\wgime)
-$src = 'C:\Tools\wgime'
+# 3. refresh dicts from the repo root (parent of this wgime-py-pure dir)
+$src = Split-Path $here -Parent
 foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'config.txt', 'tools.txt')) {
     $p = Join-Path $src $n
     if (Test-Path $p) { Copy-Item $p $dicts -Force } else { Write-Warning "missing $n in $src" }
