@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-28 (wgime-py-pure: 托盘菜单分组 + 中英双语)
+
+- **菜单分组**:托盘菜单按 C# 版结构分组——开关 / 模式 / 选项{繁体输出, 候选窗跟随光标, 主题} / 词库{造词, 导入码表} / 这个程序{改用剪贴板上屏, 标点吞字修复} / 退出,扁平项收进子菜单
+- **双语**:所有标签中英双语,按系统 UI 语言(`GetUserDefaultUILanguage() & 0x3FF == 0x04`)自动选中文/英文,与 C# 版 `CultureInfo.CurrentUICulture` 判定一致;模式名补英文(Mixed/Pinyin/Wubi/Dict)
+- **补造词入口**:词库子菜单加"造词 (Ctrl+Alt+C)",走新增的 `api['makeword']` → `makeword_clipboard()`
+
+---
+
 ## 2026-08-28 (wgime-py-pure: 新记事本自动豁免 keyfix + 候选条长度限制 + 内嵌 pystray)
 
 - **新记事本(UWP)上屏乱码修复**:keyfix 的 X+Back 自我中和只在 Win32 EDIT 成立,新记事本是 UWP 控件、不自我中和 → 全角标点后乱码。`effective_keyfix` 加内置白名单 `_KEYFIX_INCOMPATIBLE={'notepad'}`,自动关闭 keyfix;用户 pastemode.txt/托盘切换优先级更高,可显式覆盖

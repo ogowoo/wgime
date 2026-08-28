@@ -123,6 +123,7 @@ try:
         'set_theme': lambda name: set_theme(name),
         'get_theme': lambda: CFG.get('theme', 'dark'),
         'import_table': lambda: tools.show_import(engine, DICT_DIR),
+        'makeword': lambda: makeword_clipboard(),
     })
 except Exception as e:
     _dfn('tray start err %r' % e)
