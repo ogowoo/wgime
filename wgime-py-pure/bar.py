@@ -47,7 +47,7 @@ class CandBar:
                           (x2 - r, y2), (x1 + r, y2), (x1, y2), (x1, y2 - r), (x1, y1 + r), (x1, y1)],
                          smooth=True, **kw)
 
-    def show(self, header, code, cands, sel, page=0, total=1, follow=True):
+    def show(self, header, code, cands, sel, page=0, total=1, follow=True, fixed=None):
         t = THEMES[self.theme]
         c = self.canvas
         c.delete('all')
@@ -98,10 +98,17 @@ class CandBar:
             else:
                 c.create_text(x + 2, y + 13, anchor='w', text=text, fill=t['text'], font=self._fd)
             x += tw + 16
-        # 定位: 跟随光标 (多屏: 按光标所在显示器钳制); 开始菜单/搜索类 Shell UI 光标探测不可靠
-        # 且 Win11 开始菜单浮窗居中/左侧, 覆盖屏中大部分高度 -> 候选框固定到屏幕右侧垂直居中(避开浮窗) + 置顶
+        # 定位: 固定位置(fixed) > 跟随光标(多屏钳制) > 开始菜单/搜索 Shell 固定右下角 > 拖动保持
         _shell = win.foreground_process_name() in ('startmenuexperiencehost', 'searchhost', 'shellexperiencehost')
-        if follow and not _shell:
+        if isinstance(fixed, (tuple, list)):
+            self.top.geometry('%dx%d+%d+%d' % (w, h, fixed[0], fixed[1]))
+        elif fixed == 'bottom-right':
+            ra = win.screen_workarea()
+            self.top.geometry('%dx%d+%d+%d' % (w, h, ra.right - w - 16, ra.bottom - h - 8))
+        elif fixed == 'bottom-center':
+            ra = win.screen_workarea()
+            self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 8))
+        elif follow and not _shell:
             pos = win.get_caret_pos()
             if pos:
                 cx, cy = pos
@@ -123,9 +130,7 @@ class CandBar:
         elif _shell:
             # 开始菜单/搜索类 UI: 固定屏幕右下角并贴着任务栏上方(避开浮窗, 不遮挡中央)
             ra = win.screen_workarea()
-            x = ra.right - w - 16
-            y = ra.bottom - h - 8
-            self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
+            self.top.geometry('%dx%d+%d+%d' % (w, h, ra.right - w - 16, ra.bottom - h - 8))
         else:
             # 固定模式(用户可拖动): 只设尺寸, 保持既有位置
             self.top.geometry('%dx%d' % (w, h))

@@ -255,8 +255,8 @@ def show_page():
         # 缓冲非空即显示 (即使无候选) —— 无候选时也能看到已输入的编码, 不会"消失"
         bar.show(header, ime.buf, page_c, ime.sel, ime.page, total, follow)
     elif not CFG.get('hideidle', True):
-        # hideidle=0: 常驻候选窗 (空闲也显示, 只显示模式状态)
-        bar.show(header.rstrip(), '', [], 0, 0, 1, follow)
+        # hideidle=0: 常驻候选窗, 固定屏幕右下角(贴任务栏), 不跟随
+        bar.show(header.rstrip(), '', [], 0, 0, 1, False, 'bottom-right')
     else:
         bar.hide()
 
