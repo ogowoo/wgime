@@ -271,3 +271,12 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **收尾补齐（对照 pythonnet 版）**：① 注入恢复完整路由（paste 粘贴/提权 UIPI 回退 + Qt 吞字 qtfix + per-app `pastemode.txt` 模式）；② 托盘加"当前程序: 剪贴板上屏切换 / 标点吞字修复切换"；③ **插件管理窗体**（`plugins`/`cjgl` 启动器，勾选启停 + `plugins-disabled.txt` + 重载）。托盘块移到主循环前（函数定义后），回调用 lambda 延迟求值。实测：`plugins` → ▶插件管理 弹窗列出 3 插件
 
 > 剩余非阻塞项：emoji 候选目前文本渲染（C# 版用 Fluent PNG）；造词对话框（C# 有，可用 Ctrl+Alt+C 剪贴板造词替代）
+
+---
+
+## 17. 造词对话框 + 光标跟随修复 + 托盘崩溃修复（2026-08-27）
+
+- **造词对话框**（`tools.show_makeword`，Ctrl+Alt+C 弹出）：剪贴板预填词语，编码留空自动推导（`engine.code_for`），可改码后确认造词；与自动造词/剪贴板造词并存
+- **光标跟随修复**：`get_caret_pos` 探测本身准确，但**探测不到时**旧代码落到"屏幕底部居中"→ 很错位。改为：① 缓存上次有效光标位，探测失败时复用（不跳走）；② 否则用前台窗口客户区左上（贴近输入区）；③ 候选框钳制到屏幕内 + 下方不够时翻到光标上方；④ 加 DPI 感知（高分屏 tkinter/Win32 坐标一致）
+- **托盘崩溃修复（关键）**：pystray 回调在其**自己的线程**跑，原来调 `root.after` 触发 `RuntimeError: main thread is not in main loop` 直接崩掉整个 app——改为 `TRAY_Q` 队列 + 主线程 `poll` 里执行 + 刷新图标；`poll` 的 `winfo_exists` 加防护（关闭阶段不报错）
+- 实测：造词对话框弹出（词语/编码/造词/取消）；托盘不再崩溃；`get_caret_pos` 探测 `(301,126)` 即实际光标处

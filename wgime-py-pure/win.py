@@ -165,7 +165,11 @@ class GUITHREADINFO(ctypes.Structure):
                 ('hwndCaret', w.HWND), ('rcCaret', RECT)]
 
 
+_last_caret = [None]
+
+
 def get_caret_pos():
+    """光标屏幕坐标. 失败时复用上次有效位, 再失败用前台窗口客户区左上 (贴近输入区)."""
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
@@ -174,10 +178,26 @@ def get_caret_pos():
         if user32.GetGUIThreadInfo(tid, ctypes.byref(g)) and g.hwndCaret:
             pt = POINT(g.rcCaret.left, g.rcCaret.bottom)
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
-            return pt.x, pt.y
+            _last_caret[0] = (pt.x, pt.y)
+            return _last_caret[0]
     except Exception:
         pass
-    return None
+    if _last_caret[0]:
+        return _last_caret[0]
+    return _foreground_client_origin()
+
+
+def _foreground_client_origin():
+    """前台窗口客户区左上角的屏幕坐标 (光标探测失败的回退)."""
+    try:
+        fg = user32.GetForegroundWindow()
+        if not fg:
+            return None
+        pt = POINT(0, 0)
+        user32.ClientToScreen(fg, ctypes.byref(pt))
+        return pt.x + 12, pt.y + 40
+    except Exception:
+        return None
 
 
 def screen_workarea():

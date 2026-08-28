@@ -239,6 +239,56 @@ def show_nettools():
 
 
 # ---------- 插件管理 ----------
+def show_makeword(data_dir, engine, prefill=''):
+    """造词对话框: 词语 + 编码 (留空自动推导), 确认造词."""
+    root = tk._default_root
+    win = tk.Toplevel(root)
+    win.title('造词')
+    win.attributes('-topmost', True)
+    win.geometry('360x190')
+    win.configure(bg='#F4F7FB')
+    tk.Label(win, text='词语 (2-8 字)', bg='#F4F7FB').pack(anchor='w', padx=10, pady=(10, 0))
+    wentry = tk.Entry(win, font=('Microsoft YaHei UI', 12))
+    wentry.pack(fill='x', padx=10, pady=4)
+    wentry.insert(0, prefill)
+    tk.Label(win, text='编码 (留空自动推导)', bg='#F4F7FB').pack(anchor='w', padx=10)
+    centry = tk.Entry(win, font=('Consolas', 11))
+    centry.pack(fill='x', padx=10, pady=4)
+    status = tk.Label(win, text='', bg='#F4F7FB', fg='#666')
+    status.pack(anchor='w', padx=10)
+
+    def autofill(*_a):
+        if not centry.get().strip():
+            c = engine.code_for(wentry.get().strip())
+            if c:
+                centry.delete(0, 'end')
+                centry.insert(0, c)
+    wentry.bind('<KeyRelease>', autofill)
+    autofill()
+
+    def do_make():
+        w = wentry.get().strip()
+        c = centry.get().strip()
+        if not (2 <= len(w) <= 8):
+            status.config(text='词语需 2-8 字')
+            return
+        if not c:
+            c = engine.code_for(w)
+        if not c:
+            status.config(text='无法推导编码')
+            return
+        if engine.add_user_word(w, c):
+            status.config(text='已造词: %s (%s)' % (w, c), fg='#1a8f3c')
+            win.after(900, win.destroy)
+        else:
+            status.config(text='已存在: %s' % w, fg='#c0392b')
+    btnrow = tk.Frame(win, bg='#F4F7FB')
+    btnrow.pack(pady=6)
+    tk.Button(btnrow, text='造词', command=do_make, width=8).pack(side='left', padx=4)
+    tk.Button(btnrow, text='取消', command=win.destroy, width=8).pack(side='left', padx=4)
+    wentry.focus_set()
+
+
 def show_plugin_mgr(plugins, data_dir, reload_fn):
     root = tk._default_root
     win = tk.Toplevel(root)

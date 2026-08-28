@@ -8,7 +8,12 @@ except Exception:
     pystray = None
     HAS_TRAY = False
 
+import queue
+
 MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+
+# 托盘回调 (pystray 线程) 不能直接碰 tkinter —— 入队, 主线程 poll 里执行
+TRAY_Q = queue.Queue()
 
 
 def _icon_img(active):
@@ -33,7 +38,8 @@ class Tray:
 
     def _on(self, fn):
         def wrap(_icon, _item):
-            self.root.after(0, lambda: (fn(), self._refresh()))
+            # 入队给主线程执行 (tkinter 不能跨线程调用), 随后刷新图标
+            TRAY_Q.put(lambda: (fn(), self._refresh()))
         return wrap
 
     def start(self):

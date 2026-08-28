@@ -9,6 +9,16 @@ import time
 import tkinter as tk
 import importlib
 import importlib.util
+import ctypes
+
+# DPI 感知: tkinter 与 Win32 物理坐标一致 (否则高分屏光标跟随错位)
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)      # PER_MONITOR_DPI_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DICT_DIR = os.environ.get('WGIME_DICT_DIR', r'C:\Tools\wgime')
@@ -467,16 +477,9 @@ def _show_builtin(kind):
 
 
 def makeword_clipboard():
-    t = win.clipboard_text()
-    if not t:
-        t = ''
-    t = t.strip()
-    if 2 <= len(t) <= 8 and is_all_cjk(t):
-        code = engine.code_for(t)
-        if code and engine.add_user_word(t, code):
-            _dfn('made clipboard word %s %s' % (t, code))
-    else:
-        _dfn('makeword: clipboard not 2-8 hanzi')
+    t = (win.clipboard_text() or '').strip()
+    prefill = t if 2 <= len(t) <= 8 and is_all_cjk(t) else ''
+    tools.show_makeword(DATA_DIR, engine, prefill)
 
 
 def handle(vk):
@@ -619,6 +622,17 @@ except Exception as e:
 
 def poll():
     try:
+        # 先排空托盘动作 (pystray 线程入队, 此处主线程执行)
+        try:
+            import tray as _traymod
+            for _ in range(8):
+                try:
+                    a = _traymod.TRAY_Q.get_nowait()
+                except Exception:
+                    break
+                a()
+        except Exception:
+            pass
         for _ in range(64):
             try:
                 vk = hook.EVENTS.get_nowait()
@@ -627,8 +641,11 @@ def poll():
             handle(vk)
     finally:
         hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
-        if root.winfo_exists():
-            root.after(15, poll)
+        try:
+            if root.winfo_exists():
+                root.after(15, poll)
+        except Exception:
+            pass
 
 
 root.after(15, poll)

@@ -61,12 +61,23 @@ class CandBar:
             else:
                 c.create_text(x + 2, y + 13, anchor='w', text=text, fill=TEXT, font=self.f_cand)
             x += tw + 16
-        # 定位跟随光标
+        # 定位跟随光标 (钳制到屏幕内, 下方不够则翻到光标上方)
+        ra = win.screen_workarea()
         pos = win.get_caret_pos()
         if pos:
-            self.top.geometry('%dx%d+%d+%d' % (w, h, pos[0], pos[1] + 6))
+            cx, cy = pos
+            x = cx
+            y = cy + 6
+            if x + w > ra.right:
+                x = ra.right - w
+            if x < ra.left:
+                x = ra.left
+            if y + h > ra.bottom:
+                y = cy - h - 6
+            if y < ra.top:
+                y = ra.top
+            self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
         else:
-            ra = win.screen_workarea()
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40))
         self.top.deiconify()
 
