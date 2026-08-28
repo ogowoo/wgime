@@ -99,7 +99,7 @@ class CandBar:
                 c.create_text(x + 2, y + 13, anchor='w', text=text, fill=t['text'], font=self._fd)
             x += tw + 16
         # 定位: 跟随光标 (多屏: 按光标所在显示器钳制); 开始菜单/搜索类 Shell UI 光标探测不可靠
-        # 且浮窗覆盖中央, 改为固定屏幕底部(任务栏上方, 不在浮窗覆盖区) + 置顶, 避免候选框被盖住
+        # 且 Win11 开始菜单浮窗居中/左侧, 覆盖屏中大部分高度 -> 候选框固定到屏幕右侧垂直居中(避开浮窗) + 置顶
         _shell = win.foreground_process_name() in ('startmenuexperiencehost', 'searchhost', 'shellexperiencehost')
         if follow and not _shell:
             pos = win.get_caret_pos()
@@ -120,10 +120,15 @@ class CandBar:
             else:
                 ra = win.screen_workarea()
                 self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40))
-        else:
-            # 开始菜单/Shell UI 或固定模式: 固定屏幕底部中央(任务栏上方, 避开开始菜单浮窗)
+        elif _shell:
+            # 开始菜单/搜索类 UI: 固定屏幕右侧垂直居中(避开 Win11 开始菜单居中/左侧浮窗的覆盖区)
             ra = win.screen_workarea()
-            self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40))
+            x = ra.right - w - 16
+            y = ra.top + (ra.bottom - ra.top - h) // 2
+            self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
+        else:
+            # 固定模式(用户可拖动): 只设尺寸, 保持既有位置
+            self.top.geometry('%dx%d' % (w, h))
         self.top.deiconify()
         win.set_topmost(self.top.winfo_id())   # 强制提到 topmost z-order 最顶(Win11 开始菜单不压住候选框)
 
