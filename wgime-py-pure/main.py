@@ -109,6 +109,8 @@ def apply_config():
     CFG = load_config(os.path.join(APP_DIR, 'config.txt'))
     engine.FUZZY_PAIRS = tuple(tuple(p) for p in CFG['fuzzy'])
     ime.trad = CFG['trad']
+    engine.learn_k = CFG.get('learnk', 5000)   # 全量学习词频排序权重 (config learnk)
+    engine.recent_k = CFG.get('recentk', 200)  # 近期热度排序权重 (config recentk)
 
 
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
@@ -309,13 +311,16 @@ def refresh():
 
 
 def clear_assoc():
+    global _last_learn
     ime.assoc_showing = False
     ime.last_commit = None
+    _last_learn = None
     hook.COMPOSING[0] = bool(ime.buf)
     bar.hide()
 
 
 def reset():
+    global _last_learn
     ime.buf = ''
     ime.cands = []
     ime.page = 0
@@ -324,6 +329,7 @@ def reset():
     ime.assoc_showing = False
     ime.sym_cat = 0
     ime.app_cand = None
+    _last_learn = None
     hook.COMPOSING[0] = False
     bar.hide()
 
@@ -355,6 +361,7 @@ def pick_assoc(i):
     engine.learn_assoc(prev, apick)
     inject(apick)
     ime.last_commit = apick
+    engine.touch_recent(ime.mode, apick)   # ④ 联想候选上屏也计入近期热度
     show_assoc()
 
 
@@ -546,7 +553,25 @@ def record_commit(w, code):
         _dfn('made word %s %s' % (nw, nc))
 
 
+_last_learn = None   # 最近一次"主动学习" (word, code, mode): 供退格误学回滚; 默认确认/动态候选为 None
+
+
+def _rollback_last_learn():
+    """误学回滚: 撤销最近一次主动学习 (词频 + LastPick + 近期窗口)."""
+    global _last_learn
+    if not _last_learn:
+        return
+    w, code, mode = _last_learn
+    _last_learn = None
+    try:
+        engine.unlearn(w, code, mode)
+        _dfn('unlearn %r %s' % (w, code))
+    except Exception:
+        pass
+
+
 def commit(i):
+    global _last_learn
     if 0 <= i < len(ime.cands):
         text = ime.cands[i]
         if text == ime.app_cand:
@@ -555,17 +580,27 @@ def commit(i):
                 run_launcher(lch)
             reset()
             return
-        learn_word = text if text not in ime.dyn_set else None
         code = ime.buf
         prev = ime.last_commit
         inject(text)
         reset()
-        if learn_word:
-            engine.learn(code, learn_word, ime.mode)
-            if prev and len(learn_word) <= 8 and is_all_cjk(learn_word):
-                engine.learn_assoc(prev, learn_word)
-            record_commit(learn_word, code)
-            begin_assoc(learn_word)
+        is_dyn = text in ime.dyn_set
+        if is_dyn:
+            _last_learn = None
+            return
+        # 联想: 无论默认/主动都触发 (保留联想体验)
+        if prev and len(text) <= 8 and is_all_cjk(text):
+            engine.learn_assoc(prev, text)
+        begin_assoc(text)
+        # 近期热度: 所有上屏都计入 (反映最近使用习惯, 滑动窗口自动过期) —— 功能④
+        engine.touch_recent(ime.mode, text)
+        # ① 字频学习只对"主动选择"(非默认第1位/非动态)生效, 避免空格确认默认词被误强化
+        if i > 0:
+            engine.learn(code, text, ime.mode)
+            record_commit(text, code)
+            _last_learn = (text, code, ime.mode)
+        else:
+            _last_learn = None
 
 
 def digit_as_code():
@@ -813,6 +848,7 @@ def handle(vk):
         commit_char(1)
     elif vk == VK['BACK']:
         if ime.assoc_showing and not ime.buf:
+            _rollback_last_learn()                   # ② 误学回滚: 刚上屏的词被退格删除, 撤销上次主动学习
             clear_assoc()                            # 联想态退格: 退出联想
             win.send_key_backspace()                 # 并把退格交给应用 (删刚上屏的字)
         elif ime.buf:

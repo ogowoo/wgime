@@ -13,7 +13,9 @@ import os
 import re
 import threading
 import time
+from collections import deque
 
+RE_CAP = 500      # 近期热度滑动窗口: 最近上屏的 (mode, word) 数, 超出溢出最旧 -> 自动过期
 CAND_CAP = 60
 PAGE_SIZE = 9
 MODE_SUFFIX = ('mix', 'py', 'wb')
@@ -192,7 +194,8 @@ def load_config(path):
     """返回 dict: fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps"""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
-               paste=3, keyfix=True, followcaret=True, theme='dark')
+               paste=3, keyfix=True, followcaret=True, theme='dark',
+               learnk=5000, recentk=200)
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -234,6 +237,16 @@ def load_config(path):
                     cfg['paste'] = {'on': 1, 'always': 1, 'off': 2, 'key': 3, 'unicode': 3}.get(v, 0)
                 elif k == 'keyfix':
                     cfg['keyfix'] = v in ('1', 'on', 'true')
+                elif k == 'learnk':
+                    try:
+                        cfg['learnk'] = max(0, int(v))
+                    except ValueError:
+                        pass
+                elif k == 'recentk':
+                    try:
+                        cfg['recentk'] = max(0, int(v))
+                    except ValueError:
+                        pass
                 elif k == 'followcaret':
                     cfg['followcaret'] = v not in ('0', 'off', 'false')
                 elif k == 'theme':
@@ -576,6 +589,8 @@ class Engine:
         t0 = time.time()
         self.data_dir = data_dir
         self.dict_dir = dict_dir
+        self.learn_k = 5000   # 全量学习词频排序权重 (config learnk, main.py 会用 config 覆盖)
+        self.recent_k = 200   # 近期热度排序权重 (config recentk)
         os.makedirs(data_dir, exist_ok=True)
         if not self._load_cache(self._paths()):
             self._build()
@@ -625,6 +640,9 @@ class Engine:
         self.freq_m = [dict(), dict(), dict()]
         self.lastpick_m = [dict(), dict(), dict()]
         self.freq = {}
+        # 近期热度 (滑动窗口): 反映最近使用习惯, 自动过期
+        self.freq_recent = [dict(), dict(), dict()]
+        self.recent_log = deque()
         self._load_freq()
         self.freq_dirty = 0
         self.last_save = time.time()
@@ -738,6 +756,55 @@ class Engine:
             self.freq_dirty = 0
             self.last_save = time.time()
             threading.Thread(target=self.save_freq, daemon=True).start()
+
+    # ---------- 近期热度 (滑动窗口) + 误学回滚 ----------
+    def touch_recent(self, mode, w):
+        """近期热度: 上屏即计一次; recent_log 超 RE_CAP 时溢出最旧, 自动过期."""
+        if mode >= 3 or not w:
+            return
+        self.recent_log.append((mode, w))
+        fr = self.freq_recent[mode]
+        fr[w] = fr.get(w, 0) + 1
+        if len(self.recent_log) > RE_CAP:
+            om, ow = self.recent_log.popleft()
+            n = self.freq_recent[om].get(ow, 0)
+            if n <= 1:
+                self.freq_recent[om].pop(ow, None)
+            else:
+                self.freq_recent[om][ow] = n - 1
+
+    def _untouch_recent(self, mode, w):
+        """误学回滚: 从近期窗口移除该词一次."""
+        if mode >= 3 or not w:
+            return
+        try:
+            self.recent_log.remove((mode, w))
+        except ValueError:
+            pass
+        n = self.freq_recent[mode].get(w, 0)
+        if n <= 1:
+            self.freq_recent[mode].pop(w, None)
+        else:
+            self.freq_recent[mode][w] = n - 1
+
+    def unlearn(self, w, code, mode):
+        """误学回滚: 撤销一次主动学习 (learn 的逆操作) + 近期窗口回滚."""
+        def dec(d, k):
+            n = d.get(k)
+            if n is None:
+                return
+            if n <= 1:
+                d.pop(k, None)
+            else:
+                d[k] = n - 1
+        dec(self.freq, w)
+        if 0 <= mode < 3:
+            dec(self.freq_m[mode], w)
+            lb = self.lastpick_m[mode]
+            if code in lb:
+                lb.pop(code, None)
+            self._untouch_recent(mode, w)
+        self.freq_dirty += 1   # 消费掉回滚, 触发后续落盘
 
     # ---------- 造句 (BestSentence: 单字/词一元格架, score=sum(log(f+1))-edges*log_total) ----------
     def best_sentence(self, code):
@@ -930,11 +997,15 @@ class Engine:
                         add(exact)
                     if len(cands) >= CAND_CAP:
                         break
-        # 字频排序 (稳定, python 版更优, 保留): 语料基础词频 (pywfreq) + 学习词频 (每次提交 +5000)
-        # → 常见词天然靠前, 学习词频把用户常用词往上顶; 相比 C# 版(只按学习词频) 结合了语料先验
+        # 字频排序 (稳定): 语料先验 word_freq + 全量学习词频×learn_k + 近期热度×recent_k
+        # → 常见词天然靠前; 主动选过的词(learn)往上顶; 最近常打的词(近期滑动窗口)也靠前
         fb = self.freq_m[mode] if mode < 3 else self.freq
-        if len(cands) > 1 and (fb or self.word_freq):
-            cands = sorted(cands, key=lambda w: -(self.word_freq.get(w, 0) + fb.get(w, 0) * 5000))
+        fr = self.freq_recent[mode] if mode < 3 else {}
+        if len(cands) > 1 and (fb or self.word_freq or fr):
+            cands = sorted(cands, key=lambda w: -(
+                self.word_freq.get(w, 0)
+                + fb.get(w, 0) * self.learn_k
+                + fr.get(w, 0) * self.recent_k))
         if len(cands) > 1 and mode < 3:
             lp = self.lastpick_m[mode].get(keys)
             if lp and lp in cands:
