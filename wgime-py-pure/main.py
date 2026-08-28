@@ -390,12 +390,20 @@ def effective_paste_mode():
     return m
 
 
+# keyfix 的 X+Back 自我中和只在"符合规范的应用"(Win32 EDIT)里成立;
+# 已知不兼容的程序(新记事本 UWP 等)自动关闭 keyfix, 避免上屏乱码。
+# APPMODES(用户 pastemode.txt / 托盘)优先级更高, 可显式 keyfix 覆盖此白名单。
+_KEYFIX_INCOMPATIBLE = {'notepad'}
+
+
 def effective_keyfix():
     name = win.foreground_process_name()
     o = APPMODES.get(name)
     if o == 4:
         return True
     if o == 5:
+        return False
+    if name in _KEYFIX_INCOMPATIBLE:
         return False
     return CFG.get('keyfix', True)
 
