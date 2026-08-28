@@ -121,6 +121,7 @@ class CandBar:
         else:
             self.top.geometry('%dx%d' % (w, h))
         self.top.deiconify()
+        win.set_topmost(self.top.winfo_id())   # 强制提到 topmost z-order 最顶(Win11 开始菜单不压住候选框)
 
     def _drag_start(self, e):
         self._drag['x'] = e.x_root - self.top.winfo_x()

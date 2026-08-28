@@ -298,6 +298,18 @@ def screen_workarea():
     return r
 
 
+def set_topmost(hwnd):
+    """把窗口提到 topmost z-order 最顶(Win11 开始菜单等 Shell 层会比普通 topmost 更高, 用它压回)."""
+    try:
+        user32.SetWindowPos.restype = w.BOOL
+        user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, w.UINT]
+        flags = 0x0001 | 0x0002 | 0x0010                       # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        user32.SetWindowPos(ctypes.c_void_p(hwnd), ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
+    except Exception:
+        pass
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [('cbSize', w.DWORD), ('rcMonitor', RECT), ('rcWork', RECT), ('dwFlags', w.DWORD)]
 

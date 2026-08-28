@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 候选框在 Win11 开始菜单被盖住)
+
+- **根因**:Win11 开始菜单(`StartMenuExperienceHost`)是系统 Shell 层, 优先级高于普通 topmost, 候选框被盖住(隐约可见但选不了词)
+- **修复**:`win.py` 新增 `set_topmost()`; `bar.show()` 每次 `deiconify()` 后用 `SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)` 把候选框提到 topmost z-order 最顶
+- 请用户实测开始菜单搜索框候选框是否清晰可见
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 修复开始菜单/搜索类 UI 不能上屏)
 
 - **根因**:开始菜单搜索框/相关 Shell 宿主(`StartMenuExperienceHost`/`SearchHost`/`ShellExperienceHost`)会吞掉 `SendInput` UNICODE 注入, 候选上屏不进去
