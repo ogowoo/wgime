@@ -90,7 +90,7 @@ try:
         'toggle': lambda: set_active(not ime.active),
         'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
         'trad': lambda: (setattr(ime, 'trad', not ime.trad), reset()),
-        'quit': root.destroy,
+        'quit': lambda: quit_app(),
         'is_active': lambda: ime.active,
         'get_mode': lambda: ime.mode,
         'apppaste': lambda: toggle_app_paste(),
@@ -358,6 +358,19 @@ def inject(text):
 
 
 # ---------- 状态机 ----------
+def quit_app():
+    try:
+        if 'TRAY' in globals() and TRAY and getattr(TRAY, 'icon', None):
+            TRAY.icon.stop()                            # 停 pystray 循环 (其线程非 daemon)
+    except Exception:
+        pass
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    os._exit(0)                                         # 强制结束进程 (quit 场景)
+
+
 def record_commit(w, code):
     now = time.time()
     if not w or len(w) > 4 or not is_all_cjk(w):
@@ -485,7 +498,7 @@ def makeword_clipboard():
 def handle(vk):
     _dfn('kb %02x active=%s buf=%s' % (vk, ime.active, ime.buf))
     if vk == VK['QUIT']:
-        root.after(50, root.destroy)
+        quit_app()
         return
     if vk == VK['TAP'] or vk == VK['F8']:
         set_active(not ime.active)

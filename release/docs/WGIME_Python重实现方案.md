@@ -280,3 +280,6 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **光标跟随修复**：`get_caret_pos` 探测本身准确，但**探测不到时**旧代码落到"屏幕底部居中"→ 很错位。改为：① 缓存上次有效光标位，探测失败时复用（不跳走）；② 否则用前台窗口客户区左上（贴近输入区）；③ 候选框钳制到屏幕内 + 下方不够时翻到光标上方；④ 加 DPI 感知（高分屏 tkinter/Win32 坐标一致）
 - **托盘崩溃修复（关键）**：pystray 回调在其**自己的线程**跑，原来调 `root.after` 触发 `RuntimeError: main thread is not in main loop` 直接崩掉整个 app——改为 `TRAY_Q` 队列 + 主线程 `poll` 里执行 + 刷新图标；`poll` 的 `winfo_exists` 加防护（关闭阶段不报错）
 - 实测：造词对话框弹出（词语/编码/造词/取消）；托盘不再崩溃；`get_caret_pos` 探测 `(301,126)` 即实际光标处
+- **托盘退出修复（用户反馈"退出用不了"）**：pystray 的 `_run_detached` 线程**非 daemon**，`root.destroy()` 后进程挂住（窗口没了图标还在）——`quit_app` 先 `icon.stop()` 再 `root.destroy()` 最后 `os._exit(0)` 强制结束；补 `Ctrl+Alt+Q` 键盘退出（钩子加 `VK_QUIT`，注意 **VK_QUIT 必须在 hook.py 里定义**，否则 NameError）。实测 Ctrl+Alt+Q → 进程干净退出 (exit 0)
+- **UIA 光标跟随（用户反馈"窗口最左方"）**：Edge/Explorer 这类 Chromium/多线程 UI `GetGUIThreadInfo` 探测不到光标，旧回退落到窗口左上/屏幕底部。改为：GetGUIThreadInfo → **UI Automation**（`uiautomation` 包，ITextPattern.GetSelection 精确光标，聚焦控件边界做小控件回退）→ 上次有效位缓存 → 前台窗口客户区。需 `pip install uiautomation`
+- Alt+D 等组合键实测透传正常（日志无 `kb 44`）；之前是托盘崩溃+光标错位造成的误解

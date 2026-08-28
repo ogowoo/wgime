@@ -166,10 +166,42 @@ class GUITHREADINFO(ctypes.Structure):
 
 
 _last_caret = [None]
+_uia = [None]
+
+
+def get_caret_uia():
+    """UI Automation 光标 (现代应用 Edge/Explorer/Office, GetGUIThreadInfo 探测不到时)."""
+    try:
+        if _uia[0] is None:
+            import uiautomation as auto
+            _uia[0] = auto
+        auto = _uia[0]
+        el = auto.GetFocusedControl()
+        if not el:
+            return None
+        # 精确光标: ITextPattern.GetSelection()
+        try:
+            tp = el.GetPattern(auto.PatternId.TextPattern)
+            if tp:
+                sel = tp.GetSelection()
+                if sel and len(sel) > 0:
+                    rects = sel[0].GetBoundingRectangles()
+                    if rects:
+                        r = rects[0]
+                        return (int(r[0]), int(r[3]))
+        except Exception:
+            pass
+        # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
+        r = el.BoundingRectangle
+        if r and 0 < (r[2] - r[0]) < 2000 and (r[3] - r[1]) < 400:
+            return (int(r[0]), int(r[3]))
+    except Exception:
+        pass
+    return None
 
 
 def get_caret_pos():
-    """光标屏幕坐标. 失败时复用上次有效位, 再失败用前台窗口客户区左上 (贴近输入区)."""
+    """光标屏幕坐标. GetGUIThreadInfo -> UIA -> 上次有效位 -> 前台窗口客户区."""
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
@@ -182,6 +214,10 @@ def get_caret_pos():
             return _last_caret[0]
     except Exception:
         pass
+    p = get_caret_uia()
+    if p:
+        _last_caret[0] = p
+        return p
     if _last_caret[0]:
         return _last_caret[0]
     return _foreground_client_origin()

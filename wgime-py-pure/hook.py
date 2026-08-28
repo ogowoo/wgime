@@ -24,6 +24,7 @@ VK_TAP = 0xF8           # 合成: Shift 轻拍
 VK_MODE = 0xF9          # 合成: Ctrl+`
 VK_TRAD = 0xFA          # 合成: Ctrl+Shift+F
 VK_MAKEWORD = 0xFB      # 合成: Ctrl+Alt+C
+VK_QUIT = 0xFC          # 合成: Ctrl+Alt+Q 退出
 
 ACTIVE = [False]        # 输入法是否启用 (主线程写入, 钩子线程判定)
 COMPOSING = [False]     # 是否有拼音缓冲/联想 (主线程写入; 空缓冲时空格/退格/回车透传)
@@ -83,6 +84,9 @@ def _proc(nCode, wParam, lParam):
         if m == WM_KEYDOWN or m == WM_SYSKEYDOWN:
             if vk == VK_TOGGLE:                            # F8 硬开关: 未激活也可唤醒/关闭
                 EVENTS.put(VK_TOGGLE)
+                return 1
+            if _key_state(0x11) and _key_state(0x12) and vk == 0x51:   # Ctrl+Alt+Q 退出 (任意状态)
+                EVENTS.put(VK_QUIT)
                 return 1
             ctrl = _key_state(0x11)
             shift = _key_state(0x10)
