@@ -165,7 +165,8 @@ def show_page():
     total = (len(ime.cands) + 8) // 9
     if ime.assoc_showing:
         bar.show(header + '↪联想', '', page_c, 0, ime.page, total)
-    elif ime.buf and page_c:
+    elif ime.buf:
+        # 缓冲非空即显示 (即使无候选) —— 无候选时也能看到已输入的编码, 不会"消失"
         bar.show(header, ime.buf, page_c, ime.sel, ime.page, total)
     else:
         bar.hide()
