@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 低危清理 — 死代码/无 with/硬编码/常量/原子写)
+
+- **main**:删冗余 `import importlib`;删死代码 `APPMODE_NAMES`;`load_appmodes`/config 读写改 `with`;抽 `_write_config`(config 原子+正则精确改写, 修 `startswith` 误匹配/BOM);硬编码路径 `C:\Tools\wgime` 改回 BASE;`[python]` 块子进程加 `CREATE_NO_WINDOW`(防闪控制台)
+- **engine**:`learnk/recentk` 提为常量 `DEFAULT_LEARN_K/RECENT_K`(去双处重复);`load_config` docstring 补全;`trad.txt` 用 `with`+`utf-8-sig`+捕获 UnicodeError;`read_import_text` 先 getsize 预检+`with`;`_load_cache` 损坏时留痕日志;新增 `_atomic_write` 用于用户词保存(防写盘损坏)
+- **win**:`get_caret_uia` 变量遮蔽改名(避免覆盖模块级 w)+去 `r and` 死代码;`screen_workarea` 去重复 `user32`;`get_pixel` CLR_INVALID 返回 `None`(不再误判为白色);`self_elevated` 删未用 `import`
+- **tools**:`show_color.tick` 处理 `get_pixel` 返回 `None`
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 全面体检高危+中危修复)
 
 - **main**:退出同步落盘词频(`quit_app` 调 `engine.save_freq`);数字键 0 候选 off-by-one 修复;`[python]` 块插件改后台线程执行(不再冻结主线程最长 60s)+子进程 IPC 中文乱码(UTF-8 配置);修 `commit()` is_dyn 在 reset 后判断的回归

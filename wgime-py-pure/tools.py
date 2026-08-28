@@ -185,7 +185,11 @@ def show_color():
         if win.winfo_x() <= x <= win.winfo_x() + win.winfo_width() and win.winfo_y() <= y <= win.winfo_y() + win.winfo_height():
             win.after(60, tick)     # 光标在窗口内: 跳过采样但保持调度链, 否则移出后不再取色
             return
-        r, g, b = w32.get_pixel(x, y)
+        px = w32.get_pixel(x, y)
+        if px is None:
+            win.after(60, tick)     # 取色失败(越屏/无DC): 跳过本次, 保持调度
+            return
+        r, g, b = px
         state['hex'] = '#%02X%02X%02X' % (r, g, b)
         prev.configure(bg=state['hex'])
         lbl.config(text='%s  (%d,%d)' % (state['hex'], x, y))

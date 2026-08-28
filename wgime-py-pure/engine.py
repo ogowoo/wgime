@@ -190,12 +190,18 @@ def is_all_cjk(s):
 
 
 # ---------- config.txt (与 C# LoadConfig 同格式) ----------
+DEFAULT_LEARN_K = 5000   # 全量学习词频排序权重 (config learnk, 默认)
+DEFAULT_RECENT_K = 200   # 近期热度排序权重 (config recentk, 默认)
+
+
 def load_config(path):
-    """返回 dict: fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps"""
+    """解析 config.txt 返回 dict(与 C# LoadConfig 同格式):
+    fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps/paste/keyfix/
+    followcaret/theme/learnk/recentk/phrases."""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
                paste=3, keyfix=True, followcaret=True, theme='dark',
-               learnk=5000, recentk=200)
+               learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K)
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -393,11 +399,12 @@ def skip_line(t):
 
 
 def read_import_text(path):
-    """读文件: UTF-8 -> GB18030 -> GBK; >64MB 返回 None"""
+    """读文件: 先按大小预检(>64MB 直接 None), 再 UTF-8 -> GB18030 -> GBK; 用 with 关句柄."""
     try:
-        b = open(path, 'rb').read()
-        if len(b) > 64 * 1024 * 1024:
+        if os.path.getsize(path) > 64 * 1024 * 1024:
             return None
+        with open(path, 'rb') as f:
+            b = f.read()
         for enc in ('utf-8', 'gb18030', 'gbk'):
             try:
                 return b.decode(enc)
@@ -563,6 +570,20 @@ def fuzzy_variants(code):
     return out
 
 
+def _atomic_write(path, text):
+    """原子写文本(先 .tmp 再 os.replace), 避免写盘中断损坏关键数据文件."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 class Engine:
     CACHE_VER = 1
 
@@ -589,8 +610,8 @@ class Engine:
         t0 = time.time()
         self.data_dir = data_dir
         self.dict_dir = dict_dir
-        self.learn_k = 5000   # 全量学习词频排序权重 (config learnk, main.py 会用 config 覆盖)
-        self.recent_k = 200   # 近期热度排序权重 (config recentk)
+        self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
+        self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
         os.makedirs(data_dir, exist_ok=True)
         if not self._load_cache(self._paths()):
             self._build()
@@ -633,7 +654,8 @@ class Engine:
             (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
              self.ek, self.ev, self.char_py, self.acro, self.ce) = obj['data']
             return True
-        except Exception:
+        except Exception as e:
+            print('[wgime] dict-cache load failed: %r' % (e,), file=sys.stderr)   # 缓存损坏时留痕, 便于排查
             return False
 
     def _save_cache(self, paths):
@@ -702,12 +724,13 @@ class Engine:
         self.trad_map = None
         tp = os.path.join(self.dict_dir, 'trad.txt')
         try:
-            lines = open(tp, encoding='utf-8').read().split('\n')
+            with open(tp, encoding='utf-8-sig') as f:
+                lines = f.read().split('\n')
             self.trad_map = {}
             for i in range(min(len(lines[0]), len(lines[1]))):
                 if lines[0][i] not in self.trad_map:
                     self.trad_map[lines[0][i]] = lines[1][i]
-        except (OSError, IndexError):
+        except (OSError, IndexError, UnicodeError):
             self.trad_map = None
 
     # ---------- freq / lastpick persistence (与 C# 版同格式, 可互换) ----------
@@ -1083,9 +1106,8 @@ class Engine:
             by_code = {}
             for w, c in self.user_words.items():
                 by_code.setdefault(c, []).append(w)
-            with open(os.path.join(self.data_dir, 'userwords.txt'), 'w', encoding='utf-8') as f:
-                for c, ws in by_code.items():
-                    f.write('%s %s\n' % (c, ' '.join(ws)))
+            text = ''.join('%s %s\n' % (c, ' '.join(ws)) for c, ws in by_code.items())
+            _atomic_write(os.path.join(self.data_dir, 'userwords.txt'), text)   # 原子写, 防损坏
         except OSError:
             pass
 

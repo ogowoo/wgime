@@ -239,17 +239,17 @@ def get_caret_uia():
                     rects = sel[0].GetBoundingRectangles()
                     if rects:
                         r = rects[0]
-                        w = r.right - r.left
-                        h = r.bottom - r.top
-                        if 0 < w <= 200 and 4 <= h <= 200:
+                        cw = r.right - r.left
+                        ch = r.bottom - r.top
+                        if 0 < cw <= 200 and 4 <= ch <= 200:
                             return (int(r.left), int(r.bottom))
         except Exception:
             pass
         # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
         r = el.BoundingRectangle
-        w = r.right - r.left
-        h = r.bottom - r.top
-        if r and 0 < w < 2000 and h < 400:
+        cw = r.right - r.left
+        ch = r.bottom - r.top
+        if 0 < cw < 2000 and 0 < ch < 400:
             return (int(r.left), int(r.bottom))
     except Exception:
         pass
@@ -293,9 +293,8 @@ def _foreground_client_origin():
 
 
 def screen_workarea():
-    sm = ctypes.windll.user32
     r = RECT()
-    sm.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)
+    user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)
     return r
 
 
@@ -333,6 +332,8 @@ def get_pixel(x, y):
         px = gdi32.GetPixel(hdc, x, y)
     finally:
         user32.ReleaseDC(0, hdc)
+    if px == 0xFFFFFFFF:      # CLR_INVALID: 取色失败(越屏/无DC) -> None, 避免误判为白色
+        return None
     return px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF
 
 
@@ -358,7 +359,6 @@ def foreground_process_name():
 
 def self_elevated():
     try:
-        from ctypes import wintypes
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False

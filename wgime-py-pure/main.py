@@ -7,9 +7,9 @@ import sys
 import threading
 import time
 import tkinter as tk
-import importlib
 import importlib.util
 import ctypes
+import re
 
 # DPI 感知: tkinter 与 Win32 物理坐标一致 (否则高分屏光标跟随错位)
 try:
@@ -37,7 +37,10 @@ def _find_dict_dir():
         d = os.path.join(b, 'dicts')
         if os.path.exists(os.path.join(d, 'py.txt')):
             return d
-    return r'C:\Tools\wgime'
+        # 兜底: 候选目录本身直接含 py.txt (单文件/开发版把码表与脚本同目录)
+        if os.path.exists(os.path.join(b, 'py.txt')):
+            return b
+    return BASE   # 找不到时退回脚本目录(而非写死开发机路径), 由后续词库加载提示
 
 
 DICT_DIR = _find_dict_dir()
@@ -179,7 +182,8 @@ def load_py_plugins():
     global PLUGINS
     PLUGINS = []
     try:
-        disabled = set(l.strip() for l in open(os.path.join(DATA_DIR, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
+        with open(os.path.join(DATA_DIR, 'plugins-disabled.txt'), encoding='utf-8') as f:
+            disabled = set(l.strip() for l in f if l.strip())
     except OSError:
         disabled = set()
     if '_EMBEDDED_PLUGINS' in globals():                    # 单文件版: 用内嵌插件模块
@@ -367,22 +371,22 @@ def pick_assoc(i):
 
 # ---------- 注入 (paste/keyfix 路由) ----------
 APPMODES = {}
-APPMODE_NAMES = {1: 'clipboard', 2: 'sendkeys', 3: 'key', 4: 'keyfix', 5: 'keyplain'}
 
 
 def load_appmodes():
     global APPMODES
     APPMODES = {}
     try:
-        for raw in open(os.path.join(DATA_DIR, 'pastemode.txt'), encoding='utf-8'):
-            t = raw.strip()
-            if not t or t[0] == '#':
-                continue
-            sp = t.find('=')
-            if sp < 1:
-                continue
-            name, mode = t[:sp].strip().lower(), t[sp + 1:].strip().lower()
-            APPMODES[name] = {'clipboard': 1, 'on': 1, 'off': 2, 'sendkeys': 2, 'keyfix': 4, 'keyplain': 5}.get(mode, 3)
+        with open(os.path.join(DATA_DIR, 'pastemode.txt'), encoding='utf-8') as f:
+            for raw in f:
+                t = raw.strip()
+                if not t or t[0] == '#':
+                    continue
+                sp = t.find('=')
+                if sp < 1:
+                    continue
+                name, mode = t[:sp].strip().lower(), t[sp + 1:].strip().lower()
+                APPMODES[name] = {'clipboard': 1, 'on': 1, 'off': 2, 'sendkeys': 2, 'keyfix': 4, 'keyplain': 5}.get(mode, 3)
     except OSError:
         pass
 
@@ -472,45 +476,38 @@ def inject(text):
 
 
 # ---------- 状态机 ----------
-def toggle_followcaret():
-    CFG['followcaret'] = not CFG.get('followcaret', True)
-    _dfn('followcaret=%s' % CFG['followcaret'])
-    # 写回 config.txt (followcaret 行)
+def _write_config(key, value):
+    """原子改写 config.txt 的一行 key (保留行尾, utf-8-sig 兼容 BOM, 正则精确匹配)."""
     try:
         path = os.path.join(APP_DIR, 'config.txt')
-        lines = open(path, encoding='utf-8').read().split('\n')
+        with open(path, encoding='utf-8-sig') as f:
+            text = f.read()
+        lines = text.split('\n')
         found = False
         for i, l in enumerate(lines):
-            if l.strip().lower().startswith('followcaret'):
-                lines[i] = 'followcaret = %s' % ('1' if CFG['followcaret'] else '0')
+            if re.match(r'^\s*%s\s*=' % re.escape(key), l):
+                lines[i] = '%s = %s' % (key, value)
                 found = True
                 break
         if not found:
-            lines.append('followcaret = %s' % ('1' if CFG['followcaret'] else '0'))
-        open(path, 'w', encoding='utf-8').write('\n'.join(lines))
+            lines.append('%s = %s' % (key, value))
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
     except OSError:
         pass
+
+
+def toggle_followcaret():
+    CFG['followcaret'] = not CFG.get('followcaret', True)
+    _dfn('followcaret=%s' % CFG['followcaret'])
+    _write_config('followcaret', '1' if CFG['followcaret'] else '0')   # 写回 config.txt
 
 
 def set_theme(name):
     CFG['theme'] = name
     bar.set_theme(name)
     _dfn('theme=%s' % name)
-    # 写回 config.txt (theme 行)
-    try:
-        path = os.path.join(APP_DIR, 'config.txt')
-        lines = open(path, encoding='utf-8').read().split('\n')
-        found = False
-        for i, l in enumerate(lines):
-            if l.strip().lower().startswith('theme'):
-                lines[i] = 'theme = %s' % name
-                found = True
-                break
-        if not found:
-            lines.append('theme = %s' % name)
-        open(path, 'w', encoding='utf-8').write('\n'.join(lines))
-    except OSError:
-        pass
+    _write_config('theme', name)   # 写回 config.txt
 
 
 def quit_app():
@@ -708,7 +705,7 @@ def _run_python_block(body, code, name, ctx, timeout=60):
     actions = []
     try:
         r = subprocess.run([sys.executable, tmp], timeout=timeout, capture_output=True,
-                           text=True, encoding='utf-8', errors='replace')
+                           text=True, encoding='utf-8', errors='replace', creationflags=0x08000000)
         for line in r.stdout.splitlines():
             if line.startswith('@wgime '):
                 try:
