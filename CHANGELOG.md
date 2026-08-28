@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 反查编码开关 + 托盘菜单项)
+
+- **托盘"选项"子菜单新增"反查编码"开关**(勾选态), 切换即生效, 并写回 config.txt 的 `showcode`(候选上显示反查编码, 五笔用五笔码否则拼音)
+- `main.py` 新增 `toggle_showcode()` + `api['toggleshowcode']`/`['get_showcode']`; 切换时若在组字则立即刷新候选(显示/隐藏编码)
+- `config.txt` 已有 `showcode`(默认 1), 无需新增
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 候选框在 Win11 开始菜单被盖住)
 
 - **根因**:Win11 开始菜单(`StartMenuExperienceHost`)是系统 Shell 层, 优先级高于普通 topmost, 候选框被盖住(隐约可见但选不了词)

@@ -158,6 +158,8 @@ try:
         'appkeyfix': lambda: toggle_app_keyfix(),
         'followcaret': lambda: toggle_followcaret(),
         'get_followcaret': lambda: CFG.get('followcaret', True),
+        'toggleshowcode': lambda: toggle_showcode(),
+        'get_showcode': lambda: CFG.get('showcode', False),
         'set_theme': lambda name: set_theme(name),
         'get_theme': lambda: CFG.get('theme', 'dark'),
         'import_table': lambda: tools.show_import(engine, DICT_DIR),
@@ -507,6 +509,15 @@ def toggle_followcaret():
     CFG['followcaret'] = not CFG.get('followcaret', True)
     _dfn('followcaret=%s' % CFG['followcaret'])
     _write_config('followcaret', '1' if CFG['followcaret'] else '0')   # 写回 config.txt
+
+
+def toggle_showcode():
+    """反查编码开关: 候选上显示反查编码(五笔用五笔码, 否则拼音)."""
+    CFG['showcode'] = not CFG.get('showcode', False)
+    _dfn('showcode=%s' % CFG['showcode'])
+    _write_config('showcode', '1' if CFG['showcode'] else '0')   # 写回 config.txt
+    if ime.buf:
+        refresh()                                                # 立即刷新候选(显示/隐藏编码)
 
 
 def set_theme(name):

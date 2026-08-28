@@ -101,6 +101,9 @@ class Tray:
                              pystray.Menu(
                                  pystray.MenuItem(L('繁体输出  (Ctrl+Shift+F)', 'Trad output  (Ctrl+Shift+F)'),
                                                   self._on(self.api['trad'])),
+                                 pystray.MenuItem(L('反查编码', 'Reverse code'),
+                                                  self._on(self.api['toggleshowcode']),
+                                                  checked=lambda _it: self.api['get_showcode']()),
                                  pystray.MenuItem(L('候选窗跟随光标', 'Candidate board follows caret'),
                                                   self._on(self.api['followcaret']),
                                                   checked=lambda _it: self.api['get_followcaret']()),
