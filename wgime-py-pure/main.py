@@ -535,15 +535,19 @@ def commit_char(idx):
     reset()
 
 
-def set_active(on):
-    ime.active = on
-    hook.set_active(on)
-    reset()
+def _refresh_tray():
     if 'TRAY' in globals() and TRAY:
         try:
             TRAY._refresh()
         except Exception:
             pass
+
+
+def set_active(on):
+    ime.active = on
+    hook.set_active(on)
+    reset()
+    _refresh_tray()
     _dfn('active=%s' % on)
 
 
@@ -662,10 +666,12 @@ def handle(vk):
     if vk == VK['MODE']:
         ime.mode = (ime.mode + 1) % 4
         reset()
+        _refresh_tray()
         return
     if vk == VK['TRAD']:
         ime.trad = not ime.trad
         reset()
+        _refresh_tray()
         return
     if vk == VK['MAKEWORD']:
         makeword_clipboard()
