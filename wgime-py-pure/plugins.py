@@ -39,6 +39,10 @@ def parse_plugin(path):
     if m:
         p.kind = 'csharp'
         p.body = m.group(1)
+    mp = re.search(r'(?s)\[python\]\s*(.*?)\[/python\]', text)
+    if mp:
+        p.kind = 'python'                                # [python] 块: 纯 Python 代码 (替代 [csharp])
+        p.body = mp.group(1)
     # 头部: code/name/desc (第一个非"键=值"非注释行起为步骤区)
     lines = text.split('\n')
     body_start = None

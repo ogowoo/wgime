@@ -14,6 +14,7 @@ if (-not (Test-Path (Join-Path $dist 'wgime-py.py'))) { throw 'dist\wgime-py.py 
 New-Item -ItemType Directory -Force $pkg | Out-Null
 New-Item -ItemType Directory -Force $dicts | Out-Null
 Copy-Item (Join-Path $dist 'wgime-py.py') $pkg -Force
+Copy-Item (Join-Path $here 'run-csharp-plugin.ps1') $pkg -Force   # [csharp] sidecar
 
 # 3. refresh dicts from the repo (C:\Tools\wgime)
 $src = 'C:\Tools\wgime'

@@ -285,3 +285,13 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - Alt+D 等组合键实测透传正常（日志无 `kb 44`）；之前是托盘崩溃+光标错位造成的误解
 - **UIA Rect 索引坑**：`uiautomation` 的 `BoundingRectangle`/`GetBoundingRectangles` 返回 `Rect` 对象，**不能下标索引**（`r[0]` 报错），要用 `.left/.top/.right/.bottom` 属性。修后 UIA 能拿到聚焦控件位置（探针：Tk 文本框 UIA=(308,431)），GUIThreadInfo 优先精确值，UIA 回退，现代应用（Edge/Explorer）候选框跟随到地址栏/输入框
 - **托盘图标与 C# 版一致**：圆角方形(squircle)+模式汉字镂空(中/拼/五/译)+Win11 强调色(蓝#0078D4/青#00B7C3/橙#CA5010/紫#881798)，未激活灰色#BEB9B3——Pillow 复刻，模式+激活态联动刷新
+
+---
+
+## 18. 补全 + C#/C++ 插件支持（2026-08-28）
+
+- **小补全**：showcode 反查编码渲染（候选上显示编码）、hideidle=0 常驻候选、phrase= 自定义短语置顶、网络工具补齐 7 页签（Ping/Tracert/DNS/HTTP/端口/子网/本机）
+- **插件方案对齐 C#**（`plugins\*.txt` + `tools.txt` + `config.txt`）：步骤 DSL 插件（clean-bin/qping 等）直接跑；`[python]` 块（替代 `[csharp]`）exec 运行；`[csharp]` 块经 **sidecar**（`run-csharp-plugin.ps1` PowerShell+CodeDom 编译运行，独立进程弹窗）——C# 插件也能跑
+- **候选框圆角真透明**（transparentcolor，替代 SetWindowRgn 裁边残影）+ 修宽度溢出
+- **C++/DLL**：纯版可用 ctypes `LoadLibrary`+导出函数调用 C++ DLL 插件（可行，未做插件实例）
+- **遗留大补**：WgTray（托盘工具箱独立程序）、hotkey_* 全局热键、emoji PNG 图片版

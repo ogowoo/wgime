@@ -125,12 +125,13 @@ except Exception as e:
     TRAY = None
 
 PLUGINS = []
+STEP_PLUGINS = []
 TOOLS = []
 
 
 def reload_plugins():
-    global PLUGINS, TOOLS
-    PLUGINS, _ = plugmod.load_plugins(os.path.join(DICT_DIR, 'plugins'), DATA_DIR)
+    global STEP_PLUGINS, TOOLS
+    STEP_PLUGINS, _ = plugmod.load_plugins(os.path.join(DICT_DIR, 'plugins'), DATA_DIR)
     TOOLS = plugmod.load_tools(os.path.join(DICT_DIR, 'tools.txt'))
 
 
@@ -171,6 +172,11 @@ def find_launcher(code):
     for m in PLUGINS:
         if getattr(m, 'CODE', None) == code:
             return (getattr(m, 'NAME', code), 'plugin', m)
+    for p in STEP_PLUGINS:                                  # plugins/*.txt (步骤 DSL / [python] / [csharp])
+        if getattr(p, 'enabled', True) and p.code == code:
+            if p.kind == 'csharp':
+                return (p.name, 'csharp', p)                # [csharp]: sidecar PowerShell 编译运行
+            return (p.name, 'python' if p.kind == 'python' else 'step', p)
     b = {'itools': ('工具箱', 'toolbox'), 'tools': ('工具箱', 'toolbox'),
          'jlb': ('剪贴板历史', 'clipboard'), 'clip': ('剪贴板历史', 'clipboard'),
          'bj': ('便签', 'notes'), 'notes': ('便签', 'notes'),
@@ -188,13 +194,31 @@ def show_page():
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
     total = (len(ime.cands) + 8) // 9
     follow = CFG.get('followcaret', True)
+    # showcode: 候选上显示反查编码 (仅显示, 不改变上屏)
+    if CFG.get('showcode'):
+        page_c = [_with_code(w) for w in page_c]
     if ime.assoc_showing:
         bar.show(header + '↪联想', '', page_c, 0, ime.page, total, follow)
     elif ime.buf:
         # 缓冲非空即显示 (即使无候选) —— 无候选时也能看到已输入的编码, 不会"消失"
         bar.show(header, ime.buf, page_c, ime.sel, ime.page, total, follow)
+    elif not CFG.get('hideidle', True):
+        # hideidle=0: 常驻候选窗 (空闲也显示, 只显示模式状态)
+        bar.show(header.rstrip(), '', [], 0, 0, 1, follow)
     else:
         bar.hide()
+
+
+def _with_code(w):
+    """候选 + 反查编码 (五笔模式用五笔码, 否则拼音)."""
+    try:
+        if ime.mode == 2:
+            c = engine.wubi_code_for(w)
+        else:
+            c = engine.code_for(w)
+        return '%s (%s)' % (w, c) if c else w
+    except Exception:
+        return w
 
 
 def refresh():
@@ -231,6 +255,12 @@ def refresh():
             cands.remove(cand)
         cands.insert(0, cand)
         ime.app_cand = cand
+    # 自定义短语 (config phrase=): 精确匹配置顶
+    ph = CFG.get('phrases', {}).get(ime.buf)
+    if ph:
+        if ph in cands:
+            cands.remove(ph)
+        cands.insert(0, ph)
     ime.cands = cands
     hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
     _dfn('refresh buf=%s cands=%s' % (ime.buf, [repr(c) for c in cands[:4]]))
@@ -513,6 +543,37 @@ def set_active(on):
     _dfn('active=%s' % on)
 
 
+def run_steps_bg(body):
+    """步骤 DSL 插件后台执行; msgbox/confirm marshal 回主线程 (tkinter 线程安全)."""
+    from tkinter import messagebox as _mb
+
+    def _msg(title, text):
+        root.after(0, lambda: _mb.showinfo(title, text))
+
+    def _confirm(text):
+        ev = threading.Event()
+        result = [False]
+
+        def ask():
+            try:
+                result[0] = _mb.askyesno('确认', text)
+            except Exception:
+                pass
+            ev.set()
+        root.after(0, ask)
+        ev.wait()
+        return result[0]
+
+    def work():
+        try:
+            fails = plugmod.run_steps(body, lambda m: _dfn('step %s' % m), _msg, _confirm)
+            if fails:
+                _dfn('steps fails %d' % fails)
+        except Exception as ex:
+            _dfn('steps err %r' % ex)
+    threading.Thread(target=work, daemon=True).start()
+
+
 def run_launcher(l):
     name, kind, payload = l
     if kind == 'plugin':
@@ -520,6 +581,30 @@ def run_launcher(l):
             payload.run()
         except Exception as ex:
             _dfn('plugin run err %r' % ex)
+        return
+    if kind == 'step':                                     # 步骤 DSL 插件 (plugins/*.txt)
+        run_steps_bg(payload.body)
+        return
+    if kind == 'python':                                   # [python] 块插件 (plugins/*.txt)
+        try:
+            import types
+            m = types.ModuleType('plugtxt_' + (payload.code or 'x'))
+            exec(compile(payload.body, payload.path, 'exec'), m.__dict__)
+            if hasattr(m, 'run'):
+                m.run()
+        except Exception as ex:
+            _dfn('python plugin err %r' % ex)
+        return
+    if kind == 'csharp':                                   # [csharp] 插件: sidecar PowerShell + CodeDom
+        runner = os.path.join(BASE, 'run-csharp-plugin.ps1')
+        if not os.path.exists(runner):
+            runner = os.path.join(DICT_DIR, 'run-csharp-plugin.ps1')
+        try:
+            import subprocess
+            subprocess.Popen(['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
+                              '-File', runner, payload.path], creationflags=0x08000000)
+        except Exception as ex:
+            _dfn('csharp plugin err %r' % ex)
         return
     if kind == 'builtin':
         _show_builtin(payload)

@@ -167,33 +167,122 @@ def show_color():
     tick()
 
 
-# ---------- 网络工具 ----------
+# ---------- 网络工具 (7 页签: Ping/Tracert/DNS/HTTP/端口/子网/本机) ----------
 def show_nettools():
-    win, content = ui.make_window('WgIme 网络工具', 480, 360)
-    W = 480
-    H_OUT = 360 - 50 - 14
-    host = ui.rounded_entry(content, x=10, y=10, w=240, h=32, initial='www.baidu.com')
-    out = ui.console_text(content, x=10, y=50, w=W - 20, h=H_OUT)
+    win, content = ui.make_window('WgIme 网络工具', 640, 420)
+    W, H = 640, 420
+    out = ui.console_text(content, x=12, y=88, w=W - 24, h=H - 88 - 12)
 
-    def run(cmd):
-        out.insert('end', '> ' + cmd + '\n')
-        out.see('end')
-        _bg(lambda: _stream(cmd))
+    def log(s):
+        win.after(0, lambda: (out.insert('end', s + '\n'), out.see('end')))
 
-    def _stream(cmd):
+    def run_bg(fn):
+        _bg(fn)
+
+    # 页签
+    pages = []
+    names = ['Ping', 'Tracert', 'DNS', 'HTTP', '端口', '子网', '本机']
+    tbs = []
+
+    def show_tab(i):
+        for j, p in enumerate(pages):
+            pass
+        for j, b in enumerate(tbs):
+            b.configure(fg=ui.ACCENT if j == i else ui.SUB)
+        run_tab(i)
+
+    def run_tab(i):
+        out.delete('1.0', 'end')
+        run_bg(lambda: _run_page(i))
+
+    chipw = (W - 24) // len(names)
+    for i, n in enumerate(names):
+        b = ui.flat_button(content, n, (lambda i=i: show_tab(i)), x=12 + i * chipw, y=12, w=chipw - 4, h=28)
+        tbs.append(b)
+    # host 输入框 (页签下方)
+    host = ui.rounded_entry(content, x=12, y=48, w=300, h=30, initial='www.baidu.com')
+
+    def _run_page(i):
+        h = host.get().strip()
         try:
-            p = __import__('subprocess').Popen(cmd, shell=True, stdout=-1, stderr=-1, universal_newlines=True)
-            for line in p.stdout:
-                win.after(0, lambda l=line: (out.insert('end', l), out.see('end')))
-            p.stdout.close()
-            p.wait()
-            win.after(0, lambda: out.insert('end', '-- done --\n'))
+            if i == 0:
+                _shell('ping -n 4 ' + h)
+            elif i == 1:
+                _shell('tracert -d ' + h)
+            elif i == 2:
+                _shell('nslookup ' + h)
+            elif i == 3:
+                _http(h)
+            elif i == 4:
+                _ports(h)
+            elif i == 5:
+                _subnet()
+            elif i == 6:
+                _local()
         except Exception as ex:
-            win.after(0, lambda: out.insert('end', 'ERR %s\n' % ex))
+            log('ERR %s' % ex)
 
-    ui.flat_button(content, 'Ping', lambda: run('ping -n 4 ' + host.get()), primary=True, x=258, y=10, w=64, h=32)
-    ui.flat_button(content, 'Tracert', lambda: run('tracert -d ' + host.get()), x=330, y=10, w=70, h=32)
-    ui.flat_button(content, 'NSLookup', lambda: run('nslookup ' + host.get()), x=408, y=10, w=64, h=32)
+    def _shell(cmd):
+        log('> ' + cmd)
+        p = __import__('subprocess').Popen(cmd, shell=True, stdout=-1, stderr=-1, universal_newlines=True)
+        for line in p.stdout:
+            log(line.rstrip('\n'))
+        p.stdout.close()
+        p.wait()
+        log('-- done --')
+
+    def _http(h):
+        import urllib.request
+        url = h if h.startswith('http') else 'https://' + h
+        log('> GET ' + url)
+        req = urllib.request.Request(url, headers={'User-Agent': 'WgIme-Py-NetTools'})
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                log('HTTP %s  %dms' % (r.status, int((time.time() - t0) * 1000)))
+                log('Server: %s' % r.headers.get('Server', '-'))
+                log('Content-Type: %s' % r.headers.get('Content-Type', '-'))
+        except Exception as ex:
+            log('ERR %s' % ex)
+
+    def _ports(h):
+        import socket as _s
+        log('> 端口探测 %s' % h)
+        for port in (80, 443, 22, 21, 25, 3306, 3389, 8080):
+            try:
+                s = _s.create_connection((h, port), timeout=2)
+                s.close()
+                log('%d 开放' % port)
+            except Exception:
+                log('%d 关闭' % port)
+
+    def _subnet():
+        import socket as _s
+        log('> 子网信息')
+        try:
+            hn = _s.gethostname()
+            log('主机名: %s' % hn)
+            for info in _s.getaddrinfo(hn, None, _s.AF_INET):
+                log('IP: %s' % info[4][0])
+        except Exception as ex:
+            log('ERR %s' % ex)
+
+    def _local():
+        import socket as _s
+        log('> 本机信息')
+        log('主机名: %s' % _s.gethostname())
+        try:
+            log('内网IP: %s' % _s.gethostbyname(_s.gethostname()))
+        except Exception:
+            pass
+        try:
+            import urllib.request
+            ip = urllib.request.urlopen('https://api.ipify.org', timeout=5).read().decode()
+            log('公网IP: %s' % ip)
+        except Exception:
+            log('公网IP: (获取失败)')
+
+    show_tab(0)
 
 
 # ---------- 造词对话框 ----------
