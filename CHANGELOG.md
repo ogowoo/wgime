@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 插件 Manifest 化 + 权限确认)
+
+- **① 插件 Manifest(高价值)**:plugins/*.txt 头部新增 `version/author/requires/perm` 键;plugins/*.py 模块级 `VERSION/AUTHOR/REQUIRES/PERM` 属性;新增 `plugins.py plugin_meta()` 统一读取(兼容 .py 模块与 .txt Plugin 对象)
+- **② 权限声明 + 破坏性确认(高价值)**:`perm` 支持 `low/network/run/registry/destructive`;声明非 `low` 权限的插件运行前弹"插件权限"确认(带版本/作者);步骤 DSL 的破坏性动词(`file-del`/`reg-set`/`reg-del`/`kill`)执行前强确认, 用户拒绝则跳过该步
+- **插件管理 UI**:展示版本/作者/权限(⚠风险标记);`clean-bin.txt` 声明 `perm=destructive` 作示例,`calc.py` 补 manifest
+- 旧插件无这些字段 → 默认 `perm=low`, 行为不变, 不弹确认
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 候选条宽度限制 — 不再铺满整屏)
 
 - **候选条最大宽度**上限从"屏幕宽-24"(铺满整屏) 收紧为 `min(屏幕宽-24, 720px)`, 不再铺满屏

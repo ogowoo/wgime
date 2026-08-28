@@ -664,8 +664,24 @@ def run_steps_bg(body):
     threading.Thread(target=work, daemon=True).start()
 
 
+def _confirm_plugin(payload):
+    """② 插件权限确认: 声明了高权限(联网/执行命令/注册表/破坏性)的插件, 运行前弹确认."""
+    meta = plugmod.plugin_meta(payload)
+    if not plugmod.is_high_perm(meta):
+        return True
+    from tkinter import messagebox as _mb
+    risk = plugmod.PERM_LABEL.get(meta['perm'], meta['perm'])
+    v = str(meta.get('version') or ''); a = str(meta.get('author') or '')
+    extra = (' [v%s %s]' % (v, a)).strip() if (v or a) else ''
+    return _mb.askyesno('插件权限', '插件「%s」需要权限: %s%s\n确定运行?' % (meta['name'], risk, extra))
+
+
 def run_launcher(l):
     name, kind, payload = l
+    # ② 高权限插件运行前确认 (联网/执行命令/注册表/破坏性)
+    if kind in ('plugin', 'step', 'python', 'csharp') and not _confirm_plugin(payload):
+        _dfn('plugin perm denied %s' % name)
+        return
     if kind == 'plugin':
         try:
             payload.run()

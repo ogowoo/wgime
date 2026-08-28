@@ -23,7 +23,11 @@ class Plugin(object):
         self.code = None
         self.name = None
         self.desc = ''
-        self.kind = 'steps'      # 'steps' | 'csharp'
+        self.version = ''
+        self.author = ''
+        self.requires = ''
+        self.perm = 'low'     # 权限等级: low/network/run/registry/destructive
+        self.kind = 'steps'      # 'steps' | 'csharp' | 'python'
         self.body = ''
         self.error = None
 
@@ -50,7 +54,7 @@ def parse_plugin(path):
         t = line.strip()
         if not t or t[0] in ';#':
             continue
-        mm = re.match(r'^(code|name|desc)\s*[=:]\s*(.*)$', t, re.I)
+        mm = re.match(r'^(code|name|desc|version|author|requires|perm)\s*[=:]\s*(.*)$', t, re.I)
         if mm:
             k = mm.group(1).lower()
             v = mm.group(2).strip()
@@ -60,6 +64,14 @@ def parse_plugin(path):
                 p.name = v
             elif k == 'desc':
                 p.desc = v
+            elif k == 'version':
+                p.version = v
+            elif k == 'author':
+                p.author = v
+            elif k == 'requires':
+                p.requires = v
+            elif k == 'perm':
+                p.perm = v.lower()
             continue
         body_start = i
         break
@@ -94,6 +106,30 @@ def save_disabled(data_dir, disabled):
             f.write('\n'.join(sorted(disabled)))
     except OSError:
         pass
+
+
+# ---------- 插件 manifest / 权限 ----------
+HIGH_PERM = ('network', 'run', 'registry', 'destructive')
+PERM_LABEL = {'network': '联网', 'run': '执行命令', 'registry': '修改注册表', 'destructive': '删除文件/清理'}
+DESTRUCTIVE_VERBS = ('file-del', 'reg-set', 'reg-del', 'kill')   # 数据破坏/系统级操作: 执行前强确认
+
+
+def plugin_meta(p):
+    """统一读取插件 manifest, 兼容 .py 模块(属性) 与 .txt Plugin 对象(字段)."""
+    if hasattr(p, 'CODE'):                       # .py 模块插件
+        code = getattr(p, 'CODE', '')
+        return {'code': code, 'name': getattr(p, 'NAME', code) or code,
+                'desc': getattr(p, 'DESC', '') or '', 'version': str(getattr(p, 'VERSION', '') or ''),
+                'author': str(getattr(p, 'AUTHOR', '') or ''), 'requires': str(getattr(p, 'REQUIRES', '') or ''),
+                'perm': str(getattr(p, 'PERM', 'low') or 'low')}
+    # .txt Plugin 对象
+    return {'code': p.code or '', 'name': p.name or '', 'desc': p.desc or '',
+            'version': str(getattr(p, 'version', '') or ''), 'author': str(getattr(p, 'author', '') or ''),
+            'requires': str(getattr(p, 'requires', '') or ''), 'perm': str(getattr(p, 'perm', 'low') or 'low')}
+
+
+def is_high_perm(meta):
+    return meta.get('perm', 'low') in HIGH_PERM
 
 
 # ---------- tools.txt (工具箱) ----------
@@ -188,6 +224,11 @@ def run_steps(body, log, msgbox, confirm):
         sp = t.find(' ')
         verb = (t[:sp] if sp > 0 else t).lower()
         arg = t[sp + 1:].strip() if sp > 0 else ''
+        # ② 破坏性动词: 执行前确认 (用户拒绝则跳过该步并计入 fail)
+        if verb in DESTRUCTIVE_VERBS and confirm and not confirm('插件要执行[%s] %s\n确定继续?' % (verb, arg[:50])):
+            fails += 1
+            log('确认被拒: %s' % verb)
+            continue
         try:
             fails += _run_verb(verb, arg, log, msgbox, confirm)
         except Exception as e:

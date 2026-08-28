@@ -335,11 +335,17 @@ def show_plugin_mgr(plugins, data_dir, reload_fn):
         disabled = set(l.strip() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
     except OSError:
         disabled = set()
+    pmap = {'network': '联网', 'run': '执行命令', 'registry': '注册表', 'destructive': '破坏'}
     for m in plugins:
         code = getattr(m, 'CODE', '?')
         name = getattr(m, 'NAME', code)
+        ver = str(getattr(m, 'VERSION', '') or '')
+        aut = str(getattr(m, 'AUTHOR', '') or '')
+        perm = str(getattr(m, 'PERM', 'low') or 'low')
+        info = (' [v%s%s]' % (ver, ('@' + aut) if aut else '')) if ver else ((' [' + aut + ']') if aut else '')
+        risk = ('  ⚠%s' % pmap.get(perm, perm)) if perm in pmap else ''
         v = tk.BooleanVar(value=(code not in disabled))
-        cb = tk.Checkbutton(frame, text='%s (%s)  %s' % (name, code, getattr(m, 'DESC', '')), variable=v,
+        cb = tk.Checkbutton(frame, text='%s (%s)%s%s  %s' % (name, code, info, risk, getattr(m, 'DESC', '')), variable=v,
                             anchor='w', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5), activebackground=ui.BG)
         cb.pack(fill='x')
         vars_.append((code, v))

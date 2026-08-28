@@ -7,6 +7,12 @@
   code = qls            ; 启动编码 (小写 a-z, 必填, 唯一)
   name = 清空回收站      ; 显示名 (必填)
   desc = 说明            ; 可选
+  version = 1.0         ; 版本号 (可选, 插件管理显示)
+  author = 你的名字       ; 作者 (可选)
+  requires = none        ; 需要的运行时/依赖 (可选; 如 node / python3)
+  perm = low            ; 权限 (可选; low/network/run/registry/destructive)
+                         ;   network=联网, run=执行命令, registry=改注册表, destructive=删文件/清理
+                         ;   声明了非 low 权限的插件, 运行前会弹权限确认; [python]/[csharp] 同理可用模块级或块内 meta
 
   <步骤>                 ; 头部之后直到文件末尾都是步骤
 
