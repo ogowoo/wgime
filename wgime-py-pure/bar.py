@@ -51,6 +51,12 @@ class CandBar:
         t = THEMES[self.theme]
         c = self.canvas
         c.delete('all')
+        # 候选显示截断: 超长词(整句/长词)截断 + 省略号, 避免候选条无限宽
+        wa = win.screen_workarea()
+        max_w = max(160, (wa.right - wa.left) - 24)   # 候选条最大宽度(留边距)
+        def clip(s, n=24):
+            return s if len(s) <= n else s[:n] + '…'
+        cands = [clip(x) for x in cands]
         line1 = self._pad + self._fc.measure(header) + self._fc.measure(code)
         page_ind = '◀ %d/%d ▶' % (page + 1, total) if total > 1 else ''
         ind_w = self._fc.measure(page_ind) if page_ind else 0
@@ -58,6 +64,7 @@ class CandBar:
         for i, cand in enumerate(cands):
             line2 += self._fd.measure('%d.%s' % (i + 1, cand)) + 16
         w = max(line1 + ind_w + 18, line2 + self._pad, 120)
+        w = min(w, max_w)                              # 钳制到屏幕宽度, 不再无限长
         h = 54
         # 圆角底 (fill=主题底; 四角透明由 transparentcolor 提供)
         self._round_rect(c, 0, 0, w - 1, h - 1, 10, fill=t['bg'])

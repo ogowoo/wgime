@@ -59,7 +59,7 @@ def collect_thirdparty(pkgnames):
     return files
 
 
-third_files = collect_thirdparty(['comtypes', 'uiautomation'])
+third_files = collect_thirdparty(['comtypes', 'uiautomation', 'pystray'])
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
     for rel, src in sorted(third_files.items()):
