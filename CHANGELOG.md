@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 修复开始菜单/搜索类 UI 不能上屏)
+
+- **根因**:开始菜单搜索框/相关 Shell 宿主(`StartMenuExperienceHost`/`SearchHost`/`ShellExperienceHost`)会吞掉 `SendInput` UNICODE 注入, 候选上屏不进去
+- **修复**:新增 `_CLIP_FORCE` 集合, 这些前台进程时 `effective_paste_mode` 强制返回 `1`(剪贴板上屏); `APPMODES`(用户 pastemode.txt)显式设置仍优先
+- 请用户实测:开始菜单搜索框/搜索面板输入是否能上屏; 若仍有不上的进程, 把该进程名补进 `_CLIP_FORCE`
+
+---
+
 ## 2026-08-29 (wgime-py-pure: chat 插件 UI 参考窗体设计规范重做)
 
 - **chat.py 的 ChatUI 改用 `ui.py` 设计系统**(原来是一坨裸 tkinter #F4F7FB/tk.Button/tk.Label, 风格不合规范):

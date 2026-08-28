@@ -423,10 +423,16 @@ def toggle_app_keyfix():
     save_appmodes()
 
 
+# 开始菜单/搜索/Shell 宿主: SendInput UNICODE 注入会被这类 UI 吞掉(候选上屏不进去), 强制剪贴板上屏
+_CLIP_FORCE = {'startmenuexperiencehost', 'searchhost', 'shellexperiencehost'}
+
+
 def effective_paste_mode():
     name = win.foreground_process_name()
     if name in APPMODES and APPMODES[name] in (1, 2, 3):
         return APPMODES[name]
+    if name in _CLIP_FORCE:
+        return 1        # 开始菜单/搜索/Shell UI: 强制剪贴板上屏
     m = CFG.get('paste', 3)
     if m == 0:
         if not win.self_elevated() and win.foreground_elevated():
