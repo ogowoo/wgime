@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-29 (docs: 把所有文档补上纯 Python 版说明)
+
+- **README**:加「纯 Python 版(wgime-py-pure)」章节 + 文件表格/文件说明/项目演进
+- **docs/使用说明**:开头加纯 Python 版小节(环境/单文件/数据目录/快捷键/与 C# 差异)
+- **docs/技术文档**:加 §12 纯 Python 版架构(运行环境/模块职责/单文件形态/启动链)
+- **docs/插件规范**:加 §8 纯 Python 版插件(双插件形态/步骤 DSL/[python] 块 JSON IPC/[csharp] sidecar/权限 manifest/插件管理)
+- **docs/窗体设计语言**:加 §9 纯 Python 版 ui.py 实现(色板/字体/骨架/控件)
+- **docs/CHAT_技术文档**:加 §7.4 纯 Python chat 插件(协议互通/ui.py 聊天窗/线程模型)+ §1 表格行
+- **AGENTS**:§8 加纯 Python 版概况; 已 sync-dist 同步 docs/config/plugins 到 wg-all/release
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 移除昂贵的缓存 md5 校验, 修复启动/首次上屏迟钝)
 
 - **根因**:之前加载 `dict-cache.pkl` 时对 95MB 的 data 全量 `pickle.dumps` 再算 md5 校验, 每次启动 ~1s+, 拖慢启动 → 首次上屏明显迟钝
