@@ -13,6 +13,7 @@
 | `wgtray.bat` | WgTray | **bat 版（带载荷）** | cmd 引导 + 内嵌 C# + 预编译 DLL 载荷，所有机器可跑（含受限语言模式机器） | ~380KB |
 | `wgtray-nopayload.bat` | WgTray | bat 纯源码版 | 只有 C# 源码明文，启动时内存编译，杀软检测面更小 | ~227KB |
 | `WgTray.ps1` | WgTray | **ps1 版** | PS 引导 + 内嵌 base64 预编译 DLL，运行时解出加载 | ~380KB |
+| `wgime-py-pure\dist\wgime-py.py` | WgIme | **Python 纯版（单文件）** | 纯 Python 重实现，内嵌全部模块+插件+第三方库(zip)，零 .NET、免安装 | ~556KB |
 
 > **bat 版 vs ps1 版**：bat 版靠 cmd 引导双击即用（`wgime.bat` 内嵌基础码表自包含）；ps1 版启动命令行只有 `powershell -File xxx.ps1`（无 `Add-Type`/`.dll`/`::Run` 明文），规避 EDR 对"隐藏 PowerShell 加载 DLL"行为模式的命令行告警。取含详见下文「bat 版 vs ps1 版」。
 
@@ -117,6 +118,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 | `wgtray_glue.cs.txt` / `wgtray_ps_body.txt` / `wgtray_seed_patches.txt` | WgTray 构建模板（UTF-8；构建脚本本身保持 ASCII，兼容 PS 5.1 的 ANSI 解析） |
 | `vt-scan.ps1` | VirusTotal 一键扫描脚本（wg-all 分发文件） |
 | `tests/` | 回归测试（wgime-ps1 / wgtray-ps1 / wgtray 两版 / 载荷一致性） |
+| `wgime-py-pure/` | **纯 Python 版**：`main.py`(状态机/注入/tray api) / `hook.py`(ctypes 键盘钩子) / `win.py`(ctypes Win32 注入+原生剪贴板+UIA 光标) / `bar.py`(无边框圆角候选条) / `engine.py`(码表/候选/词频/造句) / `plugins.py`(插件+步骤DSL) / `tools.py`(工具箱等) / `tray.py`(pystray 双语托盘) / `ui.py`(窗体设计语言实现) / `wspy.py`(WS 客户端) / `plugins\*.py`(Python 插件) |
+| `wgime-py-pure\build-wgime-pure.py` | 生成纯 Python 单文件 `dist\wgime-py.py`（内嵌全部模块+插件+第三方库） |
+| `wgime-py-pure\build-package.ps1` | 刷新纯 Python 版 `package\` 分发目录（单文件 + sidecar + dicts + 配置/插件） |
 | `wg-all/` | 合并分发目录（install.bat + 双 ps1 版 + 配置/插件/README） |
 | `docs/` | 文档目录：使用说明 / 技术文档 / 插件规范 / 窗体设计语言 / TSF 评估 |
 
@@ -141,6 +145,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 - **性能与稳定性**：词库加载优化（批量缓存读 + 并行建表 + 缓存命中跳过解压）、修复长时间运行上屏卡顿（词频保存后台化 + 内存上限）。
 - **安全与合规**：去 base64 降 ML 误报面、移除快捷方式/计划任务自启、控制台自隐藏、词库原始二进制。
 - **工程化**：完整测试套件（86 项）、docs 文档、CHANGELOG、Git 分支合并回 master、码表 txt 入库、行尾规范化。
+- **2026-08-26 起 纯 Python 版**：追加 `wgime-py-pure/`（纯 Python 重实现，零 .NET）——`python wgime-py-pure\dist\wgime-py.py` 单文件运行；功能与 C# 版对齐（四模式/词频/简拼/双拼/造词/码表导入固化/启动器/工具箱/插件/候选窗/托盘），词频机制升级（语料+学习+近期热度），候选条宽度限制，UI 用 `ui.py` 设计系统；插件支持 `plugins/*.py` + `[python]` 块 + `[csharp]` sidecar。
+
+## 纯 Python 版（wgime-py-pure）
+
+除 C# 版（bat/ps1）外，项目还有一个**纯 Python 重实现**（`wgime-py-pure/`），零 .NET、免安装、单文件：
+
+- **运行**：Python 3.13+（3.12+ 即可），`python wgime-py-pure\dist\wgime-py.py`（单文件，内嵌全部模块与 pystray/uiautomation/comtypes）或 `python wgime-py-pure\package\wgime-py.py`（分发目录）
+- **零第三方必需**：pystray（托盘）/uiautomation+comtypes（现代应用光标跟随）已 zip 内嵌进单文件；`cryptography`（聊天加密）可选
+- **数据目录** `%LOCALAPPDATA%\wgime-py`（词频/联想/词库缓存）；若用 **Microsoft Store 版 Python**（AppContainer 沙箱虚拟化 `%LOCALAPPDATA%`），程序自动切到 `C:\Users\<user>\wgime-py`
+- **功能**：与 C# 版基本对齐——四种模式 / 词频学习 / 简拼 / 模糊音 / 双拼 / 造词 / 码表导入与固化 / 启动器 / 工具箱 / 插件 / 候选窗 / 托盘菜单 / 反查编码 / 简繁 / 整句 / 联想 / 空闲隐藏
+- **差异**：
+  - 拼音候选排序结合**语料先验 + 学习词频 + 近期热度**（比 C# 版只按学习词频更优）；词频机制已升级（默认/主动区分、近期滑动窗口、误学回滚、`learnk`/`recentk` 可配）
+  - 候选条宽度有限制（不铺满屏，超宽时动态截断候选）
+  - UI 用 `wgime-py-pure\ui.py` 设计系统实现 C# 版窗体设计语言（浅蓝灰底/白卡/深色控制台/圆角/flat 按钮），chat/calc/clock 插件同风格
+- **插件**：`plugins/*.py`（纯 Python 模块：`CODE`/`NAME`/`PERM` + `run()`）+ `plugins/*.txt`（步骤 DSL / `[python]` 块 / `[csharp]` sidecar），支持 manifest（version/author/requires/perm）与权限确认
 
 ## 系统要求
 

@@ -148,7 +148,20 @@ plugins\xxx.txt
   [/csharp]
 ```
 
-## 9. 验证要求
+## 9. 纯 Python 版实现（ui.py）
+
+纯 Python 版（`wgime-py-pure\`）没有 WinForms，用 `wgime-py-pure\ui.py`（tkinter）**复刻本规范的色彩 / 字体 / 骨架**，Python 侧新窗体一律用 `ui.py` 搭：
+
+- **色板**：`BG / HEADER / CARD / SURF2 / BORDER / TEXT / SUB / ACCENT / CONBG / CONFG` 常量，与 §2 的 `C_*` 一一对应（浅蓝灰底 + 白卡片 + systemBlue 强调 + 深色控制台）。
+- **字体**：`font(size, ...)` 内置回退链（对应 §3 的 `F()`），缺一自动降档；控制台用 Consolas。
+- **`make_window`**：标准骨架窗体——无边框 + GDI 圆角（`SetWindowRgn`，对应 §4）+ 自绘标题栏（可拖动 + ✕，对应 §5.1）+ 显式坐标 `place` 布局（遵守「不用 Dock」铁律的 tkinter 等价物：不混用 pack/grid 自动布局）。
+- **`flat_button`**：扁平按钮，`Panel` 基类的 tkinter 对应物是 `tk.Label` 基类（同样规避原生按钮主题镶边）；普通按钮白色卡片，主操作（primary）蓝底白字，带 hover / 按下态（对应 §5.2）。
+- **`rounded_entry`**：圆角输入框——白卡圆角容器内嵌无边框 `Entry`（对应 §5.3 的 RoundedEdit）。
+- **`console_text`**：深色控制台 `Text`（CONBG/CONFG + Consolas，对应 §5.4）。
+
+chat / calc / clock 三个官方插件的 Python 版已按 `ui.py` 实现，可作为 Python 侧新窗体的参考样例（地位同 C# 侧的 `plugins\calc.txt` 最小骨架）。
+
+## 10. 验证要求
 
 1. 插件能通过 CodeDom 编译（C# 5 语法）；
 2. `CopyFromScreen` 真实截屏核验每个页面（不是 DrawToBitmap）；

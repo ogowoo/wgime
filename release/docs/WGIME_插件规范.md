@@ -109,3 +109,43 @@ public class ClockPlugin
 3. 长任务用 `msg` 在开头结尾各报一次进度。
 4. 需要交互输入的：用 `[csharp]` 块弹个窗体做交互（步骤 DSL 无输入动词，`Read-Host` 无控制台不可用）。
 5. 调试：先把步骤贴进 `tools.txt` 的测试按钮里看日志，跑通后再落成插件文件；C# 插件可先用 LINQPad/本地 csc 验证语法。
+
+## 8. 纯 Python 版插件（wgime-py-pure）
+
+纯 Python 版（单文件成品 `wgime-py-pure\dist\wgime-py.py`，`package\` 为分发目录；数据目录 `%LOCALAPPDATA%\wgime-py`，Store 版 Python 自动切 `%USERPROFILE%\wgime-py`）实现了**双插件系统**，与 C# 版功能对齐。加载器：`wgime-py-pure\plugins.py`（`parse_plugin` / `load_plugins` / `run_steps` / `plugin_meta`）；`plugins\*.py` 由 `main.load_py_plugins` 加载。
+
+### 8.1 两种插件形态
+
+1. **`plugins\*.py`——纯 Python 模块**：模块级定义 `CODE` / `NAME` / `DESC`（可选）/ `VERSION` / `AUTHOR` / `PERM` + 一个 `run()` 入口，选中即调用。
+2. **`plugins\*.txt`——与 C# 版兼容**：步骤 DSL 插件 / `[python]` 块插件 / `[csharp]` 块（经 sidecar 运行，见 §8.4）。文件格式、头部元数据、启动编码冲突规则与 C# 版一致（见 §2、§6）。
+
+### 8.2 步骤 DSL 兼容
+
+txt 插件复用与 C# 版同一套步骤 DSL：
+
+- 动词：`msg` / `confirm` / `run` / `shell` / `open` / `kill` / `wait` / `file-del` / `reg-set` / `reg-del` / `mkdir`。
+- 多行脚本块：`[shell]` / `[powershell]` / `[shellx]` / `[psx]`。
+- **另有 `[python]` 块**：Python 代码在**子进程**中运行（超时 60s 熔断），不会拖垮宿主——不要指望它与输入法同进程共享状态。
+
+### 8.3 [python] 块 JSON IPC 契约
+
+`[python] ... [/python]` 块里若定义了 **`handle(ctx) -> actions`**，则走 JSON IPC：
+
+- 入参 `ctx = {"code": ..., "name": ..., "buff": ..., "mode": ...}`（启动编码、插件名、当前编码缓冲、当前模式）。
+- 返回 actions 列表，如 `[{"action": "msg", "text": "..."}, {"action": "log", "text": "..."}]`——宿主逐项执行（气泡提示 / 记日志）。
+- 通信走 stdout 的 `@wgime <json>` 行协议。
+- **没有 `handle` 则当作普通脚本**：整段在子进程里 `run()` 执行，无 IPC。
+
+### 8.4 [csharp] 块：sidecar 兼容
+
+txt 插件里的 `[csharp]` 块在纯 Python 版**仍然可用**：经 sidecar 脚本 `run-csharp-plugin.ps1` 用 PowerShell + CodeDom 编译为**独立进程**弹窗运行。因此 C# 代码插件（如 clock/chat）在 Python 版也能跑，只是从"宿主内线程"变为"独立进程"。
+
+### 8.5 Manifest 与权限模型
+
+- `plugins\*.txt` 头部支持 `code` / `name` / `desc` / `version` / `author` / `requires` / `perm`；`plugins\*.py` 用模块级 `CODE` / `NAME` / `VERSION` / `AUTHOR` / `PERM`。`plugins.py` 的 `plugin_meta()` 统一读取两类。
+- `perm` 取值：`low` / `network` / `run` / `registry` / `destructive`。**声明非 `low` 的插件运行前弹权限确认**；旧插件无这些字段默认 `perm=low`，不弹确认。
+- 步骤 DSL 的 **`file-del` / `reg-set` / `reg-del` / `kill`** 执行前**强制确认**（与 C# 版"破坏性操作建议先 confirm"的精神一致，这里是硬强制）。
+
+### 8.6 插件管理
+
+与 C# 版相同：输入 `plugins`（或 `cjgl`）唤出**插件管理窗体**——勾选启用/禁用（禁用名单存数据目录 `plugins-disabled.txt`）、重载。同样有意不进托盘菜单，只用编码唤出。

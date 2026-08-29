@@ -8,10 +8,18 @@ showcode = 1
 paste = key
 ; keyfix: 标点吞字修复 (1/0, 默认1; Qt应用如微信4.x全角标点后吞下一字符的修复; 正常程序无感知)
 keyfix = 1
+; learnk: 全量学习词频的候选排序权重 (默认5000; 越大, 主动选过的词越容易被顶到前面)
+learnk = 5000
+; recentk: 近期(滑动窗口)词频的候选排序权重 (默认200; 越大, 最近常打的词越靠前)
+recentk = 200
 ; followcaret: 候选窗跟随光标 (1/0, 默认1; 0=固定位置可拖动)
 followcaret = 1
 ; hideidle: 空闲时隐藏候选窗 (1/0, 默认1; 只在组字时显示; 0=常驻)
 hideidle = 1
+; sentence: 拼音整句连续输入 (1/0, 默认1; 全拼连打按词频搜最佳路径)
+sentence = 1
+; assoc: 联想 (1/0, 默认1; 上屏后出联想候选)
+assoc = 1
 ; phrase: 自定义短语, 编码<TAB>文本 (文本可含空格)
 ; phrase = dz	地址: 某某路5号
 ; phrase = em	user@example.com
