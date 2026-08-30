@@ -52,4 +52,11 @@ TSF TIP 的本质：**一个 DLL（`InprocServer32`）驻留在每个应用进�
   - 注册表键：`HKCR\CLSID\{d2ffe102-f716-430f-aa8a-da54a54de90b}\InprocServer32`（默认值=DLL 路径，`ThreadingModel=Both`）。写入 `HKCR\CLSID` 需 **管理员**（非提权进程 `RegCreateKeyW` 报 access denied）；PoC 验证可先写 `HKCU\Software\Classes\CLSID\...`（同样被 HKCR 合并）。
   - 待办：里程碑②（`ITfTextInputProcessor(Ex)`/`ITfKeyEventSink` 绑定 + TSF profile 注册）→ 里程碑③（notepad 打字回调触发）。
 
+- **里程碑② ✅（2026-08-30）**：`TsfTextService` 用 `#[implement(ITfTextInputProcessor, ITfTextInputProcessorEx, ITfKeyEventSink)]` 实现文本服务对象，`CreateInstance` 返回它（不再是 `E_NOTIMPL`）。`Activate`/`ActivateEx` 里从 `ITfThreadMgr` QI 到 `ITfKeystrokeMgr` 并 `AdviseKeyEventSink` 注册按键回调，`Deactivate` 反注册。**实测**：`CoCreateInstance(CLSID, CLSCTX_INPROC_SERVER)` 分别以 `IID_ITfTextInputProcessor`、`IID_ITfKeyEventSink`、`IID_IUnknown` 请求全部返回 **S_OK**，即三类接口都从对象暴露成功。
+  - 关键适配（0.58）：`ITfTarget_Impl for Self_Impl`（目标是宏生成的 `Self_Impl` 结构体）+ `IMPORTANT` `implement` feature 必须开；`AdviseKeyEventSink` 的 `psink` 参数要用引用（`&self.to_interface::<ITfKeyEventSink>()`）才能满足 `Param<ITfKeyEventSink>`；`ptim.cast::<ITfKeystrokeMgr>()`（`cast` 触发 QI）。
+  - 新增 `wgime-tsf/register-tsf.ps1`：TSF 键盘输入法注册/卸载脚本（COM CLSID + `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 类别 `GUID_TFCAT_TIP_KEYBOARD` + 语言 profile），需管理员。
+  - 待办：里程碑③（notepad 打字回调触发）；TSF profile 在新版 Windows 的正确注册位（`CTF` 表结构随版本有别）待实机验证。
+
+
+
 

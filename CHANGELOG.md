@@ -6,7 +6,19 @@
 
 ---
 
-## 2026-08-30 (wgime-tsf: 里程碑① CoGetClassObject 加载验证通过)
+## 2026-08-30 (wgime-tsf: 里程碑② ITfTextInputProcessor(Ex)/ITfKeyEventSink 接口验证通过)
+
+- **`wgime-tsf/src/lib.rs`** 新增文本服务对象 `TsfTextService`,`#[implement(ITfTextInputProcessor, ITfTextInputProcessorEx, ITfKeyEventSink)]`:
+  - `CreateInstance` 改为返回 `TsfTextService`(不再是 `E_NOTIMPL`);
+  - `Activate`/`ActivateEx` 从 `ITfThreadMgr` QI 到 `ITfKeystrokeMgr` 并 `AdviseKeyEventSink(tid, sink, TRUE)` 注册按键回调, `Deactivate` 反注册;
+  - `ITfKeyEventSink` 六方法(OnSetFocus/OnTestKeyDown/OnTestKeyUp/OnKeyDown/OnKeyUp/OnPreservedKey)先占位返回 S_FALSE(不吞键), 待里程碑③接真逻辑;
+  - 0.58 适配:`impl ITf..._Impl for TsfTextService_Impl`(目标是宏生成的 `_Impl`); `AdviseKeyEventSink` 的 `psink` 需引用; `ptim.cast::<ITfKeystrokeMgr>()` 走 QI
+- **实测里程碑② ✅**:`CoCreateInstance(CLSID, CLSCTX_INPROC_SERVER)` 分别以 `IID_ITfTextInputProcessor` / `IID_ITfKeyEventSink` / `IID_IUnknown` 请求全部返回 **S_OK**, 三类接口均从对象暴露
+- **新增 `wgime-tsf/register-tsf.ps1`**:TSF 键盘输入法注册/卸载脚本(COM CLSID + `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 类别 `GUID_TFCAT_TIP_KEYBOARD` + 语言 profile), 需管理员
+- `docs/WGIME_TSF_语言选型.md` §5 里程碑② 标记通过
+- **待办**:里程碑③(notepad 打字回调触发); 新版 Windows 的 TSF profile 正确注册位实机验证
+
+---
 
 - **`wgime-tsf/src/lib.rs`** 完成两处关键修正(0.58 接口实现方式变化):
   - `#[implement(IClassFactory)]` 生成 `TsfFactory_Impl` 结构体, **`impl IClassFactory_Impl for TsfFactory_Impl`**(不是旧版 `impl ... for TsfFactory`); `IClassFactory_Vtbl` 是 vtable **struct** 而非 trait
