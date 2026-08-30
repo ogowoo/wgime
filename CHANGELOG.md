@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-08-29 (wgime-py-pure: 修复候选翻页后按空格上屏第一页第一个)
+
+- **根因**:空格 `commit(ime.sel)`, 而 `sel` 是**页内偏移**(恒 0)——翻页后仍提交 `cands[0]`(第一页第一个), 而非当前页第一个
+- **修复**:空格改 `commit(ime.page * 9 + ime.sel)`, 上屏**当前页第一个**候选, 与 C# 版 `Hook_OnSpaced`(`page*PageSize + choose`)对齐
+- C# 版逻辑本就正确(`choose=0` → `page*PageSize`, 空格=当前页第一个), 无需改
+
+---
+
 ## 2026-08-29 (docs: 把所有文档补上纯 Python 版说明)
 
 - **README**:加「纯 Python 版(wgime-py-pure)」章节 + 文件表格/文件说明/项目演进

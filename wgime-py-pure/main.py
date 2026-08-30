@@ -963,7 +963,7 @@ def handle(vk):
             bar.hide()
             win.send_unicode(' ')
         elif ime.buf:
-            commit(ime.sel)
+            commit(ime.page * 9 + ime.sel)   # 翻页后按空格上屏"当前页"第一个(sel 为页内偏移), 而非第一页
     elif 0x30 <= vk <= 0x39:
         d = vk - 0x30
         if d == 0:
