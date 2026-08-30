@@ -33,6 +33,10 @@ use windows::Win32::UI::TextServices::{
 const WGIME_TSF_CLSID: GUID = GUID::from_u128(0xd2ffe102_f716_430f_aa8a_da54_a54d_e90b);
 const WGIME_TSF_CLSID_STR: &str = "{d2ffe102-f716-430f-aa8a-da54a54de90b}";
 
+/// GUID_TFCAT_TIP_KEYBOARD 的字符串形式(Implemented Categories 子键用).
+/// GUID: {34745c63-b2f0-4784-8b67-5e12c8701a31}
+const GUID_TFCAT_TIP_KEYBOARD_STR: &str = "{34745c63-b2f0-4784-8b67-5e12c8701a31}";
+
 /// 本 TSF 语言 profile 的 GUID (language profile 注册用, 里程碑②之后外部脚本使用).
 /// GUID: {a1e3d9c4-2f5b-7d4e-9c30-2a3b4c5d6e7f}
 #[allow(dead_code)]
@@ -216,10 +220,21 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         return FAIL;
     }
 
-    // --- TSF TIP 注册 (需管理员写 HKLM). 写共享目录 0x80000000? 用 HKLM 默认视图. ---
-    // HKLM\Software\Microsoft\CTF\TIP\{GUID}\ 下:
-    //   "Idle" 不需要; 关键是把本 CLSID 登记到 keyboard 类别.
-    // 这里只把 CLSID 自身登记到 CTF\TIP, 其余类别/profile 交给外部脚本(需要管理员+语言 id).
+    // --- Implemented Categories: TSF 线程管理器靠这个发现"键盘输入法"类别 ---
+    // HKCR\CLSID\{GUID}\Implemented Categories\{34745c63-b2f0-4784-8b67-5e12c8701a31}
+    //    (GUID_TFCAT_TIP_KEYBOARD)
+    let cat_path = to_w(&format!(
+        "CLSID\\{}\\Implemented Categories\\{GUID_TFCAT_TIP_KEYBOARD_STR}",
+        WGIME_TSF_CLSID_STR
+    ));
+    let mut hkey_cat = HKEY(std::ptr::null_mut());
+    let cat_status = RegCreateKeyW(HKEY_CLASSES_ROOT, PCWSTR(cat_path.as_ptr()), &mut hkey_cat);
+    if cat_status.0 != 0 {
+        return FAIL;
+    }
+    let _ = RegCloseKey(hkey_cat);
+
+    // --- TSF TIP 注册 (需管理员写 HKLM). ---
     let tip_path = to_w(&format!("Software\\Microsoft\\CTF\\TIP\\{}", WGIME_TSF_CLSID_STR));
     let mut hkey3 = HKEY(std::ptr::null_mut());
     let tip_status = RegCreateKeyW(HKEY_LOCAL_MACHINE, PCWSTR(tip_path.as_ptr()), &mut hkey3);

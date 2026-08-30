@@ -54,7 +54,11 @@ TSF TIP 的本质：**一个 DLL（`InprocServer32`）驻留在每个应用进�
 
 - **里程碑② ✅（2026-08-30）**：`TsfTextService` 用 `#[implement(ITfTextInputProcessor, ITfTextInputProcessorEx, ITfKeyEventSink)]` 实现文本服务对象，`CreateInstance` 返回它（不再是 `E_NOTIMPL`）。`Activate`/`ActivateEx` 里从 `ITfThreadMgr` QI 到 `ITfKeystrokeMgr` 并 `AdviseKeyEventSink` 注册按键回调，`Deactivate` 反注册。**实测**：`CoCreateInstance(CLSID, CLSCTX_INPROC_SERVER)` 分别以 `IID_ITfTextInputProcessor`、`IID_ITfKeyEventSink`、`IID_IUnknown` 请求全部返回 **S_OK**，即三类接口都从对象暴露成功。
   - 关键适配（0.58）：`ITfTarget_Impl for Self_Impl`（目标是宏生成的 `Self_Impl` 结构体）+ `IMPORTANT` `implement` feature 必须开；`AdviseKeyEventSink` 的 `psink` 参数要用引用（`&self.to_interface::<ITfKeyEventSink>()`）才能满足 `Param<ITfKeyEventSink>`；`ptim.cast::<ITfKeystrokeMgr>()`（`cast` 触发 QI）。
-  - 新增 `wgime-tsf/register-tsf.ps1`：TSF 键盘输入法注册/卸载脚本（COM CLSID + `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 类别 `GUID_TFCAT_TIP_KEYBOARD` + 语言 profile），需管理员。
+  - 新增 `wgime-tsf/register-tsf.ps1`：TSF 键盘输入法注册/卸载脚本，需管理员。分**三层**：
+    - **A) COM 注册**：`HKCR\CLSID\{CLSID}\InprocServer32`（DLL + `ThreadingModel=Both`）+ **`Implemented Categories\{GUID_TFCAT_TIP_KEYBOARD}`**（*关键*：TSF 线程管理器靠它把本 CLSID 归类为键盘输入法——此前遗漏会导致"注册了但 Activate 不触发"）。
+    - **B) Profile 注册**：`HKLM\Software\Microsoft\CTF\TIP\{CLSID}\LanguageProfile\0x{langid}\{ProfileGUID}`，带 `Description`/`Enable`/`HiddenInSettingUI`（参考 [Keyman: Making sense of Windows Layout Registration](https://github.com/keymanapp/keyman/wiki/Making-sense-of-the-Windows-Layout-Registration) 与 `RegisterProfile` 实际写盘结构）。
+    - **C) 按用户启用（无管理员）**：把 profile 挂进当前用户输入法列表（`HKCU\Software\Microsoft\CTF\TIP\{CLSID}` + 语言栏 `SortOrder` + 备选 `Set-WinUserLanguageList`）。新版 Windows 光有 HKLM 不够，缺这层语言栏/win+space 看不到、按键也不分发给 TIP。
+    - 已验证：HKCU 下 `Implemented Categories` + `InprocServer32` 注册后 `CoCreateInstance → ITfTextInputProcessor` 仍返回 **S_OK**。HKLM/HKCR 写需提权（沙箱内 access denied 属预期，脚本逻辑正确）。
   - 待办：里程碑③（notepad 打字回调触发）；TSF profile 在新版 Windows 的正确注册位（`CTF` 表结构随版本有别）待实机验证。
 
 

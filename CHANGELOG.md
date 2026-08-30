@@ -15,6 +15,12 @@
   - 0.58 适配:`impl ITf..._Impl for TsfTextService_Impl`(目标是宏生成的 `_Impl`); `AdviseKeyEventSink` 的 `psink` 需引用; `ptim.cast::<ITfKeystrokeMgr>()` 走 QI
 - **实测里程碑② ✅**:`CoCreateInstance(CLSID, CLSCTX_INPROC_SERVER)` 分别以 `IID_ITfTextInputProcessor` / `IID_ITfKeyEventSink` / `IID_IUnknown` 请求全部返回 **S_OK**, 三类接口均从对象暴露
 - **新增 `wgime-tsf/register-tsf.ps1`**:TSF 键盘输入法注册/卸载脚本(COM CLSID + `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 类别 `GUID_TFCAT_TIP_KEYBOARD` + 语言 profile), 需管理员
+- **`wgime-tsf/register-tsf.ps1` 重写为三层注册**, 并修正 `DllRegisterServer` 遗漏的 **Implemented Categories**(TSF 线程管理器靠它把 CLSID 归类为键盘输入法, 缺它=注册了但 Activate 不触发):
+  - A) COM 注册 + `Implemented Categories\{GUID_TFCAT_TIP_KEYBOARD}` (`DllRegisterServer`/脚本都补上)
+  - B) Profile 注册正确路径 `HKLM\...\CTF\TIP\{CLSID}\LanguageProfile\0x{langid}\{ProfileGUID}`(Description/Enable/HiddenInSettingUI)
+  - C) 按用户启用(HKCU): profile 挂进当前用户输入法/语言栏(直接注册表 + 备选 `Set-WinUserLanguageList`), 新版 Windows 缺这层看不到输入法
+  - 脚本改为纯 ASCII(规避 PS 5.1 读无 BOM UTF-8 判成 ANSI 的 mojibake/解析错乱)
+  - 验证: HKCU 下注册 Implemented Categories + InprocServer32 后 `CoCreateInstance → ITfTextInputProcessor` 仍 S_OK
 - `docs/WGIME_TSF_语言选型.md` §5 里程碑② 标记通过
 - **待办**:里程碑③(notepad 打字回调触发); 新版 Windows 的 TSF profile 正确注册位实机验证
 
