@@ -48,6 +48,19 @@ fn to_w(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
+/// 写一行调试日志到 %LOCALAPPDATA%\wgime-tsf-hook.log.
+/// 里程碑③验证用: 看 Activate 是否被调、按键是否进入回调.
+/// (DLL 在目标应用进程内运行, 用环境变量 + 一个简单文件即可观测, 不动注册表.)
+fn log(msg: &str) {
+    use std::io::Write;
+    let path = std::env::var("LOCALAPPDATA")
+        .map(|p| format!("{}\\wgime-tsf-hook.log", p))
+        .unwrap_or_else(|_| "wgime-tsf-hook.log".to_string());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{}] {}: {}", std::process::id(), "wgime-tsf", msg);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 文本服务对象 (TsfTextService): 实现 ITfTextInputProcessor(Ex) + ITfKeyEventSink.
 // ---------------------------------------------------------------------------
@@ -72,6 +85,7 @@ impl TsfTextService {
 
 impl ITfTextInputProcessor_Impl for TsfTextService_Impl {
     fn Activate(&self, ptim: Option<&ITfThreadMgr>, tid: u32) -> Result<()> {
+        log(&format!("Activate tid={:#x}", tid));
         *self.tid.lock().unwrap() = tid;
         if let Some(ptim) = ptim {
             // 从线程管理器拿到键盘管理器, 注册我们的按键回调(前台回调).
@@ -79,14 +93,19 @@ impl ITfTextInputProcessor_Impl for TsfTextService_Impl {
             let sink = self.to_interface::<ITfKeyEventSink>();
             unsafe { keystroke.AdviseKeyEventSink(tid, &sink, BOOL(1))? };
             *self.keystroke.lock().unwrap() = Some(keystroke);
+            log("Activate: AdviseKeyEventSink OK");
+        } else {
+            log("Activate: ptim is None (no thread mgr)");
         }
         Ok(())
     }
 
     fn Deactivate(&self) -> Result<()> {
+        log("Deactivate");
         let tid = *self.tid.lock().unwrap();
         if let Some(keystroke) = self.keystroke.lock().unwrap().take() {
             unsafe { keystroke.UnadviseKeyEventSink(tid) }?;
+            log("Deactivate: UnadviseKeyEventSink OK");
         }
         Ok(())
     }
@@ -100,7 +119,8 @@ impl ITfTextInputProcessorEx_Impl for TsfTextService_Impl {
 }
 
 impl ITfKeyEventSink_Impl for TsfTextService_Impl {
-    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
+    fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
+        log(&format!("OnSetFocus foreground={}", fforeground.0));
         Ok(())
     }
 
@@ -111,23 +131,27 @@ impl ITfKeyEventSink_Impl for TsfTextService_Impl {
         _lparam: LPARAM,
     ) -> Result<BOOL> {
         // TODO(里程碑③): 这里真正处理拼音/五笔按键; 现暂不吞键(返回 FALSE 放行).
-        let _ = wparam;
+        log(&format!("OnTestKeyDown vk={:#x} wparam={:#x}", wparam.0 as u32, wparam.0));
         Ok(BOOL(0)) // S_FALSE: 不吞键, 交给下一个 sink / 应用
     }
 
-    fn OnTestKeyUp(&self, _pic: Option<&ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+    fn OnTestKeyUp(&self, _pic: Option<&ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        log(&format!("OnTestKeyUp vk={:#x}", wparam.0 as u32));
         Ok(BOOL(0))
     }
 
-    fn OnKeyDown(&self, _pic: Option<&ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+    fn OnKeyDown(&self, _pic: Option<&ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        log(&format!("OnKeyDown vk={:#x}", wparam.0 as u32));
         Ok(BOOL(0))
     }
 
-    fn OnKeyUp(&self, _pic: Option<&ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+    fn OnKeyUp(&self, _pic: Option<&ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        log(&format!("OnKeyUp vk={:#x}", wparam.0 as u32));
         Ok(BOOL(0))
     }
 
     fn OnPreservedKey(&self, _pic: Option<&ITfContext>, _rguid: *const GUID) -> Result<BOOL> {
+        log("OnPreservedKey");
         Ok(BOOL(0))
     }
 }
