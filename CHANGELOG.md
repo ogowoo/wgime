@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-08-29 (docs: 新增 TSF 语言选型文档)
+
+- **`WGIME_TSF_语言选型.md`**:覆盖层(Python/C# 保持) vs **TSF(Rust 首选 / C++ 次选, 原生编译)** 的选型对比表与结论; TSF TIP 必须进程内 COM 服务器 DLL, 不要 Python 硬凑(解释器驻留所有进程+GIL/低级钩子超时); 含混合思路与 Rust 最小 spike 计划
+- sync-dist 同步 release/docs
+
+---
+
 ## 2026-08-29 (docs: TSF 评估重写为纯 Python 版)
 
 - **`WGIME_TSF评估.md`** 从 bat/C# 版视角重写为**纯 Python 版**评估: 独立 `wgime-tsf/` 子项目方案(与 wgime-py-pure 平级, 复用 engine 候选/词频)
