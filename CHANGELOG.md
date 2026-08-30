@@ -8,10 +8,10 @@
 
 ## 2026-08-29 (wgime-tsf: Rust TSF spike 子项目骨架)
 
-- **`wgime-tsf/`** cargo 项目骨架:`Cargo.toml`(windows-rs 0.58, 含 Win32_UI_TextServices/Com/Registry) + `src/main.rs`(占位, 写明里程碑)
+- **`wgime-tsf/`** cargo 项目骨架:`Cargo.toml`(cdylib, windows-rs 0.58) + `src/lib.rs`(COM 服务器骨架: `DllGetClassObject` + `IClassFactory` + 占位 IUnknown)
 - `docs/WGIME_TSF_语言选型.md` 与 `docs/WGIME_TSF评估.md`(纯 Python 版) 已提交
-- **现状**:本环境 Rust 工具链未完整装好(rustc toolchain manifest 缺失, GNU host 编译还需 MinGW linker); 完整 TSF spike(COM 注册 + notepad 验证回调)是数天级 PoC + 需在**具备完整 Rust + 链接器**的机器上编译调试
-- 后续:在本机 `rustup` 装好(MSVC 或 MinGW-GNU)后, 逐步实现 `ITfTextInputProcessor(Ex)`/`ITfKeyEventSink` + COM/类别/profile 注册, 用 notepad 打字验证回调在目标进程内触发
+- **现状**:本环境 Rust 工具链已 OK(rustc/cargo 1.98.0 + linker 验证过); 但 `windows` crate 首次编译很大(慢); windows-rs API 版本敏感, 需在本机 `cargo build` 迭代微调
+- 里程碑(见 `docs/WGIME_TSF_语言选型.md` §5): ① DLL 可被 `CoGetClassObject` 加载 ② `ITfTextInputProcessor`/`ITfKeyEventSink` 绑定 + TSF profile 注册 ③ notepad 打字验证回调
 
 ---
 
