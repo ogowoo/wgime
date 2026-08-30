@@ -1,75 +1,97 @@
-# WgIme → TSF 输入法 技术评估
+# WgIme（纯 Python 版）→ TSF 输入法 技术评估
 
-> 日期：2026-08（基于当前 wgime.bat 架构评估）　结论：**可行但建议冻结为独立子项目**；现阶段用"注入架构 + keyfix + UIA 光标跟随"覆盖体验差距。
+> 日期：2026-08-29　对象：`wgime-py-pure`（Python 3.13 + ctypes + tkinter，零 .NET）　结论：**可行但比 C# 版更重，建议独立子项目，先做 PoC spike**。原 bat/C# 版评估见本文件底部历史（被本版本取代，仅作对比）。
 
-## 1. 背景
+## 0. 结论先行
 
-WgIme 当前是**覆盖层输入法**：全局低级键盘钩子（`WH_KEYBOARD_LL`）截获按键 → 维护内部编码缓冲与候选 → 用 `SendInput`（KEYEVENTF_UNICODE）把结果**模拟键盘注入**目标程序。全部逻辑在单个 `.bat`（内嵌 C# / 预编译 DLL）里，免安装、免注册、不产生 exe。
+TSF（Text Services Framework）是 Windows 系统级输入法框架，TIP（Text Input Processor）是一个**进程内 COM 服务器 DLL**，被 ctfmon/系统加载进**每一个接受文本输入的应用进程**，直接参与 composition/commit。它能根治覆盖层架构的两个痛点：**UIPI 管理员窗口不可用**、**注入类兼容问题（微信 4.x 等）**。
 
-TSF（Text Services Framework）是 Windows 自 XP 起的官方输入法框架（Vista+ 成熟，Win8/10/11 的 modern 输入法均基于此）。TSF 输入法（TIP，Text Input Processor）是一个**进程内 COM 服务器 DLL**：被ctfmon/系统加载进**每一个接受文本输入的应用进程**，直接参与文本组合（composition）与编辑会话（edit session）。
+但用**纯 Python** 做 TIP，比 C#（.NET CLR 驻留所有进程）**更重、更 tricky**——Python 解释器要被打进每个应用进程，且 TIP 按键回调发生在目标应用的主线程，**Python 的 GIL 与性能是硬挑战**。**强烈建议独立成 `wgime-tsf/` 子项目（PoC 先行）**，不要混进现有单文件覆盖层。
 
-## 2. 两条路的本质差异
+## 1. 现状：纯 Python 版覆盖层
 
-| 维度 | 覆盖层（现状） | TSF |
-|---|---|---|
-| 代码位置 | 独立进程，外部观察键盘 | **DLL 驻留在每个应用进程内** |
-| 文本上屏 | 模拟键盘事件（应用以为用户敲的） | 真实 composition → commit（应用认为是输入法） |
-| 安装 | 双击即用 | 注册表注册（HKCR\CLSID + TIP profile），**需管理员** |
-| 候选窗 | 自绘置顶窗，固定/拖动位置 | 可随光标（caret tracking 是 TSF 原生能力） |
-| 失效场景 | UIPI（管理员窗口）、个别程序对注入敏感（微信4.x 已用 keyfix 修复） | UWP 进程拒绝加载托管 COM 对象（见 §4） |
-| 故障面 | 只影响自己进程 | bug 出现在**别人的进程**里，可能拖垮目标应用 |
+`wgime-py-pure` 是**覆盖层输入法**：全局低级键盘钩子（`hook.py` 的 `SetWindowsHookExW(WH_KEYBOARD_LL)`）截获按键 → 维护编码缓冲/候选（`engine.py`）→ `win.py` 用 `SendInput`(KEYEVENTF_UNICODE) 把结果**模拟键盘注入**目标程序。候选窗是 `bar.py` 的无边框置顶 tkinter 窗。
 
-## 3. TSF TIP 的硬性要求清单
+- **UIPI 限制**（与 C# 版一致）：管理员（高完整性）窗口前台时，普通权限的 wgime 钩子收不到输入、注入被拒 → 连 Shift 切换都不行（本会话已加托盘提示：建议以管理员运行 wgime）。
+- **注入兼容**：部分程序对注入敏感（已用 keyfix/剪贴板/clipboard 兜底）。
+- **光标跟随**：已用 `GetGUIThreadInfo` + UI Automation TextPattern 三级回退，接近 TSF 的 caret tracking。
 
-1. **COM 注册**：`HKCR\CLSID\{guid}\InprocServer32` 指向 DLL（32/64 位需分别提供对应架构的 DLL；ARM64 另算）。
+## 2. 为什么还要 TSF
+
+1. **UIPI 根治**：TIP 已在目标进程内，天然不受 UIPI 限制，管理员窗口自然可用（无需"以管理员运行 IME"）。
+2. **真实 composition/commit**：应用认为是正规输入法，注入类兼容 bug 从根上消失。
+3. **系统集成**：系统语言栏/设置标准条目、caret tracking 原生、预编辑串（下划线）。
+
+## 3. Python 实现 TSF TIP 的技术路径（核心）
+
+TIP 必需是**进程内 COM 服务器（InprocServer32 指向一个 DLL）**。纯 Python 的三种走法：
+
+### 路径 A：pywin32 COM 服务器（相对最可行）
+- 用 `win32com.server`（pywin32 的 pythoncom）把 `ITfTextInputProcessor` 等接口注册为**进程内 COM 服务器**：`InprocServer32` 指向 `pythoncomXX.dll` + 已注册的 Python 类（`win32com.server.register`）。
+- **后果**：每个文本应用进程会被加载 `pythoncomXX.dll` **和 Python 运行时（python313.dll）**——和 C# CLR 驻留所有进程同理，但 Python 解释器通常更重、更易和目标应用已有运行时冲突。
+- **依赖**：pywin32（win32com/pythoncom）+ Python 3.13 运行时。分发要么"用户装 Python"，要么**内嵌（embeddable）Python** 一并部署。
+- 性能/GIL：TSF 按键回调跑在目标应用主线程的 COM 消息泵里；Python 回调持 GIL，若处理慢会**卡住宿主应用**（更甚于现在自进程内）。热路径（按键→组合串）需极简回调 + 必要处 `ctypes` 释放 GIL。
+
+### 路径 B：cffi 编译薄 TIP DLL + 内嵌 Python（可控性最好）
+- 用 cffi 写一个**薄 C 层**（实现 TSF 的 vtable/COM 接口 + 类工厂），DLL 作 `InprocServer32`，内部把回调转发给**内嵌的 Python 解释器**（`Py_Initialize` + 加载 `wgime-tsf.py` 的 engine 逻辑）。
+- **后果**：C 薄壳负责 COM/TSF 骨架与稳定（崩溃隔离、GIL 释放时机），Python 只做组合/候选/词频。这是"C 壳 + Python 核"的折中，开发和维护成本最高，但**性能与崩溃面最可控**。
+
+### 路径 C：comtypes 手写 vtable（理论可行，工程最重）
+- comtypes 是纯 Python COM（可定义/调用接口），但要作为**进程内服务器**被外界加载，仍需一个 DLL 宿主（comtypes 自身不是 InprocServer DLL）。基本上要回到"用 cffi/cython 造宿主 DLL"，可行性等于 B，且 vtable 全手写。
+
+### 路径对比
+
+| | A: pywin32 | B: cffi 薄壳+内嵌Python | C: comtypes vtable |
+|---|---|---|---|
+| 实现成本 | 中 | 高 | 高 |
+| 每进程加载 | pythoncom + Python 运行时 | Python 运行时（C 壳很薄） | Python 运行时 |
+| 性能/GIL | 回调持 GIL，风险大 | C 壳可控 GIL 释放 | 同 A |
+| 崩溃隔离 | 差 | 较好 | 差 |
+| 对目标应用侵入 | python 解释器驻留 | python 解释器驻留 | python 解释器驻留 |
+
+**说明**：无论哪条路，Python TIP 都会让 **Python 运行时驻留每一个文本应用进程**——这是和 C# 版 TSF 相同的方向，但 Python 解释器通常比 .NET CLR 更挑剔（运行时兼容、启动开销、GIL）。这是本版评估比 C# 版**更保守**的根本原因。
+
+## 4. TSF TIP 硬性要求（与 C# 版相同）
+
+1. **COM 注册**：`HKCR\CLSID\{guid}\InprocServer32` 指向 TIP DLL（pythoncom/comtypes 宿主 DLL 或 cffi 编译 DLL）；32/64 位需对应架构 DLL。
 2. **类别注册**：`ITfCategoryMgr::RegisterCategory` 挂 `GUID_TFCAT_TIP_KEYBOARD`。
-3. **profile 注册**：`ITfInputProcessorProfiles::Register` + `AddLanguageProfile`（指定 LANGID、描述、图标），之后才会出现在系统设置的输入法列表里。
-4. **接口实现**（最小集）：`ITfTextInputProcessor(Ex)`（Activate/Deactivate）、`ITfThreadMgrEventSink`（焦点跟踪）、`ITfKeyEventSink`（按键捕获/消费）、`ITfCompositionSink` + `ITfEditSession`（组合串显示与提交）、候选列表（自绘窗或 `ITfCandidateList`）、显示属性。
-5. **权限**：注册写 HKCR/HKLM 需要管理员；卸载同理。
+3. **profile 注册**：`ITfInputProcessorProfiles::Register` + `AddLanguageProfile`（LANGID、描述、图标），之后才进系统输入法列表。
+4. **接口最小集**：`ITfTextInputProcessor(Ex)`（Activate/Deactivate）、`ITfThreadMgrEventSink`（焦点）、`ITfKeyEventSink`（按键）、`ITfCompositionSink`+`ITfEditSession`（组合/提交）、候选列表（自绘窗或 `ITfCandidateList`）、显示属性。
+5. **权限**：注册写 HKCR/HKLM 需**管理员**；卸载同理。
 
-## 4. 托管（C#）实现可行性
+## 5. 可行性 spike（必须先验证，Py 特有）
 
-- **有先例**：[TSF-TypeLib](https://github.com/nayaku/TSF-TypeLib)（C# 封装库，持续更新）；微软官方完整样例 [SampleIME](https://github.com/ChineseInputMethod/SampleIME) 是 C++。手写 COM interop 也可行，但几十个接口的 GUID/vtable 顺序必须逐一精确。
-- **UWP 限制（硬伤）**：[CLR 不能在 UWP 进程里创建 .NET COM 对象](https://stackoverflow.com/questions/50660726)——托管 TIP 进不了 UWP 应用（设置、部分系统界面）。要全场景覆盖就得回到 C++ 原生。
-- **CLR 驻留所有进程**：.NET Framework 4.x CLR 会被拉进每个文本输入进程——启动开销、内存、以及与目标应用加载的其他运行时（.NET 6+ 可并存，但仍有兼容面）。
-- **调试**：Attach 到目标进程调别人的消息循环里的 COM 回调，体验远差于现在的单进程模型。
+在动手前，先写一个最小 spike（复用 `tests/python-spike/` 思路）验证：
+1. **Python 能否被作为进程内 COM 服务器加载进别的应用**：pywin32 `win32com.server.register` 一个最简接口（如 `ITfKeyEventSink` 占位），注册后用一个普通 Win32 应用（notepad/写字板）接受输入，确认**回调真的在该应用进程内触发**。这是最大不确定性——若 Python COM 服务器的 InprocServer 加载/注册链路不通，后续全部作废。
+2. **Python 3.13 作为内嵌运行时打进应用进程**：确认 `python313.dll` 在任意文本应用里能被 `Py_Initialize`（或 pywin32 自动加载），无路径/依赖问题。
+3. **按键回调延迟**：在目标应用主线程里跑 Python 回调，测 `SetWindowsHookEx`/TSF 回调到组合串的延迟；确认 GIL 释放/低延迟是否守住系统低层钩子超时（LowLevelHooksTimeout，系统会对耗时钩子摘除）。
+4. 确认**UWP 应用**：托管/解释型 COM 对象在 UWP 进程（Win10/11 设置、部分系统界面）**是否加载**。C# 侧已知 CLR 进不去 UWP（`CLR cannot be used in UWP`），Python 大概率同样进不去——**这是全场景覆盖的明显盲区**，除非转纯 C++。
 
-## 5. 能买到什么 / 付出什么
+> spike 通过与否，直接决定 TSF 子项目是"可以立项"还是"仅能覆盖非 UWP 的桌面应用"。
 
-**买到**：组合输入原生体验（预编辑串、下划线）；注入类兼容问题（如微信 4.x 的 VK_PACKET 陈旧字符 bug）从根上消失；管理员窗口自然可用（TIP 已在目标进程内，不受 UIPI 限制）；系统语言栏/设置的标准集成。
-**付出**：放弃"免安装免注册"这一核心卖点；新增常驻所有进程的代码面；开发与调试成本量级上升；UWP 盲区（除非转 C++）。
+## 6. 独立子项目方案（若立项）
 
-## 6. 若要做：分发与集成方案（设计草图）
+- **目录**：`wgime-tsf/`（与 wgime-py-pure 平级），Python 为主 —— `tsf.py`(COM/TSF 接口)、`engine.py`/`cands.py`(复用/移植 wgime-py-pure 的 engine 候选/词频逻辑)、`build_tsf.py`(打包嵌入 Python 或 pywin32 server)。
+- **复用**：词频（`freq_m`/`lastpick_m`/`freq_recent`）与候选管线（`ShowCharatar` 逻辑）可直接从 `wgime-py-pure/engine.py` 平移；词库缓存 `dict-cache.pkl` 可共用。
+- **与覆盖层共存**：用户按语言栏切换；覆盖层检测 TSF 激活时自动休眠（或反之），避免双输入。
+- **分发**：可选安装——托盘「**安装 TSF 模式（需管理员）**／**卸载 TSF 模式**」；把 pywin32/嵌入式 Python 打成目录 + 注册脚本，而不是塞进单文件。
 
-复用 WgIme 现有机制，TSF 作为**可选安装组件**而非替代：
+## 7. 风险清单
 
-1. TSF TIP 独立编译为 `WgImeTsf.dll`（项目子目录，C# + TSF-TypeLib 或手写 interop）。
-2. 以 base64 载荷形式内嵌进 `wgime.bat` 尾部（与现有 `###WGIME_DLL###` 机制相同，第二个标记位）。
-3. 托盘新增"安装 TSF 模式（需管理员）"：解码写出 DLL 到 `%LOCALAPPDATA%\wgime\tsf\` → 提权注册（COM + category + profile）→ 引导用户在系统设置里启用；"卸载 TSF 模式"反向清理。
-4. 词典复用 `%LOCALAPPDATA%\wgime\wgime.mb` 二进制缓存（TSF DLL 直接读，零重复构建）。
-5. 覆盖层与 TSF 可共存：用户按语言栏切换，覆盖层检测到 TSF 激活时自动休眠（或反之）。
+- Python 运行时驻留所有进程（比 CLR 更重、兼容面更大）；
+- GIL/低层钩子超时：回调慢被系统摘钩，或卡宿主应用；
+- **UWP 盲区**：解释型 COM 大概率进不去 UWP（与 C# 版同病，除非转 C++）；
+- 注册/卸载残留、杀软/EDR 对"输入法 DLL 注入所有进程"敏感（TSF 被红队用做持久化）；
+- Win 大版本更新带来的 TSF 行为变化需持续跟进。
 
-## 7. 工作量评估
+## 8. 替代路径（不改架构，现在可做）
 
-| 阶段 | 内容 | 量级估计 |
-|---|---|---|
-| PoC | 注册→激活→捕获按键→组合串→上屏汉字→简单候选窗 | 数百行 interop + 数天跨进程调试 |
-| 可用 | 词频/简拼/翻页/标点映射迁移，主流桌面应用实测 | 一至两周 |
-| 生产级 | Chrome/Edge/旧 Win32/安全桌面/多 DPI/32 位，崩溃隔离 | 数周+ |
+- **keyfix / 剪贴板 / per-app 兜底**（已落地）：逐项覆盖注入兼容问题；
+- **UIA 光标跟随**（已落地）：有 TSF care tracking 的体验而不换架构；
+- **UIPI**：目前只能"以管理员运行 wgime"（本会话加了托盘提示）。
 
-## 8. 风险清单
+---
 
-- 注册/卸载残留导致系统输入法列表脏条目；
-- TIP 崩溃波及宿主应用（Explorer 也会加载）；
-- 杀毒/EDR 对"注入所有进程的输入法 DLL"敏感（[TSF 已被红队用作持久化手段](https://www.praetorian.com/blog/leveraging-microsoft-text-services-framework-tsf-for-red-team-operations)，安全软件有理由盯）；
-- Windows 大版本更新带来的 TSF 行为变化需要持续跟进。
+## 附：原 bat/C# 版评估要点（2026-08，已被本版本取代，仅对比）
 
-## 9. 结论与替代路径
-
-**建议冻结**：TSF 是"更正确但重得多"的路，与 WgIme 单文件免安装的定位相斥。当前架构下已落地/可落地的体验替代：
-
-- **keyfix**（已落地）：微信 4.x 等 Qt 应用的注入吞字修复，全局默认开；
-- **UIA 光标跟随**（已落地）：候选窗通过 `GetGUIThreadInfo` + UI Automation TextPattern 跟随光标（`followcaret = 1`），获得 TSF 最显眼的体验优势而不换架构；
-- **按进程覆盖**（已有）：clipboard / keyfix / keyplain 逐项兜底个别顽固程序。
-
-若未来真的启动 TSF 子项目，本文档 §6 的分发设计可直接复用，词典与候选管线（`ShowCharatar` 系列）也可平移。
+原评估（wgime.bat 时期）结论：可行但建议冻结为独立子项目；用 C# + TSF-TypeLib 或手写 interop；CLR 进不了 UWP；放弃"免安装免注册"。本版评估差异：**改用 Python 技术栈（pywin32/comtypes/cffi），难点从"CLR 驻留所有进程"升级为"Python 解释器驻留所有进程 + GIL/低层钩子超时"**，整体更保守，PoC 验证（§5 的前 3 点）是立项前必做。

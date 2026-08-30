@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-08-29 (docs: TSF 评估重写为纯 Python 版)
+
+- **`WGIME_TSF评估.md`** 从 bat/C# 版视角重写为**纯 Python 版**评估: 独立 `wgime-tsf/` 子项目方案(与 wgime-py-pure 平级, 复用 engine 候选/词频)
+- **Python 实现 TSF TIP 技术路径**:pywin32 COM 服务器(win32com.server, pythoncom+嵌入式 Python) / cffi 薄壳+内嵌 Python / comtypes 手写 vtable; 对比(成本/每进程加载/GIL/崩溃隔离)
+- **Python 特有难点**:Python 解释器(**比 CLR 更重**)驻留每个文本应用进程、TSF 回调在目标应用主线程受 **GIL/低层钩子超时**约束、**UWP 盲区**(解释型 COM 大概率进不去 UWP)
+- **结论**:可行但比 C# 版更保守, 建议 **PoC 先行**(§5 spike: 验证 Python 能否被作为进程内 COM 服务器加载进别的应用 + 内嵌 Python 运行时 + 回调延迟)
+- sync-dist 同步到 release/docs
+
+---
+
 ## 2026-08-29 (wgime-py-pure: 检测到前台管理员窗口时托盘提示以管理员运行 wgime)
 
 - **UIPI 限制**:前台为管理员(高完整性)窗口时, 普通权限的 wgime 被 Windows UIPI 阻止交互(钩子收不到输入/注入被拒), 连 Shift 切换/组字都不响应
