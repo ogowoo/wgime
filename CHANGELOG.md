@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-08-29 (wgime-tsf: Rust TSF spike 子项目骨架)
+
+- **`wgime-tsf/`** cargo 项目骨架:`Cargo.toml`(windows-rs 0.58, 含 Win32_UI_TextServices/Com/Registry) + `src/main.rs`(占位, 写明里程碑)
+- `docs/WGIME_TSF_语言选型.md` 与 `docs/WGIME_TSF评估.md`(纯 Python 版) 已提交
+- **现状**:本环境 Rust 工具链未完整装好(rustc toolchain manifest 缺失, GNU host 编译还需 MinGW linker); 完整 TSF spike(COM 注册 + notepad 验证回调)是数天级 PoC + 需在**具备完整 Rust + 链接器**的机器上编译调试
+- 后续:在本机 `rustup` 装好(MSVC 或 MinGW-GNU)后, 逐步实现 `ITfTextInputProcessor(Ex)`/`ITfKeyEventSink` + COM/类别/profile 注册, 用 notepad 打字验证回调在目标进程内触发
+
+---
+
 ## 2026-08-29 (docs: 新增 TSF 语言选型文档)
 
 - **`WGIME_TSF_语言选型.md`**:覆盖层(Python/C# 保持) vs **TSF(Rust 首选 / C++ 次选, 原生编译)** 的选型对比表与结论; TSF TIP 必须进程内 COM 服务器 DLL, 不要 Python 硬凑(解释器驻留所有进程+GIL/低级钩子超时); 含混合思路与 Rust 最小 spike 计划
