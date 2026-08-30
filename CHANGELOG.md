@@ -20,6 +20,7 @@
   - B) Profile 注册正确路径 `HKLM\...\CTF\TIP\{CLSID}\LanguageProfile\0x{langid}\{ProfileGUID}`(Description/Enable/HiddenInSettingUI)
   - C) 按用户启用(HKCU): profile 挂进当前用户输入法/语言栏(直接注册表 + 备选 `Set-WinUserLanguageList`), 新版 Windows 缺这层看不到输入法
   - 脚本改为纯 ASCII(规避 PS 5.1 读无 BOM UTF-8 判成 ANSI 的 mojibake/解析错乱)
+  - **修正路径 bug**:注册表**两套路径写法**必须分开 —— PowerShell provider(`New-Item`/`Set-Item`/`Test-Path`)要 `HKLM:\`/`HKCU:\`(**带冒号**), `reg.exe` 要 `HKLM\`/`HKCU\`(**无冒号**)。之前 `Reg-Key` 把 `Registry::` 拼到已是 provider 路径前(非法), 且 `reg add` 拿到带冒号路径("Invalid key name")。重写为 `reg*`(无冒号)与 `ps*`(带冒号)两组变量, 不再混用。层 A/B 实测报 **Access is denied**(路径已正确, 唯一阻塞是需**管理员**), 层 C(HKCU)无需提权已实测写入成功(`Enable=1`)
   - 验证: HKCU 下注册 Implemented Categories + InprocServer32 后 `CoCreateInstance → ITfTextInputProcessor` 仍 S_OK
 - `docs/WGIME_TSF_语言选型.md` §5 里程碑② 标记通过
 - **待办**:里程碑③(notepad 打字回调触发); 新版 Windows 的 TSF profile 正确注册位实机验证
