@@ -45,3 +45,11 @@ TSF TIP 的本质：**一个 DLL（`InprocServer32`）驻留在每个应用进�
 4. UWP 应用是否加载（预期同样受限）。
 
 > 若 spike 通过 → TSF 子项目可立项（Rust）；若 COM 注册/回调链路不通 → 明确"只能靠 keyfix/UIA 兜底"，不再投入。
+
+### Spike 进度（`wgime-tsf/`，迭代式）
+
+- **里程碑① ✅（2026-08-30）**：`wgime-tsf` 用 `windows-rs 0.58`（`#[implement(IClassFactory)]` + `IClassFactory_Impl for TsfFactory_Impl`）编译出 `wgime_tsf.dll`（`crate-type=["cdylib"]`），`DllGetClassObject`/`DllRegisterServer`/`DllUnregisterServer` 导出齐全。**实测**：`CoGetClassObject(CLSID, CLSCTX_INPROC_SERVER, IID_IClassFactory)` 返回 **S_OK**，Windows 成功加载 DLL 并创建类工厂实例。`CreateInstance` 目前返回 `E_NOTIMPL`（待里程碑② 返回真正的文本服务对象）。
+  - 注册表键：`HKCR\CLSID\{d2ffe102-f716-430f-aa8a-da54a54de90b}\InprocServer32`（默认值=DLL 路径，`ThreadingModel=Both`）。写入 `HKCR\CLSID` 需 **管理员**（非提权进程 `RegCreateKeyW` 报 access denied）；PoC 验证可先写 `HKCU\Software\Classes\CLSID\...`（同样被 HKCR 合并）。
+  - 待办：里程碑②（`ITfTextInputProcessor(Ex)`/`ITfKeyEventSink` 绑定 + TSF profile 注册）→ 里程碑③（notepad 打字回调触发）。
+
+

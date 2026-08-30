@@ -6,7 +6,19 @@
 
 ---
 
-## 2026-08-29 (wgime-tsf: Rust TSF spike 子项目骨架)
+## 2026-08-30 (wgime-tsf: 里程碑① CoGetClassObject 加载验证通过)
+
+- **`wgime-tsf/src/lib.rs`** 完成两处关键修正(0.58 接口实现方式变化):
+  - `#[implement(IClassFactory)]` 生成 `TsfFactory_Impl` 结构体, **`impl IClassFactory_Impl for TsfFactory_Impl`**(不是旧版 `impl ... for TsfFactory`); `IClassFactory_Vtbl` 是 vtable **struct** 而非 trait
+  - `IClassFactory_Impl` trait 藏在 `windows` crate 的 **`implement` feature** 下(之前缺失导致找不到); 需要把 `"implement"` 加进 `Cargo.toml` features
+  - `DllGetClassObject` 用 `factory.query(riid, ppv)`(0.58 的 `Interface::query` 返回 `HRESULT`, 旧 `query_interface` 已无); `0x80004005`/`0x80004001` HRESULT 字面量需 `u32 as i32`(防 i32 溢出)
+  - 新增 `DllRegisterServer`(HKCR\CLSID\{GUID}\InprocServer32 = DLL 路径 + ThreadingModel=Both)与 `DllUnregisterServer`(删除键); `Cargo.toml` 加 `Win32_System_LibraryLoader`
+- **实测里程碑① ✅**:注册后(验证用 `HKCU\Software\Classes\CLSID\...`, 因为写 HKCR\CLSID 需管理员) `CoGetClassObject(CLSID, CLSCTX_INPROC_SERVER, IID_IClassFactory)` 返回 **S_OK(0x00000000)**, Windows 成功加载 `wgime_tsf.dll` 并创建类工厂实例
+- **`.gitignore`** 增加 `/wgime-tsf/target/`(忽略 cargo 构建产物)
+- `docs/WGIME_TSF_语言选型.md` §5 增补 Spike 进度(里程碑① 通过, 里程碑②/③ 待办)
+- **待办**:里程碑②(`ITfTextInputProcessor(Ex)`/`ITfKeyEventSink` 绑定 + TSF profile 注册) → 里程碑③(notepad 打字回调触发); TSF 注册脚本(写 `GUID_TFCAT_TIP_KEYBOARD` 类别 + 语言 profile)
+
+---
 
 - **`wgime-tsf/`** cargo 项目骨架:`Cargo.toml`(cdylib, windows-rs 0.58) + `src/lib.rs`(COM 服务器骨架: `DllGetClassObject` + `IClassFactory` + 占位 IUnknown)
 - `docs/WGIME_TSF_语言选型.md` 与 `docs/WGIME_TSF评估.md`(纯 Python 版) 已提交

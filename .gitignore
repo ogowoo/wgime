@@ -29,3 +29,6 @@ tests/interop/*.log
 
 tests/interop/*.png
 tests/interop/*.bin
+
+# rust TSF spike build artifacts (cargo checkout lives elsewhere)
+/wgime-tsf/target/
