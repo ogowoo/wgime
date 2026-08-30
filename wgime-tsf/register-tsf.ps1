@@ -45,6 +45,33 @@ if (-not $DllPath) {
 }
 if (-not (Test-Path $DllPath)) { throw "DLL not found: $DllPath" }
 
+# InstallLayoutOrTip (in input.dll) installs a text service profile for the CURRENT user WITHOUT
+# rewriting the whole language list (unlike Set-WinUserLanguageList). It has no import library, so
+# load it with LoadLibrary + GetProcAddress. psz format: "0x{langid}:{CLSID}{ProfileGUID}".
+function Install-LayoutOrTip([string]$psz) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WgimeIlot {
+    [DllImport("kernel32.dll", CharSet=CharSet.Auto)] static extern IntPtr LoadLibrary(string n);
+    [DllImport("kernel32.dll")] static extern IntPtr GetProcAddress(IntPtr h, string n);
+    [DllImport("kernel32.dll")] static extern bool FreeLibrary(IntPtr h);
+    delegate bool Fn([MarshalAs(UnmanagedType.LPWStr)] string psz, uint flags);
+    public static int Install(string psz) {
+        IntPtr h = LoadLibrary("input.dll");
+        if (h == IntPtr.Zero) return -1;
+        IntPtr p = GetProcAddress(h, "InstallLayoutOrTip");
+        if (p == IntPtr.Zero) { FreeLibrary(h); return -2; }
+        var fn = (Fn)Marshal.GetDelegateForFunctionPointer(p, typeof(Fn));
+        bool ok = fn(psz, 0);
+        FreeLibrary(h);
+        return ok ? 0 : -3;
+    }
+}
+'@
+    return [WgimeIlot]::Install($psz)
+}
+
 $langHex = ("{0:X}" -f $LangID)
 
 # ---- reg.exe paths (NO colon) ----
@@ -119,45 +146,15 @@ if (-not $SkipUserInstall) {
         reg add $regUserSort /v KeyboardLayout /t REG_SZ /d "00000409" /f | Out-Null
     }
 
-    # C3) recommended: let Windows add this TIP to the current user's language list.
-    #     Only call when this TIP is absent, because Set-WinUserLanguageList rewrites the
-    #     whole language+input list.
-    $needsInstall = $false
-    try {
-        $L = Get-WinUserLanguageList -ErrorAction Stop
-        $found = $false
-        foreach ($entry in $L) {
-            foreach ($im in $entry.InputMethodTips) {
-                if ($im -match [regex]::Escape($Profile)) { $found = $true; break }
-            }
-        }
-        $needsInstall = (-not $found)
-    } catch {
-        $needsInstall = $false
-    }
-    if ($needsInstall) {
-        Write-Host "  -> calling Set-WinUserLanguageList to install to current user language list (may rewrite it)..."
-        try {
-            $L = Get-WinUserLanguageList
-            if ($L.Count -eq 0) {
-                $L = @()
-                $L += New-WinUserLanguageList -Language "zh-CN"
-            }
-            foreach ($entry in $L) {
-                $has = $false
-                foreach ($im in $entry.InputMethodTips) {
-                    if ($im -match [regex]::Escape($Profile)) { $has = $true; break }
-                }
-                if (-not $has) {
-                    $entry.InputMethodTips = @($entry.InputMethodTips) + $Profile
-                }
-            }
-            Set-WinUserLanguageList -LanguageList $L -Force
-        } catch {
-            Write-Host "  Set-WinUserLanguageList failed (no permission / empty language list). Add it manually in Settings -> Keyboard." -ForegroundColor Yellow
-        }
+    # C3) recommended: InstallLayoutOrTip adds this TSF profile to the current user's input
+    #     methods WITHOUT rewriting the whole language list. It's the per-user, no-admin step that
+    #     makes the TIP visible in the language bar / win+space and lets ITfThreadMgr route keys to it.
+    $psz = ("0x" + $langHex + ":" + $CLSID + $Profile)
+    $ilot = Install-LayoutOrTip $psz
+    if ($ilot -eq 0) {
+        Write-Host "  -> InstallLayoutOrTip OK: $psz"
     } else {
-        Write-Host "  (already in current user language list, skipping)"
+        Write-Host ("  InstallLayoutOrTip failed (code " + $ilot + "). Add it manually in Settings -> Keyboard.") -ForegroundColor Yellow
     }
 }
 

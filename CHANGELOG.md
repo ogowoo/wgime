@@ -22,6 +22,7 @@
   - 脚本改为纯 ASCII(规避 PS 5.1 读无 BOM UTF-8 判成 ANSI 的 mojibake/解析错乱)
   - **修正路径 bug**:注册表**两套路径写法**必须分开 —— PowerShell provider(`New-Item`/`Set-Item`/`Test-Path`)要 `HKLM:\`/`HKCU:\`(**带冒号**), `reg.exe` 要 `HKLM\`/`HKCU\`(**无冒号**)。之前 `Reg-Key` 把 `Registry::` 拼到已是 provider 路径前(非法), 且 `reg add` 拿到带冒号路径("Invalid key name")。重写为 `reg*`(无冒号)与 `ps*`(带冒号)两组变量, 不再混用。层 A/B 实测报 **Access is denied**(路径已正确, 唯一阻塞是需**管理员**), 层 C(HKCU)无需提权已实测写入成功(`Enable=1`)
   - 验证: HKCU 下注册 Implemented Categories + InprocServer32 后 `CoCreateInstance → ITfTextInputProcessor` 仍 S_OK
+  - **层 C 改用 `InstallLayoutOrTip`(input.dll, LoadLibrary+GetProcAddress 加载)**:实测原 `Set-WinUserLanguageList` 在本机语言列表退化态(BCP47 的 `Language` 字段为空)下报不可用; `InstallLayoutOrTip("0x{langid}:{CLSID}{ProfileGUID}")` **无需管理员、不改写整个语言列表**、按当前用户把 TSF profile 装进输入法/语言栏(实测 OK, SortOrder 出现该 profile 的 AssemblyItem)。`InstallLayoutOrTip` 无 import library, 用 LoadLibrary+GetProcAddress 取指针(P/Invoke)
 - `docs/WGIME_TSF_语言选型.md` §5 里程碑② 标记通过
 - **待办**:里程碑③(notepad 打字回调触发); 新版 Windows 的 TSF profile 正确注册位实机验证
 
