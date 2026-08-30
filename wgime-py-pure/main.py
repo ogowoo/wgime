@@ -11,6 +11,46 @@ import importlib.util
 import ctypes
 import re
 
+
+def _relaunch_if_console_python():
+    """无黑窗口引导: 若被控制台版 python.exe 启动(会弹一个黑色控制台窗口),
+    立刻用 pythonw.exe(无控制台)重启自身并退出当前进程.
+    - 仅在 win32 且当前解释器是 console 版时触发; pythonw/其他解释器跳过.
+    - 环境变量 WGIME_DEBUG=1 时不自动跳走(保留控制台以看清错误).
+    - WGIME_RELAUNCHED=1 防循环(避免个别环境下 pythonw 仍报 python.exe 造成二次重启).
+    - 重启用同一套 sys.argv 传递(支持 argparse/文件路径), 不丢失参数.
+    """
+    if sys.platform != 'win32':
+        return
+    if os.environ.get('WGIME_DEBUG'):
+        return
+    if os.environ.get('WGIME_RELAUNCHED'):
+        return                       # 已重启过一次, 停止(防循环)
+    try:
+        exe = (sys.executable or '').lower()
+        if exe.endswith('pythonw.exe'):
+            return                   # 已经是无控制台版, 无需重启
+        if not (exe.endswith('python.exe') or exe.endswith('python3.exe')):
+            return                   # 非标准解释器(如 venv/py launcher), 交给外层处理
+        pw = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')
+        if not os.path.exists(pw):
+            return                   # 找不到 pythonw, 只能保留控制台
+        import subprocess
+        os.environ['WGIME_RELAUNCHED'] = '1'
+        # STARTUPINFO 隐藏窗口 + 不弹出控制台; 继承当前 cwd 与参数.
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        subprocess.Popen([pw] + sys.argv, cwd=os.getcwd(),
+                         startupinfo=si, creationflags=0x08000000)  # CREATE_NO_WINDOW
+        os._exit(0)
+    except Exception:
+        return                       # 重启失败则不阻塞主流程, 保留当前进程(可能仍弹控制台)
+
+
+_relaunch_if_console_python()
+
+
 # DPI 感知: tkinter 与 Win32 物理坐标一致 (否则高分屏光标跟随错位)
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)      # PER_MONITOR_DPI_AWARE
@@ -739,6 +779,17 @@ else:
 '''
 
 
+def _console_python():
+    """子进程[python]块用 console 版解释器. 主程序可能用 pythonw(无黑窗口)启动,
+    而 pythonw 的 stdout 不可靠 -> 子进程要抓 @wgime 行必须用 python.exe."""
+    exe = sys.executable
+    if exe and os.path.basename(exe).lower() == 'pythonw.exe':
+        alt = os.path.join(os.path.dirname(exe), 'python.exe')
+        if os.path.exists(alt):
+            return alt
+    return exe or 'python'
+
+
 def _run_python_block(body, code, name, ctx, timeout=60):
     """④ [python] 块子进程运行(隔离+超时熔断), 支持 JSON IPC 契约(handle(ctx)->actions).
     返回解析到的动作 dict 列表; 崩溃/超时只记日志, 不影响输入法."""
@@ -751,7 +802,7 @@ def _run_python_block(body, code, name, ctx, timeout=60):
         f.write(runner)
     actions = []
     try:
-        r = subprocess.run([sys.executable, tmp], timeout=timeout, capture_output=True,
+        r = subprocess.run([_console_python(), tmp], timeout=timeout, capture_output=True,
                            text=True, encoding='utf-8', errors='replace', creationflags=0x08000000)
         for line in r.stdout.splitlines():
             if line.startswith('@wgime '):

@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 纯 Python 版运行时无黑窗口)
+
+- **`main.py` 顶部新增 `_relaunch_if_console_python()`**:检测到被控制台版 `python.exe` 启动(会弹黑色控制台窗口)时, 立刻用 **`pythonw.exe`(无控制台)重启自身**并退出当前进程——与 C# 版 `wgime.bat` 的隐藏窗口思路一致, 但由 Python 自己完成, **无需额外启动器文件**
+  - 仅 win32 + 且 `sys.executable` 是 console 版时触发; `pythonw`/其他解释器跳过; `WGIME_DEBUG=1` 时不自动跳走(保留控制台看错误); `WGIME_RELAUNCHED=1` 防循环
+  - 重启用 `subprocess.Popen([pythonw]+sys.argv, startupinfo=SW_HIDE, CREATE_NO_WINDOW)`; 实测控制台父进程约 160ms 内退出, pythonw 子进程存活并运行单文件
+- **`main.py` `_console_python()`**:主进程改用 `pythonw` 后, `sys.executable` 会是 `pythonw.exe`; 子进程 `[python]` 插件块的 `subprocess.run(capture_output=True)` 必须改用 console 版 `python.exe` 才能抓到 `@wgime` 行。实测 pythonw 下 `_console_python()` 正确解析回 `python.exe`, `[python]` 块 `captured=True`
+- `dist/wgime-py.py`(单文件)由 `build-wgime-pure.py` 重建, 已内嵌上述两处
+- **验证**:本人机 pythonw 直接启动单文件进程存活、无黑窗口; console→pythonw 重启链路走通; pythonw 下插件块捕获正常
+
+---
+
 ## 2026-08-30 (wgime-tsf: 里程碑② ITfTextInputProcessor(Ex)/ITfKeyEventSink 接口验证通过)
 
 - **`wgime-tsf/src/lib.rs`** 新增文本服务对象 `TsfTextService`,`#[implement(ITfTextInputProcessor, ITfTextInputProcessorEx, ITfKeyEventSink)]`:

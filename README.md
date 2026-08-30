@@ -151,7 +151,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 
 除 C# 版（bat/ps1）外，项目还有一个**纯 Python 重实现**（`wgime-py-pure/`），零 .NET、免安装、单文件：
 
-- **运行**：Python 3.13+（3.12+ 即可），`python wgime-py-pure\dist\wgime-py.py`（单文件，内嵌全部模块与 pystray/uiautomation/comtypes）或 `python wgime-py-pure\package\wgime-py.py`（分发目录）
+- **运行**：Python 3.13+（3.12+ 即可），`python wgime-py-pure\dist\wgime-py.py`（单文件，内嵌全部模块与 pystray/uiautomation/comtypes）或 `python wgime-py-pure\package\wgime-py.py`（分发目录）。**无黑窗口**：被 `python.exe` 启动会自动用 `pythonw.exe` 无控制台重启自身（设 `WGIME_DEBUG=1` 可保留控制台看错误）
 - **零第三方必需**：pystray（托盘）/uiautomation+comtypes（现代应用光标跟随）已 zip 内嵌进单文件；`cryptography`（聊天加密）可选
 - **数据目录** `%LOCALAPPDATA%\wgime-py`（词频/联想/词库缓存）；若用 **Microsoft Store 版 Python**（AppContainer 沙箱虚拟化 `%LOCALAPPDATA%`），程序自动切到 `C:\Users\<user>\wgime-py`
 - **功能**：与 C# 版基本对齐——四种模式 / 词频学习 / 简拼 / 模糊音 / 双拼 / 造词 / 码表导入与固化 / 启动器 / 工具箱 / 插件 / 候选窗 / 托盘菜单 / 反查编码 / 简繁 / 整句 / 联想 / 空闲隐藏
