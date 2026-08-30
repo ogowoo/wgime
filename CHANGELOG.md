@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 托盘菜单新增"编辑/重载配置", 对齐 C# 版)
+
+- **`main.py` 新增 `reload_config()`**:重读 config.txt + tools.txt + plugins/*.txt + plugins/*.py + pastemode.txt, 并刷新主题/托盘勾选(无需重启程序), 对齐 C# 版 `ReloadConfig()`
+  - `apply_config()` 重读 config.txt; `load_tools()`/`load_plugins()`/`load_py_plugins()` 本就每次重新读盘(无缓存), 改文件即生效; `load_appmodes()` 重读 pastemode.txt
+  - 新增 `open_config_file()`:用默认编辑器打开 config.txt(对齐 C# `OpenConfigFile()`)
+- **`main.py` tray.api 新增 `reload`/`open_config` 回调**
+- **`tray.py` "这个程序" 菜单新增**:`编辑配置 (config.txt)…` 与 `重载配置 (config/tools/插件)` 两项
+- **实测**:`load_config` 改文件后重读即变(`theme=light`/`showcode=True`/`learnk=9999`); `load_tools` 加按钮后重读 1→2; 菜单结构 `MENU_BUILD_OK` 含两新项; pythonw 启动无异常
+- `dist/wgime-py.py` 重建内嵌; package 已刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 纯 Python 版运行时无黑窗口)
 
 - **`main.py` 顶部新增 `_relaunch_if_console_python()`**:检测到被控制台版 `python.exe` 启动(会弹黑色控制台窗口)时, 立刻用 **`pythonw.exe`(无控制台)重启自身**并退出当前进程——与 C# 版 `wgime.bat` 的隐藏窗口思路一致, 但由 Python 自己完成, **无需额外启动器文件**

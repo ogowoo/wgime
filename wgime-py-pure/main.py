@@ -156,6 +156,39 @@ def apply_config():
     engine.recent_k = CFG.get('recentk', 200)  # 近期热度排序权重 (config recentk)
 
 
+def reload_config():
+    """重载配置 + 工具箱 + 插件 + pastemode (对齐 C# ReloadConfig).
+    改完 config.txt / tools.txt / plugins / pastemode.txt 后不必重启,
+    托盘菜单'重载配置'或 Ctrl+` 重新生效."""
+    global CFG
+    apply_config()                                  # 重新读 config.txt -> CFG
+    try:
+        bar.set_theme(CFG.get('theme', 'dark'))     # 主题即时生效
+    except Exception:
+        pass
+    reload_plugins()                                # 重读 plugins/*.txt + tools.txt -> TOOLS
+    load_py_plugins()                               # 重扫 plugins/*.py
+    load_appmodes()                                 # 重读 pastemode.txt
+    try:
+        _refresh_tray()                             # 托盘勾选/图标按新配置刷新
+    except Exception:
+        pass
+    _dfn('reload config ok (theme=%s, tools=%d, plugins=%d)' %
+         (CFG.get('theme'), len(TOOLS), len(PLUGINS)))
+
+
+def open_config_file():
+    """用默认编辑器打开 config.txt (对齐 C# OpenConfigFile)."""
+    try:
+        cfg = os.path.join(APP_DIR, 'config.txt')
+        if not os.path.exists(cfg):
+            with open(cfg, 'w', encoding='utf-8') as f:
+                f.write('')                          # 缺失时先建空文件再打开
+        os.startfile(cfg)
+    except Exception as e:
+        _dfn('open config err %r' % e)
+
+
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC)
 MODE_NAMES = ('混合', '拼音', '五笔', '词典')
@@ -210,6 +243,8 @@ try:
         'get_theme': lambda: CFG.get('theme', 'dark'),
         'import_table': lambda: tools.show_import(engine, DICT_DIR),
         'makeword': lambda: makeword_clipboard(),
+        'reload': lambda: reload_config(),
+        'open_config': lambda: open_config_file(),
     })
 except Exception as e:
     _dfn('tray start err %r' % e)

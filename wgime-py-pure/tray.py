@@ -139,7 +139,11 @@ class Tray:
                                  pystray.MenuItem(L('改用剪贴板上屏', 'Paste via clipboard'),
                                                   self._on(self.api['apppaste'])),
                                  pystray.MenuItem(L('标点吞字修复', 'Punct stale-char fix'),
-                                                  self._on(self.api['appkeyfix'])))),
+                                                  self._on(self.api['appkeyfix'])),
+                                 pystray.MenuItem(L('编辑配置 (config.txt)…', 'Edit config (config.txt)…'),
+                                                  self._on(self.api['open_config'])),
+                                 pystray.MenuItem(L('重载配置 (config/tools/插件)', 'Reload config (config/tools/plugins)'),
+                                                  self._on(self.api['reload'])))),
             pystray.Menu.SEPARATOR,
             # 退出
             pystray.MenuItem(L('退出', 'Exit'), self._on(self.api['quit'])),
