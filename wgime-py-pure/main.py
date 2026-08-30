@@ -1027,6 +1027,25 @@ except Exception as e:
     _dfn('tray start err %r' % e)
 
 
+_admin_hint_shown = [False]
+_admin_hint_last = [0.0]
+
+
+def _maybe_admin_hint():
+    """检测前台是管理员(高完整性)窗口且 wgime 未提权 -> 托盘气泡提示以管理员运行 wgime(节流, 一次)."""
+    now = time.time()
+    if _admin_hint_shown[0] or now - _admin_hint_last[0] < 5:
+        return
+    _admin_hint_last[0] = now
+    try:
+        if not win.self_elevated() and win.foreground_elevated():
+            _admin_hint_shown[0] = True
+            if TRAY and getattr(TRAY, 'icon', None):
+                TRAY.icon.notify('当前前台窗口以管理员身份运行, wgime(普通权限)无法在其中输入。\n请右键以管理员身份运行 wgime 后重试。', 'WgIme')
+    except Exception:
+        pass
+
+
 def poll():
     try:
         # 先排空托盘动作 (pystray 线程入队, 此处主线程执行)
@@ -1046,6 +1065,7 @@ def poll():
             except Exception:
                 break
             handle(vk)
+        _maybe_admin_hint()   # 提权前台 + 未提权 wgime: 托盘提示(节流一次)
     finally:
         hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
         try:
