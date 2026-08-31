@@ -402,6 +402,27 @@ def _import_uia_robust():
     try:
         import uiautomation as auto
         _neutralize_uia_check_version()
+        # 诊断: 确认 comtypes/uiautomation 到底从哪个文件加载(是否被 site-packages 劫持).
+        try:
+            import sys
+            import comtypes
+            _ctf = getattr(comtypes, '__file__', '') or ''
+            _zips = [p for p in sys.path if p and p.lower().endswith('thirdparty.zip')]
+            _zp = _zips[0] if _zips else '<none>'
+            _in_zip = 'thirdparty.zip' in _ctf
+            # zip 里是否有 comtypes/uiautomation
+            import zipfile as _zf
+            _z_has_com = _z_has_uia = False
+            try:
+                _names = _zf.ZipFile(_zp).namelist()
+                _z_has_com = any(n.startswith('comtypes/') for n in _names)
+                _z_has_uia = any(n.startswith('uiautomation/') for n in _names)
+            except Exception:
+                pass
+            _dlog('DIAG: comtypes.__file__=%s | from_zip=%s | sys.path[0]=%s | zip_has_comtypes=%s zip_has_uia=%s' % (
+                _ctf, _in_zip, (sys.path[0] if sys.path else '<empty>'), _z_has_com, _z_has_uia))
+        except Exception as _e:
+            _dlog('DIAG exc %s' % repr(_e))
         return auto
     except KeyboardInterrupt:
         raise
