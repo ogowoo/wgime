@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 鼠标跟随体验增强 - 来源标记 + 鼠标中心贴边 + GUITI 优先)
+
+- 背景: 用户机器(Cisco+Store Python) comtypes-UIA 不可用, 决定纯 Python 覆盖层 + 更好的位置跟随(不纠结 UIA/TSF)
+- **`win.py`**: `get_caret_pos` 增加 `_last_caret_source` 标记返回来源('caret'/'mouse'/'last'/'fallback'); 仍纯 ctypes Win32, 顺序 GUITI -> 鼠标 -> last -> 窗口底部
+- **`bar.py`** 光标跟随分支按来源区分:
+  - `mouse` 来源: 候选窗中心对齐鼠标点下方(x = cx - w//2, y = cy+10), 不压指针, 超屏 clamp(上翻)
+  - `caret`/`last`/`fallback`: 贴光标下方(光标左侧对齐), 同原
+- 实测: `get_caret_pos` 纯 Win32 返回 (1408,1145) source=mouse, 无 uiautomation/comtypes; pythonw 启动干净
+- `dist/wgime-py.py` 重建(563.1KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 光标跟随彻底移除非 comtypes/uiautomation, 纯 ctypes Win32)
 
 - **背景**: 用户机器 comtypes 版 uiautomation 反复 `ImportError('Typelib different than module')`(即使从 zip 加载、`_check_version` 已中和仍复现), ctypes 直调 UIA 又遇 Store-Python 进程 COM 隔离(REGDB_CLASSNOTREG)。用户明确要求**不依赖 comtypes/UIA 的定位方式**

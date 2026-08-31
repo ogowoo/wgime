@@ -234,6 +234,7 @@ class GUITHREADINFO(ctypes.Structure):
 
 
 _last_caret = [None]
+_last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback'
 
 
 def get_caret_pos():
@@ -251,6 +252,7 @@ def get_caret_pos():
             pt = POINT(g.rcCaret.left, g.rcCaret.bottom)
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
             _last_caret[0] = (pt.x, pt.y)
+            _last_caret_source[0] = 'caret'
             _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s -> %s' % (
                 (_t.time()-_t0)*1000, bool(g.hwndCaret), _last_caret[0]))
             return _last_caret[0]
@@ -262,11 +264,14 @@ def get_caret_pos():
     # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用鼠标作兜底.
     mpos = _mouse_pos()
     if mpos is not None:
+        _last_caret_source[0] = 'mouse'
         _dlog('get_caret_pos: mouse-fallback(%.1fms) -> %s' % ((_t.time()-_t0)*1000, mpos))
         return mpos
     if _last_caret[0]:
+        _last_caret_source[0] = 'last'
         _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
         return _last_caret[0]
+    _last_caret_source[0] = 'fallback'
     _dlog('get_caret_pos: fallback-origin(%.1fms)' % ((_t.time()-_t0)*1000))
     return _foreground_client_origin()
 

@@ -110,17 +110,24 @@ class CandBar:
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 8))
         elif follow and not _shell:
             pos = win.get_caret_pos()
+            src = win._last_caret_source[0]
             if pos:
                 cx, cy = pos
                 ra = win.workarea_at(cx, cy)
-                x = cx
-                y = cy + 6
+                if src == 'mouse':
+                    # 鼠标兜底: 候选窗中心对齐鼠标点下方(不压指针), 横向居中, 超屏 clamp.
+                    x = cx - w // 2
+                    y = cy + 10
+                else:
+                    # 精确 caret / last / fallback: 贴光标下方(光标左侧对齐).
+                    x = cx
+                    y = cy + 6
                 if x + w > ra.right:
                     x = ra.right - w
                 if x < ra.left:
                     x = ra.left
                 if y + h > ra.bottom:
-                    y = cy - h - 6
+                    y = max(ra.top, cy - h - 6)
                 if y < ra.top:
                     y = ra.top
                 self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
