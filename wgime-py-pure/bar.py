@@ -57,6 +57,11 @@ class CandBar:
                 self._hide_after = None
         except Exception:
             pass
+        # 先唤醒窗口(即使后续因位置滞回提前 return, 窗口也已显示; 否则 withdrawn 态永远显示不出).
+        try:
+            self.top.deiconify()
+        except Exception:
+            pass
         t = THEMES[self.theme]
         c = self.canvas
         c.delete('all')

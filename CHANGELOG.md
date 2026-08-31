@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 根治候选框不显示 - show 里位置滞回提前 return 跳过 deiconify)
+
+- **用户反馈(关键)**: Backspace / Shift 开关 / 标点符号后候选框"整个屏幕看不到"(但打字仍上屏)
+- **真根因**: `bar.show` 开头 `c.delete('all')` 清空画布, 但**位置滞回分支 `if dx<40 and dy<10: return` 提前返回, 跳过了末尾的 `self.top.deiconify()`**。若窗口先前被 `bar.hide`(withdraw), 则 show 被调用但因位置接近触发滞回 return -> 窗口**保持隐藏**, 永远显示不出
+- **修复**: `bar.show` 开头先 `self.top.deiconify()`(无论后续是否提前 return, 窗口都已唤醒); `win.set_topmost` 仍在末尾
+- 这解释了"Backspace 清空后 hide(withdraw) -> 再输入 show 但位置接近 -> 滞回 return 不 deiconify -> 永久隐藏"
+- `dist/wgime-py.py` 重建(576.4KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 修 _last_geom 从未赋值导致平滑失效 + 候选框位置异常)
 
 - 用户反馈: 按 Backspace 后"整个屏幕看不到候选框"——疑与候选框位置异常/平滑有关
