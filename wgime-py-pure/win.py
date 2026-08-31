@@ -584,11 +584,11 @@ def ensure_caret_bg():
 
 
 def get_caret_pos():
-    """光标屏幕坐标(主线程, 绝不阻塞). UIA 缓存(后台刷新, 精确 caret) -> GetGUIThreadInfo ->
-    上次有效位 -> 前台窗口客户区. 优先 UIA: Electron/Chromium(Teams/Edge) 的 GUITI 光标准确性差."""
+    """光标屏幕坐标(主线程, 绝不阻塞). 顺序: UIA 缓存 -> GetGUIThreadInfo -> 鼠标光标 ->
+    上次有效位 -> 前台窗口底部居中. UIA 仅后台线程刷新(慢), 主线程只读缓存, 绝不跑 UIA."""
     import time as _t
     _t0 = _t.time()
-    # UIA 缓存优先(后台线程已刷新的精确 caret 选区, 对 Electron 准). 不在此处同步跑 UIA.
+    # UIA 缓存优先(后台线程已刷新的精确 caret 选区). 不在此处同步跑 UIA.
     if _uia_el[0] is not None:
         _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
         return _uia_el[0]
@@ -611,6 +611,11 @@ def get_caret_pos():
     except Exception as e:
         _dlog('get_caret_pos: GUITI exc(%.1fms) %s' % ((_t.time()-_t0)*1000, repr(e)))
         pass
+    # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用鼠标作非 UIA 兜底.
+    mpos = _mouse_pos()
+    if mpos is not None:
+        _dlog('get_caret_pos: mouse-fallback(%.1fms) -> %s' % ((_t.time()-_t0)*1000, mpos))
+        return mpos
     if _last_caret[0]:
         _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
         return _last_caret[0]
@@ -618,15 +623,34 @@ def get_caret_pos():
     return _foreground_client_origin()
 
 
+def _mouse_pos():
+    """鼠标光标屏幕坐标(非 UIA 兜底, 快速)."""
+    try:
+        p = POINT()
+        if user32.GetCursorPos(ctypes.byref(p)):
+            return p.x, p.y
+    except Exception:
+        pass
+    return None
+
+
 def _foreground_client_origin():
-    """前台窗口客户区左上角的屏幕坐标 (光标探测失败的回退)."""
+    """前台窗口底部居中的屏幕坐标(光标探测失败的回退, 贴近输入区而非左上角)."""
     try:
         fg = user32.GetForegroundWindow()
         if not fg:
             return None
+        r = RECT()
+        if user32.GetClientRect(fg, ctypes.byref(r)):
+            tl = POINT(0, 0)
+            user32.ClientToScreen(fg, ctypes.byref(tl))
+            # 底部居中附近(略靠左, 贴近常见输入区/任务栏上方), 宽高按 1/3 估算.
+            x = tl.x + r.right // 3
+            y = tl.y + max(r.bottom - 60, 0)
+            return x, y
         pt = POINT(0, 0)
         user32.ClientToScreen(fg, ctypes.byref(pt))
-        return pt.x + 12, pt.y + 40
+        return pt.x + 120, pt.y + 200
     except Exception:
         return None
 
