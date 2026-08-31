@@ -36,6 +36,7 @@ class CandBar:
         self._fc = tkfont.Font(family='Microsoft YaHei UI', size=9)
         self._fd = tkfont.Font(family='Microsoft YaHei UI', size=11)
         self._last_geom = None   # 低通平滑的上一次窗口位置 (x, y)
+        self._hide_after = None  # 防抖隐藏的 after 句柄
 
     def set_theme(self, name):
         if name in THEMES:
@@ -49,6 +50,13 @@ class CandBar:
                          smooth=True, **kw)
 
     def show(self, header, code, cands, sel, page=0, total=1, follow=True, fixed=None):
+        # 取消待执行的防抖隐藏(上屏后紧跟的下一键会让 hide 的延迟回调失效前先取消).
+        try:
+            if self._hide_after is not None:
+                self.top.after_cancel(self._hide_after)
+                self._hide_after = None
+        except Exception:
+            pass
         t = THEMES[self.theme]
         c = self.canvas
         c.delete('all')
@@ -187,4 +195,21 @@ class CandBar:
         self.top.geometry('+%d+%d' % (e.x_root - self._drag['x'], e.y_root - self._drag['y']))
 
     def hide(self):
-        self.top.withdraw()
+        """候选窗隐藏. 加防抖: 延迟 withdraw, 若期间又 show(连续输入/上屏后紧跟下一键)则不隐藏,
+        避免候选框在快速连打/上屏瞬间"闪一下消失"."""
+        try:
+            if self._hide_after is not None:
+                self.top.after_cancel(self._hide_after)
+        except Exception:
+            pass
+        try:
+            self._hide_after = self.top.after(160, self._do_hide)
+        except Exception:
+            self._do_hide()
+
+    def _do_hide(self):
+        self._hide_after = None
+        try:
+            self.top.withdraw()
+        except Exception:
+            pass
