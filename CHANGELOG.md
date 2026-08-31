@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随改为后台线程刷新, 主线程不阻塞, 解决上屏卡顿)
+
+- **上屏卡顿根因**: 光标跟随开启时, `bar.show`(tkinter 主线程)里同步调用 `get_caret_pos()` → `get_caret_uia()`. UIA 的 `GetFocusedControl`/`GetSelection`/`GetBoundingRectangles` 在 Teams 等 Electron 应用一次可耗时 1~几秒, 且跑在**主线程**, 直接阻塞按键处理/上屏(即使之前加了 150ms 节流, 慢的 UIA 调用本身仍阻塞主线程)
+- **修复 `win.py`**: 新增**后台光标刷新线程** `_caret_bg_loop`/`ensure_caret_bg()`:
+  - 后台线程每 100ms 调 `get_caret_uia()`(内部还有 150ms 节流)刷新缓存 `_uia_el[0]`
+  - `get_caret_pos()` 改为: 廉价同步 `GetGUIThreadInfo` -> **读取 UIA 缓存**(后台线程刷新, 主线程绝不跑 UIA) -> 上次有效位 -> 前台窗口客户区
+  - 主线程因此**永不阻塞**(实测 `get_caret_pos` 返回 <0.1ms)
+- **`main.py`**: 启动时 `win.ensure_caret_bg()` 启动后台线程
+- **实测**: `ensure_caret_bg` + mtime 失真下, `get_caret_pos` 0.0001s 返回 `(2647,1300)`(bg 已缓存); pythonw 启动干净
+- `dist/wgime-py.py` 重建(573.1KB); package 已刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 强制用内嵌 zip 的 comtypes/uiautomation, 排除用户 pip 装的 site-packages 版)
 
 - **真正破案**: 生产机 pip 装了 `uiautomation 2.0.29 + comtypes 1.4.16`(user site-packages, `AppData\Roaming\Python\Python313\site-packages`)。单文件虽然 `sys.path.insert(0, thirdparty.zip)`, 但若 site 里 zip 过期/损坏, Python 会**回退到 site-packages 的 comtypes**——而我们所有的 `_check_version` 补丁都打在 **zip comtypes** 上, 对实际加载的 site-packages comtypes 完全无效! 这就是"改了 N 轮仍复现"的根本原因

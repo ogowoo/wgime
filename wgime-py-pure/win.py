@@ -478,8 +478,42 @@ def get_caret_uia(max_age=0.15):
     return None
 
 
+_uia_bg_started = [False]
+
+
+def _caret_bg_loop():
+    """后台线程: 周期性刷新 UIA 光标位置到 _uia_el[0], 供主线程 get_caret_pos 读缓存.
+    关键: UIA GetFocusedControl/GetSelection 在 Teams 等 Electron 应用可耗时 1~几秒,
+    若在主线程(bar.show 里)同步跑, 会阻塞按键处理/上屏. 这里挪到后台线程, 主线程只读缓存."""
+    import time
+    try:
+        _force_zip_uia()
+        _import_uia_robust()          # 先确保 uiautomation 可用 + _check_version 中和
+        while True:
+            time.sleep(0.10)          # 后台: 每 100ms 试一次(内部 get_caret_uia 还有 150ms 节流)
+            try:
+                get_caret_uia()       # 更新 _uia_el[0]
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def ensure_caret_bg():
+    """启动后台光标刷新线程(仅一次). get_caret_pos 因此总能拿到缓存位, 主线程不阻塞."""
+    import threading
+    if _uia_bg_started[0]:
+        return
+    _uia_bg_started[0] = True
+    try:
+        threading.Thread(target=_caret_bg_loop, daemon=True).start()
+    except Exception:
+        pass
+
+
 def get_caret_pos():
-    """光标屏幕坐标. GetGUIThreadInfo -> UIA(节流) -> 上次有效位 -> 前台窗口客户区."""
+    """光标屏幕坐标(主线程, 绝不阻塞). GetGUIThreadInfo(廉价,同步) -> UIA 缓存(后台刷新) ->
+    上次有效位 -> 前台窗口客户区."""
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
@@ -492,10 +526,9 @@ def get_caret_pos():
             return _last_caret[0]
     except Exception:
         pass
-    p = get_caret_uia()
-    if p:
-        _last_caret[0] = p
-        return p
+    # UIA 缓存(后台线程已刷新): 直接读, 不在此处同步跑 UIA(否则 Teams 会卡几秒).
+    if _uia_el[0] is not None:
+        return _uia_el[0]
     if _last_caret[0]:
         return _last_caret[0]
     return _foreground_client_origin()

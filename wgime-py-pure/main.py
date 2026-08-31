@@ -1164,4 +1164,10 @@ def poll():
 root.after(15, poll)
 hook.start()
 set_active(CFG['starton'])
+# 光标跟随: 用后台线程刷新 UIA 光标, 主线程(bar.show)只读缓存, 避免 UIA 在 Teams 等
+# 应用里耗时几秒阻塞上屏.
+try:
+    win.ensure_caret_bg()
+except Exception:
+    pass
 root.mainloop()
