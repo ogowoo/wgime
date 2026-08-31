@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 后台线程用 UIAutomationInitializerInThread 初始化, 根治 UIA 超时/跟随不到)
+
+- **生产机日志决定性发现**: 后台线程定时刷新的 `get_caret_uia` → `GetFocusedControl` **每次耗时 1~2.6s 且 el=False**(拿不到控件), 而主线程 `get_caret_pos` 一直 `fallback-origin`(光标准不了)。这就是"上屏仍卡 + 跟随不到"
+- **根因**: 在**裸后台线程**里用 uiautomation 的 `GetFocusedControl`, **没初始化该线程的 UIA/COM 上下文**——uiautomation 官方明确要求"used in a thread 必须用 `UIAutomationInitializerInThread`"(正是报错提示第 2 条)。未初始化的线程里 COM 调用超时/失败 → el=False、耗时 1~2.6s
+- **修复 `win.py` `_caret_bg_loop`**: 用 `with auto.UIAutomationInitializerInThread():` 包裹循环, 在后台线程内初始化 UIA 上下文(退出自动 Uninitialize)
+- **实测**: 后台线程用 initializer 后 `GetFocusedControl` 从 1950ms/el=False 变成 3~8ms/el=True, `_uia_el[0]` 成功填充 (2647,1300); 主线程 `get_caret_pos` 走 UIA-cache 0.1ms 不再 fallback; pythonw 启动干净
+- **效果**: 生产机 Teams 里光标跟随应能取到精确光标(cache 由后台线程持续更新), 且主线程不跑 UIA, 上屏不卡
+- `dist/wgime-py.py` 重建(575.8KB); package 已刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 光标跟随 debug 增强 + UIA 优先定位 + 定位失败原因日志)
 
 - **生产机"跟随不到光标"根因线索**: 后台线程 `get_caret_uia` 的 `GetSelection()` 对很多控件返回**空矩形**(`rects=[]`)或**整行/大控件**, 旧逻辑硬性要求 `0<cw<=200`, 导致 `_uia_el[0]` 填不上 → `get_caret_pos` 走 fallback(客户区左上角, 不准)

@@ -519,19 +519,24 @@ _uia_bg_started = [False]
 
 def _caret_bg_loop():
     """后台线程: 周期性刷新 UIA 光标位置到 _uia_el[0], 供主线程 get_caret_pos 读缓存.
-    关键: UIA GetFocusedControl/GetSelection 在 Teams 等 Electron 应用可耗时 1~几秒,
-    若在主线程(bar.show 里)同步跑, 会阻塞按键处理/上屏. 这里挪到后台线程, 主线程只读缓存."""
+    关键1: UIA GetFocusedControl 在 Teams 等 Electron 应用可耗时 1~2.6s, 若在主线程(bar.show)
+           同步跑会阻塞按键处理/上屏, 故挪到后台线程, 主线程只读缓存.
+    关键2: **在子线程里用 uiautomation 必须用 UIAutomationInitializerInThread 初始化本线程的
+           UIA/COM 上下文**, 否则 GetFocusedControl 会在未初始化的 COM 上下文中超时/失败
+           (el=False, 耗 1~2.6s)——这正是生产机日志的现象. 官方要求, 缺它不行."""
     import time
     try:
         _force_zip_uia()
-        _import_uia_robust()          # 先确保 uiautomation 可用 + _check_version 中和
+        auto = _import_uia_robust()   # 先确保 uiautomation 可用 + _check_version 中和
         _dlog('caret_bg: started')
-        while True:
-            time.sleep(0.10)          # 后台: 每 100ms 试一次(内部 get_caret_uia 还有 150ms 节流)
-            try:
-                get_caret_uia()       # 更新 _uia_el[0]
-            except Exception:
-                pass
+        # 线程内初始化 UIA 上下文(退出时自动 Uninitialize).
+        with auto.UIAutomationInitializerInThread():
+            while True:
+                time.sleep(0.10)      # 后台: 每 100ms 试一次(内部 get_caret_uia 还有 150ms 节流)
+                try:
+                    get_caret_uia()   # 更新 _uia_el[0]
+                except Exception:
+                    pass
     except Exception:
         pass
 
