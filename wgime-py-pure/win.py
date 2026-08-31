@@ -13,6 +13,50 @@ user32.SendInput.restype = w.UINT
 user32.SendInput.argtypes = [w.UINT, ctypes.c_void_p, ctypes.c_int]
 
 
+def _early_neutralize_uia():
+    """在 win 模块加载时就彻底中和 comtypes 的 typelib 版本校验 + uiautomation 的黄字日志.
+    不依赖任何时序(无需等 uiautomation import): 直接打补丁到 comtypes._tlib_version_checker
+    及 uiautomation.Logger, 让 _check_version 恒通过, 并吞掉 'Can not load UIAutomationCore.dll'
+    这类只吓人不致命的日志."""
+    try:
+        import comtypes._tlib_version_checker as _tvc
+        _tvc._check_version = lambda *a, **kw: None
+    except Exception:
+        pass
+    try:
+        import comtypes.gen
+        try:
+            import sys as _s
+            for _k in list(_s.modules):
+                if _k.startswith('comtypes.gen.'):
+                    try:
+                        _s.modules[_k].__dict__['_check_version'] = lambda *a, **kw: None
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        import uiautomation.uiautomation as _uu
+        if hasattr(_uu, 'Logger') and hasattr(_uu.Logger, 'WriteLine'):
+            _real_wl = _uu.Logger.WriteLine
+            def _quiet(*a, **kw):
+                try:
+                    if a and 'UIAutomationCore' in str(a[0]):
+                        return                      # 吞掉 Can not load UIAutomationCore.dll 类提示
+                except Exception:
+                    pass
+                return _real_wl(*a, **kw)
+            _uu.Logger.WriteLine = _quiet
+    except Exception:
+        pass
+
+
+# 顶层立即中和(单文件 via _load('win') 时即生效), 早于任何 uiautomation 使用.
+_early_neutralize_uia()
+
+
 # ---------- SendInput (UNICODE) ----------
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [('wVk', w.WORD), ('wScan', w.WORD), ('dwFlags', w.DWORD),

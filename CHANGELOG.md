@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: win 加载即中和 comtypes typelib 校验 + 吞 uiautomation 黄字日志)
+
+- **生产机仍报 `Typelib different than module`/@automationlog.txt 的原因**: 补丁时序依赖——之前的 `_neutralize_uia_check_version` 只在 `_import_uia_robust` 里调用, 若 uiautomation 在某条路径下提前触发 `_AutomationClient`(import 时绑定 `_check_version`), 补丁就晚了
+- **`win.py` 新增 `_early_neutralize_uia()` 并在 win 模块加载时(顶层)立即调用**: `_load('win')` 即生效, 早于任何 uiautomation 使用, 无时序依赖:
+  - 中和 `comtypes._tlib_version_checker._check_version` + 所有已加载 `comtypes.gen.*` 模块 `__dict__['_check_version']` → 恒通过
+  - 把 `uiautomation.Logger.WriteLine` 降噪: 对含 `UIAutomationCore` 的提示("Can not load UIAutomationCore.dll" 等)直接吞掉, 不再写进 `@automationlog.txt`
+- **实测**: 强制 mtime 失真 + win 加载即中和, `get_caret_uia` 返回 `(2647,1300)` 无报错; `Logger.WriteLine('Can not load UIAutomationCore.dll.')` 被静默; pythonw 启动干净
+- `dist/wgime-py.py` 重建(570KB); package 已刷新
+- **必须用最新单文件**; 若生产仍报, 说明跑的仍是旧构建
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 单文件启动时强制刷新 thirdparty.zip —— 根治旧 comtypes typelib 报错)
 
 - **真正根因**: 单文件解压 `thirdparty.zip` 到 `%LOCALAPPDATA%\wgime-py\site` 的旧逻辑是 **`if not os.path.exists(_third_zip)`** —— site 里已有 zip 就**永不刷新**。生产机 site 残留早期版本的 zip → 一直用**旧 comtypes**, 其 `comtypes.gen.UIAutomationClient` 烘焙的 UIAutomationCore.dll mtime 更老, `_check_version` 必报 `Typelib different than module`——这解释了为什么改了多轮仍复现(旧 comtypes 从没被换掉)
