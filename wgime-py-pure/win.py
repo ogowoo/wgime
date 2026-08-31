@@ -459,8 +459,10 @@ def get_caret_uia(max_age=0.15):
             _uia_fg[0] = fg
             _uia_el[0] = None
             return None
-        # 精确光标: ITextPattern.GetSelection(); caret 是细矩形(高 4~200, 宽<=200),
-        # 太宽 = 整行/段落(某些 Chromium 字段) -> 不信任, 回退到控件边界
+        # 精确光标: ITextPattern.GetSelection(). 对 Electron/Chromium(Teams/Edge), GetSelection
+        # 常返回"当前行"的矩形(可能较宽), 但其 left 即光标列锚点, bottom 是行底——足够定位候选窗
+        # (候选窗贴在 left 下方). 因此放宽宽度限制, 只拒绝高度异常(整页/特大)的矩形.
+        _sel_info = ''
         try:
             tp = el.GetPattern(auto.PatternId.TextPattern)
             if tp:
@@ -471,18 +473,32 @@ def get_caret_uia(max_age=0.15):
                         r = rects[0]
                         cw = r.right - r.left
                         ch = r.bottom - r.top
-                        if 0 < cw <= 200 and 4 <= ch <= 200:
+                        _sel_info = 'sel rect cw=%d ch=%d' % (cw, ch)
+                        # 高度合理(一行文字)即视为可定位光标; 宽度不再强限(整行也行, 取 left 锚点).
+                        if 4 <= ch <= 200 and cw >= 0:
                             pos = (int(r.left), int(r.bottom))
                             _uia_el[0] = pos
                             _uia_t[0] = now
                             _uia_fg[0] = fg
                             return pos
+                    else:
+                        _sel_info = 'sel rects EMPTY'
+                else:
+                    _sel_info = 'selection EMPTY/None'
+            else:
+                _sel_info = 'no TextPattern'
         except Exception:
             pass
+        if _sel_info:
+            _dlog('get_caret_uia: %s (el=%s Rect=%s)' % (
+                _sel_info,
+                getattr(el, 'ControlTypeName', getattr(el, 'Name', '?')),
+                getattr(el, 'BoundingRectangle', '?')))
         # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
         r = el.BoundingRectangle
         cw = r.right - r.left
         ch = r.bottom - r.top
+        _dlog('get_caret_uia: fallback-bound Rect cw=%d ch=%d' % (cw, ch))
         if 0 < cw < 2000 and 0 < ch < 400:
             pos = (int(r.left), int(r.bottom))
             _uia_el[0] = pos
@@ -533,10 +549,14 @@ def ensure_caret_bg():
 
 
 def get_caret_pos():
-    """光标屏幕坐标(主线程, 绝不阻塞). GetGUIThreadInfo(廉价,同步) -> UIA 缓存(后台刷新) ->
-    上次有效位 -> 前台窗口客户区."""
+    """光标屏幕坐标(主线程, 绝不阻塞). UIA 缓存(后台刷新, 精确 caret) -> GetGUIThreadInfo ->
+    上次有效位 -> 前台窗口客户区. 优先 UIA: Electron/Chromium(Teams/Edge) 的 GUITI 光标准确性差."""
     import time as _t
     _t0 = _t.time()
+    # UIA 缓存优先(后台线程已刷新的精确 caret 选区, 对 Electron 准). 不在此处同步跑 UIA.
+    if _uia_el[0] is not None:
+        _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
+        return _uia_el[0]
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
@@ -550,10 +570,6 @@ def get_caret_pos():
             return _last_caret[0]
     except Exception:
         pass
-    # UIA 缓存(后台线程已刷新): 直接读, 不在此处同步跑 UIA(否则 Teams 会卡几秒).
-    if _uia_el[0] is not None:
-        _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
-        return _uia_el[0]
     if _last_caret[0]:
         _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
         return _last_caret[0]

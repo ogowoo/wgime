@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随 debug 增强 + UIA 优先定位 + 定位失败原因日志)
+
+- **生产机"跟随不到光标"根因线索**: 后台线程 `get_caret_uia` 的 `GetSelection()` 对很多控件返回**空矩形**(`rects=[]`)或**整行/大控件**, 旧逻辑硬性要求 `0<cw<=200`, 导致 `_uia_el[0]` 填不上 → `get_caret_pos` 走 fallback(客户区左上角, 不准)
+- **`get_caret_uia` 放宽**: 选区矩形高度合理(4~200)即视为可定位光标(用 left/bottom 锚点), 宽度不再强限(整行也接受, 取 left 锚点); 仅拒绝整页级别高度
+- **`get_caret_pos` UIA 优先**: 改为**先读 UIA 缓存**(精确), 再 GUITI(对 Electron 光标准确性差), 最后 fallback
+- **`get_caret_uia` 失败原因日志**: 取不到时记录 `_sel_info`(selection EMPTY/rects EMPTY/no TextPattern) + 控件类型 + 回退 Rect 尺寸, 便于 Teams 实测定位
+- **实测(本机)**: 前台为浏览器网页时 `GetSelection() rects=[]`(复现"取不到光标"); 需在 Teams 聚焦实测看日志
+- `dist/wgime-py.py` 重建(575.4KB); package 已刷新
+- **收集方式**: 生产机 `set WGIME_DEBUG=1` + 最新单文件, Teams 打字, 发 `%LOCALAPPDATA%\wgime-py\debug.log` 中 `[win]` 行
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 光标跟随 debug 日志, 用于实测定位上屏卡顿)
 
 - **`win.py` 新增 `_dlog()`** 集中式光标跟随耗时日志, 写入 `%LOCALAPPDATA%\wgime-py\debug.log`(与 main.py `_dfn` 同文件, 一起看), 仅在**环境变量 `WGIME_DEBUG=1`** 时记录(不拖慢正常运行)
