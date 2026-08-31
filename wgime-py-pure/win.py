@@ -222,6 +222,60 @@ _uia = [None]
 _uia_t = [0.0]        # 上次真正执行 UIA 检索的时间
 _uia_el = [None]      # 缓存聚焦元素 + TextPattern(短 TTL 复用, GetSelection 每次仍重取当前选区)
 _uia_fg = [0]         # 缓存时的前台 hwnd, 防止跨窗口复用过期元素
+# 记录 UIA 库是否已确认加载失败, 避免每次调用都重复尝试 import (导入本身也慢)
+_uia_import_broken = [False]
+
+
+def _import_uia_robust():
+    """稳健导入 uiautomation. comtypes 可能在 typelib 版本不匹配时抛
+    ImportError("Typelib different than module")/加载失败, 且它会打印黄色告警到 stderr.
+    这里: 失败时清掉 comtypes.gen 的 UIAutomationClient 缓存并在内存里重新生成一次;
+    仍失败则返回 None, 让调用方优雅降级(用 _last_caret/非跟随), 绝不让 IME 因光标跟随崩掉."""
+    if _uia_import_broken[0]:
+        return None
+    try:
+        import uiautomation as auto
+        return auto
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        pass
+    # 第一次失败: 清 comtypes.gen 生成的 UIAutomationClient 模块缓存, 强制内存里重新生成,
+    # 使 mtime 版本校验与当前系统 UIAutomationCore.dll 一致, 再重试一次.
+    try:
+        import sys
+        for k in list(sys.modules):
+            if k.startswith('comtypes.gen.') and ('UIAutomation' in k or '944DE083' in k):
+                del sys.modules[k]
+        import comtypes.gen
+        _gen_attrs = [a for a in dir(comtypes.gen) if 'UIAutomation' in a or '944DE083' in a]
+        for a in _gen_attrs:
+            try:
+                delattr(comtypes.gen, a)
+            except Exception:
+                pass
+        # 非 zip 环境comtypes.gen 是真实目录: 顺便删掉磁盘上缓存的生成模块, 强制重新生成
+        for _gp in getattr(comtypes.gen, '__path__', []):
+            try:
+                if os.path.isdir(_gp):
+                    for _fn in os.listdir(_gp):
+                        if 'UIAutomation' in _fn or '944DE083' in _fn:
+                            try:
+                                os.remove(os.path.join(_gp, _fn))
+                            except OSError:
+                                pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import uiautomation as auto
+        return auto
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        _uia_import_broken[0] = True   # 重试仍失败: 本会话不再尝试, 避免每次 import 都慢/报错
+        return None
 
 
 def get_caret_uia(max_age=0.15):
@@ -241,7 +295,13 @@ def get_caret_uia(max_age=0.15):
                 return None          # 上次失败且仍在节流窗口内 -> 直接算失败, 不重跑 UIA
         # 到了节流窗口(或换了前台窗口): 重新做整套 UIA
         if _uia[0] is None:
-            import uiautomation as auto
+            auto = _import_uia_robust()
+            if auto is None:
+                # UIA 库加载失败(如 comtypes typelib 版本不匹配): 记录待节流, 不报错、本次算失败.
+                _uia_t[0] = now
+                _uia_fg[0] = fg
+                _uia_el[0] = None
+                return None
             _uia[0] = auto
         auto = _uia[0]
         el = auto.GetFocusedControl()

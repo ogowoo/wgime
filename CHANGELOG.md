@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 修 uiautomation 报 "Can not load UIAutomationCore.dll/Typelib different than module")
+
+- **`win.py` 新增 `_import_uia_robust()`**:稳健导入 uiautomation。comtypes 在 typelib 版本不匹配时会抛 `ImportError("Typelib different than module")` 并在 stderr 打印黄色告警(实测偶发, 取决于系统 `UIAutomationCore.dll` 的 mtime)
+  - 失败时**清掉 comtypes.gen 里 UIAutomationClient 缓存模块**(`sys.modules` + `dir(comtypes.gen)` + 磁盘 gen 目录里的 `UIAutomation*`), 强制内存里**重新生成**一次, 使 mtime 版本校验与当前系统 DLL 一致, 再重试
+  - 仍失败则置 `_uia_import_broken=True`(本会话不再重复尝试), 返回 None → `get_caret_uia` 优雅降级(用 `_last_caret`/非跟随), **绝不让 IME 因光标跟随崩掉**
+- `get_caret_uia` 的导入改走 `_import_uia_robust()`; 导入失败也按节流记录, 不报错
+- 实测: `_import_uia_robust` 返回真 uiautomation(含 GetFocusedControl/UIAutomationInitializerInThread); Teams 聚焦时 `get_caret_pos` 返回 (2663,1297); pythonw 启动干净无异常
+- `dist/wgime-py.py` 重建; package 已刷新
+- **说明**:该错误信息里"你需要用 UIAutomationInitializerInThread"是 uiautomation 库的**固定提示文案**, 实际抛的是 comtypes typelib mtime 不匹配(`ImportError`), 与线程无关——本修复清缓存重生成即解决
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 修 Teams 等 Electron 应用中光标跟随卡顿)
 
 - **`win.py` `get_caret_uia()` 加节流 + 复用**:原实现每个 poll(15ms)/每键都跑整套 UIA(`GetFocusedControl`→`GetPattern`→`GetSelection`→`GetBoundingRectangles`), 在 Teams/Edge 这类 Chromium 应用里一次可达几十~上百 ms, 且跑在 tkinter 主线程上, 直接卡死 IME 主循环 → 光标跟随后"反应很慢"
