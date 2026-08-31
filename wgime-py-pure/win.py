@@ -512,6 +512,14 @@ def get_caret_uia(max_age=0.15):
             # 首次 GetFocusedControl 若因 comtypes typelib 版本校验失败(_AutomationClient 单例
             # 构造失败), 重置该单例并重试一次——此时 _check_version 已被打成 no-op, 重新初始化即可.
             _dlog('get_caret_uia: GetFocusedControl EXC(%.0fms) %s' % ((time.time()-_t0)*1000, repr(e)))
+            # 决定性诊断: _check_version 此刻是否已是 no-op? comtypes 从哪加载?
+            try:
+                import comtypes._tlib_version_checker as _tvc
+                _is_noop = (lambda *a, **k: None).__code__.co_code == _tvc._check_version.__code__.co_code
+                import comtypes as _ct
+                _dlog('get_caret_uia: DIAG2 _check_version_is_noop=%s comtypes=%s' % (_is_noop, getattr(_ct,'__file__','')))
+            except Exception as _e2:
+                _dlog('get_caret_uia: DIAG2 err %s' % repr(_e2))
             el = None
             try:
                 el = _uia_retry_client(auto)
