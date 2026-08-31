@@ -449,10 +449,15 @@ def get_caret_uia(max_age=0.15):
         auto = _uia[0]
         try:
             el = auto.GetFocusedControl()
-        except BaseException:
+        except BaseException as e:
             # 首次 GetFocusedControl 若因 comtypes typelib 版本校验失败(_AutomationClient 单例
             # 构造失败), 重置该单例并重试一次——此时 _check_version 已被打成 no-op, 重新初始化即可.
-            el = _uia_retry_client(auto)
+            _dlog('get_caret_uia: GetFocusedControl EXC(%.0fms) %s' % ((time.time()-_t0)*1000, repr(e)))
+            el = None
+            try:
+                el = _uia_retry_client(auto)
+            except BaseException as e2:
+                _dlog('get_caret_uia: retry EXC(%.0fms) %s' % ((time.time()-_t0)*1000, repr(e2)))
         _dlog('get_caret_uia: GetFocusedControl=%.0fms el=%s' % ((time.time()-_t0)*1000, bool(el)))
         if not el:
             _uia_t[0] = now
@@ -567,13 +572,19 @@ def get_caret_pos():
         tid = user32.GetWindowThreadProcessId(fg, None)
         g = GUITHREADINFO()
         g.cbSize = ctypes.sizeof(GUITHREADINFO)
-        if user32.GetGUIThreadInfo(tid, ctypes.byref(g)) and g.hwndCaret:
+        ok = bool(user32.GetGUIThreadInfo(tid, ctypes.byref(g)))
+        if ok and g.hwndCaret:
             pt = POINT(g.rcCaret.left, g.rcCaret.bottom)
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
             _last_caret[0] = (pt.x, pt.y)
-            _dlog('get_caret_pos: GUITI ok in %.1fms -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
+            _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s -> %s' % (
+                (_t.time()-_t0)*1000, bool(g.hwndCaret), _last_caret[0]))
             return _last_caret[0]
-    except Exception:
+        _dlog('get_caret_pos: GUITI fail(%.1fms) ok=%s hwndCaret=%s rcCaret=(%d,%d,%d,%d) fg=%s' % (
+            (_t.time()-_t0)*1000, ok, bool(g.hwndCaret),
+            g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, fg))
+    except Exception as e:
+        _dlog('get_caret_pos: GUITI exc(%.1fms) %s' % ((_t.time()-_t0)*1000, repr(e)))
         pass
     if _last_caret[0]:
         _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
