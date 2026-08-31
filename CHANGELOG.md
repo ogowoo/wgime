@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 单文件启动时强制刷新 thirdparty.zip —— 根治旧 comtypes typelib 报错)
+
+- **真正根因**: 单文件解压 `thirdparty.zip` 到 `%LOCALAPPDATA%\wgime-py\site` 的旧逻辑是 **`if not os.path.exists(_third_zip)`** —— site 里已有 zip 就**永不刷新**。生产机 site 残留早期版本的 zip → 一直用**旧 comtypes**, 其 `comtypes.gen.UIAutomationClient` 烘焙的 UIAutomationCore.dll mtime 更老, `_check_version` 必报 `Typelib different than module`——这解释了为什么改了多轮仍复现(旧 comtypes 从没被换掉)
+- **修复 `build-wgime-pure.py`**: 单文件 preamble 改为**入内嵌 zip 的 md5 与磁盘 zip 的 md5 比对, 不一致就 `os.replace` 原子重写**。首次运行或单文件升级后 zip 自动刷新成新版 comtypes, 用户无需手动删 site
+- **实测**: 预置 stale zip(md5 不同), 单文件启动后对应数据路径的 zip md5 变回与内嵌一致; Store 虚拟化环境会切到 `~\wgime-py\site` 并在那里刷新(仅 `%LOCALAPPDATA%` 里残留的旧 zip 未用、不影响)
+- 配合之前 `win.py` 的 `_neutralize_uia_check_version`(覆盖 comtypes.gen 各 UIAutomation 模块 `__dict__['_check_version']`)防御层, 双保险
+- `dist/wgime-py.py` 重建(568.3KB); package 已刷新
+- **重要**: 必须用**最新单文件**(含 md5 强制刷新 + `_neutralize_uia_check_version`), 旧单文件无论怎么改 patch 都无法修复
+
+---
+
 ## 2026-08-31 (wgime-py-pure: UIAutomation typelib 修复改为模块级 __dict__ 覆盖, 顺序无关/普适)
 
 - **关键发现**: comtypes 生成模块 `comtypes.gen.UIAutomationClient/wrapper` 内部的 `_check_version('1.4.16', <mtime>)` 用 **`LOAD_GLOBAL` 读模块 __dict__**, 所以**直接覆盖模块 `__dict__['_check_version']` 为 no-op** 就能让该调用不抛——**无论该模块何时被 import 都生效**(之前只改 `comtypes._tlib_version_checker._check_version` 模块属性, 对已 `from ... import` 绑定的引用无效, 这就是为什么之前没修好)
