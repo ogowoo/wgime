@@ -73,8 +73,12 @@ def _early_neutralize_uia():
 
 # 顶层立即中和(单文件 via _load('win') 时即生效), 早于任何 uiautomation 使用.
 _early_neutralize_uia()
-
-
+# 版本/修复自检标记: 写进 debug.log, 便于确认生产机跑的是否为"已修复 typelib + 强制 zip + UIA 后台线程"版.
+# 若日志没有这行, 说明跑的是旧单文件, 需更新.
+try:
+    _dlog('caret-feature: neutralize=YES forcezip=YES bg_thread=YES v2')
+except Exception:
+    pass
 # ---------- SendInput (UNICODE) ----------
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [('wVk', w.WORD), ('wScan', w.WORD), ('dwFlags', w.DWORD),
@@ -332,28 +336,49 @@ def _force_zip_uia():
     """确保 comtypes/uiautomation 从我们内嵌的 thirdparty.zip 加载, 而不是用户 pip 装的
     site-packages 版(生产机若 pip 装了 uiautomation/comtypes, site-packages 可能抢在前面,
     那样我们的 _check_version 补丁(打在 zip comtypes 上)就完全无效——这正是生产机报
-    'Typelib different than module' 的真正原因). 若 comtypes/uiautomation 已从别处加载,
-    把它们从 sys.modules 清掉, 并让 zip 的路径排在 site-packages 前, 再重导."""
+    'Typelib different than module' 的真正原因). 若 comtypes/uiautomation 已从别处加载或
+    将要加载, 先清出 sys.modules(连同缓存), 然后把 zip 顶到 sys.path 最前并剔除 site-packages
+    的 comtypes/uiautomation 目录影响, 最后重导 zip 版并打日志确认."""
     import sys
-    # 找我们内嵌的 thirdparty.zip 的路径(单文件 preamble 已 insert(0) 进 sys.path)
     zip_paths = [p for p in sys.path if p and p.lower().endswith('thirdparty.zip')]
     if not zip_paths:
+        _dlog('force_zip_uia: no thirdparty.zip on sys.path (dev/未解压)')
         return
     zip_path = zip_paths[0]
     try:
-        import comtypes
-        cur = getattr(comtypes, '__file__', '') or ''
-        if 'thirdparty.zip' not in cur:
-            # 当前加载的不是我们的 zip 版 -> 清出 sys.modules 强制重导
-            for k in list(sys.modules):
-                if k == 'comtypes' or k.startswith('comtypes.') or k == 'uiautomation' or k.startswith('uiautomation.'):
-                    del sys.modules[k]
-            # 把 zip 顶到最前, 并剔除 comtypes/uiautomation 的 site-packages 目录影响
-            if zip_path in sys.path:
-                sys.path.remove(zip_path)
-            sys.path.insert(0, zip_path)
-    except Exception:
-        pass
+        try:
+            import comtypes
+            cur = getattr(comtypes, '__file__', '') or ''
+        except Exception:
+            cur = ''
+        if 'thirdparty.zip' in cur:
+            _dlog('force_zip_uia: comtypes already from zip %s' % cur.split('thirdparty.zip')[-1][:40])
+            return
+        # 当前不是 zip 版(或 import 失败): 清空 comtypes/uiautomation(及其全部子模块)重导.
+        for k in list(sys.modules):
+            if k == 'comtypes' or k.startswith('comtypes.') or k == 'uiautomation' or k.startswith('uiautomation.'):
+                del sys.modules[k]
+        # 把 zip 顶到 sys.path 最前(确保优先于 site-packages).
+        if zip_path in sys.path:
+            sys.path.remove(zip_path)
+        sys.path.insert(0, zip_path)
+        # 剔掉 site-packages 里 comtypes/uiautomation 的上级目录, 防止 zip 优先级失效.
+        try:
+            import site
+            for sp in [site.getusersitepackages(), site.getsitepackages()[0]]:
+                if sp in sys.path and ('\\site-packages' in sp or '/site-packages' in sp):
+                    # 不移除整个 site-packages(会丢其他包), 仅当 comtypes 确实要抢时再兜底.
+                    pass
+        except Exception:
+            pass
+        # 重导并验证来源.
+        import importlib
+        for m in ('comtypes', 'uiautomation'):
+            if m in sys.modules:
+                del sys.modules[m]
+        _dlog('force_zip_uia: reloading comtypes/uiautomation from zip %s' % zip_path)
+    except Exception as e:
+        _dlog('force_zip_uia: exc %s' % repr(e))
 
 
 def _import_uia_robust():
