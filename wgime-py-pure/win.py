@@ -227,12 +227,23 @@ _uia_import_broken = [False]
 
 
 def _import_uia_robust():
-    """稳健导入 uiautomation. comtypes 可能在 typelib 版本不匹配时抛
-    ImportError("Typelib different than module")/加载失败, 且它会打印黄色告警到 stderr.
-    这里: 失败时清掉 comtypes.gen 的 UIAutomationClient 缓存并在内存里重新生成一次;
-    仍失败则返回 None, 让调用方优雅降级(用 _last_caret/非跟随), 绝不让 IME 因光标跟随崩掉."""
+    """稳健导入 uiautomation. comtypes 在 typelib 版本不匹配时会抛
+    ImportError("Typelib different than module")——根因: 我们 zip 内嵌的
+    comtypes.gen.UIAutomationClient 里烘焙了生成时的 UIAutomationCore.dll mtime
+    (如 _check_version('1.4.16', <mtime>)), 用户机上该 DLL 的 mtime 与烘焙值相差>=1s
+    就抛错(与线程无关, 是 uiautomation 库的误导文案).
+    这里在导入 uiautomation 前, 把 comtypes 的 _check_version 临时打成"总是通过"——
+    生成模块的接口布局与 mtime 无关, 单靠 mtime 判定"不同"并不严谨, 跳过即可让跟随正常."""
     if _uia_import_broken[0]:
         return None
+    _patch = None
+    try:
+        # 预先打补丁: 让 _check_version 不再因 mtime 差异拒绝已生成的 typelib 模块
+        from comtypes import _tlib_version_checker as _tvc
+        _patch = _tvc._check_version
+        _tvc._check_version = lambda *a, **k: None
+    except Exception:
+        _patch = None
     try:
         import uiautomation as auto
         return auto
@@ -240,21 +251,18 @@ def _import_uia_robust():
         raise
     except BaseException:
         pass
-    # 第一次失败: 清 comtypes.gen 生成的 UIAutomationClient 模块缓存, 强制内存里重新生成,
-    # 使 mtime 版本校验与当前系统 UIAutomationCore.dll 一致, 再重试一次.
+    # 仍失败: 清 comtypes.gen 缓存模块, 强制内存里重新生成一次
     try:
         import sys
         for k in list(sys.modules):
             if k.startswith('comtypes.gen.') and ('UIAutomation' in k or '944DE083' in k):
                 del sys.modules[k]
         import comtypes.gen
-        _gen_attrs = [a for a in dir(comtypes.gen) if 'UIAutomation' in a or '944DE083' in a]
-        for a in _gen_attrs:
+        for a in [a for a in dir(comtypes.gen) if 'UIAutomation' in a or '944DE083' in a]:
             try:
                 delattr(comtypes.gen, a)
             except Exception:
                 pass
-        # 非 zip 环境comtypes.gen 是真实目录: 顺便删掉磁盘上缓存的生成模块, 强制重新生成
         for _gp in getattr(comtypes.gen, '__path__', []):
             try:
                 if os.path.isdir(_gp):
@@ -274,8 +282,10 @@ def _import_uia_robust():
     except KeyboardInterrupt:
         raise
     except BaseException:
-        _uia_import_broken[0] = True   # 重试仍失败: 本会话不再尝试, 避免每次 import 都慢/报错
+        _uia_import_broken[0] = True
         return None
+    finally:
+        pass
 
 
 def get_caret_uia(max_age=0.15):

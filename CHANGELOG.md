@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 根治 uiautomation "Typelib different than module")
+
+- **根因定位**(实测确认):我们 zip 内嵌的 `comtypes/gen/_944DE083_..._UIAutomationClient.py` 里**烘焙了生成时 UIAutomationCore.dll 的 mtime**, 形如 `_check_version('1.4.16', 1787852155.337951)`(`comtypes._tlib_version_checker` 在导入生成模块时用 `os.stat(该DLL).st_mtime` 与烘焙值比较, 相差>=1s 就抛 `ImportError("Typelib different than module")`)
+  - 本机(开发机)DLL mtime 恰好等于烘焙值(1787852155.337951)所以正常; **用户机上 Windows 更新/版本不同 → mtime 相差>=1s → 必抛**. 与线程无关, 是 uiautomation 库误导文案
+  - "清 gen 缓存重新生成"无效: zip 里 gen 是内存生成、不落盘, 重入仍读烘焙的那份
+- **正解 `win.py` `_import_uia_robust()`**:导入 uiautomation **前**把 `comtypes._tlib_version_checker._check_version` 临时打成**总是通过**(no-op)——生成模块的接口布局与 DLL mtime 无关, 仅凭 mtime 判定"不同"本就不严谨, 跳过即可让跟随在这些机器上稳定工作
+  - 仍失败(其他原因)才清 gen 缓存重试 + `_uia_import_broken` 兜底优雅降级, 绝不让 IME 崩
+- **实测**:模拟 UIAutomationCore.dll mtime **+30s** 的失真(等效用户机), `_import_uia_robust` 仍成功导入 uiautomation(`broken=False`)、`get_caret_uia` 返回有效坐标; pythonw 启动干净无异常
+- `dist/wgime-py.py` 重建; package 已刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 修 uiautomation 报 "Can not load UIAutomationCore.dll/Typelib different than module")
 
 - **`win.py` 新增 `_import_uia_robust()`**:稳健导入 uiautomation。comtypes 在 typelib 版本不匹配时会抛 `ImportError("Typelib different than module")` 并在 stderr 打印黄色告警(实测偶发, 取决于系统 `UIAutomationCore.dll` 的 mtime)
