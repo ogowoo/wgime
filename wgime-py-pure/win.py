@@ -295,8 +295,8 @@ _uia_import_broken = [False]
 def _uia_retry_client(auto):
     """GetFocusedControl 首次失败(comtypes typelib 版本校验在 _AutomationClient 单例构造时抛,
     uiautomation 会在 stderr 打 'Can not load UIAutomationCore.dll' 黄字)时调用:
-    重置单例(_instance=None), 触发重新构造——此时 _check_version 已被 _import_uia_robust 打成
-    no-op, 重试即成功; 返回 el 或 None."""
+    先彻底中和 _check_version(包括已 import 的 gen 模块的绑定名), 再重置单例(_instance=None)
+    触发重新构造——重试即成功; 返回 el 或 None."""
     try:
         import uiautomation.uiautomation as _uu
         if hasattr(_uu, '_AutomationClient'):
@@ -304,6 +304,19 @@ def _uia_retry_client(auto):
                 _uu._AutomationClient._instance = None
             except Exception:
                 pass
+        # 彻底中和: 无论 gen 模块是否已加载/绑定, 都把它 __dict__['_check_version'] 覆盖成 no-op.
+        try:
+            import sys
+            for k in list(sys.modules):
+                if k.startswith('comtypes.gen.'):
+                    try:
+                        sys.modules[k].__dict__['_check_version'] = lambda *a, **kw: None
+                    except Exception:
+                        pass
+            from comtypes import _tlib_version_checker as _tvc
+            _tvc._check_version = lambda *a, **kw: None
+        except Exception:
+            pass
         import time as _t
         _t.sleep(0.02)
         return auto.GetFocusedControl()
