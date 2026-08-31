@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随 debug 日志, 用于实测定位上屏卡顿)
+
+- **`win.py` 新增 `_dlog()`** 集中式光标跟随耗时日志, 写入 `%LOCALAPPDATA%\wgime-py\debug.log`(与 main.py `_dfn` 同文件, 一起看), 仅在**环境变量 `WGIME_DEBUG=1`** 时记录(不拖慢正常运行)
+- **埋点**: `get_caret_pos` 记录 GUITI/UIA-cache/last-cache/fallback 用时与来源; `get_caret_uia` 记录 `GetFocusedControl` 耗时; `_caret_bg_loop` 记录启动
+- **实测(本机)**: `GetFocusedControl` 2-6ms、主线程 `get_caret_pos` 走 UIA-cache 0.1ms、后台线程每 ~200ms 刷新 —— 本环境不卡, 说明生产卡顿非 UIA 本身慢, 需实测 debug.log 定位
+- **收集方式**: 生产机 `set WGIME_DEBUG=1` 后运行最新单文件, 在 Teams 打字, 把 debug.log 尾部发来
+- `dist/wgime-py.py` 重建(574.4KB); package 已刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 光标跟随改为后台线程刷新, 主线程不阻塞, 解决上屏卡顿)
 
 - **上屏卡顿根因**: 光标跟随开启时, `bar.show`(tkinter 主线程)里同步调用 `get_caret_pos()` → `get_caret_uia()`. UIA 的 `GetFocusedControl`/`GetSelection`/`GetBoundingRectangles` 在 Teams 等 Electron 应用一次可耗时 1~几秒, 且跑在**主线程**, 直接阻塞按键处理/上屏(即使之前加了 150ms 节流, 慢的 UIA 调用本身仍阻塞主线程)

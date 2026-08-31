@@ -4,6 +4,24 @@ import ctypes
 import ctypes.wintypes as w
 import os
 
+# debug 日志(光标跟随耗时排查用): 设 WGIME_DEBUG=1 时才记录, 不拖慢正常输入.
+# 写 %LOCALAPPDATA%\wgime-py\debug.log (与 main.py _dfn 同文件, 便于一起看).
+_DEBUG_CARET = (os.environ.get('WGIME_DEBUG', '') == '1')
+
+
+def _dlog(text):
+    if not _DEBUG_CARET:
+        return
+    try:
+        la = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
+        d = os.path.join(la, 'wgime-py')
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'debug.log'), 'a', encoding='utf-8') as f:
+            f.write('%.3f [win] %s\n' % (__import__('time').time(), text))
+    except Exception:
+        pass
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 gdi32 = ctypes.windll.gdi32
@@ -418,6 +436,7 @@ def get_caret_uia(max_age=0.15):
             if (now - _uia_t[0]) < max_age:
                 return None          # 上次失败且仍在节流窗口内 -> 直接算失败, 不重跑 UIA
         # 到了节流窗口(或换了前台窗口): 重新做整套 UIA
+        _t0 = time.time()
         if _uia[0] is None:
             auto = _import_uia_robust()
             if auto is None:
@@ -434,6 +453,7 @@ def get_caret_uia(max_age=0.15):
             # 首次 GetFocusedControl 若因 comtypes typelib 版本校验失败(_AutomationClient 单例
             # 构造失败), 重置该单例并重试一次——此时 _check_version 已被打成 no-op, 重新初始化即可.
             el = _uia_retry_client(auto)
+        _dlog('get_caret_uia: GetFocusedControl=%.0fms el=%s' % ((time.time()-_t0)*1000, bool(el)))
         if not el:
             _uia_t[0] = now
             _uia_fg[0] = fg
@@ -489,6 +509,7 @@ def _caret_bg_loop():
     try:
         _force_zip_uia()
         _import_uia_robust()          # 先确保 uiautomation 可用 + _check_version 中和
+        _dlog('caret_bg: started')
         while True:
             time.sleep(0.10)          # 后台: 每 100ms 试一次(内部 get_caret_uia 还有 150ms 节流)
             try:
@@ -514,6 +535,8 @@ def ensure_caret_bg():
 def get_caret_pos():
     """光标屏幕坐标(主线程, 绝不阻塞). GetGUIThreadInfo(廉价,同步) -> UIA 缓存(后台刷新) ->
     上次有效位 -> 前台窗口客户区."""
+    import time as _t
+    _t0 = _t.time()
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
@@ -523,14 +546,18 @@ def get_caret_pos():
             pt = POINT(g.rcCaret.left, g.rcCaret.bottom)
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
             _last_caret[0] = (pt.x, pt.y)
+            _dlog('get_caret_pos: GUITI ok in %.1fms -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
             return _last_caret[0]
     except Exception:
         pass
     # UIA 缓存(后台线程已刷新): 直接读, 不在此处同步跑 UIA(否则 Teams 会卡几秒).
     if _uia_el[0] is not None:
+        _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
         return _uia_el[0]
     if _last_caret[0]:
+        _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
         return _last_caret[0]
+    _dlog('get_caret_pos: fallback-origin(%.1fms)' % ((_t.time()-_t0)*1000))
     return _foreground_client_origin()
 
 
