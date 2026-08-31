@@ -261,8 +261,8 @@ def get_caret_pos():
             g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, fg))
     except Exception as e:
         _dlog('get_caret_pos: GUITI exc(%.1fms) %s' % ((_t.time()-_t0)*1000, repr(e)))
-    # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用鼠标作兜底.
-    mpos = _mouse_pos()
+    # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用"输入感知鼠标位"作兜底.
+    mpos = _input_aware_mouse_pos()
     if mpos is not None:
         _last_caret_source[0] = 'mouse'
         _dlog('get_caret_pos: mouse-fallback(%.1fms) -> %s' % ((_t.time()-_t0)*1000, mpos))
@@ -274,6 +274,32 @@ def get_caret_pos():
     _last_caret_source[0] = 'fallback'
     _dlog('get_caret_pos: fallback-origin(%.1fms)' % ((_t.time()-_t0)*1000))
     return _foreground_client_origin()
+
+
+def _input_aware_mouse_pos():
+    """输入感知鼠标兜底位. 垂直 y = 鼠标 y(输入行常在鼠标附近高度); 水平 x:
+    若鼠标在前台窗口内 -> 用鼠标 x; 否则(鼠标停在工具栏/屏幕角落) -> 用前台窗口水平中央,
+    避免候选窗跑到屏幕角落. 返回 (x, y) 或 None."""
+    p = _mouse_pos()
+    if p is None:
+        return None
+    mx, my = p
+    fg = user32.GetForegroundWindow()
+    if fg:
+        r = RECT()
+        if user32.GetClientRect(fg, ctypes.byref(r)):
+            tl = POINT(0, 0)
+            user32.ClientToScreen(fg, ctypes.byref(tl))
+            # 前台窗口的屏幕矩形
+            win_l, win_t = tl.x, tl.y
+            win_r, win_b = tl.x + r.right, tl.y + r.bottom
+            if win_l <= mx <= win_r and win_t <= my <= win_b:
+                return mx, my           # 鼠标在窗口内, 直接用(光标列接近鼠标横向)
+            # 鼠标在窗口外 -> 水平取窗口中央, 垂直仍用鼠标 y(避免贴到屏幕角落)
+            return win_l + r.right // 2, my
+        # 拿不到窗口矩形, 退回鼠标点
+        return mx, my
+    return mx, my
 
 def _mouse_pos():
     """鼠标光标屏幕坐标(非 UIA 兜底, 快速)."""

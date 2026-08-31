@@ -130,6 +130,15 @@ class CandBar:
                     y = max(ra.top, cy - h - 6)
                 if y < ra.top:
                     y = ra.top
+                # 最小移动滞回: 候选窗位置与当前差 < 阈值时不动, 防鼠标抖动/每键跳变.
+                try:
+                    cx0, cy0 = self.top.winfo_x(), self.top.winfo_y()
+                    dx = abs(x - cx0)
+                    dy = abs(y - cy0)
+                    if dx < 60 and dy < 14:
+                        return
+                except Exception:
+                    pass
                 self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
             else:
                 ra = win.screen_workarea()

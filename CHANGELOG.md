@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 鼠标跟随再优化 - 输入感知鼠标位 + 最小移动滞回)
+
+- **`win.py` 新增 `_input_aware_mouse_pos()`**: 鼠标兜底位更贴近输入行为——垂直 y=鼠标 y(输入行高度), 水平 x: 若鼠标在前台窗口内则用鼠标 x(光标列接近鼠标横向), 鼠标在窗口外则取前台窗口水平中央(避免候选窗跑到屏幕角落)
+- **`bar.py` 跟随分支加最小移动滞回**: 候选窗与当前位置差 < (水平 60px, 垂直 14px) 时不动, 防鼠标轻微抖动/每键入跳变; 组合: 鼠标"跳到别处"才跟, 原地微动不跟
+- 实测: `get_caret_pos` 返回 (643,1840) source=mouse(输入感知), 无 uiautomation/comtypes; pythonw 启动干净
+- `dist/wgime-py.py` 重建(564.7KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 鼠标跟随体验增强 - 来源标记 + 鼠标中心贴边 + GUITI 优先)
 
 - 背景: 用户机器(Cisco+Store Python) comtypes-UIA 不可用, 决定纯 Python 覆盖层 + 更好的位置跟随(不纠结 UIA/TSF)
