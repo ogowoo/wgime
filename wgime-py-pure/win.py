@@ -234,18 +234,162 @@ class GUITHREADINFO(ctypes.Structure):
 
 
 _last_caret = [None]
-_last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback' | 'focus'
+_last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback' | 'focus' | 'uia'
 # caret 抖动检测: 记录最近几次 GUITI caret, 若方向反复横跳/大幅摆动则判不可信(浏览器等自绘应用),
 # 避免候选窗"跳舞". 用 deque 环形.
 import collections as _col
 _guiti_hist = _col.deque(maxlen=5)
 
+# ---------------- UIA 首选(可选) + 纯 Win32 回退 ----------------
+# UIA(comtypes/uiautomation)仅在可用时作为首选精确路径; 一旦探测故障即 _uia_disabled=True 锁死,
+# get_caret_pos 不再走 UIA, 回退到纯 ctypes Win32(不重复报 typelib/COM 错).
+_uia = [None]            # 缓存的 uiautomation 模块(惰性)
+_uia_el = [None]         # UIA 刷新的精确 caret 屏幕坐标缓存
+_uia_t = [0.0]           # 上次 UIA 检索时间
+_uia_fg = [0]            # 上次检索的前台 hwnd
+_uia_disabled = [False]  # UIA 已确认不可用锁死, 后续跳过
+_uia_import_broken = [False]
+_uia_bg_started = [False]  # 后台 UIA 线程只启动一次
+
+
+def _import_uia_robust():
+    """惰性导入 uiautomation(经 comtypes). 若 typelib/加载失败(用户环境 comtypes-UIA 不可用),
+    打补丁中和 _check_version 再试一次; 仍失败返回 None(由调用方置 _uia_disabled)."""
+    if _uia_import_broken[0]:
+        return None
+    try:
+        from comtypes import _tlib_version_checker as _tvc
+        _tvc._check_version = lambda *a, **k: None
+    except Exception:
+        pass
+    try:
+        import uiautomation as auto
+        return auto
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        pass
+    # 仍失败: 清 comtypes.gen 缓存重试一次(内存重新生成).
+    try:
+        import sys
+        for k in list(sys.modules):
+            if k.startswith('comtypes.gen.') and ('UIAutomation' in k or '944DE083' in k):
+                del sys.modules[k]
+        import comtypes.gen
+        for a in [a for a in dir(comtypes.gen) if 'UIAutomation' in a or '944DE083' in a]:
+            try:
+                delattr(comtypes.gen, a)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import uiautomation as auto
+        return auto
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        _uia_import_broken[0] = True
+        return None
+
+
+def _get_uia_caret():
+    """用 uiautomation 拿精确 caret 屏幕坐标(后台线程调用). 失败/异常即置 _uia_disabled, 返回 None."""
+    if _uia_disabled[0]:
+        return None
+    import time
+    try:
+        if _uia[0] is None:
+            auto = _import_uia_robust()
+            if auto is None:
+                _uia_disabled[0] = True
+                _dlog('uia: import failed -> UIA disabled')
+                return None
+            _uia[0] = auto
+        auto = _uia[0]
+        fg = user32.GetForegroundWindow()
+        # 前台变了才重查; 否则仅在节流窗口外查(减少慢调用).
+        now = time.time()
+        if fg == _uia_fg[0] and (now - _uia_t[0]) < 0.15:
+            return _uia_el[0]
+        try:
+            el = auto.GetFocusedControl()
+        except BaseException:
+            # 线程内未初始化 UIA 或单例坏: 重置重试一次.
+            import uiautomation.uiautomation as _uu
+            try:
+                _uu._AutomationClient._instance = None
+            except Exception:
+                pass
+            try:
+                el = auto.GetFocusedControl()
+            except BaseException:
+                el = None
+        _uia_t[0] = now
+        _uia_fg[0] = fg
+        if not el:
+            # 拿不到聚焦控件: 可能 UIA 在该环境整体不可用 -> 锁死, 回退 Win32.
+            _uia_disabled[0] = True
+            _dlog('uia: GetFocusedControl el=False -> UIA disabled')
+            return None
+        # TextPattern 选区矩形(精确 caret)
+        try:
+            tp = el.GetPattern(auto.PatternId.TextPattern)
+            if tp:
+                sel = tp.GetSelection()
+                if sel and len(sel) > 0:
+                    rects = sel[0].GetBoundingRectangles()
+                    if rects:
+                        r = rects[0]
+                        ch = r.bottom - r.top
+                        if 4 <= ch <= 200 and (r.right - r.left) >= 0:
+                            pos = (int(r.left), int(r.bottom))
+                            _uia_el[0] = pos
+                            return pos
+        except Exception:
+            pass
+    except BaseException:
+        _uia_disabled[0] = True
+        _dlog('uia: exc -> UIA disabled')
+        return None
+    return None
+
+
+def _caret_bg_loop():
+    """后台线程: 周期用 UIA 刷新精确 caret 到 _uia_el[0]; UIA 不可用则退出(主线程走 Win32)."""
+    import time
+    try:
+        _dlog('uia: bg started')
+        while not _uia_disabled[0]:
+            _get_uia_caret()
+            time.sleep(0.12)
+        _dlog('uia: bg stopped (disabled)')
+    except Exception:
+        pass
+
+
+def ensure_caret_bg():
+    """启动 UIA 后台刷新线程(仅一次). UIA 不可用会自行停, 不影响 Win32 回退."""
+    import threading
+    if _uia_bg_started[0]:
+        return
+    _uia_bg_started[0] = True
+    try:
+        threading.Thread(target=_caret_bg_loop, daemon=True).start()
+    except Exception:
+        pass
+
 
 def get_caret_pos():
-    """光标屏幕坐标(主线程, 绝不阻塞). 顺序: GetGUIThreadInfo -> 鼠标光标 ->
-    上次有效位 -> 前台窗口底部居中. 纯 ctypes Win32, 不依赖 comtypes/uiautomation."""
+    """光标屏幕坐标(主线程, 绝不阻塞). 顺序: UIA缓存(首选,后台刷新) -> GetGUIThreadInfo ->
+    聚焦输入框矩形 -> 输入感知鼠标 -> 上次有效位 -> 前台窗口底部. UIA 不可用时自动回退纯 Win32."""
     import time as _t
     _t0 = _t.time()
+    # UIA 缓存(后台线程刷新的精确 caret)首选; 主线程只读缓存, 绝不在此跑 UIA.
+    if not _uia_disabled[0] and _uia_el[0] is not None:
+        _last_caret_source[0] = 'uia'
+        _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
+        return _uia_el[0]
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)

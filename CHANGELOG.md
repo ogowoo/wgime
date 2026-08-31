@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随恢复 UIA 首选 + 纯 Win32 回退, 保留现方案)
+
+- 用户决定: UIA 用回做首选, 现有的纯 Win32 方案保留做回退
+- **`win.py` 恢复 UIA 机制但更安全**: `_import_uia_robust`(中和 `_check_version` 防 typelib 反复) + `_get_uia_caret`(后台拿精确 caret 到 `_uia_el`) + `_caret_bg_loop`(后台线程刷新), **关键: 一旦 UIA 导入/取控件/异常失败, 置 `_uia_disabled=True` 锁死, 之后 get_caret_pos 不再走 UIA, 不重复报 typelib/COM 错**
+- **`get_caret_pos` 顺序**: UIA缓存(首选,后台刷新) -> GetGUIThreadInfo -> 聚焦输入框矩形 -> 输入感知鼠标 -> 上次有效位 -> 前台窗口底部; UIA 不可用自动跳过
+- **`main.py`** 启动时 `win.ensure_caret_bg()`
+- **实测**: 启动前 source=mouse; 后台线程跑后 **source=uia** (UIA 拿到精确 caret (424,2004), uia_disabled=False); 目标设备 UIA 不可用时自动锁死回退纯 Win32
+- 既有纯 Win32 路径(GUITI/focus_edit/鼠标/平滑)保留
+- `dist/wgime-py.py` 重建(574.8KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 候选窗位置低通平滑, 彻底治"跳舞/越跳越右")
 
 - 用户反馈: 浏览器测试候选条"一上一下跳舞, 越跳越往右"——平移+抖动检测后仍有位置振荡

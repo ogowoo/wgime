@@ -1164,4 +1164,9 @@ def poll():
 root.after(15, poll)
 hook.start()
 set_active(CFG['starton'])
+# UIA 后台刷新精确 caret(首选); UIA 不可用会自动停, get_caret_pos 回退纯 Win32.
+try:
+    win.ensure_caret_bg()
+except Exception:
+    pass
 root.mainloop()
