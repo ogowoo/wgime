@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随彻底移除非 comtypes/uiautomation, 纯 ctypes Win32)
+
+- **背景**: 用户机器 comtypes 版 uiautomation 反复 `ImportError('Typelib different than module')`(即使从 zip 加载、`_check_version` 已中和仍复现), ctypes 直调 UIA 又遇 Store-Python 进程 COM 隔离(REGDB_CLASSNOTREG)。用户明确要求**不依赖 comtypes/UIA 的定位方式**
+- **`win.py` 大重构**: 删除全部 comtypes/uiautomation 依赖(UIA 缓存机制 `_uia*`、`_import_uia_robust`、`get_caret_uia`、`_caret_bg_loop`、`ensure_caret_bg`、`_neutralize_uia_check_version`、`_force_zip_uia`、`_early_neutralize_uia`), `get_caret_pos` 改为**纯 ctypes Win32**:
+  - 顺序: `GetGUIThreadInfo`(传统 Win32 caret) -> **鼠标位置**(现代应用无 caret, 用户打字时光标在鼠标附近) -> 上次有效位 -> 前台窗口底部居中
+  - `_mouse_pos()`/`_foreground_client_origin()` 保留(纯 Win32)
+  - 文件 758 行 -> 380 行
+- **`main.py`**: 移除 `win.ensure_caret_bg()` 调用(不再有后台 UIA 线程)
+- **实测**: `get_caret_pos` 纯 Win32 返回 (3119,1638), `is uiautomation loaded? False` / `is comtypes loaded? False`; pythonw 启动干净
+- **效果**: 光标跟随不再依赖任何第三方库, 彻底消灭 typelib/COM 隔离问题; 现代应用(Teams 等)用鼠标位置兜底(贴鼠标), 传统应用用 Win32 caret, 稳定不崩
+- `dist/wgime-py.py` 重建; package 已刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 后台线程用 UIAutomationInitializerInThread 初始化, 根治 UIA 超时/跟随不到)
 
 - **生产机日志决定性发现**: 后台线程定时刷新的 `get_caret_uia` → `GetFocusedControl` **每次耗时 1~2.6s 且 el=False**(拿不到控件), 而主线程 `get_caret_pos` 一直 `fallback-origin`(光标准不了)。这就是"上屏仍卡 + 跟随不到"
