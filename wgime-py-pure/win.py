@@ -248,19 +248,33 @@ def get_caret_pos():
         g = GUITHREADINFO()
         g.cbSize = ctypes.sizeof(GUITHREADINFO)
         ok = bool(user32.GetGUIThreadInfo(tid, ctypes.byref(g)))
+        # 宽容判定(对齐 C# TryGetCaretScreenRect): 只要 hwndCaret 存在就采纳, 用 rcCaret.top 定位,
+        # 容忍退化 caret(某些 Electron/Qt 给的是 2x2/零尺寸, 但 (x,y) 真实跟踪光标).
         if ok and g.hwndCaret:
-            pt = POINT(g.rcCaret.left, g.rcCaret.bottom)
+            pt = POINT(g.rcCaret.left, g.rcCaret.top)
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
-            _last_caret[0] = (pt.x, pt.y)
-            _last_caret_source[0] = 'caret'
-            _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s -> %s' % (
-                (_t.time()-_t0)*1000, bool(g.hwndCaret), _last_caret[0]))
-            return _last_caret[0]
-        _dlog('get_caret_pos: GUITI fail(%.1fms) ok=%s hwndCaret=%s rcCaret=(%d,%d,%d,%d) fg=%s' % (
-            (_t.time()-_t0)*1000, ok, bool(g.hwndCaret),
-            g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, fg))
+            # 防最小化坐标(-32000)与越界.
+            if pt.x > -10000 and pt.y > -10000:
+                _last_caret[0] = (pt.x, pt.y)
+                _last_caret_source[0] = 'caret'
+                _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s rc=(%d,%d,%d,%d) -> %s' % (
+                    (_t.time()-_t0)*1000, bool(g.hwndCaret),
+                    g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, _last_caret[0]))
+                return _last_caret[0]
+            _dlog('get_caret_pos: GUITI degenerate(minimized?) hwndCaret=%s pt=(%d,%d)' % (
+                bool(g.hwndCaret), pt.x, pt.y))
+        else:
+            _dlog('get_caret_pos: GUITI fail(%.1fms) ok=%s hwndCaret=%s rcCaret=(%d,%d,%d,%d) fg=%s' % (
+                (_t.time()-_t0)*1000, ok, bool(g.hwndCaret),
+                g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, fg))
     except Exception as e:
         _dlog('get_caret_pos: GUITI exc(%.1fms) %s' % ((_t.time()-_t0)*1000, repr(e)))
+    # GUITI 无 caret: 尝试聚焦输入框矩形(纯 Win32, 很多现代应用的文本控件是真 HWND).
+    fr = _focus_edit_rect()
+    if fr is not None:
+        _last_caret_source[0] = 'focus'
+        _dlog('get_caret_pos: focus-edit(%.1fms) -> %s' % ((_t.time()-_t0)*1000, fr))
+        return fr
     # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用"输入感知鼠标位"作兜底.
     mpos = _input_aware_mouse_pos()
     if mpos is not None:
@@ -307,6 +321,28 @@ def _mouse_pos():
         p = POINT()
         if user32.GetCursorPos(ctypes.byref(p)):
             return p.x, p.y
+    except Exception:
+        pass
+    return None
+
+
+def _focus_edit_rect():
+    """取当前聚焦窗口(GetFocus)的屏幕矩形, 作为"输入框"位置的近似. 纯 Win32(不依赖 UIA):
+    很多现代应用(Chrome/部分 Electron 对话框)的文本控件是真实 HWND, GetWindowRect 能拿到其
+    位置, 比鼠标更贴近输入框. 若能拿到且矩形合理(非全屏/非空), 返回 (x, y) 光标近似点."""
+    try:
+        hwnd = user32.GetFocus()
+        if not hwnd:
+            return None
+        r = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            return None
+        w = r.right - r.left
+        h = r.bottom - r.top
+        # 合理输入框: 宽 > 40, 高 8~90, 且不是全屏.
+        if w > 40 and 8 <= h <= 90 and w < 4000:
+            # 用输入框左边缘下方作为候选窗锚点(贴近光标列/行).
+            return r.left + 12, r.top + h // 2
     except Exception:
         pass
     return None

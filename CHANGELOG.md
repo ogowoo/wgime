@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随加聚焦输入框矩形路径 + GUITI 宽容判定)
+
+- **`win.py` GUITI 判定放宽**(对齐 C# TryGetCaretScreenRect): 只要 `hwndCaret` 存在即采纳, 用 `rcCaret.top` 定位(原先用 bottom 会有偏移), 容忍退化 caret(2x2/零尺寸但 (x,y) 真实跟踪光标), 防最小化(-32000)坐标
+- **`win.py` 新增 `_focus_edit_rect()`**: 取聚焦窗口 `GetFocus` 的屏幕矩形(输入框位置近似), 纯 Win32 不依赖 UIA——很多现代应用(Chrome/部分 Electron 对话框)的文本控件是真实 HWND, `GetWindowRect` 能拿到其位置, 比鼠标更贴近输入框. `get_caret_pos` 顺序变为: GUITI -> focus-edit -> 输入感知鼠标 -> last -> 窗口底部
+- 实测: `focus-edit rect` 在无真实 HWND 前台(浏览器)时返回 None(安全), 回退鼠标; pythonw 启动干净
+- `dist/wgime-py.py` 重建(566.5KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 鼠标跟随再优化 - 输入感知鼠标位 + 最小移动滞回)
 
 - **`win.py` 新增 `_input_aware_mouse_pos()`**: 鼠标兜底位更贴近输入行为——垂直 y=鼠标 y(输入行高度), 水平 x: 若鼠标在前台窗口内则用鼠标 x(光标列接近鼠标横向), 鼠标在窗口外则取前台窗口水平中央(避免候选窗跑到屏幕角落)
