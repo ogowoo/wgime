@@ -387,9 +387,12 @@ def get_caret_pos():
     _t0 = _t.time()
     # UIA 缓存(后台线程刷新的精确 caret)首选; 主线程只读缓存, 绝不在此跑 UIA.
     if not _uia_disabled[0] and _uia_el[0] is not None:
-        _last_caret_source[0] = 'uia'
-        _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
-        return _uia_el[0]
+        # UIA 缓存只在"前台窗口未变"时可靠(后台线程按前台刷新). 前台已变(刚切换应用)时缓存是旧窗口的
+        # 坐标, 用它会让候选窗先跳到旧位置再跳回来(表现为"刚输入就跳"). 故前台变时忽略缓存, 走下去用 GUITI.
+        if _uia_fg[0] == user32.GetForegroundWindow():
+            _last_caret_source[0] = 'uia'
+            _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
+            return _uia_el[0]
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)

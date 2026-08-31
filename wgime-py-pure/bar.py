@@ -50,6 +50,12 @@ class CandBar:
                          smooth=True, **kw)
 
     def show(self, header, code, cands, sel, page=0, total=1, follow=True, fixed=None):
+        # 进入时窗口是否已映射(未隐藏): 用于"刚显示(从隐藏恢复)则直接贴目标, 不做从旧位置的平滑滑动".
+        was_visible = False
+        try:
+            was_visible = self.top.winfo_ismapped()
+        except Exception:
+            was_visible = False
         # 取消待执行的防抖隐藏(上屏后紧跟的下一键会让 hide 的延迟回调失效前先取消).
         try:
             if self._hide_after is not None:
@@ -146,9 +152,13 @@ class CandBar:
                     y = max(ra.top, cy - h - 6)
                 if y < ra.top:
                     y = ra.top
-                # 低通平滑: 位置只向目标挪 alpha 比例, 抹平剧烈抖动/累积漂移(治"越跳越右").
+                # 低通平滑/直接贴: 位置只向目标挪 0.45 比例, 抹平剧烈抖动/累积漂移(治"越跳越右").
+                # 但"刚显示(从隐藏恢复)"或"目标与当前相差过远(跨窗口/跨行迁移)"时直接贴目标(重置平滑),
+                # 避免候选窗从"上一次打字的陈旧位置"慢慢滑过来 -> 表现为刚输入就"跳舞/飘过来".
                 cur = self._last_geom
-                if cur is not None:
+                relocate = (not was_visible) or (
+                    cur is not None and (abs(x - cur[0]) > 200 or abs(y - cur[1]) > 60))
+                if cur is not None and not relocate:
                     sx = cur[0] + int((x - cur[0]) * 0.45)
                     sy = cur[1] + int((y - cur[1]) * 0.45)
                     # 平滑后再次 clamp 到工作区.
@@ -157,15 +167,16 @@ class CandBar:
                     if sy + h > ra.bottom: sy = ra.bottom - h
                     if sy < ra.top: sy = ra.top
                     x, y = sx, sy
-                # 最小移动滞回: 与平滑后当前位置差 < 阈值时不动, 防微抖.
-                try:
-                    cx0, cy0 = self.top.winfo_x(), self.top.winfo_y()
-                    dx = abs(x - cx0)
-                    dy = abs(y - cy0)
-                    if dx < 40 and dy < 10:
-                        return
-                except Exception:
-                    pass
+                # 最小移动滞回: 仅对"已显示的小移动"生效(抑制微抖); 刚显示/跨窗口迁移时总是定位, 不提前 return.
+                if not relocate:
+                    try:
+                        cx0, cy0 = self.top.winfo_x(), self.top.winfo_y()
+                        dx = abs(x - cx0)
+                        dy = abs(y - cy0)
+                        if dx < 40 and dy < 10:
+                            return
+                    except Exception:
+                        pass
                 self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
             else:
                 ra = win.screen_workarea()
