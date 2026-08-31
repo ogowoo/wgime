@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 彻底修复 uiautomation "Typelib different than module" 并普适)
+
+- **确认普适根因**: zip 内嵌 `comtypes/gen/UIAutomationClient.py`(及 wrapper `_944DE083_...`)在模块顶部 `from comtypes._tlib_version_checker import _check_version` **绑定函数对象引用**, 并在模块体里调用 `_check_version('1.4.16', <烘焙mtime>)`; `_check_version` 比较系统 `UIAutomationCore.dll` 当前 mtime 与烘焙值, 相差>=1s 即抛 `ImportError("Typelib different than module")`。**任何**机器上只要该 DLL mtime 与烘焙值不同(用户机/系统更新后)就会触发, 不止 Teams
+- **上一版 patch 的失效点**: 只 `from comtypes import _tlib_version_checker; _tvc._check_version = no-op` 是指向**模块属性**; 但生成模块已经 `from ... import _check_version` **绑定的是函数对象本身**, 模块属性改了也不影响已绑定的引用(实测 `um._check_version is tvc._check_version` 为 False)
+- **本版正解双层防护 `win.py`**:
+  1. `_import_uia_robust()`: 在**导入 uiautomation 前**把 `_check_version` 打成 no-op —— 生成模块是**惰性**(首次 `GetFocusedControl` 才 import), 所以 patch 发生时它还没绑定, 之后 `from ... import` 拿到的就是 no-op → 从源头不抛
+  2. `_uia_retry_client()`: 若首次 `GetFocusedControl` 仍失败, **重置 `uiautomation.uiautomation._AutomationClient._instance=None`** 强制重新构造(此时 patch 已在), 重试一次再成功
+- **实测**: 强制 `UIAutomationCore.dll` mtime **+50s**(等效用户机), `_import_uia_robust` 仍导入成功、`get_caret_uia` 返回有效坐标; 把单例设成坏占位, `_uia_retry_client` 重置后仍返回精确光标 `(2728,1085)`
+- `dist/wgime-py.py` 重建; package 已刷新
+- **提醒**: 请务必使用最新单文件(`dist/wgime-py.py` 或 `package\wgime-py.py`), 旧版不含该修复
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 根治 uiautomation "Typelib different than module")
 
 - **根因定位**(实测确认):我们 zip 内嵌的 `comtypes/gen/_944DE083_..._UIAutomationClient.py` 里**烘焙了生成时 UIAutomationCore.dll 的 mtime**, 形如 `_check_version('1.4.16', 1787852155.337951)`(`comtypes._tlib_version_checker` 在导入生成模块时用 `os.stat(该DLL).st_mtime` 与烘焙值比较, 相差>=1s 就抛 `ImportError("Typelib different than module")`)

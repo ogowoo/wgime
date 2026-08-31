@@ -226,6 +226,25 @@ _uia_fg = [0]         # 缓存时的前台 hwnd, 防止跨窗口复用过期元�
 _uia_import_broken = [False]
 
 
+def _uia_retry_client(auto):
+    """GetFocusedControl 首次失败(comtypes typelib 版本校验在 _AutomationClient 单例构造时抛,
+    uiautomation 会在 stderr 打 'Can not load UIAutomationCore.dll' 黄字)时调用:
+    重置单例(_instance=None), 触发重新构造——此时 _check_version 已被 _import_uia_robust 打成
+    no-op, 重试即成功; 返回 el 或 None."""
+    try:
+        import uiautomation.uiautomation as _uu
+        if hasattr(_uu, '_AutomationClient'):
+            try:
+                _uu._AutomationClient._instance = None
+            except Exception:
+                pass
+        import time as _t
+        _t.sleep(0.02)
+        return auto.GetFocusedControl()
+    except BaseException:
+        return None
+
+
 def _import_uia_robust():
     """稳健导入 uiautomation. comtypes 在 typelib 版本不匹配时会抛
     ImportError("Typelib different than module")——根因: 我们 zip 内嵌的
@@ -314,7 +333,12 @@ def get_caret_uia(max_age=0.15):
                 return None
             _uia[0] = auto
         auto = _uia[0]
-        el = auto.GetFocusedControl()
+        try:
+            el = auto.GetFocusedControl()
+        except BaseException:
+            # 首次 GetFocusedControl 若因 comtypes typelib 版本校验失败(_AutomationClient 单例
+            # 构造失败), 重置该单例并重试一次——此时 _check_version 已被打成 no-op, 重新初始化即可.
+            el = _uia_retry_client(auto)
         if not el:
             _uia_t[0] = now
             _uia_fg[0] = fg
