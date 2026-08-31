@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 修 Teams 等 Electron 应用中光标跟随卡顿)
+
+- **`win.py` `get_caret_uia()` 加节流 + 复用**:原实现每个 poll(15ms)/每键都跑整套 UIA(`GetFocusedControl`→`GetPattern`→`GetSelection`→`GetBoundingRectangles`), 在 Teams/Edge 这类 Chromium 应用里一次可达几十~上百 ms, 且跑在 tkinter 主线程上, 直接卡死 IME 主循环 → 光标跟随后"反应很慢"
+  - 前台窗口没变且距上次 < 150ms: 返回缓存的屏幕位, **不重跑 UIA**(成功/失败路径都节流, 避免"Teams UIA 拿不到光标"这种高频失败也每键都跑)
+  - 前台窗口变了才立即重新检索; 失败(返回 None)也记录尝试时间, 同样被节流
+  - 实测节流逻辑: 8 次快速调用 UIA 只跑 1 次; 过 0.16s 后重新跑; 成功/失败两路径都正确
+- `GetGUIThreadInfo` 快速路径仍优先(廉价), 只有它取不到光标才走(UIA 节流的)慢路径
+- `dist/wgime-py.py` 重建; package 已刷新
+- **效果**: Teams 里开启"光标跟随"不再每键卡 UIA, 光标位置最多滞后 ~150ms(视觉无感)
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 托盘菜单新增"编辑/重载配置", 对齐 C# 版)
 
 - **`main.py` 新增 `reload_config()`**:重读 config.txt + tools.txt + plugins/*.txt + plugins/*.py + pastemode.txt, 并刷新主题/托盘勾选(无需重启程序), 对齐 C# 版 `ReloadConfig()`

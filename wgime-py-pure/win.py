@@ -217,17 +217,38 @@ class GUITHREADINFO(ctypes.Structure):
 
 _last_caret = [None]
 _uia = [None]
+# UIA 代价高(Teams 等 Electron 应用尤其慢): GetFocusedControl 一次可达几十~上百 ms.
+# 加节流 + 复用元素, 避免每个 poll(15ms)都重做整套 UIA, 否则光标跟随会卡住 IME 主循环.
+_uia_t = [0.0]        # 上次真正执行 UIA 检索的时间
+_uia_el = [None]      # 缓存聚焦元素 + TextPattern(短 TTL 复用, GetSelection 每次仍重取当前选区)
+_uia_fg = [0]         # 缓存时的前台 hwnd, 防止跨窗口复用过期元素
 
 
-def get_caret_uia():
-    """UI Automation 光标 (现代应用 Edge/Explorer/Office, GetGUIThreadInfo 探测不到时)."""
+def get_caret_uia(max_age=0.15):
+    """UI Automation 光标 (现代应用 Edge/Explorer/Office, GetGUIThreadInfo 探测不到时).
+    带节流: 在 max_age 秒内复用上次聚焦控件/选区, 只返回缓存的屏幕位, 不重复 UIA COM 往返.
+    若前台窗口变了则立即重新检索. 失败(返回 None)也记录尝试时间, 让"Teams UIA 拿不到光标"
+    这种高频失败同样被节流, 不再每键都跑整套 UIA."""
+    import time
     try:
+        now = time.time()
+        fg = user32.GetForegroundWindow()
+        if fg == _uia_fg[0]:
+            # 同一前台窗口(无论上次成功与否): 在 max_age 内都复用上次结果, 不重跑 UIA
+            if _uia_el[0] is not None and (now - _uia_t[0]) < max_age:
+                return _uia_el[0]
+            if (now - _uia_t[0]) < max_age:
+                return None          # 上次失败且仍在节流窗口内 -> 直接算失败, 不重跑 UIA
+        # 到了节流窗口(或换了前台窗口): 重新做整套 UIA
         if _uia[0] is None:
             import uiautomation as auto
             _uia[0] = auto
         auto = _uia[0]
         el = auto.GetFocusedControl()
         if not el:
+            _uia_t[0] = now
+            _uia_fg[0] = fg
+            _uia_el[0] = None
             return None
         # 精确光标: ITextPattern.GetSelection(); caret 是细矩形(高 4~200, 宽<=200),
         # 太宽 = 整行/段落(某些 Chromium 字段) -> 不信任, 回退到控件边界
@@ -242,7 +263,11 @@ def get_caret_uia():
                         cw = r.right - r.left
                         ch = r.bottom - r.top
                         if 0 < cw <= 200 and 4 <= ch <= 200:
-                            return (int(r.left), int(r.bottom))
+                            pos = (int(r.left), int(r.bottom))
+                            _uia_el[0] = pos
+                            _uia_t[0] = now
+                            _uia_fg[0] = fg
+                            return pos
         except Exception:
             pass
         # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
@@ -250,14 +275,22 @@ def get_caret_uia():
         cw = r.right - r.left
         ch = r.bottom - r.top
         if 0 < cw < 2000 and 0 < ch < 400:
-            return (int(r.left), int(r.bottom))
+            pos = (int(r.left), int(r.bottom))
+            _uia_el[0] = pos
+            _uia_t[0] = now
+            _uia_fg[0] = fg
+            return pos
+        # 未取到: 记录此次尝试, 让后续调用被节流
+        _uia_t[0] = now
+        _uia_fg[0] = fg
+        _uia_el[0] = None
     except Exception:
         pass
     return None
 
 
 def get_caret_pos():
-    """光标屏幕坐标. GetGUIThreadInfo -> UIA -> 上次有效位 -> 前台窗口客户区."""
+    """光标屏幕坐标. GetGUIThreadInfo -> UIA(节流) -> 上次有效位 -> 前台窗口客户区."""
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
