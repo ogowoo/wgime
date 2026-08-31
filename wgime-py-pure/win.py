@@ -234,7 +234,11 @@ class GUITHREADINFO(ctypes.Structure):
 
 
 _last_caret = [None]
-_last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback'
+_last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback' | 'focus'
+# caret 抖动检测: 记录最近几次 GUITI caret, 若方向反复横跳/大幅摆动则判不可信(浏览器等自绘应用),
+# 避免候选窗"跳舞". 用 deque 环形.
+import collections as _col
+_guiti_hist = _col.deque(maxlen=5)
 
 
 def get_caret_pos():
@@ -255,12 +259,18 @@ def get_caret_pos():
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
             # 防最小化坐标(-32000)与越界.
             if pt.x > -10000 and pt.y > -10000:
-                _last_caret[0] = (pt.x, pt.y)
-                _last_caret_source[0] = 'caret'
-                _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s rc=(%d,%d,%d,%d) -> %s' % (
-                    (_t.time()-_t0)*1000, bool(g.hwndCaret),
-                    g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, _last_caret[0]))
-                return _last_caret[0]
+                cand = (pt.x, pt.y)
+                # 抖动检测: 若 caret 在历史里大幅往返/摆动(方向反复, 或单帧大幅跳), 判不可信,
+                # 退回鼠标. 真光标通常原地或小幅单向移动, 不会剧烈横跳.
+                if _caret_jittery(cand):
+                    _dlog('get_caret_pos: GUITI jittery reject cand=%s' % (cand,))
+                else:
+                    _last_caret[0] = cand
+                    _last_caret_source[0] = 'caret'
+                    _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s rc=(%d,%d,%d,%d) -> %s' % (
+                        (_t.time()-_t0)*1000, bool(g.hwndCaret),
+                        g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, cand))
+                    return cand
             _dlog('get_caret_pos: GUITI degenerate(minimized?) hwndCaret=%s pt=(%d,%d)' % (
                 bool(g.hwndCaret), pt.x, pt.y))
         else:
@@ -324,6 +334,33 @@ def _mouse_pos():
     except Exception:
         pass
     return None
+
+
+def _caret_jittery(cand):
+    """判断 GUITI caret 候选是否"抖动/漂移"不可信. 若候选相对历史位置大幅往返(单帧跳变大且方向
+    反复), 视为自绘应用的噪声(浏览器 etc), 返回 True -> 调用方退回鼠标. 真光标移动幅度小且方向一致."""
+    _guiti_hist.append(cand)
+    if len(_guiti_hist) < 2:
+        return False
+    # 连续两帧的位移
+    prev = _guiti_hist[-2]
+    dx = cand[0] - prev[0]
+    dy = cand[1] - prev[1]
+    import math as _m
+    dist = _m.hypot(dx, dy)
+    if dist > 120:      # 单帧跳超 120px(跨越整屏跳动), 很像噪声
+        return True
+    # 看最近 3 帧是否方向反复(先右后左 / 先上后下 来回横跳)
+    if len(_guiti_hist) >= 3:
+        p0 = _guiti_hist[-3]
+        d1 = (cand[0] - prev[0], cand[1] - prev[1])
+        d2 = (prev[0] - p0[0], prev[1] - p0[1])
+        # x 方向或 y 方向出现明显反向(>40px) => 横跳
+        if (d1[0] > 40 and d2[0] < -40) or (d1[0] < -40 and d2[0] > 40):
+            return True
+        if (d1[1] > 30 and d2[1] < -30) or (d1[1] < -30 and d2[1] > 30):
+            return True
+    return False
 
 
 def _focus_edit_rect():

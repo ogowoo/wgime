@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 光标跟随 caret 抖动检测, 治候选框"跳舞")
+
+- 用户反馈浏览器里候选框"一上一下跳舞、越跳越往右"——根因: 放宽 GUITI 后, 浏览器等自绘应用返回**抖动/漂移的退化 caret**(单帧大幅往返), 候选窗跟着横跳
+- **`win.py` 新增 `_caret_jittery(cand)`**: 记录最近 GUITI caret 位置(deque), 若 (a) 单帧位移 >120px 或 (b) x/y 方向出现 >40/30px 反复反向(横跳)则判不可信, `get_caret_pos` 拒绝该 caret 退回鼠标
+- 实测: 稳定 caret(原位小幅移动)正常跟随; 跳舞 caret(100→400→60→420→40)判 jittery=True 退回鼠标; pythonw 启动干净
+- `dist/wgime-py.py` 重建(568.3KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 光标跟随加聚焦输入框矩形路径 + GUITI 宽容判定)
 
 - **`win.py` GUITI 判定放宽**(对齐 C# TryGetCaretScreenRect): 只要 `hwndCaret` 存在即采纳, 用 `rcCaret.top` 定位(原先用 bottom 会有偏移), 容忍退化 caret(2x2/零尺寸但 (x,y) 真实跟踪光标), 防最小化(-32000)坐标
