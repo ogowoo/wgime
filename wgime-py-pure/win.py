@@ -310,6 +310,34 @@ def _neutralize_uia_check_version():
         pass
 
 
+def _force_zip_uia():
+    """确保 comtypes/uiautomation 从我们内嵌的 thirdparty.zip 加载, 而不是用户 pip 装的
+    site-packages 版(生产机若 pip 装了 uiautomation/comtypes, site-packages 可能抢在前面,
+    那样我们的 _check_version 补丁(打在 zip comtypes 上)就完全无效——这正是生产机报
+    'Typelib different than module' 的真正原因). 若 comtypes/uiautomation 已从别处加载,
+    把它们从 sys.modules 清掉, 并让 zip 的路径排在 site-packages 前, 再重导."""
+    import sys
+    # 找我们内嵌的 thirdparty.zip 的路径(单文件 preamble 已 insert(0) 进 sys.path)
+    zip_paths = [p for p in sys.path if p and p.lower().endswith('thirdparty.zip')]
+    if not zip_paths:
+        return
+    zip_path = zip_paths[0]
+    try:
+        import comtypes
+        cur = getattr(comtypes, '__file__', '') or ''
+        if 'thirdparty.zip' not in cur:
+            # 当前加载的不是我们的 zip 版 -> 清出 sys.modules 强制重导
+            for k in list(sys.modules):
+                if k == 'comtypes' or k.startswith('comtypes.') or k == 'uiautomation' or k.startswith('uiautomation.'):
+                    del sys.modules[k]
+            # 把 zip 顶到最前, 并剔除 comtypes/uiautomation 的 site-packages 目录影响
+            if zip_path in sys.path:
+                sys.path.remove(zip_path)
+            sys.path.insert(0, zip_path)
+    except Exception:
+        pass
+
+
 def _import_uia_robust():
     """稳健导入 uiautomation. comtypes 在 typelib 版本不匹配时会抛
     ImportError("Typelib different than module")——根因: 我们 zip 内嵌的
@@ -320,6 +348,8 @@ def _import_uia_robust():
     绑定名——双保险, 顺序无关, 让跟随在这些机器上稳定工作."""
     if _uia_import_broken[0]:
         return None
+    # 关键: 确保用的是我们内嵌 zip 的 comtypes/uiautomation, 而非用户 pip 装的 site-packages 版
+    _force_zip_uia()
     # 首层打补丁: 让 _check_version 不再因 mtime 差异拒绝已生成的 typelib 模块
     try:
         from comtypes import _tlib_version_checker as _tvc

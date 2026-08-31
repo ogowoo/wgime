@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 强制用内嵌 zip 的 comtypes/uiautomation, 排除用户 pip 装的 site-packages 版)
+
+- **真正破案**: 生产机 pip 装了 `uiautomation 2.0.29 + comtypes 1.4.16`(user site-packages, `AppData\Roaming\Python\Python313\site-packages`)。单文件虽然 `sys.path.insert(0, thirdparty.zip)`, 但若 site 里 zip 过期/损坏, Python 会**回退到 site-packages 的 comtypes**——而我们所有的 `_check_version` 补丁都打在 **zip comtypes** 上, 对实际加载的 site-packages comtypes 完全无效! 这就是"改了 N 轮仍复现"的根本原因
+- **实测确认**: 有效 zip 在 sys.path[0] 时, comtypes/uiautomation **从 zip 加载**(`thirdparty.zip\comtypes`); 但 site zip 被污染(1006B, `STALE`)后, Python 回退 site-packages → 之前补丁失效
+- **`win.py` 新增 `_force_zip_uia()`**: 在 `_import_uia_robust` 里先调用, 若当前 `comtypes.__file__` 不含 `thirdparty.zip`(即加载了 site-packages 版), 则把 `comtypes`/`uiautomation`(及子模块)从 `sys.modules` 清除、把 zip 顶到 sys.path[0], 强制重导 zip 版——排除用户 pip 装的 site-packages 版干扰
+- **实测**: `_force_zip_uia` 后 comtypes 从 `thirdparty.zip\comtypes` 加载; mtime 失真下 `get_caret_uia` 优雅降级(None, broken=False, 无 typelib 报错)
+- `dist/wgime-py.py` 重建(571.6KB); package 已刷新
+- **生产机建议**: 若/当 site-packages 装有 uiautomation/comtypes, 新版单文件会自动强制用 zip 版; 亦可 `pip uninstall uiautomation comtypes` 彻底避免冲突
+
+---
+
 ## 2026-08-31 (wgime-py-pure: win 加载即中和 comtypes typelib 校验 + 吞 uiautomation 黄字日志)
 
 - **生产机仍报 `Typelib different than module`/@automationlog.txt 的原因**: 补丁时序依赖——之前的 `_neutralize_uia_check_version` 只在 `_import_uia_robust` 里调用, 若 uiautomation 在某条路径下提前触发 `_AutomationClient`(import 时绑定 `_check_version`), 补丁就晚了
