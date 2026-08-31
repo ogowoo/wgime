@@ -245,26 +245,46 @@ def _uia_retry_client(auto):
         return None
 
 
+def _neutralize_uia_check_version():
+    """把 comtypes.gen 里 UIAutomationClient/wrapper 模块的 _check_version 绑定名覆盖成 no-op.
+    生成模块内部的 _check_version('1.4.16', <mtime>) 用 LOAD_GLOBAL 读模块 __dict__,
+    **覆盖 __dict__['_check_version'] 即可直接让该调用不抛**(无论模块何时被 import),
+    从而绕开 comtypes 的 "Typelib different than module" mtime 误判."""
+    import sys
+    for k in list(sys.modules):
+        if not (k.startswith('comtypes.gen.') and ('UIAutomation' in k or '944DE083' in k)):
+            continue
+        try:
+            sys.modules[k].__dict__['_check_version'] = lambda *a, **kw: None
+        except Exception:
+            pass
+    # 也覆盖 comtypes._tlib_version_checker 模块属性(首层导入时用)
+    try:
+        from comtypes import _tlib_version_checker as _tvc
+        _tvc._check_version = lambda *a, **kw: None
+    except Exception:
+        pass
+
+
 def _import_uia_robust():
     """稳健导入 uiautomation. comtypes 在 typelib 版本不匹配时会抛
     ImportError("Typelib different than module")——根因: 我们 zip 内嵌的
     comtypes.gen.UIAutomationClient 里烘焙了生成时的 UIAutomationCore.dll mtime
     (如 _check_version('1.4.16', <mtime>)), 用户机上该 DLL 的 mtime 与烘焙值相差>=1s
-    就抛错(与线程无关, 是 uiautomation 库的误导文案).
-    这里在导入 uiautomation 前, 把 comtypes 的 _check_version 临时打成"总是通过"——
-    生成模块的接口布局与 mtime 无关, 单靠 mtime 判定"不同"并不严谨, 跳过即可让跟随正常."""
+    就抛错. 这里在导入 uiautomation 前把 comtypes._tlib_version_checker._check_version
+    打成 no-op, 并在导入后覆盖 comtypes.gen 各 UIAutomation 模块 __dict__ 的 _check_version
+    绑定名——双保险, 顺序无关, 让跟随在这些机器上稳定工作."""
     if _uia_import_broken[0]:
         return None
-    _patch = None
+    # 首层打补丁: 让 _check_version 不再因 mtime 差异拒绝已生成的 typelib 模块
     try:
-        # 预先打补丁: 让 _check_version 不再因 mtime 差异拒绝已生成的 typelib 模块
         from comtypes import _tlib_version_checker as _tvc
-        _patch = _tvc._check_version
         _tvc._check_version = lambda *a, **k: None
     except Exception:
-        _patch = None
+        pass
     try:
         import uiautomation as auto
+        _neutralize_uia_check_version()
         return auto
     except KeyboardInterrupt:
         raise
@@ -297,6 +317,7 @@ def _import_uia_robust():
         pass
     try:
         import uiautomation as auto
+        _neutralize_uia_check_version()
         return auto
     except KeyboardInterrupt:
         raise

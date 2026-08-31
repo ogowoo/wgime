@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: UIAutomation typelib 修复改为模块级 __dict__ 覆盖, 顺序无关/普适)
+
+- **关键发现**: comtypes 生成模块 `comtypes.gen.UIAutomationClient/wrapper` 内部的 `_check_version('1.4.16', <mtime>)` 用 **`LOAD_GLOBAL` 读模块 __dict__**, 所以**直接覆盖模块 `__dict__['_check_version']` 为 no-op** 就能让该调用不抛——**无论该模块何时被 import 都生效**(之前只改 `comtypes._tlib_version_checker._check_version` 模块属性, 对已 `from ... import` 绑定的引用无效, 这就是为什么之前没修好)
+- **`win.py` 新增 `_neutralize_uia_check_version()`**: 遍历 `sys.modules` 里所有 `comtypes.gen.*UIAutomation*`(及 wrapper)模块, 覆盖其 `__dict__['_check_version']`; 并同时覆盖 `comtypes._tlib_version_checker._check_version`
+- `_import_uia_robust()` 改为: 导入 uiautomation 前打补丁 + 导入后调用 `_neutralize_uia_check_version()`(双保险), 仍失败才清 gen 缓存重试 + `_uia_import_broken` 兜底
+- **实测**: 最坏情形(gen 模块已被 import、`_check_version` 已绑定原函数)下, `_neutralize_uia_check_version` 覆盖后 `um/wr._check_version('1.4.16',999999)` 均返回 None(不再抛); 强制 mtime 失真(1000000.0)下 `_import_uia_robust` 成功、`get_caret_uia` 返回 `(2647,1300)`
+- `dist/wgime-py.py` 重建; package 已刷新
+- **此修复顺序无关**: 无论 gen 模块何时加载、之前是否被任何代码 import 过, 只要在 uiautomation 使用前调用过 `_neutralize_uia_check_version` 就稳定
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 彻底修复 uiautomation "Typelib different than module" 并普适)
 
 - **确认普适根因**: zip 内嵌 `comtypes/gen/UIAutomationClient.py`(及 wrapper `_944DE083_...`)在模块顶部 `from comtypes._tlib_version_checker import _check_version` **绑定函数对象引用**, 并在模块体里调用 `_check_version('1.4.16', <烘焙mtime>)`; `_check_version` 比较系统 `UIAutomationCore.dll` 当前 mtime 与烘焙值, 相差>=1s 即抛 `ImportError("Typelib different than module")`。**任何**机器上只要该 DLL mtime 与烘焙值不同(用户机/系统更新后)就会触发, 不止 Teams
