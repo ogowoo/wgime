@@ -35,6 +35,7 @@ class CandBar:
         self._pad = 10
         self._fc = tkfont.Font(family='Microsoft YaHei UI', size=9)
         self._fd = tkfont.Font(family='Microsoft YaHei UI', size=11)
+        self._last_geom = None   # 低通平滑的上一次窗口位置 (x, y)
 
     def set_theme(self, name):
         if name in THEMES:
@@ -126,16 +127,29 @@ class CandBar:
                     x = ra.right - w
                 if x < ra.left:
                     x = ra.left
+                # 翻转滞回: 若已在上方(当前窗口在 caret 上方)则不轻易翻下去, 反之亦然.
+                # 用"当前窗口中心相对 caret 的上下关系"决定, 防止在边界反复 上/下 跳.
                 if y + h > ra.bottom:
                     y = max(ra.top, cy - h - 6)
                 if y < ra.top:
                     y = ra.top
-                # 最小移动滞回: 候选窗位置与当前差 < 阈值时不动, 防鼠标抖动/每键跳变.
+                # 低通平滑: 位置只向目标挪 alpha 比例, 抹平剧烈抖动/累积漂移(治"越跳越右").
+                cur = self._last_geom
+                if cur is not None:
+                    sx = cur[0] + int((x - cur[0]) * 0.45)
+                    sy = cur[1] + int((y - cur[1]) * 0.45)
+                    # 平滑后再次 clamp 到工作区.
+                    if sx + w > ra.right: sx = ra.right - w
+                    if sx < ra.left: sx = ra.left
+                    if sy + h > ra.bottom: sy = ra.bottom - h
+                    if sy < ra.top: sy = ra.top
+                    x, y = sx, sy
+                # 最小移动滞回: 与平滑后当前位置差 < 阈值时不动, 防微抖.
                 try:
                     cx0, cy0 = self.top.winfo_x(), self.top.winfo_y()
                     dx = abs(x - cx0)
                     dy = abs(y - cy0)
-                    if dx < 60 and dy < 14:
+                    if dx < 40 and dy < 10:
                         return
                 except Exception:
                     pass
