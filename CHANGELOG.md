@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-08-31 (wgime-py-pure: 修 _last_geom 从未赋值导致平滑失效 + 候选框位置异常)
+
+- 用户反馈: 按 Backspace 后"整个屏幕看不到候选框"——疑与候选框位置异常/平滑有关
+- **`bar.py` bug**: `_last_geom` 只初始化**从未赋值**, 平滑分支 `if cur is not None` 永不进入, 低通平滑根本没生效
+- **修复**: `show` 末尾在窗口 `winfo_viewable && ismapped` 时记录实际 `winfo_x/winfo_y` 到 `_last_geom`(避免首次/隐藏时读到 0/0 污染平滑起点), 平滑才真正起作用
+- 配合防抖 hide + 抖动检测, 候选框位置更稳定
+- `dist/wgime-py.py` 重建(576.2KB); package 刷新
+
+---
+
 ## 2026-08-31 (wgime-py-pure: 候选窗隐藏加防抖, 治"候选框有时消失")
 
 - 用户反馈: 候选框有时消失(但打字还能上屏)——根因: 连续打字/上屏瞬间, `ime.buf` 短暂清空触发 `bar.hide()`(立即 withdraw), 下一键又 `bar.show()`, 候选框在快速连打时"闪一下消失"

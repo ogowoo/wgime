@@ -184,6 +184,13 @@ class CandBar:
             if cy < ra.top:
                 cy = ra.top
             self.top.geometry('%dx%d+%d+%d' % (w, h, cx, cy))
+        # 记录实际几何位置供低通平滑使用(之前 _last_geom 从未赋值 -> 平滑没生效).
+        # 只在窗口已映射且坐标合理时记录, 避免首次/隐藏时读到 0/0 污染平滑起始点.
+        try:
+            if self.top.winfo_viewable() and self.top.winfo_ismapped():
+                self._last_geom = (self.top.winfo_x(), self.top.winfo_y())
+        except Exception:
+            pass
         self.top.deiconify()
         win.set_topmost(self.top.winfo_id())   # 强制提到 topmost z-order 最顶(Win11 开始菜单不压住候选框)
 
