@@ -1164,7 +1164,8 @@ def poll():
 root.after(15, poll)
 hook.start()
 set_active(CFG['starton'])
-# UIA 后台刷新精确 caret(首选); UIA 不可用会自动停, get_caret_pos 回退纯 Win32.
+# 光标跟随: 启动独立 Caret Helper 子进程(纯 ctypes UIA, 主进程绝不初始化 COM/UIA).
+# helper 常驻等 request_caret_refresh; 定位失败时 get_caret_pos 回退纯 Win32 链.
 try:
     win.ensure_caret_bg()
 except Exception:

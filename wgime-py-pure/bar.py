@@ -37,6 +37,9 @@ class CandBar:
         self._fd = tkfont.Font(family='Microsoft YaHei UI', size=11)
         self._last_geom = None   # 低通平滑的上一次窗口位置 (x, y)
         self._hide_after = None  # 防抖隐藏的 after 句柄
+        self._anchor = None
+        self._ipc_place_token = 0
+        self._window_anchor = {}      # hwnd -> stable fallback anchor
 
     def set_theme(self, name):
         if name in THEMES:
@@ -49,7 +52,32 @@ class CandBar:
                           (x2 - r, y2), (x1 + r, y2), (x1, y2), (x1, y2 - r), (x1, y1 + r), (x1, y1)],
                          smooth=True, **kw)
 
+    def _ipc_reposition(self, w, h, token):
+        if token != getattr(self, '_ipc_place_token', 0):
+            return
+        try:
+            if not self.top.winfo_ismapped():
+                return
+            pos=win.get_ipc_caret()
+            if not pos:
+                return
+            cx,cy=pos
+            ra=win.workarea_at(cx,cy)
+            x,y=cx,cy+6
+            if x+w>ra.right: x=ra.right-w
+            if x<ra.left: x=ra.left
+            if y+h>ra.bottom: y=max(ra.top,cy-h-6)
+            if y<ra.top: y=ra.top
+            self.top.geometry('%dx%d+%d+%d'%(w,h,x,y))
+            fg=win.user32.GetForegroundWindow()
+            self._anchor=(x,y,fg);self._window_anchor[fg]=(x,y)
+            win.set_topmost(self.top.winfo_id())
+        except Exception:
+            pass
+
     def show(self, header, code, cands, sel, page=0, total=1, follow=True, fixed=None):
+        if follow and cands:
+            win.request_caret_refresh('bar.show code=%s cands=%d' % (code, len(cands)))
         # 进入时窗口是否已映射(未隐藏): 用于"刚显示(从隐藏恢复)则直接贴目标, 不做从旧位置的平滑滑动".
         was_visible = False
         try:
@@ -129,47 +157,39 @@ class CandBar:
             ra = win.screen_workarea()
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 8))
         elif follow and not _shell:
-            pos = win.get_caret_pos()
-            src = win._last_caret_source[0]
+            fg=win.user32.GetForegroundWindow()
+            pos=win.get_ipc_caret()
             if pos:
-                cx, cy = pos
-                ra = win.workarea_at(cx, cy)
-                if src == 'mouse':
-                    # 鼠标兜底: 候选窗中心对齐鼠标点下方(不压指针), 横向居中, 超屏 clamp.
-                    x = cx - w // 2
-                    y = cy + 10
-                else:
-                    # 精确 caret / last / fallback: 贴光标下方(光标左侧对齐).
-                    x = cx
-                    y = cy + 6
-                if x + w > ra.right:
-                    x = ra.right - w
-                if x < ra.left:
-                    x = ra.left
-                # 翻转滞回: 若已在上方(当前窗口在 caret 上方)则不轻易翻下去, 反之亦然.
-                # 用"当前窗口中心相对 caret 的上下关系"决定, 防止在边界反复 上/下 跳.
-                if y + h > ra.bottom:
-                    y = max(ra.top, cy - h - 6)
-                if y < ra.top:
-                    y = ra.top
-                # 直接贴目标 (C# 同款, 无滑行): 消除"向右下飘"(0.45 渐进滑行看着像漂移).
-                # 最小移动滞回: 仅对"已显示的小移动"生效(抑制微抖); 刚显示/跨窗口迁移时总是定位, 不提前 return.
-                cur = self._last_geom
-                relocate = (not was_visible) or (
-                    cur is not None and (abs(x - cur[0]) > 200 or abs(y - cur[1]) > 60))
-                if not relocate:
-                    try:
-                        cx0, cy0 = self.top.winfo_x(), self.top.winfo_y()
-                        dx = abs(x - cx0)
-                        dy = abs(y - cy0)
-                        if dx < 40 and dy < 10:
-                            return
-                    except Exception:
-                        pass
-                self.top.geometry('%dx%d+%d+%d' % (w, h, x, y))
+                cx,cy=pos
+                ra=win.workarea_at(cx,cy)
+                x,y=cx,cy+6
             else:
-                ra = win.screen_workarea()
-                self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40))
+                # No fresh helper result yet. Keep current visible position, or use deterministic fallback once.
+                same_window = (self._anchor is not None and self._anchor[2] == fg)
+                if was_visible and same_window:
+                    x,y=self.top.winfo_x(),self.top.winfo_y()
+                    ra=win.workarea_at(x,y)
+                elif fg in self._window_anchor:
+                    x,y=self._window_anchor[fg]
+                    ra=win.workarea_at(x,y)
+                else:
+                    base=win.get_caret_pos()
+                    cx,cy=base if base else (100,100)
+                    ra=win.workarea_at(cx,cy)
+                    x,y=cx,cy+6
+                    self._window_anchor[fg]=(x,y)
+            if x+w>ra.right: x=ra.right-w
+            if x<ra.left: x=ra.left
+            if y+h>ra.bottom: y=max(ra.top,y-h-12)
+            if y<ra.top: y=ra.top
+            self.top.geometry('%dx%d+%d+%d'%(w,h,x,y))
+            self._anchor=(x,y,fg)
+            self._window_anchor[fg]=(x,y)
+            # Consume the helper result after it arrives. Later keystrokes invalidate older callbacks.
+            self._ipc_place_token += 1
+            tok=self._ipc_place_token
+            self.top.after(35, lambda: self._ipc_reposition(w,h,tok))
+            self.top.after(80, lambda: self._ipc_reposition(w,h,tok))
         elif _shell:
             # 开始菜单/搜索类 UI: 固定屏幕右下角并贴着任务栏上方(避开浮窗, 不遮挡中央)
             ra = win.screen_workarea()
@@ -204,7 +224,12 @@ class CandBar:
         self._drag['y'] = e.y_root - self.top.winfo_y()
 
     def _drag_move(self, e):
-        self.top.geometry('+%d+%d' % (e.x_root - self._drag['x'], e.y_root - self._drag['y']))
+        x = e.x_root - self._drag['x']
+        y = e.y_root - self._drag['y']
+        self.top.geometry('+%d+%d' % (x, y))
+        fg=win.user32.GetForegroundWindow()
+        self._anchor = (x, y, fg)
+        self._window_anchor[fg] = (x, y)
 
     def hide(self):
         """候选窗隐藏. 加防抖: 延迟 withdraw, 若期间又 show(连续输入/上屏后紧跟下一键)则不隐藏,
@@ -221,6 +246,9 @@ class CandBar:
 
     def _do_hide(self):
         self._hide_after = None
+        self._ipc_place_token += 1
+        self._anchor = None
+        self._last_geom = None
         try:
             self.top.withdraw()
         except Exception:

@@ -240,255 +240,99 @@ _last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback' | 'foc
 import collections as _col
 _guiti_hist = _col.deque(maxlen=5)
 
-# ---------------- UIA 首选(可选) + 纯 Win32 回退 ----------------
-# UIA(comtypes/uiautomation)仅在可用时作为首选精确路径; 一旦探测故障即 _uia_disabled=True 锁死,
-# get_caret_pos 不再走 UIA, 回退到纯 ctypes Win32(不重复报 typelib/COM 错).
-_uia = [None]            # 缓存的 uiautomation 模块(惰性)
-_uia_el = [None]         # UIA 刷新的精确 caret 屏幕坐标缓存
-_uia_t = [0.0]           # 上次 UIA 检索时间
-_uia_fg = [0]            # 上次检索的前台 hwnd
-_uia_disabled = [False]  # UIA 已确认不可用锁死, 后续跳过
-_uia_import_broken = [False]
-_uia_bg_started = [False]  # 后台 UIA 线程只启动一次
-
-
-def _import_uia_robust():
-    """惰性导入 uiautomation(经 comtypes). 若 typelib/加载失败(用户环境 comtypes-UIA 不可用),
-    打补丁中和 _check_version 再试一次; 仍失败返回 None(由调用方置 _uia_disabled)."""
-    if _uia_import_broken[0]:
-        return None
+# ---------------- 独立 Caret Helper IPC ----------------
+# 主输入法绝不初始化 COM/UIA。所有 UIA 调用均在 wgime-caret-helper.py 子进程。
+import subprocess as _sp, threading as _th, json as _json, time as _time, sys as _sys
+_uia_el=[None]; _uia_fg=[0]; _uia_t=[0.0]; _uia_disabled=[False]
+_ipc_proc=[None]; _ipc_started=[False]; _ipc_id=[0]; _ipc_done=[0]; _ipc_lock=_th.Lock(); _ipc_last_start=[0.0]; _ipc_req_hwnd={}; _last_fg=[0]
+_EMBEDDED_CARET_HELPER = '# -*- coding: utf-8 -*-\n"""WgIme Caret Helper. UIA lives only in this process. JSONL stdin/stdout IPC."""\nimport ctypes, ctypes.wintypes as w, json, os, sys, time, traceback\nLOG=os.path.join(os.environ.get(\'LOCALAPPDATA\',os.path.expanduser(\'~\')),\'wgime-py\',\'caret-helper.log\')\ndef log(s):\n    try:\n        os.makedirs(os.path.dirname(LOG),exist_ok=True)\n        with open(LOG,\'a\',encoding=\'utf-8\') as f:f.write(\'%.3f [helper:%d] %s\\n\'%(time.time(),os.getpid(),s))\n    except Exception: pass\ndef emit(o):\n    sys.stdout.write(json.dumps(o,ensure_ascii=False,separators=(\',\',\':\'))+\'\\n\');sys.stdout.flush()\nclass GUID(ctypes.Structure):\n    _fields_=[(\'Data1\',w.DWORD),(\'Data2\',w.WORD),(\'Data3\',w.WORD),(\'Data4\',ctypes.c_ubyte*8)]\ndef guid(s):\n    g=GUID();hr=ctypes.windll.ole32.CLSIDFromString(s,ctypes.byref(g))\n    if hr<0:raise OSError(\'CLSIDFromString 0x%08X\'%(hr&0xffffffff))\n    return g\nCLSID=guid(\'{FF48DBA4-60EF-4201-AA87-54103EEF594E}\')\nIID_AUTO=guid(\'{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}\')\nIID_TP2=guid(\'{506A921A-FCC9-409F-B23B-37EB74106872}\')\nIID_TP=guid(\'{32EBA289-3583-42C9-9C59-3B6D9A1E9B6A}\')\nole32=ctypes.OleDLL(\'ole32\');oa=ctypes.OleDLL(\'oleaut32\')\nole32.CoInitializeEx.argtypes=[ctypes.c_void_p,w.DWORD];ole32.CoInitializeEx.restype=ctypes.c_long\nole32.CoCreateInstance.argtypes=[ctypes.POINTER(GUID),ctypes.c_void_p,w.DWORD,ctypes.POINTER(GUID),ctypes.POINTER(ctypes.c_void_p)];ole32.CoCreateInstance.restype=ctypes.c_long\ndef pv(p):\n    try:return int(p.value or 0) if hasattr(p,\'value\') else int(p or 0)\n    except:return 0\ndef call(p,i,rt,args,*xs):\n    v=ctypes.cast(p,ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents\n    addr=pv(v[i]);log(\'call i=%d obj=0x%X method=0x%X\'%(i,pv(p),addr))\n    if addr<0x10000:raise OSError(\'bad method %d 0x%X\'%(i,addr))\n    return ctypes.WINFUNCTYPE(rt,ctypes.c_void_p,*args)(addr)(p,*xs)\ndef release(p):\n    if pv(p):\n        try:call(p,2,w.ULONG,[])\n        except:pass\ndef rect(rng,pattern):\n    psa=ctypes.c_void_p();hr=call(rng,10,ctypes.c_long,[ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(psa))\n    log(\'%s GetBoundingRectangles hr=0x%08X psa=0x%X\'%(pattern,hr&0xffffffff,pv(psa)))\n    if hr<0 or not psa.value:return None\n    lo=ctypes.c_long();hi=ctypes.c_long();data=ctypes.c_void_p();access=False\n    try:\n        if oa.SafeArrayGetLBound(psa,1,ctypes.byref(lo))<0 or oa.SafeArrayGetUBound(psa,1,ctypes.byref(hi))<0:return None\n        n=hi.value-lo.value+1\n        if n<4 or n>4096 or oa.SafeArrayAccessData(psa,ctypes.byref(data))<0:return None\n        access=True;v=ctypes.cast(data,ctypes.POINTER(ctypes.c_double));raw=[float(v[i]) for i in range(n)]\n        x,y,cw,ch=raw[-4:];log(\'%s raw=%r\'%(pattern,raw[:24]))\n        if ch<1 or ch>240 or x<-10000 or y<-10000:return None\n        return {\'x\':round(x),\'y\':round(y+ch),\'rect\':[x,y,cw,ch],\'raw\':raw[:24],\'provider\':pattern}\n    finally:\n        if access:\n            try:oa.SafeArrayUnaccessData(psa)\n            except:pass\n        try:oa.SafeArrayDestroy(psa)\n        except:pass\ndef try_element(el,label):\n    pat=ctypes.c_void_p();rng=ctypes.c_void_p();arr=ctypes.c_void_p()\n    try:\n        log(\'PROBE %s el=0x%X\'%(label,pv(el)))\n        hr=call(el,14,ctypes.c_long,[ctypes.c_int,ctypes.POINTER(GUID),ctypes.POINTER(ctypes.c_void_p)],10024,ctypes.byref(IID_TP2),ctypes.byref(pat))\n        log(\'%s TP2 hr=0x%08X pat=0x%X\'%(label,hr&0xffffffff,pv(pat)))\n        if hr>=0 and pat.value:\n            active=w.BOOL();hr2=call(pat,10,ctypes.c_long,[ctypes.POINTER(w.BOOL),ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(active),ctypes.byref(rng))\n            log(\'%s GetCaretRange hr=0x%08X active=%d rng=0x%X\'%(label,hr2&0xffffffff,active.value,pv(rng)))\n            if hr2>=0 and active.value and rng.value:\n                p=rect(rng,\'TextPattern2\')\n                if p:p[\'element_path\']=label;return p\n            release(rng);rng=ctypes.c_void_p();release(pat);pat=ctypes.c_void_p()\n        hr=call(el,14,ctypes.c_long,[ctypes.c_int,ctypes.POINTER(GUID),ctypes.POINTER(ctypes.c_void_p)],10014,ctypes.byref(IID_TP),ctypes.byref(pat))\n        log(\'%s TP hr=0x%08X pat=0x%X\'%(label,hr&0xffffffff,pv(pat)))\n        if hr<0 or not pat.value:return None\n        hr=call(pat,3,ctypes.c_long,[ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(arr))\n        log(\'%s GetSelection hr=0x%08X arr=0x%X\'%(label,hr&0xffffffff,pv(arr)))\n        if hr<0 or not arr.value:return None\n        n=ctypes.c_int();hr=call(arr,3,ctypes.c_long,[ctypes.POINTER(ctypes.c_int)],ctypes.byref(n))\n        if hr<0 or n.value<1:return None\n        hr=call(arr,4,ctypes.c_long,[ctypes.c_int,ctypes.POINTER(ctypes.c_void_p)],0,ctypes.byref(rng))\n        if hr<0 or not rng.value:return None\n        p=rect(rng,\'TextPattern\')\n        if p:p[\'element_path\']=label\n        return p\n    finally:release(rng);release(arr);release(pat)\n_FAIL_UNTIL={}\nFAIL_COOLDOWN_S=8.0\n\ndef query(auto,hwnd):\n    now=time.monotonic()\n    until=_FAIL_UNTIL.get(hwnd,0.0)\n    if now<until:\n        return None,\'ProviderCooldown\',0\n    el=ctypes.c_void_p()\n    try:\n        hr=call(auto,8,ctypes.c_long,[ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(el))\n        log(\'GetFocusedElement hwnd=%d hr=0x%08X el=0x%X\'%(hwnd,hr&0xffffffff,pv(el)))\n        if hr<0 or not el.value:\n            _FAIL_UNTIL[hwnd]=now+FAIL_COOLDOWN_S\n            return None,\'GetFocusedElement\',hr\n        p=try_element(el,\'focus\')\n        if p:\n            _FAIL_UNTIL.pop(hwnd,None)\n            return p,\'focus\',0\n        # The focused provider does not expose a usable caret. Do not scan the whole\n        # WebView tree on every keystroke. The main process keeps a per-window anchor.\n        _FAIL_UNTIL[hwnd]=time.monotonic()+FAIL_COOLDOWN_S\n        log(\'NO_CARET_PROVIDER hwnd=%d cooldown=%.1fs\'%(hwnd,FAIL_COOLDOWN_S))\n        return None,\'NoCaretProvider\',0\n    finally:\n        release(el)\ndef main():\n    hr=ole32.CoInitializeEx(None,0);log(\'START CoInitializeEx=0x%08X\'%(hr&0xffffffff));auto=ctypes.c_void_p()\n    try:\n        hr2=ole32.CoCreateInstance(ctypes.byref(CLSID),None,1,ctypes.byref(IID_AUTO),ctypes.byref(auto));log(\'CoCreateInstance=0x%08X auto=0x%X\'%(hr2&0xffffffff,pv(auto)))\n        if hr2<0 or not auto.value:return 2\n        emit({\'type\':\'ready\',\'pid\':os.getpid(),\'mode\':\'stable-focus-cooldown\',\'cooldown_s\':FAIL_COOLDOWN_S})\n        for line in sys.stdin:\n            try:\n                q=json.loads(line);rid=int(q.get(\'id\',0));t=time.perf_counter();p,stage,h=query(auto,int(q.get(\'hwnd\',0)));ms=(time.perf_counter()-t)*1000\n                o={\'type\':\'result\',\'id\':rid,\'ok\':bool(p),\'stage\':stage,\'hr\':\'0x%08X\'%(h&0xffffffff),\'elapsed_ms\':round(ms,2),\'pid\':os.getpid(),\'hwnd\':int(q.get(\'hwnd\',0))}\n                if p:o.update(p)\n                emit(o)\n            except BaseException as e:\n                log(\'QUERY EXC \'+repr(e)+\' \'+traceback.format_exc());emit({\'type\':\'result\',\'id\':q.get(\'id\',0) if \'q\' in locals() else 0,\'ok\':False,\'stage\':\'exception\',\'error\':repr(e),\'pid\':os.getpid(),\'hwnd\':int(q.get(\'hwnd\',0))})\n    finally:\n        release(auto)\n        try:ole32.CoUninitialize()\n        except:pass\nif __name__==\'__main__\':raise SystemExit(main())\n'
+def _helper_path():
+    # Single-file distribution: materialize the isolated helper into a private cache.
+    # UIA still runs out-of-process, so a provider crash cannot take down the keyboard hook.
+    root=os.path.join(os.environ.get('LOCALAPPDATA',os.path.expanduser('~')),'wgime-py','runtime')
+    os.makedirs(root,exist_ok=True)
+    path=os.path.join(root,'wgime-caret-helper-v3-stable-embedded.py')
+    data=_EMBEDDED_CARET_HELPER
     try:
-        from comtypes import _tlib_version_checker as _tvc
-        _tvc._check_version = lambda *a, **k: None
-    except Exception:
-        pass
+        current=None
+        if os.path.isfile(path):
+            with open(path,'r',encoding='utf-8-sig') as f:current=f.read()
+        if current!=data:
+            tmp=path+'.tmp'
+            with open(tmp,'w',encoding='utf-8',newline='\n') as f:f.write(data)
+            os.replace(tmp,path)
+    except Exception as e:
+        _dlog('IPC embedded helper extract failed '+repr(e))
+    return path
+def _ipc_reader(proc):
     try:
-        import uiautomation as auto
-        return auto
-    except KeyboardInterrupt:
-        raise
-    except BaseException:
-        pass
-    # 仍失败: 清 comtypes.gen 缓存重试一次(内存重新生成).
-    try:
-        import sys
-        for k in list(sys.modules):
-            if k.startswith('comtypes.gen.') and ('UIAutomation' in k or '944DE083' in k):
-                del sys.modules[k]
-        import comtypes.gen
-        for a in [a for a in dir(comtypes.gen) if 'UIAutomation' in a or '944DE083' in a]:
+        for line in proc.stdout:
             try:
-                delattr(comtypes.gen, a)
-            except Exception:
-                pass
-    except Exception:
-        pass
+                o=_json.loads(line); _dlog('IPC recv '+repr(o))
+                if o.get('type')!='result':continue
+                rid=int(o.get('id',0));_ipc_done[0]=max(_ipc_done[0],rid)
+                expected=_ipc_req_hwnd.pop(rid,None);current=int(user32.GetForegroundWindow())
+                if o.get('ok') and expected is not None and int(o.get('hwnd',0))==expected and current==expected and rid>=_ipc_id[0]-1:
+                    _uia_el[0]=(int(o['x']),int(o['y']));_uia_fg[0]=expected;_uia_t[0]=_time.monotonic()
+                elif o.get('ok'):_dlog('IPC stale reject id=%d expected=%r current=%r result=%r'%(rid,expected,current,o.get('hwnd')))
+            except Exception as e:_dlog('IPC parse error '+repr(e))
+    finally:
+        _dlog('IPC helper exited rc=%r'%(proc.poll(),));
+        if _ipc_proc[0] is proc:_ipc_proc[0]=None
+        _ipc_started[0]=False
+        _uia_el[0]=None
+
+def _start_helper():
+    if _ipc_proc[0] is not None and _ipc_proc[0].poll() is None:return True
+    now=_time.monotonic()
+    if now-_ipc_last_start[0]<1.0:return False
+    _ipc_last_start[0]=now; path=_helper_path()
+    if not os.path.isfile(path):
+        _dlog('IPC helper missing '+path);return False
     try:
-        import uiautomation as auto
-        return auto
-    except KeyboardInterrupt:
-        raise
-    except BaseException:
-        _uia_import_broken[0] = True
-        return None
-
-
-def _probe_el_caret(auto, el):
-    """对单个 UIA 元素试 TextPattern 选区 -> 精确 caret 屏幕坐标 (无则 None).
-    y 用选区顶 r.top (行顶, 与 C#/GUITI 的 rcCaret.top 对齐, 候选框贴行下沿而不是行底下很远)."""
-    try:
-        tp = el.GetPattern(auto.PatternId.TextPattern)
-        if tp:
-            sel = tp.GetSelection()
-            if sel and len(sel) > 0:
-                rects = sel[0].GetBoundingRectangles()
-                if rects:
-                    r = rects[0]
-                    ch = r.bottom - r.top
-                    if 0 <= ch <= 240 and -10000 < r.left < 100000:
-                        # 折叠光标(选区 ~0 宽)用 r.top; 非折叠选区用 r.bottom 会偏低.
-                        y = int(r.top) if ch <= 4 else int(r.bottom)
-                        return (int(r.left), y)
-    except Exception:
-        pass
-    return None
-
-
-_UIA_DISCOVER_BUDGET = 0.30   # HWND 发现总预算 (秒), 防慢应用拖垮后台线程
-_UIA_FEATURE = {}             # per-HWND: 上次命中光标的子 hwnd (发现优先走它)
-
-
-def _hwnd_render_children(top):
-    """枚举 top 的同进程子 HWND, 优先 render 宿主类 (Chromium/WebView/IE). 返回 [(hwnd,class,visible)]."""
-    out = []
-    try:
-        pid = w.DWORD()
-        user32.GetWindowThreadProcessId(w.HWND(top), ctypes.byref(pid))
-        top_pid = int(pid.value)
-
-        @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, ctypes.c_void_p)
-        def cb(ch, _):
-            try:
-                ch = int(ch)
-                cp = w.DWORD()
-                user32.GetWindowThreadProcessId(w.HWND(ch), ctypes.byref(cp))
-                if int(cp.value) == top_pid:
-                    cls = _hwnd_class(ch)
-                    lc = cls.lower()
-                    vis = bool(user32.IsWindowVisible(w.HWND(ch)))
-                    score = 0
-                    if 'renderwidgethost' in lc:
-                        score = 100
-                    elif 'webview' in lc or 'chrome' in lc or 'webview2' in lc:
-                        score = 90
-                    elif 'internet explorer_server' in lc:
-                        score = 80
-                    elif 'wndclass' in lc or vis:
-                        score = 20
-                    out.append((score, ch, cls, vis))
-            except Exception:
-                pass
-            return True
-        user32.EnumChildWindows(w.HWND(top), cb, None)
-    except Exception:
-        pass
-    out.sort(key=lambda x: (-x[0], not x[3]))
-    return out[:48]
-
-
-def _hwnd_class(hwnd):
-    try:
-        b = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(w.HWND(hwnd), b, 256)
-        return b.value or ''
-    except Exception:
-        return ''
-
-
-def _discover_hwnd_caret(auto, fg):
-    """前台 HWND 聚焦控件无光标时: 发现其 render 子 HWND 并逐个探测 TextPattern 光标."""
-    import time as _t
-    started = _t.time()
-    fav = _UIA_FEATURE.get(fg)
-    children = _hwnd_render_children(fg)
-    # 上次命中的优先, 其余按类名分
-    ordered = []
-    if fav:
-        ordered.append(fav)
-    ordered += [(c[1], c[2]) for c in children]
-    seen = set()
-    for hwnd, cls in ordered:
-        if hwnd in seen:
-            continue
-        seen.add(hwnd)
-        if _t.time() - started > _UIA_DISCOVER_BUDGET:
-            break
-        try:
-            el = auto.ElementFromHandle(hwnd)
-            if el:
-                try:
-                    p = _probe_el_caret(auto, el)
-                    if p:
-                        _UIA_FEATURE[fg] = (hwnd, cls)
-                        return p
-                finally:
-                    try:
-                        el = None
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    return None
-
-
-def _get_uia_caret():
-    """用 uiautomation 拿精确 caret 屏幕坐标(后台线程调用). 失败/异常即置 _uia_disabled, 返回 None."""
-    if _uia_disabled[0]:
-        return None
-    import time
-    try:
-        if _uia[0] is None:
-            auto = _import_uia_robust()
-            if auto is None:
-                _uia_disabled[0] = True
-                _dlog('uia: import failed -> UIA disabled')
-                return None
-            _uia[0] = auto
-        auto = _uia[0]
-        fg = user32.GetForegroundWindow()
-        # 前台变了才重查; 否则仅在节流窗口外查(减少慢调用).
-        now = time.time()
-        if fg == _uia_fg[0] and (now - _uia_t[0]) < 0.15:
-            return _uia_el[0]
-        try:
-            el = auto.GetFocusedControl()
-        except BaseException:
-            # 线程内未初始化 UIA 或单例坏: 重置重试一次.
-            import uiautomation.uiautomation as _uu
-            try:
-                _uu._AutomationClient._instance = None
-            except Exception:
-                pass
-            try:
-                el = auto.GetFocusedControl()
-            except BaseException:
-                el = None
-        _uia_t[0] = now
-        _uia_fg[0] = fg
-        # 1) 聚焦控件 TextPattern (记事本/标准控件快速路径)
-        if el:
-            p = _probe_el_caret(auto, el)
-            if p:
-                _uia_el[0] = p
-                return p
-        # 2) HWND 发现: 前台窗口的 render 子 HWND (Edge/微信/VS Code 等 Chromium/WebView 应用)
-        #    不因"聚焦控件拿不到"就锁死 UIA —— 这类应用光标在 render 子窗口里.
-        if fg:
-            p = _discover_hwnd_caret(auto, fg)
-            if p:
-                _uia_el[0] = p
-                return p
-        if not el:
-            # 完全拿不到聚焦控件: UIA 整体不可用 -> 锁死回退 Win32.
-            _uia_disabled[0] = True
-            _dlog('uia: GetFocusedControl el=False -> UIA disabled')
-    except BaseException:
-        _uia_disabled[0] = True
-        _dlog('uia: exc -> UIA disabled')
-        return None
-    return None
-
-
-def _caret_bg_loop():
-    """后台线程: 周期用 UIA 刷新精确 caret 到 _uia_el[0]; UIA 不可用则退出(主线程走 Win32)."""
-    import time
-    try:
-        _dlog('uia: bg started')
-        while not _uia_disabled[0]:
-            _get_uia_caret()
-            time.sleep(0.12)
-        _dlog('uia: bg stopped (disabled)')
-    except Exception:
-        pass
-
+        flags=getattr(_sp,'CREATE_NO_WINDOW',0)
+        p=_sp.Popen([_sys.executable,'-u',path],stdin=_sp.PIPE,stdout=_sp.PIPE,stderr=_sp.DEVNULL,text=True,encoding='utf-8',bufsize=1,creationflags=flags)
+        _ipc_proc[0]=p;_ipc_started[0]=True
+        _th.Thread(target=_ipc_reader,args=(p,),name='WgImeCaretIPC',daemon=True).start()
+        _dlog('IPC helper started pid=%d path=%s'%(p.pid,path));return True
+    except Exception as e:_dlog('IPC start failed '+repr(e));return False
 
 def ensure_caret_bg():
-    """启动 UIA 后台刷新线程(仅一次). UIA 不可用会自行停, 不影响 Win32 回退."""
-    import threading
-    if _uia_bg_started[0]:
-        return
-    _uia_bg_started[0] = True
-    try:
-        threading.Thread(target=_caret_bg_loop, daemon=True).start()
-    except Exception:
-        pass
+    _start_helper()
+def request_caret_refresh(reason='candidate'):
+    if not _start_helper():return 0
+    with _ipc_lock:
+        _ipc_id[0]+=1;rid=_ipc_id[0];p=_ipc_proc[0]
+        try:
+            hwnd=int(user32.GetForegroundWindow());_ipc_req_hwnd[rid]=hwnd
+            p.stdin.write(_json.dumps({'id':rid,'reason':reason,'hwnd':hwnd,'t':_time.time()},separators=(',',':'))+'\n');p.stdin.flush()
+            _dlog('IPC send id=%d reason=%s'%(rid,reason));return rid
+        except Exception as e:
+            _dlog('IPC send failed '+repr(e));
+            try:p.kill()
+            except:pass
+            return 0
+def get_precise_caret_cache(max_age=0.8):
+    if _uia_el[0] is not None and _uia_fg[0]==user32.GetForegroundWindow() and _time.monotonic()-_uia_t[0]<=max_age:return _uia_el[0]
+    return None
 
+def get_ipc_caret():
+    """Return only the newest helper coordinate for the current foreground window."""
+    fg=int(user32.GetForegroundWindow())
+    if _uia_el[0] is not None and _uia_fg[0]==fg:
+        return _uia_el[0]
+    return None
 
 def get_caret_pos():
+    # Recovery v2 keeps keyboard/input path simple and deterministic.
     """光标屏幕坐标(主线程, 绝不阻塞). 顺序: UIA缓存(首选,后台刷新) -> GetGUIThreadInfo ->
     聚焦输入框矩形 -> 输入感知鼠标 -> 上次有效位 -> 前台窗口底部. UIA 不可用时自动回退纯 Win32."""
     import time as _t
     _t0 = _t.time()
+    fg_now=int(user32.GetForegroundWindow())
+    if _last_fg[0]!=fg_now:
+        _last_fg[0]=fg_now;_last_caret[0]=None;_uia_el[0]=None;_guiti_hist.clear()
+        _dlog('foreground changed: cleared caret caches hwnd=%s'%fg_now)
     # UIA 缓存(后台线程刷新的精确 caret)首选; 主线程只读缓存, 绝不在此跑 UIA.
     if not _uia_disabled[0] and _uia_el[0] is not None:
         # UIA 缓存只在"前台窗口未变"时可靠(后台线程按前台刷新). 前台已变(刚切换应用)时缓存是旧窗口的
@@ -536,8 +380,7 @@ def get_caret_pos():
         _last_caret_source[0] = 'focus'
         _dlog('get_caret_pos: focus-edit(%.1fms) -> %s' % ((_t.time()-_t0)*1000, fr))
         return fr
-    # 鼠标兜底已禁用 (对齐 testing v3: "mouse fallback is intentionally disabled")——
-    # 否则输入法非激活/无候选时候选窗会跟着鼠标跑. 直接走 last / 前台窗口原点.
+    # Recovery v2: mouse fallback is intentionally disabled.
     if _last_caret[0]:
         _last_caret_source[0] = 'last'
         _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
