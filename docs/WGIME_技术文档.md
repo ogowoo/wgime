@@ -425,7 +425,41 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 7. **PS 5.1 读无 BOM 的 .ps1 按 ANSI 解码**——所有测试/工具脚本必须纯 ASCII，中文一律用码点构造；多行 PS 块的临时 .ps1 由 `RunScriptBlock` 带 BOM 写出。
 8. **PowerShell 反射三坑**：函数返回的集合会被管道拆包（单元素 List 被拆成本体，`.Count` 量出的是元素数——用 `(, $v)` 或强类型变量阻止）；`@()` 里内联 `New-Object` 会包 PSObject 导致反射绑定失败（先赋给强类型变量）；私有嵌套类字段只能走 `GetField(..., NonPublic)` 读，ETS 不暴露。
 
-## 12. 已知局限
+## 12. 纯 Python 版（wgime-py-pure）架构
+
+除 C# 版（`wgime.bat`/`WgIme.ps1`）外，仓库另提供一个**纯 Python 重实现**（目录 `wgime-py-pure\`），功能与 C# 版对齐（四模式 / 词频 / 简拼 / 模糊音 / 双拼 / 造词 / 码表导入固化 / 启动器 / 工具箱 / 插件 / 候选窗 / 托盘 / 反查编码 / 简繁 / 整句 / 联想 / 空闲隐藏）。
+
+### 12.1 运行环境
+
+- **Python 3.13+，仅用标准库 `ctypes` + `tkinter`，零 .NET 依赖**——不装 PowerShell 也能跑。
+- 第三方库 `pystray` / `uiautomation` / `comtypes` 已内嵌进单文件（见 §12.3），`cryptography` 可选。
+- 数据目录 `%LOCALAPPDATA%\wgime-py`；若命中 Microsoft Store 版 Python（其 AppContainer 会虚拟化 `%LOCALAPPDATA%`），自动切换到 `USERPROFILE\wgime-py`，并把虚拟化位置的旧数据搬过去。
+
+### 12.2 模块职责（均为 `wgime-py-pure\*.py`）
+
+| 模块 | 职责 |
+|---|---|
+| `main.py` | 程序入口与状态机；注入调度、托盘 `api` 注册表；插件权限确认 |
+| `hook.py` | ctypes 直调 `WH_KEYBOARD_LL` 全局低级钩子；钩子线程只入事件队列，主线程 `poll` 消费（避免在钩子回调里做 UI/慢操作） |
+| `win.py` | ctypes Win32 封装：文本注入、原生剪贴板读写、UIA 光标跟随（现代应用经内嵌 `uiautomation`） |
+| `bar.py` | 无边框圆角候选条（候选渲染、翻页、宽度上限 `min(工作区宽-24, 720px)`） |
+| `engine.py` | 码表加载/解析、候选检索、词频（语料先验 + 学习词频 + 近期热度）、造句 |
+| `plugins.py` | 插件加载与执行：插件 Manifest/权限模型、步骤 DSL、`[python]` 块子进程 + JSON IPC |
+| `tools.py` | 工具箱（tools.txt DSL） |
+| `tray.py` | 托盘菜单（pystray），中英双语按 `GetUserDefaultUILanguage` 判定 |
+| `ui.py` | 窗体设计语言复刻库（色板/字体/无边框圆角窗体/扁平按钮等，见 `docs/WGIME_窗体设计语言.md`） |
+| `wspy.py` | 窗口/光标信息探测调试工具 |
+
+插件文件在 `wgime-py-pure\plugins\*.py`（模块级 `CODE/NAME/DESC/VERSION/AUTHOR/PERM`）。
+
+### 12.3 单文件形态与启动链
+
+- `wgime-py-pure\build-wgime-pure.py` 把所有源码模块 + 插件 + 第三方包源码收集打包，生成单文件 `dist\wgime-py.py`；`package\` 为分发目录。
+- 收集第三方包时用 `m.ispkg` 区分——包写 `__init__.py`、模块写 `.py`（否则同名模块+包会崩）。
+- **启动链**：单文件开头是一段 preamble——先把内嵌的 `thirdparty.zip` 解到 `%LOCALAPPDATA%\wgime-py\site`（Store Python 虚拟化场景同 §12.1 处理），`zipimport` 挂上标准 import 机制，然后 `exec` 内嵌的 `main` 模块进入主程序。
+- **词频机制比 C# 版更优（有意保留，勿对齐）**：候选排序 = 语料先验 `word_freq` + 学习词频 `fb×learnk` + 近期热度 `freq_recent×recentk`（滑动窗口 RE_CAP=500，上屏即计、退格删除回滚）。
+
+## 13. 已知局限（C# 版）
 
 - **注入上屏**：管理员权限窗口/部分 UWP 应用可能拒绝注入；游戏全屏输入不支持。Qt 应用（微信 4.x）的 VK_PACKET 陈旧字符问题已由 keyfix 全局修复（§3.4）；顽固程序可按进程覆盖（pastemode.txt）。
 - 单实例（Mutex `WgImeSingleInstance`）。

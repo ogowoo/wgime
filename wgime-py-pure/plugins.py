@@ -23,7 +23,11 @@ class Plugin(object):
         self.code = None
         self.name = None
         self.desc = ''
-        self.kind = 'steps'      # 'steps' | 'csharp'
+        self.version = ''
+        self.author = ''
+        self.requires = ''
+        self.perm = 'low'     # 权限等级: low/network/run/registry/destructive
+        self.kind = 'steps'      # 'steps' | 'csharp' | 'python'
         self.body = ''
         self.error = None
 
@@ -50,7 +54,7 @@ def parse_plugin(path):
         t = line.strip()
         if not t or t[0] in ';#':
             continue
-        mm = re.match(r'^(code|name|desc)\s*[=:]\s*(.*)$', t, re.I)
+        mm = re.match(r'^(code|name|desc|version|author|requires|perm)\s*[=:]\s*(.*)$', t, re.I)
         if mm:
             k = mm.group(1).lower()
             v = mm.group(2).strip()
@@ -60,6 +64,14 @@ def parse_plugin(path):
                 p.name = v
             elif k == 'desc':
                 p.desc = v
+            elif k == 'version':
+                p.version = v
+            elif k == 'author':
+                p.author = v
+            elif k == 'requires':
+                p.requires = v
+            elif k == 'perm':
+                p.perm = v.lower()
             continue
         body_start = i
         break
@@ -94,6 +106,30 @@ def save_disabled(data_dir, disabled):
             f.write('\n'.join(sorted(disabled)))
     except OSError:
         pass
+
+
+# ---------- 插件 manifest / 权限 ----------
+HIGH_PERM = ('network', 'run', 'registry', 'destructive')
+PERM_LABEL = {'network': '联网', 'run': '执行命令', 'registry': '修改注册表', 'destructive': '删除文件/清理'}
+DESTRUCTIVE_VERBS = ('file-del', 'reg-set', 'reg-del', 'kill')   # 数据破坏/系统级操作: 执行前强确认
+
+
+def plugin_meta(p):
+    """统一读取插件 manifest, 兼容 .py 模块(属性) 与 .txt Plugin 对象(字段)."""
+    if hasattr(p, 'CODE'):                       # .py 模块插件
+        code = getattr(p, 'CODE', '')
+        return {'code': code, 'name': getattr(p, 'NAME', code) or code,
+                'desc': getattr(p, 'DESC', '') or '', 'version': str(getattr(p, 'VERSION', '') or ''),
+                'author': str(getattr(p, 'AUTHOR', '') or ''), 'requires': str(getattr(p, 'REQUIRES', '') or ''),
+                'perm': str(getattr(p, 'PERM', 'low') or 'low')}
+    # .txt Plugin 对象
+    return {'code': p.code or '', 'name': p.name or '', 'desc': p.desc or '',
+            'version': str(getattr(p, 'version', '') or ''), 'author': str(getattr(p, 'author', '') or ''),
+            'requires': str(getattr(p, 'requires', '') or ''), 'perm': str(getattr(p, 'perm', 'low') or 'low')}
+
+
+def is_high_perm(meta):
+    return meta.get('perm', 'low') in HIGH_PERM
 
 
 # ---------- tools.txt (工具箱) ----------
@@ -173,7 +209,7 @@ def run_steps(body, log, msgbox, confirm):
         if bm:
             tag = bm.group(1).lower()
             block = []
-            end_tag = {'shell': '[/shell]', 'cmd': '[/shell]', 'powershell': '[/powershell]', 'ps': '[/powershell]',
+            end_tag = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/powershell]',
                        'shellx': '[/shellx]', 'psx': '[/psx]'}[tag]
             while i < len(lines) and lines[i].strip() != end_tag:
                 block.append(lines[i])
@@ -188,6 +224,11 @@ def run_steps(body, log, msgbox, confirm):
         sp = t.find(' ')
         verb = (t[:sp] if sp > 0 else t).lower()
         arg = t[sp + 1:].strip() if sp > 0 else ''
+        # ② 破坏性动词: 执行前确认 (用户拒绝则跳过该步并计入 fail)
+        if verb in DESTRUCTIVE_VERBS and confirm and not confirm('插件要执行[%s] %s\n确定继续?' % (verb, arg[:50])):
+            fails += 1
+            log('确认被拒: %s' % verb)
+            continue
         try:
             fails += _run_verb(verb, arg, log, msgbox, confirm)
         except Exception as e:
@@ -205,10 +246,10 @@ def _run_verb(verb, arg, log, msgbox, confirm):
     elif verb == 'run':
         parts = tokenize(arg)
         if parts:
-            r = subprocess.run(parts, capture_output=True, timeout=3600)
+            r = subprocess.run(parts, capture_output=True, timeout=120)
             log('run %s -> %s' % (parts[0], r.returncode))
     elif verb == 'shell':
-        r = subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True, capture_output=True, timeout=3600)
+        r = subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True, capture_output=True, timeout=120)
         log('shell -> %s' % r.returncode)
     elif verb == 'shellx':
         subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True,
@@ -216,15 +257,19 @@ def _run_verb(verb, arg, log, msgbox, confirm):
     elif verb == 'open':
         os.startfile(os.path.expandvars(arg))
     elif verb == 'kill':
-        subprocess.run('taskkill /f /im "%s.exe"' % arg, shell=True, capture_output=True)
+        img = arg.replace('"', '').replace('&', '').replace('|', '').replace('<', '').replace('>', '').replace('^', '')
+        if not re.match(r'^[\w. -]+$', img):
+            raise RuntimeError('bad image name: %s' % arg)
+        subprocess.run(['taskkill', '/f', '/im', img + '.exe'], capture_output=True, timeout=60)
     elif verb == 'wait':
         time.sleep(int(arg) / 1000.0)
     elif verb == 'mkdir':
         os.makedirs(os.path.expandvars(arg), exist_ok=True)
     elif verb == 'file-del':
         target = os.path.expandvars(arg)
-        if re.match(r'^[A-Za-z]:[\\/]?$', target):
-            raise RuntimeError('refuse drive root')
+        base = re.split(r'[*?\[]', target)[0].rstrip('\\/ ')   # 去掉 glob 元字符后再判根
+        if re.match(r'^[A-Za-z]:$', base) or re.match(r'^\\\\[^\\]+\\[^\\]+$', base):
+            raise RuntimeError('refuse drive/UNC root')
         for p in glob.glob(target):
             try:
                 if os.path.isdir(p):
@@ -237,29 +282,27 @@ def _run_verb(verb, arg, log, msgbox, confirm):
         parts = tokenize(arg)
         if len(parts) >= 4:
             hive, sub = parts[0].split('\\', 1)
-            key = winreg.CreateKey(REG_HIVES[hive.upper()], sub)
             name = None if parts[1] == '-' else parts[1]
             typ = parts[2].lower()
             data = parts[3]
-            if typ == 'dword':
-                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
-            elif typ == 'qword':
-                winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
-            elif typ == 'expand':
-                winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
-            elif typ == 'multi':
-                winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
-            else:
-                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
-            winreg.CloseKey(key)
+            with winreg.CreateKey(REG_HIVES[hive.upper()], sub) as key:   # with 自动 CloseKey, 防句柄泄漏
+                if typ == 'dword':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
+                elif typ == 'qword':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
+                elif typ == 'expand':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
+                elif typ == 'multi':
+                    winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
+                else:
+                    winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
     elif verb == 'reg-del':
         parts = tokenize(arg)
         if parts:
             hive, sub = parts[0].split('\\', 1)
             if len(parts) > 1:
-                key = winreg.OpenKey(REG_HIVES[hive.upper()], sub, 0, winreg.KEY_SET_VALUE)
-                winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
-                winreg.CloseKey(key)
+                with winreg.OpenKey(REG_HIVES[hive.upper()], sub, 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
             else:
                 winreg.DeleteKey(REG_HIVES[hive.upper()], sub)
     else:
@@ -285,7 +328,7 @@ def _run_block(tag, content, log):
                 else 'cmd /c start "wgpy" /wait cmd /k "%s %s & echo. & echo [按任意键关闭] & pause>nul"' % (cmdline, path)
             subprocess.run(cmd, shell=True, timeout=86400)
         else:
-            r = subprocess.run('%s "%s"' % (cmdline, path), shell=True, capture_output=True, timeout=3600)
+            r = subprocess.run('%s "%s"' % (cmdline, path), shell=True, capture_output=True, timeout=300)
             log('block -> %s' % r.returncode)
     finally:
         try:

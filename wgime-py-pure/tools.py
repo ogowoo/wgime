@@ -16,11 +16,37 @@ def _bg(fn):
 
 
 def _msgbox(title, text):
-    messagebox.showinfo(title, text)
+    """线程安全弹窗: 后台线程调用经 tk default root marshal 回主线程."""
+    try:
+        r = getattr(tk, '_default_root', None)
+        if r:
+            r.after(0, lambda: messagebox.showinfo(title, text))
+        else:
+            messagebox.showinfo(title, text)
+    except Exception:
+        pass
 
 
 def _confirm(text):
-    return messagebox.askyesno('确认', text)
+    """线程安全确认: 主线程 askyesno, 后台线程阻塞等待结果."""
+    ev = threading.Event()
+    res = [False]
+    try:
+        r = getattr(tk, '_default_root', None)
+        if r:
+            def ask():
+                try:
+                    res[0] = messagebox.askyesno('确认', text)
+                except Exception:
+                    pass
+                ev.set()
+            r.after(0, ask)
+            ev.wait()
+        else:
+            return messagebox.askyesno('确认', text)
+    except Exception:
+        return False
+    return res[0]
 
 
 # ---------- 工具箱 (tools.txt tab/按钮 -> 步骤 DSL; 自绘标签页) ----------
@@ -59,21 +85,25 @@ def show_toolbox(tools, dict_dir):
 
 
 def _run_tool_steps(steps):
-    try:
-        fails = plugmod.run_steps(steps, lambda m: print('[tool]', m), _msgbox, _confirm)
-        if fails:
-            _msgbox('工具箱', '部分步骤失败 (%d)' % fails)
-    except Exception as ex:
-        _msgbox('工具箱', '失败: %s' % ex)
+    """后台线程执行工具步骤, msgbox/confirm 经 marshal 回主线程, 不阻塞工具箱/输入法."""
+    def work():
+        try:
+            fails = plugmod.run_steps(steps, lambda m: print('[tool]', m), _msgbox, _confirm)
+            if fails:
+                _msgbox('工具箱', '部分步骤失败 (%d)' % fails)
+        except Exception as ex:
+            _msgbox('工具箱', '失败: %s' % ex)
+    threading.Thread(target=work, daemon=True).start()
 
 
 # ---------- 剪贴板历史 ----------
 _CLIPT = []
+_clip_started = [False]
 
 
 def _clip_poll():
     last = None
-    while True:
+    while True:                                        # daemon 线程, 进程退出自动停
         time.sleep(1.0)
         try:
             t = w32.clipboard_text()
@@ -87,7 +117,9 @@ def _clip_poll():
 
 
 def show_clipboard():
-    _bg(_clip_poll)
+    if not _clip_started[0]:                            # 守卫: 轮询线程只启动一次(防多开叠加)
+        _clip_started[0] = True
+        _bg(_clip_poll)
     win, content = ui.make_window('WgIme 剪贴板历史', 420, 400)
     lst = tk.Listbox(content, font=ui.font(9.5), bg=ui.CARD, fg=ui.TEXT, bd=0,
                      highlightthickness=1, highlightbackground=ui.BORDER, selectbackground=ui.ACCENT)
@@ -151,8 +183,13 @@ def show_color():
     def tick():
         x, y = w32.cursor_pos()
         if win.winfo_x() <= x <= win.winfo_x() + win.winfo_width() and win.winfo_y() <= y <= win.winfo_y() + win.winfo_height():
+            win.after(60, tick)     # 光标在窗口内: 跳过采样但保持调度链, 否则移出后不再取色
             return
-        r, g, b = w32.get_pixel(x, y)
+        px = w32.get_pixel(x, y)
+        if px is None:
+            win.after(60, tick)     # 取色失败(越屏/无DC): 跳过本次, 保持调度
+            return
+        r, g, b = px
         state['hex'] = '#%02X%02X%02X' % (r, g, b)
         prev.configure(bg=state['hex'])
         lbl.config(text='%s  (%d,%d)' % (state['hex'], x, y))
@@ -335,11 +372,17 @@ def show_plugin_mgr(plugins, data_dir, reload_fn):
         disabled = set(l.strip() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
     except OSError:
         disabled = set()
+    pmap = {'network': '联网', 'run': '执行命令', 'registry': '注册表', 'destructive': '破坏'}
     for m in plugins:
         code = getattr(m, 'CODE', '?')
         name = getattr(m, 'NAME', code)
+        ver = str(getattr(m, 'VERSION', '') or '')
+        aut = str(getattr(m, 'AUTHOR', '') or '')
+        perm = str(getattr(m, 'PERM', 'low') or 'low')
+        info = (' [v%s%s]' % (ver, ('@' + aut) if aut else '')) if ver else ((' [' + aut + ']') if aut else '')
+        risk = ('  ⚠%s' % pmap.get(perm, perm)) if perm in pmap else ''
         v = tk.BooleanVar(value=(code not in disabled))
-        cb = tk.Checkbutton(frame, text='%s (%s)  %s' % (name, code, getattr(m, 'DESC', '')), variable=v,
+        cb = tk.Checkbutton(frame, text='%s (%s)%s%s  %s' % (name, code, info, risk, getattr(m, 'DESC', '')), variable=v,
                             anchor='w', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5), activebackground=ui.BG)
         cb.pack(fill='x')
         vars_.append((code, v))
@@ -353,3 +396,89 @@ def show_plugin_mgr(plugins, data_dir, reload_fn):
         reload_fn()
         _msgbox('插件管理', '已应用并重载')
     ui.flat_button(content, '应用', apply, primary=True, x=12, y=282, w=90, h=30)
+
+
+# ---------- 导入码表 (转换常见码表 -> import_py/wb/ec.txt) ----------
+def _import_dialog(target, detected):
+    """目标(五笔/拼音/英汉) + 格式(自动/词在前/码在前)确认; 返回 (target, fmt) 或 None."""
+    import engine as engmod
+    win = tk.Toplevel()
+    win.title('导入码表')
+    win.attributes('-topmost', True)
+    win.resizable(False, False)
+    win.configure(bg=ui.BG)
+    result = {'target': target, 'fmt': 0, 'cancel': False}
+
+    tk.Label(win, text='目标词库', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5)).grid(
+        row=0, column=0, columnspan=3, sticky='w', padx=14, pady=(12, 2))
+    tvar = tk.IntVar(value=target)
+    for i, n in enumerate(('五笔', '拼音', '英汉')):
+        tk.Radiobutton(win, text=n, variable=tvar, value=i, bg=ui.BG, fg=ui.TEXT,
+                       selectcolor=ui.BG, activebackground=ui.BG, font=ui.font(9.5)).grid(
+            row=1, column=i, padx=10, pady=4)
+
+    tk.Label(win, text='格式', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5)).grid(
+        row=2, column=0, columnspan=3, sticky='w', padx=14, pady=(10, 2))
+    fvar = tk.IntVar(value=0)
+    for i, (n, v) in enumerate((('自动', 0), ('词在前', 1), ('码在前', 2))):
+        tk.Radiobutton(win, text=n, variable=fvar, value=v, bg=ui.BG, fg=ui.TEXT,
+                       selectcolor=ui.BG, activebackground=ui.BG, font=ui.font(9.5)).grid(
+            row=3, column=i, padx=10, pady=4)
+
+    def ok():
+        result['target'] = tvar.get()
+        result['fmt'] = fvar.get()
+        win.destroy()
+
+    def cancel():
+        result['cancel'] = True
+        win.destroy()
+
+    win.protocol('WM_DELETE_WINDOW', cancel)   # 点标题栏 X = 取消(否则被当"确定"导致误导入)
+
+    btns = tk.Frame(win, bg=ui.BG)
+    btns.grid(row=4, column=0, columnspan=3, pady=14)
+    tk.Button(btns, text='确定', command=ok, width=8).pack(side='left', padx=6)
+    tk.Button(btns, text='取消', command=cancel, width=8).pack(side='left', padx=6)
+    win.wait_window()
+    if result['cancel']:
+        return None
+    return result['target'], result['fmt']
+
+
+def show_import(engine, dict_dir):
+    """导入码表: 选文件 -> 检测 -> 确认 -> 转换写 import_*.txt -> 热重载."""
+    from tkinter import filedialog
+    import engine as engmod
+
+    path = filedialog.askopenfilename(
+        title='选择要导入的码表',
+        filetypes=[('码表文件', '*.txt *.dict *.yaml *.yml'), ('所有文件', '*.*')])
+    if not path:
+        return
+    text = engmod.read_import_text(path)
+    if text is None:
+        _msgbox('导入失败', '文件超过 64MB 或无法读取')
+        return
+    detected = engmod.detect_format(text.split('\n'))
+    target = engmod.suggest_target(os.path.basename(path))
+    r = _import_dialog(target, detected)
+    if r is None:
+        return
+    target, fmt = r
+    if fmt == 0:
+        fmt = detected if detected else 2                      # 自动 -> 检测结果(默认码在前)
+    import_path = os.path.join(dict_dir, ('import_wb.txt' if target == 0 else ('import_py.txt' if target == 1 else 'import_ec.txt')))
+    try:
+        acc = engmod.load_import_base(import_path)
+        base_words = sum(len(v) for v in acc.values())
+        skipped, trunc_codes, trunc_total = engmod.convert_file(text, fmt, acc)
+        new_words = sum(len(v) for v in acc.values()) - base_words
+        if new_words <= 0:
+            _msgbox('导入', '没有新增词条')
+            return
+        engmod.write_import_file(import_path, acc)
+        engine.reload()
+        _msgbox('导入完成', '新增 %d 词条 (跳过 %d 行, 截断 %d 码)' % (new_words, skipped, trunc_codes))
+    except Exception as ex:
+        _msgbox('导入失败', str(ex))

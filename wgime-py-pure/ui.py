@@ -4,6 +4,7 @@
 """
 import ctypes
 import tkinter as tk
+import tkinter.font as tkfont
 
 # 色板 (直接抄规范)
 BG = '#E8EDF5'
@@ -27,11 +28,14 @@ FONT_NAMES = ['Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei UI']
 def font(size, bold=False, mono=False):
     if mono:
         return ('Consolas', int(size))
+    # 检测系统实际可用字体(避免 tkinter 静默替换为空 / 修复原 try/except 永不触发的死代码)
+    try:
+        fams = set(tkfont.families(tk._default_root)) if getattr(tk, '_default_root', None) else set()
+    except Exception:
+        fams = set()
     for n in FONT_NAMES:
-        try:
+        if not fams or n in fams:
             return (n, int(round(size)), 'bold' if bold else 'normal')
-        except Exception:
-            continue
     return ('Microsoft YaHei UI', int(round(size)), 'bold' if bold else 'normal')
 
 
@@ -39,8 +43,16 @@ def _round_region(win, w, h):
     """GDI 原生 Rgn 圆角 (C# 同款, 角落无锯齿)."""
     try:
         hwnd = win.winfo_id()
-        rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, 20, 20)
-        ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
+        gdi32 = ctypes.windll.gdi32
+        user32 = ctypes.windll.user32
+        gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+        gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+        user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        user32.SetWindowRgn.restype = ctypes.c_int
+        rgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, 20, 20)
+        if not user32.SetWindowRgn(hwnd, rgn, True):
+            gdi32.DeleteObject(rgn)   # 失败: 释放句柄, 防泄漏
     except Exception:
         pass
 
@@ -62,13 +74,16 @@ def make_window(title, w, h, on_close=None):
     # 标题栏
     bar = tk.Frame(win, bg=HEADER, height=38)
     bar.place(x=0, y=0, width=w, height=38)
-    tk.Label(bar, text=title, bg=HEADER, fg=TEXT, font=font(10, bold=True)).place(x=12, y=9)
+    ttl = tk.Label(bar, text=title, bg=HEADER, fg=TEXT, font=font(10, bold=True))
+    ttl.place(x=12, y=9)
     tk.Frame(bar, bg=BORDER, height=1).place(x=0, y=37, width=w, height=1)
 
     def close(_=None):
-        if on_close:
-            on_close()
-        win.destroy()
+        try:
+            if on_close:
+                on_close()
+        finally:
+            win.destroy()   # 保证窗口一定销毁(即使 on_close 抛异常)
 
     xbtn = tk.Label(bar, text='✕', bg=HEADER, fg=TEXT, font=font(11), cursor='hand2')
     xbtn.place(x=w - 34, y=7, width=26, height=24)
@@ -86,6 +101,8 @@ def make_window(title, w, h, on_close=None):
         win.geometry('+%d+%d' % (e.x_root - drag['x'], e.y_root - drag['y']))
     bar.bind('<ButtonPress-1>', start)
     bar.bind('<B1-Motion>', move)
+    ttl.bind('<ButtonPress-1>', start)      # 标题文字也能拖动(tkinter 事件不向父冒泡)
+    ttl.bind('<B1-Motion>', move)
 
     # 内容区
     content = tk.Frame(win, bg=BG)

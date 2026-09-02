@@ -18,7 +18,17 @@ plugins/lt.txt
 
 /tray_cs.cs
 
+# build-package.ps1 output: ready-to-copy package folder (regenerated from dist + repo dicts)
+/wgime-py-pure/package/
+
+# python bytecode caches
+__pycache__/
+*.pyc
+
 tests/interop/*.log
 
 tests/interop/*.png
 tests/interop/*.bin
+
+# rust TSF spike build artifacts (cargo checkout lives elsewhere)
+/wgime-tsf/target/

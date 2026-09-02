@@ -8,6 +8,9 @@ import ui
 CODE = 'js'
 NAME = '计算器'
 DESC = '安全表达式计算器'
+VERSION = '1.0'
+AUTHOR = 'ogowoo'
+PERM = 'low'
 
 SAFE = re.compile(r'^[\d+\-*/().% ]+$')
 

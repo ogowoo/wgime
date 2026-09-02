@@ -2,6 +2,16 @@
 
 WgIme 是一个**免安装的单文件悬浮输入法**：支持拼音、五笔、混合、英汉词典四种模式，带词频学习、简拼、模糊音、造词，并可导入常见码表扩充词库。内嵌码表已内置**全量单字**（拼音 26,719 字 / 五笔 17,366 字，覆盖 BMP 全部有读音汉字 + 〇 + 扩展A区）——即使目录下的 txt 词库文件全部删除，单文件也能打出几乎所有汉字；txt 文件提供的是词语与排序优化。
 
+## 纯 Python 版（wgime-py-pure）
+
+除 C# 版（`wgime.bat` / `WgIme.ps1`）外，仓库还有一个**纯 Python 版**（目录 `wgime-py-pure\`），功能与 C# 版基本对齐（四模式 / 词频 / 简拼 / 模糊音 / 双拼 / 造词 / 码表导入固化 / 启动器 / 工具箱 / 插件 / 候选窗 / 托盘 / 反查编码 / 简繁 / 整句 / 联想 / 空闲隐藏）。
+
+- **运行环境**：Python 3.13（3.12+ 皆可），**零 .NET、零第三方必需依赖**——pystray / uiautomation / comtypes 已 zip 内嵌进单文件；`cryptography` 为可选（chat 插件加密用）。
+- **用法**：`python wgime-py-pure\dist\wgime-py.py`（单文件成品）；`package\wgime-py.py` 为分发目录形态。
+- **数据目录**：`%LOCALAPPDATA%\wgime-py\`（词频 / 联想 / `dict-cache.pkl` 词典缓存 / `site` 内嵌库解压区）。**注意 Microsoft Store 版 Python**（AppContainer 沙箱）会虚拟化 `%LOCALAPPDATA%`，程序检测到后自动把数据目录切到 `%USERPROFILE%\wgime-py`（并把旧数据搬过去），保证词库、配置真实可见可管。
+- **快捷键与 C# 版一致**：Shift 轻点开关 / `Ctrl+\`` 切模式 / `Ctrl+Shift+F` 繁简 / `Ctrl+Alt+C` 造词（见 §2）。
+- **与 C# 版的差异**：① **拼音候选排序更优**——C# 版只按学习词频排，Python 版用"语料先验 + 学习词频 + 近期热度"三因子排序（常见词靠前、主动选过的词上顶、最近常打的词靠前），词频机制已整体升级（`learnk` / `recentk` 可在 config.txt 调）；② 部分 UI 为 tkinter 自绘的折中实现（无边框圆角、设计语言一致，细节观感与 C# WinForms 版略有出入）。
+
 ## 1. 快速开始
 
 1. 双击运行 `wgime.bat`（无窗口启动，任务栏托盘出现圆角方块"中"字图标）。

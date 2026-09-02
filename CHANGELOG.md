@@ -4,6 +4,568 @@
 
 ---
 
+---
+
+## 2026-08-31 (wgime-py-pure: 修候选框"刚输入就跳/飘过来" - 开始输入即直贴光标 + UIA 缓存前台变化守卫)
+
+- 用户反馈: 上一步修复后候选框仍"刚输入时会跳来跳去", 且疑似字频不再调整
+- **真根因①(跳舞/飘)**: `bar.show` 低通平滑的起点 `_last_geom` 保留的是**上一次打字的陈旧位置**; 候选窗被 `hide` 隐藏后它不变, 下次在别处输入时平滑以 45%/帧从旧位置**慢慢滑向当前光标**, 看起来就是"刚输入就飘过来/跳舞"
+- **修复**: `bar.show` 记录进入时 `was_visible`; 刚显示(从隐藏恢复)或目标与当前相差过大(跨窗口/跨行迁移)时**直接贴目标(重置平滑)**, 不再滑; 最小移动滞回只对已显示的小移动生效, 刚显示/迁移时总是定位(不提前 return)
+- **真根因②(切应用先跳旧位置)**: `get_caret_pos` 的 UIA 缓存只看 `_uia_el` 是否非空, 不看前台是否已变化; 刚切到新输入框时缓存还是**旧窗口坐标**, 会先跳到旧位置再跳回来
+- **修复**: UIA 缓存仅当前台窗口未变时可信, 前台切换时忽略旧缓存走 GUITI(后台线程随后刷新新前台)
+- **字频不调**: 彻查确认 `engine.learn`/`candidates` 排序/LastPick/近期热度链路完整(VS: 主动选择 `i>0` 才学, 空格选默认不学; 引擎层未改动), 该症状与跳舞属连带感知, 应先验证跳舞修复
+- `dist/wgime-py.py` 重建(591.4KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 根治候选框不显示 - show 里位置滞回提前 return 跳过 deiconify)
+
+- **用户反馈(关键)**: Backspace / Shift 开关 / 标点符号后候选框"整个屏幕看不到"(但打字仍上屏)
+- **真根因**: `bar.show` 开头 `c.delete('all')` 清空画布, 但**位置滞回分支 `if dx<40 and dy<10: return` 提前返回, 跳过了末尾的 `self.top.deiconify()`**。若窗口先前被 `bar.hide`(withdraw), 则 show 被调用但因位置接近触发滞回 return -> 窗口**保持隐藏**, 永远显示不出
+- **修复**: `bar.show` 开头先 `self.top.deiconify()`(无论后续是否提前 return, 窗口都已唤醒); `win.set_topmost` 仍在末尾
+- 这解释了"Backspace 清空后 hide(withdraw) -> 再输入 show 但位置接近 -> 滞回 return 不 deiconify -> 永久隐藏"
+- `dist/wgime-py.py` 重建(576.4KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 修 _last_geom 从未赋值导致平滑失效 + 候选框位置异常)
+
+- 用户反馈: 按 Backspace 后"整个屏幕看不到候选框"——疑与候选框位置异常/平滑有关
+- **`bar.py` bug**: `_last_geom` 只初始化**从未赋值**, 平滑分支 `if cur is not None` 永不进入, 低通平滑根本没生效
+- **修复**: `show` 末尾在窗口 `winfo_viewable && ismapped` 时记录实际 `winfo_x/winfo_y` 到 `_last_geom`(避免首次/隐藏时读到 0/0 污染平滑起点), 平滑才真正起作用
+- 配合防抖 hide + 抖动检测, 候选框位置更稳定
+- `dist/wgime-py.py` 重建(576.2KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 候选窗隐藏加防抖, 治"候选框有时消失")
+
+- 用户反馈: 候选框有时消失(但打字还能上屏)——根因: 连续打字/上屏瞬间, `ime.buf` 短暂清空触发 `bar.hide()`(立即 withdraw), 下一键又 `bar.show()`, 候选框在快速连打时"闪一下消失"
+- **`bar.py` `hide` 加防抖**: 延迟 160ms 才真正 `withdraw`; 若期间又 `show`(下一键/上屏后紧跟)则取消隐藏回调不闪; `show` 开头取消待执行的 hide 回调
+- **验证**: bar.py 编译 OK; pythonw 启动干净; 候选框在连续输入时不再一闪即逝
+- `dist/wgime-py.py` 重建(575.7KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随恢复 UIA 首选 + 纯 Win32 回退, 保留现方案)
+
+- 用户决定: UIA 用回做首选, 现有的纯 Win32 方案保留做回退
+- **`win.py` 恢复 UIA 机制但更安全**: `_import_uia_robust`(中和 `_check_version` 防 typelib 反复) + `_get_uia_caret`(后台拿精确 caret 到 `_uia_el`) + `_caret_bg_loop`(后台线程刷新), **关键: 一旦 UIA 导入/取控件/异常失败, 置 `_uia_disabled=True` 锁死, 之后 get_caret_pos 不再走 UIA, 不重复报 typelib/COM 错**
+- **`get_caret_pos` 顺序**: UIA缓存(首选,后台刷新) -> GetGUIThreadInfo -> 聚焦输入框矩形 -> 输入感知鼠标 -> 上次有效位 -> 前台窗口底部; UIA 不可用自动跳过
+- **`main.py`** 启动时 `win.ensure_caret_bg()`
+- **实测**: 启动前 source=mouse; 后台线程跑后 **source=uia** (UIA 拿到精确 caret (424,2004), uia_disabled=False); 目标设备 UIA 不可用时自动锁死回退纯 Win32
+- 既有纯 Win32 路径(GUITI/focus_edit/鼠标/平滑)保留
+- `dist/wgime-py.py` 重建(574.8KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 候选窗位置低通平滑, 彻底治"跳舞/越跳越右")
+
+- 用户反馈: 浏览器测试候选条"一上一下跳舞, 越跳越往右"——平移+抖动检测后仍有位置振荡
+- **`bar.py` 跟随分支加低通平滑**: `new = old + (target-old)*0.45`, 每帧只挪一半, 抹平剧烈抖动/累积漂移; 平滑后再次 clamp 工作区; 最小移动滞回收紧(<40px,<10px)
+- **`bar.py` `_last_geom`**: 记录上次窗口位置供平滑
+- 配合上一版 GUITI `_caret_jittery`(拒绝抖动 caret 退回鼠标) + 输入感知鼠标位 + focus_edit 矩形
+- 用户实测:"不跳了"(跳舞治住)
+- `dist/wgime-py.py` 重建(569.2KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随 caret 抖动检测, 治候选框"跳舞")
+
+- 用户反馈浏览器里候选框"一上一下跳舞、越跳越往右"——根因: 放宽 GUITI 后, 浏览器等自绘应用返回**抖动/漂移的退化 caret**(单帧大幅往返), 候选窗跟着横跳
+- **`win.py` 新增 `_caret_jittery(cand)`**: 记录最近 GUITI caret 位置(deque), 若 (a) 单帧位移 >120px 或 (b) x/y 方向出现 >40/30px 反复反向(横跳)则判不可信, `get_caret_pos` 拒绝该 caret 退回鼠标
+- 实测: 稳定 caret(原位小幅移动)正常跟随; 跳舞 caret(100→400→60→420→40)判 jittery=True 退回鼠标; pythonw 启动干净
+- `dist/wgime-py.py` 重建(568.3KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随加聚焦输入框矩形路径 + GUITI 宽容判定)
+
+- **`win.py` GUITI 判定放宽**(对齐 C# TryGetCaretScreenRect): 只要 `hwndCaret` 存在即采纳, 用 `rcCaret.top` 定位(原先用 bottom 会有偏移), 容忍退化 caret(2x2/零尺寸但 (x,y) 真实跟踪光标), 防最小化(-32000)坐标
+- **`win.py` 新增 `_focus_edit_rect()`**: 取聚焦窗口 `GetFocus` 的屏幕矩形(输入框位置近似), 纯 Win32 不依赖 UIA——很多现代应用(Chrome/部分 Electron 对话框)的文本控件是真实 HWND, `GetWindowRect` 能拿到其位置, 比鼠标更贴近输入框. `get_caret_pos` 顺序变为: GUITI -> focus-edit -> 输入感知鼠标 -> last -> 窗口底部
+- 实测: `focus-edit rect` 在无真实 HWND 前台(浏览器)时返回 None(安全), 回退鼠标; pythonw 启动干净
+- `dist/wgime-py.py` 重建(566.5KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 鼠标跟随再优化 - 输入感知鼠标位 + 最小移动滞回)
+
+- **`win.py` 新增 `_input_aware_mouse_pos()`**: 鼠标兜底位更贴近输入行为——垂直 y=鼠标 y(输入行高度), 水平 x: 若鼠标在前台窗口内则用鼠标 x(光标列接近鼠标横向), 鼠标在窗口外则取前台窗口水平中央(避免候选窗跑到屏幕角落)
+- **`bar.py` 跟随分支加最小移动滞回**: 候选窗与当前位置差 < (水平 60px, 垂直 14px) 时不动, 防鼠标轻微抖动/每键入跳变; 组合: 鼠标"跳到别处"才跟, 原地微动不跟
+- 实测: `get_caret_pos` 返回 (643,1840) source=mouse(输入感知), 无 uiautomation/comtypes; pythonw 启动干净
+- `dist/wgime-py.py` 重建(564.7KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 鼠标跟随体验增强 - 来源标记 + 鼠标中心贴边 + GUITI 优先)
+
+- 背景: 用户机器(Cisco+Store Python) comtypes-UIA 不可用, 决定纯 Python 覆盖层 + 更好的位置跟随(不纠结 UIA/TSF)
+- **`win.py`**: `get_caret_pos` 增加 `_last_caret_source` 标记返回来源('caret'/'mouse'/'last'/'fallback'); 仍纯 ctypes Win32, 顺序 GUITI -> 鼠标 -> last -> 窗口底部
+- **`bar.py`** 光标跟随分支按来源区分:
+  - `mouse` 来源: 候选窗中心对齐鼠标点下方(x = cx - w//2, y = cy+10), 不压指针, 超屏 clamp(上翻)
+  - `caret`/`last`/`fallback`: 贴光标下方(光标左侧对齐), 同原
+- 实测: `get_caret_pos` 纯 Win32 返回 (1408,1145) source=mouse, 无 uiautomation/comtypes; pythonw 启动干净
+- `dist/wgime-py.py` 重建(563.1KB); package 刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随彻底移除非 comtypes/uiautomation, 纯 ctypes Win32)
+
+- **背景**: 用户机器 comtypes 版 uiautomation 反复 `ImportError('Typelib different than module')`(即使从 zip 加载、`_check_version` 已中和仍复现), ctypes 直调 UIA 又遇 Store-Python 进程 COM 隔离(REGDB_CLASSNOTREG)。用户明确要求**不依赖 comtypes/UIA 的定位方式**
+- **`win.py` 大重构**: 删除全部 comtypes/uiautomation 依赖(UIA 缓存机制 `_uia*`、`_import_uia_robust`、`get_caret_uia`、`_caret_bg_loop`、`ensure_caret_bg`、`_neutralize_uia_check_version`、`_force_zip_uia`、`_early_neutralize_uia`), `get_caret_pos` 改为**纯 ctypes Win32**:
+  - 顺序: `GetGUIThreadInfo`(传统 Win32 caret) -> **鼠标位置**(现代应用无 caret, 用户打字时光标在鼠标附近) -> 上次有效位 -> 前台窗口底部居中
+  - `_mouse_pos()`/`_foreground_client_origin()` 保留(纯 Win32)
+  - 文件 758 行 -> 380 行
+- **`main.py`**: 移除 `win.ensure_caret_bg()` 调用(不再有后台 UIA 线程)
+- **实测**: `get_caret_pos` 纯 Win32 返回 (3119,1638), `is uiautomation loaded? False` / `is comtypes loaded? False`; pythonw 启动干净
+- **效果**: 光标跟随不再依赖任何第三方库, 彻底消灭 typelib/COM 隔离问题; 现代应用(Teams 等)用鼠标位置兜底(贴鼠标), 传统应用用 Win32 caret, 稳定不崩
+- `dist/wgime-py.py` 重建; package 已刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 后台线程用 UIAutomationInitializerInThread 初始化, 根治 UIA 超时/跟随不到)
+
+- **生产机日志决定性发现**: 后台线程定时刷新的 `get_caret_uia` → `GetFocusedControl` **每次耗时 1~2.6s 且 el=False**(拿不到控件), 而主线程 `get_caret_pos` 一直 `fallback-origin`(光标准不了)。这就是"上屏仍卡 + 跟随不到"
+- **根因**: 在**裸后台线程**里用 uiautomation 的 `GetFocusedControl`, **没初始化该线程的 UIA/COM 上下文**——uiautomation 官方明确要求"used in a thread 必须用 `UIAutomationInitializerInThread`"(正是报错提示第 2 条)。未初始化的线程里 COM 调用超时/失败 → el=False、耗时 1~2.6s
+- **修复 `win.py` `_caret_bg_loop`**: 用 `with auto.UIAutomationInitializerInThread():` 包裹循环, 在后台线程内初始化 UIA 上下文(退出自动 Uninitialize)
+- **实测**: 后台线程用 initializer 后 `GetFocusedControl` 从 1950ms/el=False 变成 3~8ms/el=True, `_uia_el[0]` 成功填充 (2647,1300); 主线程 `get_caret_pos` 走 UIA-cache 0.1ms 不再 fallback; pythonw 启动干净
+- **效果**: 生产机 Teams 里光标跟随应能取到精确光标(cache 由后台线程持续更新), 且主线程不跑 UIA, 上屏不卡
+- `dist/wgime-py.py` 重建(575.8KB); package 已刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随 debug 增强 + UIA 优先定位 + 定位失败原因日志)
+
+- **生产机"跟随不到光标"根因线索**: 后台线程 `get_caret_uia` 的 `GetSelection()` 对很多控件返回**空矩形**(`rects=[]`)或**整行/大控件**, 旧逻辑硬性要求 `0<cw<=200`, 导致 `_uia_el[0]` 填不上 → `get_caret_pos` 走 fallback(客户区左上角, 不准)
+- **`get_caret_uia` 放宽**: 选区矩形高度合理(4~200)即视为可定位光标(用 left/bottom 锚点), 宽度不再强限(整行也接受, 取 left 锚点); 仅拒绝整页级别高度
+- **`get_caret_pos` UIA 优先**: 改为**先读 UIA 缓存**(精确), 再 GUITI(对 Electron 光标准确性差), 最后 fallback
+- **`get_caret_uia` 失败原因日志**: 取不到时记录 `_sel_info`(selection EMPTY/rects EMPTY/no TextPattern) + 控件类型 + 回退 Rect 尺寸, 便于 Teams 实测定位
+- **实测(本机)**: 前台为浏览器网页时 `GetSelection() rects=[]`(复现"取不到光标"); 需在 Teams 聚焦实测看日志
+- `dist/wgime-py.py` 重建(575.4KB); package 已刷新
+- **收集方式**: 生产机 `set WGIME_DEBUG=1` + 最新单文件, Teams 打字, 发 `%LOCALAPPDATA%\wgime-py\debug.log` 中 `[win]` 行
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随 debug 日志, 用于实测定位上屏卡顿)
+
+- **`win.py` 新增 `_dlog()`** 集中式光标跟随耗时日志, 写入 `%LOCALAPPDATA%\wgime-py\debug.log`(与 main.py `_dfn` 同文件, 一起看), 仅在**环境变量 `WGIME_DEBUG=1`** 时记录(不拖慢正常运行)
+- **埋点**: `get_caret_pos` 记录 GUITI/UIA-cache/last-cache/fallback 用时与来源; `get_caret_uia` 记录 `GetFocusedControl` 耗时; `_caret_bg_loop` 记录启动
+- **实测(本机)**: `GetFocusedControl` 2-6ms、主线程 `get_caret_pos` 走 UIA-cache 0.1ms、后台线程每 ~200ms 刷新 —— 本环境不卡, 说明生产卡顿非 UIA 本身慢, 需实测 debug.log 定位
+- **收集方式**: 生产机 `set WGIME_DEBUG=1` 后运行最新单文件, 在 Teams 打字, 把 debug.log 尾部发来
+- `dist/wgime-py.py` 重建(574.4KB); package 已刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 光标跟随改为后台线程刷新, 主线程不阻塞, 解决上屏卡顿)
+
+- **上屏卡顿根因**: 光标跟随开启时, `bar.show`(tkinter 主线程)里同步调用 `get_caret_pos()` → `get_caret_uia()`. UIA 的 `GetFocusedControl`/`GetSelection`/`GetBoundingRectangles` 在 Teams 等 Electron 应用一次可耗时 1~几秒, 且跑在**主线程**, 直接阻塞按键处理/上屏(即使之前加了 150ms 节流, 慢的 UIA 调用本身仍阻塞主线程)
+- **修复 `win.py`**: 新增**后台光标刷新线程** `_caret_bg_loop`/`ensure_caret_bg()`:
+  - 后台线程每 100ms 调 `get_caret_uia()`(内部还有 150ms 节流)刷新缓存 `_uia_el[0]`
+  - `get_caret_pos()` 改为: 廉价同步 `GetGUIThreadInfo` -> **读取 UIA 缓存**(后台线程刷新, 主线程绝不跑 UIA) -> 上次有效位 -> 前台窗口客户区
+  - 主线程因此**永不阻塞**(实测 `get_caret_pos` 返回 <0.1ms)
+- **`main.py`**: 启动时 `win.ensure_caret_bg()` 启动后台线程
+- **实测**: `ensure_caret_bg` + mtime 失真下, `get_caret_pos` 0.0001s 返回 `(2647,1300)`(bg 已缓存); pythonw 启动干净
+- `dist/wgime-py.py` 重建(573.1KB); package 已刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 强制用内嵌 zip 的 comtypes/uiautomation, 排除用户 pip 装的 site-packages 版)
+
+- **真正破案**: 生产机 pip 装了 `uiautomation 2.0.29 + comtypes 1.4.16`(user site-packages, `AppData\Roaming\Python\Python313\site-packages`)。单文件虽然 `sys.path.insert(0, thirdparty.zip)`, 但若 site 里 zip 过期/损坏, Python 会**回退到 site-packages 的 comtypes**——而我们所有的 `_check_version` 补丁都打在 **zip comtypes** 上, 对实际加载的 site-packages comtypes 完全无效! 这就是"改了 N 轮仍复现"的根本原因
+- **实测确认**: 有效 zip 在 sys.path[0] 时, comtypes/uiautomation **从 zip 加载**(`thirdparty.zip\comtypes`); 但 site zip 被污染(1006B, `STALE`)后, Python 回退 site-packages → 之前补丁失效
+- **`win.py` 新增 `_force_zip_uia()`**: 在 `_import_uia_robust` 里先调用, 若当前 `comtypes.__file__` 不含 `thirdparty.zip`(即加载了 site-packages 版), 则把 `comtypes`/`uiautomation`(及子模块)从 `sys.modules` 清除、把 zip 顶到 sys.path[0], 强制重导 zip 版——排除用户 pip 装的 site-packages 版干扰
+- **实测**: `_force_zip_uia` 后 comtypes 从 `thirdparty.zip\comtypes` 加载; mtime 失真下 `get_caret_uia` 优雅降级(None, broken=False, 无 typelib 报错)
+- `dist/wgime-py.py` 重建(571.6KB); package 已刷新
+- **生产机建议**: 若/当 site-packages 装有 uiautomation/comtypes, 新版单文件会自动强制用 zip 版; 亦可 `pip uninstall uiautomation comtypes` 彻底避免冲突
+
+---
+
+## 2026-08-31 (wgime-py-pure: win 加载即中和 comtypes typelib 校验 + 吞 uiautomation 黄字日志)
+
+- **生产机仍报 `Typelib different than module`/@automationlog.txt 的原因**: 补丁时序依赖——之前的 `_neutralize_uia_check_version` 只在 `_import_uia_robust` 里调用, 若 uiautomation 在某条路径下提前触发 `_AutomationClient`(import 时绑定 `_check_version`), 补丁就晚了
+- **`win.py` 新增 `_early_neutralize_uia()` 并在 win 模块加载时(顶层)立即调用**: `_load('win')` 即生效, 早于任何 uiautomation 使用, 无时序依赖:
+  - 中和 `comtypes._tlib_version_checker._check_version` + 所有已加载 `comtypes.gen.*` 模块 `__dict__['_check_version']` → 恒通过
+  - 把 `uiautomation.Logger.WriteLine` 降噪: 对含 `UIAutomationCore` 的提示("Can not load UIAutomationCore.dll" 等)直接吞掉, 不再写进 `@automationlog.txt`
+- **实测**: 强制 mtime 失真 + win 加载即中和, `get_caret_uia` 返回 `(2647,1300)` 无报错; `Logger.WriteLine('Can not load UIAutomationCore.dll.')` 被静默; pythonw 启动干净
+- `dist/wgime-py.py` 重建(570KB); package 已刷新
+- **必须用最新单文件**; 若生产仍报, 说明跑的仍是旧构建
+
+---
+
+## 2026-08-31 (wgime-py-pure: 单文件启动时强制刷新 thirdparty.zip —— 根治旧 comtypes typelib 报错)
+
+- **真正根因**: 单文件解压 `thirdparty.zip` 到 `%LOCALAPPDATA%\wgime-py\site` 的旧逻辑是 **`if not os.path.exists(_third_zip)`** —— site 里已有 zip 就**永不刷新**。生产机 site 残留早期版本的 zip → 一直用**旧 comtypes**, 其 `comtypes.gen.UIAutomationClient` 烘焙的 UIAutomationCore.dll mtime 更老, `_check_version` 必报 `Typelib different than module`——这解释了为什么改了多轮仍复现(旧 comtypes 从没被换掉)
+- **修复 `build-wgime-pure.py`**: 单文件 preamble 改为**入内嵌 zip 的 md5 与磁盘 zip 的 md5 比对, 不一致就 `os.replace` 原子重写**。首次运行或单文件升级后 zip 自动刷新成新版 comtypes, 用户无需手动删 site
+- **实测**: 预置 stale zip(md5 不同), 单文件启动后对应数据路径的 zip md5 变回与内嵌一致; Store 虚拟化环境会切到 `~\wgime-py\site` 并在那里刷新(仅 `%LOCALAPPDATA%` 里残留的旧 zip 未用、不影响)
+- 配合之前 `win.py` 的 `_neutralize_uia_check_version`(覆盖 comtypes.gen 各 UIAutomation 模块 `__dict__['_check_version']`)防御层, 双保险
+- `dist/wgime-py.py` 重建(568.3KB); package 已刷新
+- **重要**: 必须用**最新单文件**(含 md5 强制刷新 + `_neutralize_uia_check_version`), 旧单文件无论怎么改 patch 都无法修复
+
+---
+
+## 2026-08-31 (wgime-py-pure: UIAutomation typelib 修复改为模块级 __dict__ 覆盖, 顺序无关/普适)
+
+- **关键发现**: comtypes 生成模块 `comtypes.gen.UIAutomationClient/wrapper` 内部的 `_check_version('1.4.16', <mtime>)` 用 **`LOAD_GLOBAL` 读模块 __dict__**, 所以**直接覆盖模块 `__dict__['_check_version']` 为 no-op** 就能让该调用不抛——**无论该模块何时被 import 都生效**(之前只改 `comtypes._tlib_version_checker._check_version` 模块属性, 对已 `from ... import` 绑定的引用无效, 这就是为什么之前没修好)
+- **`win.py` 新增 `_neutralize_uia_check_version()`**: 遍历 `sys.modules` 里所有 `comtypes.gen.*UIAutomation*`(及 wrapper)模块, 覆盖其 `__dict__['_check_version']`; 并同时覆盖 `comtypes._tlib_version_checker._check_version`
+- `_import_uia_robust()` 改为: 导入 uiautomation 前打补丁 + 导入后调用 `_neutralize_uia_check_version()`(双保险), 仍失败才清 gen 缓存重试 + `_uia_import_broken` 兜底
+- **实测**: 最坏情形(gen 模块已被 import、`_check_version` 已绑定原函数)下, `_neutralize_uia_check_version` 覆盖后 `um/wr._check_version('1.4.16',999999)` 均返回 None(不再抛); 强制 mtime 失真(1000000.0)下 `_import_uia_robust` 成功、`get_caret_uia` 返回 `(2647,1300)`
+- `dist/wgime-py.py` 重建; package 已刷新
+- **此修复顺序无关**: 无论 gen 模块何时加载、之前是否被任何代码 import 过, 只要在 uiautomation 使用前调用过 `_neutralize_uia_check_version` 就稳定
+
+---
+
+## 2026-08-31 (wgime-py-pure: 彻底修复 uiautomation "Typelib different than module" 并普适)
+
+- **确认普适根因**: zip 内嵌 `comtypes/gen/UIAutomationClient.py`(及 wrapper `_944DE083_...`)在模块顶部 `from comtypes._tlib_version_checker import _check_version` **绑定函数对象引用**, 并在模块体里调用 `_check_version('1.4.16', <烘焙mtime>)`; `_check_version` 比较系统 `UIAutomationCore.dll` 当前 mtime 与烘焙值, 相差>=1s 即抛 `ImportError("Typelib different than module")`。**任何**机器上只要该 DLL mtime 与烘焙值不同(用户机/系统更新后)就会触发, 不止 Teams
+- **上一版 patch 的失效点**: 只 `from comtypes import _tlib_version_checker; _tvc._check_version = no-op` 是指向**模块属性**; 但生成模块已经 `from ... import _check_version` **绑定的是函数对象本身**, 模块属性改了也不影响已绑定的引用(实测 `um._check_version is tvc._check_version` 为 False)
+- **本版正解双层防护 `win.py`**:
+  1. `_import_uia_robust()`: 在**导入 uiautomation 前**把 `_check_version` 打成 no-op —— 生成模块是**惰性**(首次 `GetFocusedControl` 才 import), 所以 patch 发生时它还没绑定, 之后 `from ... import` 拿到的就是 no-op → 从源头不抛
+  2. `_uia_retry_client()`: 若首次 `GetFocusedControl` 仍失败, **重置 `uiautomation.uiautomation._AutomationClient._instance=None`** 强制重新构造(此时 patch 已在), 重试一次再成功
+- **实测**: 强制 `UIAutomationCore.dll` mtime **+50s**(等效用户机), `_import_uia_robust` 仍导入成功、`get_caret_uia` 返回有效坐标; 把单例设成坏占位, `_uia_retry_client` 重置后仍返回精确光标 `(2728,1085)`
+- `dist/wgime-py.py` 重建; package 已刷新
+- **提醒**: 请务必使用最新单文件(`dist/wgime-py.py` 或 `package\wgime-py.py`), 旧版不含该修复
+
+---
+
+## 2026-08-31 (wgime-py-pure: 根治 uiautomation "Typelib different than module")
+
+- **根因定位**(实测确认):我们 zip 内嵌的 `comtypes/gen/_944DE083_..._UIAutomationClient.py` 里**烘焙了生成时 UIAutomationCore.dll 的 mtime**, 形如 `_check_version('1.4.16', 1787852155.337951)`(`comtypes._tlib_version_checker` 在导入生成模块时用 `os.stat(该DLL).st_mtime` 与烘焙值比较, 相差>=1s 就抛 `ImportError("Typelib different than module")`)
+  - 本机(开发机)DLL mtime 恰好等于烘焙值(1787852155.337951)所以正常; **用户机上 Windows 更新/版本不同 → mtime 相差>=1s → 必抛**. 与线程无关, 是 uiautomation 库误导文案
+  - "清 gen 缓存重新生成"无效: zip 里 gen 是内存生成、不落盘, 重入仍读烘焙的那份
+- **正解 `win.py` `_import_uia_robust()`**:导入 uiautomation **前**把 `comtypes._tlib_version_checker._check_version` 临时打成**总是通过**(no-op)——生成模块的接口布局与 DLL mtime 无关, 仅凭 mtime 判定"不同"本就不严谨, 跳过即可让跟随在这些机器上稳定工作
+  - 仍失败(其他原因)才清 gen 缓存重试 + `_uia_import_broken` 兜底优雅降级, 绝不让 IME 崩
+- **实测**:模拟 UIAutomationCore.dll mtime **+30s** 的失真(等效用户机), `_import_uia_robust` 仍成功导入 uiautomation(`broken=False`)、`get_caret_uia` 返回有效坐标; pythonw 启动干净无异常
+- `dist/wgime-py.py` 重建; package 已刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 修 uiautomation 报 "Can not load UIAutomationCore.dll/Typelib different than module")
+
+- **`win.py` 新增 `_import_uia_robust()`**:稳健导入 uiautomation。comtypes 在 typelib 版本不匹配时会抛 `ImportError("Typelib different than module")` 并在 stderr 打印黄色告警(实测偶发, 取决于系统 `UIAutomationCore.dll` 的 mtime)
+  - 失败时**清掉 comtypes.gen 里 UIAutomationClient 缓存模块**(`sys.modules` + `dir(comtypes.gen)` + 磁盘 gen 目录里的 `UIAutomation*`), 强制内存里**重新生成**一次, 使 mtime 版本校验与当前系统 DLL 一致, 再重试
+  - 仍失败则置 `_uia_import_broken=True`(本会话不再重复尝试), 返回 None → `get_caret_uia` 优雅降级(用 `_last_caret`/非跟随), **绝不让 IME 因光标跟随崩掉**
+- `get_caret_uia` 的导入改走 `_import_uia_robust()`; 导入失败也按节流记录, 不报错
+- 实测: `_import_uia_robust` 返回真 uiautomation(含 GetFocusedControl/UIAutomationInitializerInThread); Teams 聚焦时 `get_caret_pos` 返回 (2663,1297); pythonw 启动干净无异常
+- `dist/wgime-py.py` 重建; package 已刷新
+- **说明**:该错误信息里"你需要用 UIAutomationInitializerInThread"是 uiautomation 库的**固定提示文案**, 实际抛的是 comtypes typelib mtime 不匹配(`ImportError`), 与线程无关——本修复清缓存重生成即解决
+
+---
+
+## 2026-08-31 (wgime-py-pure: 修 Teams 等 Electron 应用中光标跟随卡顿)
+
+- **`win.py` `get_caret_uia()` 加节流 + 复用**:原实现每个 poll(15ms)/每键都跑整套 UIA(`GetFocusedControl`→`GetPattern`→`GetSelection`→`GetBoundingRectangles`), 在 Teams/Edge 这类 Chromium 应用里一次可达几十~上百 ms, 且跑在 tkinter 主线程上, 直接卡死 IME 主循环 → 光标跟随后"反应很慢"
+  - 前台窗口没变且距上次 < 150ms: 返回缓存的屏幕位, **不重跑 UIA**(成功/失败路径都节流, 避免"Teams UIA 拿不到光标"这种高频失败也每键都跑)
+  - 前台窗口变了才立即重新检索; 失败(返回 None)也记录尝试时间, 同样被节流
+  - 实测节流逻辑: 8 次快速调用 UIA 只跑 1 次; 过 0.16s 后重新跑; 成功/失败两路径都正确
+- `GetGUIThreadInfo` 快速路径仍优先(廉价), 只有它取不到光标才走(UIA 节流的)慢路径
+- `dist/wgime-py.py` 重建; package 已刷新
+- **效果**: Teams 里开启"光标跟随"不再每键卡 UIA, 光标位置最多滞后 ~150ms(视觉无感)
+
+---
+
+## 2026-08-31 (wgime-py-pure: 托盘菜单新增"编辑/重载配置", 对齐 C# 版)
+
+- **`main.py` 新增 `reload_config()`**:重读 config.txt + tools.txt + plugins/*.txt + plugins/*.py + pastemode.txt, 并刷新主题/托盘勾选(无需重启程序), 对齐 C# 版 `ReloadConfig()`
+  - `apply_config()` 重读 config.txt; `load_tools()`/`load_plugins()`/`load_py_plugins()` 本就每次重新读盘(无缓存), 改文件即生效; `load_appmodes()` 重读 pastemode.txt
+  - 新增 `open_config_file()`:用默认编辑器打开 config.txt(对齐 C# `OpenConfigFile()`)
+- **`main.py` tray.api 新增 `reload`/`open_config` 回调**
+- **`tray.py` "这个程序" 菜单新增**:`编辑配置 (config.txt)…` 与 `重载配置 (config/tools/插件)` 两项
+- **实测**:`load_config` 改文件后重读即变(`theme=light`/`showcode=True`/`learnk=9999`); `load_tools` 加按钮后重读 1→2; 菜单结构 `MENU_BUILD_OK` 含两新项; pythonw 启动无异常
+- `dist/wgime-py.py` 重建内嵌; package 已刷新
+
+---
+
+## 2026-08-31 (wgime-py-pure: 纯 Python 版运行时无黑窗口)
+
+- **`main.py` 顶部新增 `_relaunch_if_console_python()`**:检测到被控制台版 `python.exe` 启动(会弹黑色控制台窗口)时, 立刻用 **`pythonw.exe`(无控制台)重启自身**并退出当前进程——与 C# 版 `wgime.bat` 的隐藏窗口思路一致, 但由 Python 自己完成, **无需额外启动器文件**
+  - 仅 win32 + 且 `sys.executable` 是 console 版时触发; `pythonw`/其他解释器跳过; `WGIME_DEBUG=1` 时不自动跳走(保留控制台看错误); `WGIME_RELAUNCHED=1` 防循环
+  - 重启用 `subprocess.Popen([pythonw]+sys.argv, startupinfo=SW_HIDE, CREATE_NO_WINDOW)`; 实测控制台父进程约 160ms 内退出, pythonw 子进程存活并运行单文件
+- **`main.py` `_console_python()`**:主进程改用 `pythonw` 后, `sys.executable` 会是 `pythonw.exe`; 子进程 `[python]` 插件块的 `subprocess.run(capture_output=True)` 必须改用 console 版 `python.exe` 才能抓到 `@wgime` 行。实测 pythonw 下 `_console_python()` 正确解析回 `python.exe`, `[python]` 块 `captured=True`
+- `dist/wgime-py.py`(单文件)由 `build-wgime-pure.py` 重建, 已内嵌上述两处
+- **验证**:本人机 pythonw 直接启动单文件进程存活、无黑窗口; console→pythonw 重启链路走通; pythonw 下插件块捕获正常
+
+---
+
+## 2026-08-30 (wgime-tsf: 里程碑② ITfTextInputProcessor(Ex)/ITfKeyEventSink 接口验证通过)
+
+- **`wgime-tsf/src/lib.rs`** 新增文本服务对象 `TsfTextService`,`#[implement(ITfTextInputProcessor, ITfTextInputProcessorEx, ITfKeyEventSink)]`:
+  - `CreateInstance` 改为返回 `TsfTextService`(不再是 `E_NOTIMPL`);
+  - `Activate`/`ActivateEx` 从 `ITfThreadMgr` QI 到 `ITfKeystrokeMgr` 并 `AdviseKeyEventSink(tid, sink, TRUE)` 注册按键回调, `Deactivate` 反注册;
+  - `ITfKeyEventSink` 六方法(OnSetFocus/OnTestKeyDown/OnTestKeyUp/OnKeyDown/OnKeyUp/OnPreservedKey)先占位返回 S_FALSE(不吞键), 待里程碑③接真逻辑;
+  - 0.58 适配:`impl ITf..._Impl for TsfTextService_Impl`(目标是宏生成的 `_Impl`); `AdviseKeyEventSink` 的 `psink` 需引用; `ptim.cast::<ITfKeystrokeMgr>()` 走 QI
+- **实测里程碑② ✅**:`CoCreateInstance(CLSID, CLSCTX_INPROC_SERVER)` 分别以 `IID_ITfTextInputProcessor` / `IID_ITfKeyEventSink` / `IID_IUnknown` 请求全部返回 **S_OK**, 三类接口均从对象暴露
+- **新增 `wgime-tsf/register-tsf.ps1`**:TSF 键盘输入法注册/卸载脚本(COM CLSID + `HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}` 类别 `GUID_TFCAT_TIP_KEYBOARD` + 语言 profile), 需管理员
+- **`wgime-tsf/register-tsf.ps1` 重写为三层注册**, 并修正 `DllRegisterServer` 遗漏的 **Implemented Categories**(TSF 线程管理器靠它把 CLSID 归类为键盘输入法, 缺它=注册了但 Activate 不触发):
+  - A) COM 注册 + `Implemented Categories\{GUID_TFCAT_TIP_KEYBOARD}` (`DllRegisterServer`/脚本都补上)
+  - B) Profile 注册正确路径 `HKLM\...\CTF\TIP\{CLSID}\LanguageProfile\0x{langid}\{ProfileGUID}`(Description/Enable/HiddenInSettingUI)
+  - C) 按用户启用(HKCU): profile 挂进当前用户输入法/语言栏(直接注册表 + 备选 `Set-WinUserLanguageList`), 新版 Windows 缺这层看不到输入法
+  - 脚本改为纯 ASCII(规避 PS 5.1 读无 BOM UTF-8 判成 ANSI 的 mojibake/解析错乱)
+  - **修正路径 bug**:注册表**两套路径写法**必须分开 —— PowerShell provider(`New-Item`/`Set-Item`/`Test-Path`)要 `HKLM:\`/`HKCU:\`(**带冒号**), `reg.exe` 要 `HKLM\`/`HKCU\`(**无冒号**)。之前 `Reg-Key` 把 `Registry::` 拼到已是 provider 路径前(非法), 且 `reg add` 拿到带冒号路径("Invalid key name")。重写为 `reg*`(无冒号)与 `ps*`(带冒号)两组变量, 不再混用。层 A/B 实测报 **Access is denied**(路径已正确, 唯一阻塞是需**管理员**), 层 C(HKCU)无需提权已实测写入成功(`Enable=1`)
+  - **层 C 改用 `InstallLayoutOrTip`(input.dll, LoadLibrary+GetProcAddress 取指针)**:实测 `Set-WinUserLanguageList` 在本机语言列表退化态(BCP47 的 `Language` 字段为空)下报不可用, 且它重写整个语言列表风险高; `InstallLayoutOrTip("0x{langid}:{CLSID}{ProfileGUID}")` **无需管理员、不改写语言列表**、按当前用户把 profile 装进输入法/语言栏(实测 OK, SortOrder 出现该 profile 的 AssemblyItem)
+  - 验证: HKCU 下注册 Implemented Categories + InprocServer32 后 `CoCreateInstance → ITfTextInputProcessor` 仍 S_OK
+  - **里程碑③观测探针**:`Activate`/`Deactivate`/`ActivateEx`/`OnSetFocus`/`OnTestKeyUp`/`OnTestKeyDown`/`OnKeyUp`/`OnKeyDown`/`OnPreservedKey` 全写日志到 `%LOCALAPPDATA%\wgime-tsf-hook.log`(`log()` helper, `std::process::id()` 区分宿主进程)。待实机验证回调是否被 TSF 调起
+  - **实测**:注册后 TSF 已把 `wgime_tsf.dll` **加载进多个宿主进程**(explorer/msedge/微信/百度网盘/notepad/ApplicationFrameHost)——证明 COM+Implemented Categories 注册对, TSF 认可为 TIP 并枚举加载; 但**`Activate` 尚未被调**(无日志), 即 TIP 处于"已加载未激活"态, 需在设置→键盘选中 wgime-tsf 切为当前输入法后才会 Activate/收到按键
+- `docs/WGIME_TSF_语言选型.md` §5 里程碑② 标记通过
+- **待办**:里程碑③(notepad 打字回调触发); 新版 Windows 的 TSF profile 正确注册位实机验证
+
+---
+
+- **`wgime-tsf/src/lib.rs`** 完成两处关键修正(0.58 接口实现方式变化):
+  - `#[implement(IClassFactory)]` 生成 `TsfFactory_Impl` 结构体, **`impl IClassFactory_Impl for TsfFactory_Impl`**(不是旧版 `impl ... for TsfFactory`); `IClassFactory_Vtbl` 是 vtable **struct** 而非 trait
+  - `IClassFactory_Impl` trait 藏在 `windows` crate 的 **`implement` feature** 下(之前缺失导致找不到); 需要把 `"implement"` 加进 `Cargo.toml` features
+  - `DllGetClassObject` 用 `factory.query(riid, ppv)`(0.58 的 `Interface::query` 返回 `HRESULT`, 旧 `query_interface` 已无); `0x80004005`/`0x80004001` HRESULT 字面量需 `u32 as i32`(防 i32 溢出)
+  - 新增 `DllRegisterServer`(HKCR\CLSID\{GUID}\InprocServer32 = DLL 路径 + ThreadingModel=Both)与 `DllUnregisterServer`(删除键); `Cargo.toml` 加 `Win32_System_LibraryLoader`
+- **实测里程碑① ✅**:注册后(验证用 `HKCU\Software\Classes\CLSID\...`, 因为写 HKCR\CLSID 需管理员) `CoGetClassObject(CLSID, CLSCTX_INPROC_SERVER, IID_IClassFactory)` 返回 **S_OK(0x00000000)**, Windows 成功加载 `wgime_tsf.dll` 并创建类工厂实例
+- **`.gitignore`** 增加 `/wgime-tsf/target/`(忽略 cargo 构建产物)
+- `docs/WGIME_TSF_语言选型.md` §5 增补 Spike 进度(里程碑① 通过, 里程碑②/③ 待办)
+- **待办**:里程碑②(`ITfTextInputProcessor(Ex)`/`ITfKeyEventSink` 绑定 + TSF profile 注册) → 里程碑③(notepad 打字回调触发); TSF 注册脚本(写 `GUID_TFCAT_TIP_KEYBOARD` 类别 + 语言 profile)
+
+---
+
+- **`wgime-tsf/`** cargo 项目骨架:`Cargo.toml`(cdylib, windows-rs 0.58) + `src/lib.rs`(COM 服务器骨架: `DllGetClassObject` + `IClassFactory` + 占位 IUnknown)
+- `docs/WGIME_TSF_语言选型.md` 与 `docs/WGIME_TSF评估.md`(纯 Python 版) 已提交
+- **现状**:本环境 Rust 工具链已 OK(rustc/cargo 1.98.0 + linker 验证过); 但 `windows` crate 首次编译很大(慢); windows-rs API 版本敏感, 需在本机 `cargo build` 迭代微调
+- 里程碑(见 `docs/WGIME_TSF_语言选型.md` §5): ① DLL 可被 `CoGetClassObject` 加载 ② `ITfTextInputProcessor`/`ITfKeyEventSink` 绑定 + TSF profile 注册 ③ notepad 打字验证回调
+
+---
+
+## 2026-08-29 (docs: 新增 TSF 语言选型文档)
+
+- **`WGIME_TSF_语言选型.md`**:覆盖层(Python/C# 保持) vs **TSF(Rust 首选 / C++ 次选, 原生编译)** 的选型对比表与结论; TSF TIP 必须进程内 COM 服务器 DLL, 不要 Python 硬凑(解释器驻留所有进程+GIL/低级钩子超时); 含混合思路与 Rust 最小 spike 计划
+- sync-dist 同步 release/docs
+
+---
+
+## 2026-08-29 (docs: TSF 评估重写为纯 Python 版)
+
+- **`WGIME_TSF评估.md`** 从 bat/C# 版视角重写为**纯 Python 版**评估: 独立 `wgime-tsf/` 子项目方案(与 wgime-py-pure 平级, 复用 engine 候选/词频)
+- **Python 实现 TSF TIP 技术路径**:pywin32 COM 服务器(win32com.server, pythoncom+嵌入式 Python) / cffi 薄壳+内嵌 Python / comtypes 手写 vtable; 对比(成本/每进程加载/GIL/崩溃隔离)
+- **Python 特有难点**:Python 解释器(**比 CLR 更重**)驻留每个文本应用进程、TSF 回调在目标应用主线程受 **GIL/低层钩子超时**约束、**UWP 盲区**(解释型 COM 大概率进不去 UWP)
+- **结论**:可行但比 C# 版更保守, 建议 **PoC 先行**(§5 spike: 验证 Python 能否被作为进程内 COM 服务器加载进别的应用 + 内嵌 Python 运行时 + 回调延迟)
+- sync-dist 同步到 release/docs
+
+---
+
+## 2026-08-29 (wgime-py-pure: 检测到前台管理员窗口时托盘提示以管理员运行 wgime)
+
+- **UIPI 限制**:前台为管理员(高完整性)窗口时, 普通权限的 wgime 被 Windows UIPI 阻止交互(钩子收不到输入/注入被拒), 连 Shift 切换/组字都不响应
+- **提示**:`poll` 里节流(5s)检测 `前台提权 && 自身未提权`, 命中则托盘气泡提示"请以管理员身份运行 wgime"; 只提示一次(`_admin_hint_shown`)
+- 真正解法是"以管理员身份运行 wgime"(与提权窗口同完整性级别, UIPI 不再拦截)
+
+---
+
+## 2026-08-29 (wgime-py-pure: 修复候选翻页后按空格上屏第一页第一个)
+
+- **根因**:空格 `commit(ime.sel)`, 而 `sel` 是**页内偏移**(恒 0)——翻页后仍提交 `cands[0]`(第一页第一个), 而非当前页第一个
+- **修复**:空格改 `commit(ime.page * 9 + ime.sel)`, 上屏**当前页第一个**候选, 与 C# 版 `Hook_OnSpaced`(`page*PageSize + choose`)对齐
+- C# 版逻辑本就正确(`choose=0` → `page*PageSize`, 空格=当前页第一个), 无需改
+
+---
+
+## 2026-08-29 (docs: 把所有文档补上纯 Python 版说明)
+
+- **README**:加「纯 Python 版(wgime-py-pure)」章节 + 文件表格/文件说明/项目演进
+- **docs/使用说明**:开头加纯 Python 版小节(环境/单文件/数据目录/快捷键/与 C# 差异)
+- **docs/技术文档**:加 §12 纯 Python 版架构(运行环境/模块职责/单文件形态/启动链)
+- **docs/插件规范**:加 §8 纯 Python 版插件(双插件形态/步骤 DSL/[python] 块 JSON IPC/[csharp] sidecar/权限 manifest/插件管理)
+- **docs/窗体设计语言**:加 §9 纯 Python 版 ui.py 实现(色板/字体/骨架/控件)
+- **docs/CHAT_技术文档**:加 §7.4 纯 Python chat 插件(协议互通/ui.py 聊天窗/线程模型)+ §1 表格行
+- **AGENTS**:§8 加纯 Python 版概况; 已 sync-dist 同步 docs/config/plugins 到 wg-all/release
+
+---
+
+## 2026-08-29 (wgime-py-pure: 移除昂贵的缓存 md5 校验, 修复启动/首次上屏迟钝)
+
+- **根因**:之前加载 `dict-cache.pkl` 时对 95MB 的 data 全量 `pickle.dumps` 再算 md5 校验, 每次启动 ~1s+, 拖慢启动 → 首次上屏明显迟钝
+- **修复**:移除该全量 md5 重算; 完整性改由 `sig`(码表 mtime/size) + `pickle` 加载异常保底; `_save_cache` 不再写 md5 字段
+
+---
+
+## 2026-08-29 (wgime-py-pure: 修复候选框超出屏幕)
+
+- **根因**:固定/常驻(`follow=False`)模式下候选框宽度变化时位置未重算, 候选变宽后右/下边缘超出屏幕, 超出部分不可见("只见一点点/后面看不到")
+- **修复**:`bar.show` 非跟随定位分支统一 clamp 到工作区(左/右/上/下), 确保候选框完全在屏幕内; 位置(winfo)异常时回退居中
+- 候选条最大宽度 `720→880`、截断下限 `4→8`(候选更完整可读)
+
+---
+
+## 2026-08-29 (wgime-py-pure: 托盘选项即时生效 + 常驻候选窗优化)
+
+- **托盘"选项"勾选态修复**:`_refresh()` 加 `icon.update_menu()`(`checked` 重求值); 原来只更新图标不重建菜单 → 切换后勾选态不变、看起来"点了没反应"(实际 CFG 已改)。验证 `pystray.Icon.update_menu()` 存在
+- **切换即时反馈**:`toggle_followcaret`/`toggle_showcode` 切后调 `show_page()`, 立即用新设置重定位/刷新候选框(否则组字中无可见变化)
+- **常驻候选窗优化**:`hideidle=0`(关空闲隐藏)时常驻框**固定屏幕右下角贴任务栏**, 不跟随; `toggle_hideidle` 切后直接 `show_page()`(之前空缓冲不刷新导致常驻框不出现); `bar.show` 加 `fixed` 参数(坐标 / `'bottom-right'` / `'bottom-center'`)
+- 覆盖此前的"修复关掉空闲隐藏后常驻框不出现"(bef5903)、"常驻候选窗固定位置右下角"(9462009)两轮
+
+---
+
+## 2026-08-29 (wgime-py-pure: 托盘"选项"补全其余开关)
+
+- **托盘"选项"子菜单补全**:整句输入(`sentence`)/联想(`assoc`)/空闲隐藏(`hideidle`)勾选开关(反查编码/繁体/跟随光标/主题已有)
+- `main.py` 新增 `toggle_sentence()`/`toggle_assoc()`/`toggle_hideidle()` + api 对应 `get`/`toggle`(sentence 单独 api, assoc/hideidle 同理); 切换写回 `config.txt`, 组字中即时刷新
+- `config.txt` 新增 `sentence`/`assoc` 注释项(`hideidle` 已有)
+
+---
+
+## 2026-08-29 (wgime-py-pure: 反查编码开关 + 托盘菜单项)
+
+- **托盘"选项"子菜单新增"反查编码"开关**(勾选态), 切换即生效, 并写回 config.txt 的 `showcode`(候选上显示反查编码, 五笔用五笔码否则拼音)
+- `main.py` 新增 `toggle_showcode()` + `api['toggleshowcode']`/`['get_showcode']`; 切换时若在组字则立即刷新候选(显示/隐藏编码)
+- `config.txt` 已有 `showcode`(默认 1), 无需新增
+
+---
+
+## 2026-08-29 (wgime-py-pure: 候选框在 Win11 开始菜单被盖住)
+
+- **根因**:Win11 开始菜单(`StartMenuExperienceHost`)是系统 Shell 层, 优先级高于普通 topmost, 候选框被盖住(隐约可见但选不了词)
+- **修复**:① `win.py` 新增 `set_topmost()`, `bar.show()` 每次 `deiconify()` 后用 `SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)` 提到 topmost z-order 最顶(实测仍压不过开始菜单层); ② 开始菜单/搜索类进程(`startmenuexperiencehost`/`searchhost`/`shellexperiencehost`)时候选框**不跟随光标, 固定到屏幕右下角**(避开 Win11 开始菜单浮窗, 不遮挡中央视野), 配合置顶
+- 请用户实测开始菜单搜索框候选框是否清晰可见
+
+---
+
+## 2026-08-29 (wgime-py-pure: 修复开始菜单/搜索类 UI 不能上屏)
+
+- **根因**:开始菜单搜索框/相关 Shell 宿主(`StartMenuExperienceHost`/`SearchHost`/`ShellExperienceHost`)会吞掉 `SendInput` UNICODE 注入, 候选上屏不进去
+- **修复**:新增 `_CLIP_FORCE` 集合, 这些前台进程时 `effective_paste_mode` 强制返回 `1`(剪贴板上屏); `APPMODES`(用户 pastemode.txt)显式设置仍优先
+- 请用户实测:开始菜单搜索框/搜索面板输入是否能上屏; 若仍有不上的进程, 把该进程名补进 `_CLIP_FORCE`
+
+---
+
+## 2026-08-29 (wgime-py-pure: chat 插件 UI 参考窗体设计规范重做)
+
+- **chat.py 的 ChatUI 改用 `ui.py` 设计系统**(原来是一坨裸 tkinter #F4F7FB/tk.Button/tk.Label, 风格不合规范):
+  - `ui.make_window`(无边框圆角 + 自绘标题栏 + 浅蓝灰底色板)
+  - 消息区 → **深色控制台** `ui.console_text`(#2E3040 底/Consolas)
+  - 昵称/房间/密钥/输入 → **白卡圆角输入** `ui.rounded_entry`
+  - Broker 选择 → **flat 按钮行**(选中 accent 高亮, `_pick_broker`); 加入/离开、发送 → `ui.flat_button`(primary)
+  - 状态栏(status/online) → 主题色 Label
+- **功能逻辑不变**(AES-256/MQTT/relay/收发/在线数), 只重做 UI 布局与控件; 删死代码 `quit()`, 新增 `_on_close`(断网)/`_pick_broker`; `join()` 改读 `_sel_broker`
+- 验证: ChatUI 布局测试通过(深色控制台/圆角输入/flat 按钮高亮切换/控件齐全)
+
+---
+
+## 2026-08-29 (C# wgime.bat: 双拼 üe 映射修复, 与 python 版对齐)
+
+- **SpSegment** 的 `Replace("üe","ue")` 改为仅 `Replace("ü","v")`:原 `üe->ue` 会撞码表 `lue`(蓼/庐等), 打不出 **略/虐**(lve/nve); 与 python 版 engine 的修复对齐(两版同源 bug 一并消除)
+- **连锁动作**:重编译 wgime.bat 瘦 DLL(556KB, bat 3.3MB) + WgIme.ps1(含完整 DLL, 39MB) + WgTray 三版(wgtray.bat/WgTray.ps1/wgtray-nopayload.bat); 同步 release/ 与 wg-all/
+- **修测试脚本 bug**:`tests\wgime-ps1.tests.ps1` 的 `$dllDir` 使用顺序错(第47行用、第48行才定义), 导致 Join-Path null 中断测试; 已修正
+- **测试**:`wgime-ps1.tests.ps1` **15/15 PASS** (含 runtime smoke: 启动/解 DLL/无FATAL/缓存命中)
+
+---
+
+## 2026-08-29 (wgime-py-pure: 剩余低危 — pickle 校验 / z通配分桶 / 简拼顺序)
+
+- **dict-cache pickle 完整性校验**:保存时写 `md5` 字段(对 data), 加载时校验 bytes 一致才用; 缓存被篡改/损坏时检测并重建(留痕日志), 不再静默崩/加载错; 顺带补 `engine.py` 的 `import sys`(此前日志用到却未导入)
+- **五笔 z 通配改码长分桶索引**:新增 `_build_wb_len()` 构建 `wb_by_len`(按码长分桶), z 通配只扫等长桶, 替代原来 `for k in self.wk` 全表线性扫描; `_init_state`/`reload()` 均重建该索引
+- **简拼候选去掉启动预排**:原来按 `self.freq` 预排 acro 列表(与候选排序键不一致), 现改为由 `candidates()` 的统一词频排序决定顺序, 消除不一致
+
+---
+
+## 2026-08-29 (wgime-py-pure: 低危清理 — 死代码/无 with/硬编码/常量/原子写)
+
+- **main**:删冗余 `import importlib`;删死代码 `APPMODE_NAMES`;`load_appmodes`/config 读写改 `with`;抽 `_write_config`(config 原子+正则精确改写, 修 `startswith` 误匹配/BOM);硬编码路径 `C:\Tools\wgime` 改回 BASE;`[python]` 块子进程加 `CREATE_NO_WINDOW`(防闪控制台)
+- **engine**:`learnk/recentk` 提为常量 `DEFAULT_LEARN_K/RECENT_K`(去双处重复);`load_config` docstring 补全;`trad.txt` 用 `with`+`utf-8-sig`+捕获 UnicodeError;`read_import_text` 先 getsize 预检+`with`;`_load_cache` 损坏时留痕日志;新增 `_atomic_write` 用于用户词保存(防写盘损坏)
+- **win**:`get_caret_uia` 变量遮蔽改名(避免覆盖模块级 w)+去 `r and` 死代码;`screen_workarea` 去重复 `user32`;`get_pixel` CLR_INVALID 返回 `None`(不再误判为白色);`self_elevated` 删未用 `import`
+- **tools**:`show_color.tick` 处理 `get_pixel` 返回 `None`
+
+---
+
+## 2026-08-29 (wgime-py-pure: 全面体检高危+中危修复)
+
+- **main**:退出同步落盘词频(`quit_app` 调 `engine.save_freq`);数字键 0 候选 off-by-one 修复;`[python]` 块插件改后台线程执行(不再冻结主线程最长 60s)+子进程 IPC 中文乱码(UTF-8 配置);修 `commit()` is_dyn 在 reset 后判断的回归
+- **engine**:词频保存线程竞争修复(用 RLock 状态锁, 锁内快照/锁外写盘, 不再抛 dictionary changed size);`reload()` 导入码表后重放用户词(不再丢已造词);双拼 üe 映射修正(`üe->ue` 错误会撞 lue 码, 改 `ü->v` 得 lve/nve, 打得出略/虐)
+- **win**:`send_unicode`/`qtfix` 按 UTF-16 码元注入(支持 astral/emoji 代理对, 不再截断);剪贴板改 ctypes 原生实现(零子进程/零编码问题), `paste` 恢复加代际+读回校验防竞态覆盖;删死 import `subprocess` 与 `_ps_quote`
+- **tools**:剪贴板轮询线程加启动守卫(防多开叠加);工具步骤后台线程执行(msgbox/confirm 线程安全, 不再阻塞输入法);取色轮询调度链保持(光标入窗不中断);导入码表对话框点 X 关窗=取消(不再误导入)
+- **hook**:Shift 轻拍带修饰键(Ctrl/Alt/Win)不武装(修 Ctrl+Shift/Alt+Shift 误触发);F8 带修饰键透传(不劫持 Ctrl+F8/Shift+F8);数字键仅组字/联想时吞(裸数字透传, C# 对齐);放行所有注入键(不吞第三方宏/AHK/远程桌面);钩子回调异常保护;`start()` 重入守卫;删死代码 `_is_ime_key`/`_is_compose_key`
+- **plugins**:`kill` 校验 image 名(修 shell 注入)+列表参数不 shell;`file-del` 盘根/UNC 根防护加固(去 glob 元字符后判);`reg-set`/`reg-del` 用 `with` 自动 CloseKey 防句柄泄漏;`[cmd]` 块结束标记修正
+- **ui**:`font()` 用 `tkfont.families` 检测系统可用字体(修死代码);`_round_region` 补 ctypes 签名+失败时 `DeleteObject` 防句柄泄漏;`close()` finally destroy;标题栏文字可拖动
+
+---
+
+## 2026-08-29 (wgime-py-pure: 插件隔离熔断 + 统一 JSON IPC)
+
+- **③ 隔离与超时熔断(中价值)**:`[python]` 块插件改为**子进程运行**(超时 60s, 崩溃/卡死只记日志, 不影响输入法打字);步骤 DSL 的 `run`/`shell` 超时 3600→120s、静默脚本块超时 3600→300s(可见交互块保留);`[csharp]` 保持 sidecar 独立进程
+- **④ 统一 JSON IPC(中价值)**:`[python]` 块支持 `handle(ctx)->actions` JSON 契约(子进程 stdout `@wgime <json>` 行协议, stdin 不依赖;宿主动作 `msg`/`log` 已接入,可扩展 `commit` 上屏);跨语言/脚本插件可遵循此统一协议
+- 文档:plugins/README 更新 `[python]` JSON IPC 契约与 manifest/权限说明
+
+---
+
+## 2026-08-29 (wgime-py-pure: 插件 Manifest 化 + 权限确认)
+
+- **① 插件 Manifest(高价值)**:plugins/*.txt 头部新增 `version/author/requires/perm` 键;plugins/*.py 模块级 `VERSION/AUTHOR/REQUIRES/PERM` 属性;新增 `plugins.py plugin_meta()` 统一读取(兼容 .py 模块与 .txt Plugin 对象)
+- **② 权限声明 + 破坏性确认(高价值)**:`perm` 支持 `low/network/run/registry/destructive`;声明非 `low` 权限的插件运行前弹"插件权限"确认(带版本/作者);步骤 DSL 的破坏性动词(`file-del`/`reg-set`/`reg-del`/`kill`)执行前强确认, 用户拒绝则跳过该步
+- **插件管理 UI**:展示版本/作者/权限(⚠风险标记);`clean-bin.txt` 声明 `perm=destructive` 作示例,`calc.py` 补 manifest
+- 旧插件无这些字段 → 默认 `perm=low`, 行为不变, 不弹确认
+
+---
+
+## 2026-08-29 (wgime-py-pure: 候选条宽度限制 — 不再铺满整屏)
+
+- **候选条最大宽度**上限从"屏幕宽-24"(铺满整屏) 收紧为 `min(屏幕宽-24, 720px)`, 不再铺满屏
+- **候选超宽时动态收紧截断**:候选总宽超上限, 逐步缩短每个候选(24→4 字符逐档), 全部候选仍可见/可数字键选; 到最小仍超则窗口封顶裁剪
+- 修复: 长词候选(如整句/简拼长词)过多时候选条铺满整屏、视觉过长的问题
+
+---
+
+## 2026-08-29 (wgime-py-pure: 字频调整升级 — 默认/主动区分 + 近期热度 + 误学回滚 + K 可配)
+
+- **① 默认/主动选择区分**:commit 只对"主动选择"(非默认第1位/非动态, 即数字键选中)做全量词频学习 + LastPick 置顶;空格确认默认词不再被误强化(靠语料先验), 减少"顺手空格就固化一个词"
+- **④ 近期热度**:engine 新增 `freq_recent` 滑动窗口(RE_CAP=500, 上屏即计、溢出自动过期);候选排序 = `语料先验 + 学习词频×learn_k + 近期热度×recent_k`, 最近常打的词更靠前且会自然过期
+- **② 误学回滚**:上屏词退格删除(联想态退格)时 `unlearn` 撤销最近一次主动学习(freq/freq_m/LastPick/近期窗口), 解决"选错一个词就粘住删不掉"
+- **③ K 可配置**:config.txt 新增 `learnk`(默认5000, 全量学习词频权重)/`recentk`(默认200, 近期热度权重), 可自由调
+- learn/save 逻辑(递增 `+1`/上限90000,30000/保存前20000/50次或5s flush)与 C# 版一致, 不变
+
+---
+
+## 2026-08-29 (wgime-py-pure: 字频[candidate 排序]延续 python 版更优逻辑)
+
+- **对比 C# 版字频机制**:C# 候选排序只按学习词频 `fb[w]` 降序(语料词频 `WordFreq` 仅用于造句, 不参与候选排序);python 版用 `语料基础词频 + 学习词频×5000`,常见词天然靠前 + 用户常用词被顶上来
+- **结论**:权衡后**保留 python 版**(结合语料先验, 更合理),不改成 C# 版纯学习词频排序;源码注释补充该决策说明
+- 其余字频机制(学习递增 `+1`/上限 90000/30000、保存取前 20000、50 次或 5s flush、LastPick 置顶、简拼按综合词频排序)两端本已一致,无需改动
+
+---
+
+## 2026-08-29 (wgime-py-pure: 修复 Store 版 Python 把 %LOCALAPPDATA% 虚拟化导致数据目录不可见)
+
+- **根因**:用户机器 `python` 命令命中 Microsoft Store 版 Python 3.13(运行在 AppContainer 沙箱), 它对 `%LOCALAPPDATA%` 的写入被 Windows **重定向(虚拟化)** 到 `Packages\...\LocalCache\Local\`, 导致真实 `C:\Users\<user>\AppData\Local\wgime-py` **不存在**、用户词库/配置/导入码表不可见也无法管理(资源管理器找不到)。C# 版无此问题(非 Store 应用)。
+- **修复**:`main.py` 启动时用探针(在 `%LOCALAPPDATA%\wgime-py` 下建目录, 看 `realpath` 是否被重定向到 `\packages\` + `\localcache\`)检测 Store 版虚拟化; 若命中, 把 `DATA_DIR` 切到真实 `C:\Users\<user>\wgime-py`(USERPROFILE, 不被虚拟化), 并把虚拟化位置已有数据(userdict/词频/联想/导入码表/dict-cache/site)搬到新目录, 避免丢失
+- 单文件 preamble(`_third_dir`)同样处理, thirdparty.zip 也落到真实位置; 非 Store 版 Python(python.org 官方安装) 走 `_appdata_virtualized=False` 分支, 仍用 `%LOCALAPPDATA%\wgime-py`, 行为不变
+- 当前这台机器数据已自动迁移到 `C:\Users\watl\wgime-py`
+
+---
+
+## 2026-08-28 (wgime-py-pure: 托盘菜单分组 + 中英双语)
+
+- **菜单分组**:托盘菜单按 C# 版结构分组——开关 / 模式 / 选项{繁体输出, 候选窗跟随光标, 主题} / 词库{造词, 导入码表} / 这个程序{改用剪贴板上屏, 标点吞字修复} / 退出,扁平项收进子菜单
+- **双语**:所有标签中英双语,按系统 UI 语言(`GetUserDefaultUILanguage() & 0x3FF == 0x04`)自动选中文/英文,与 C# 版 `CultureInfo.CurrentUICulture` 判定一致;模式名补英文(Mixed/Pinyin/Wubi/Dict)
+- **补造词入口**:词库子菜单加"造词 (Ctrl+Alt+C)",走新增的 `api['makeword']` → `makeword_clipboard()`
+
+---
+
+## 2026-08-28 (wgime-py-pure: 新记事本自动豁免 keyfix + 候选条长度限制 + 内嵌 pystray)
+
+- **新记事本(UWP)上屏乱码修复**:keyfix 的 X+Back 自我中和只在 Win32 EDIT 成立,新记事本是 UWP 控件、不自我中和 → 全角标点后乱码。`effective_keyfix` 加内置白名单 `_KEYFIX_INCOMPATIBLE={'notepad'}`,自动关闭 keyfix;用户 pastemode.txt/托盘切换优先级更高,可显式覆盖
+- **候选条长度限制**:候选显示截断(超长词 >24 字符 + `…`)+ 候选条宽度钳制到屏幕工作区,不再无限长
+- **内嵌 pystray**:纯 Python 依赖内嵌列表加 pystray(托盘),单文件 ~487KB → ~525KB;PIL/cryptography 是二进制扩展(.pyd),无法 zip 内嵌,保持 pip 可选依赖
+
+---
+
+## 2026-08-28 (wgime-py-pure: 第三方库内嵌, 单文件零 pip 依赖)
+
+- **背景**:现代应用(Edge/新记事本)光标跟随需要 UI Automation,纯 Python 侧用 `uiautomation`(纯 Python,基于 `comtypes`)
+- **方案选型**:零第三方方案(ctypes 直调 `UIAutomationCore` COM)需手写 120+ 个 vtable 方法占位 + SAFEARRAY 处理,易错、难维护 → 放弃;改用**内嵌**
+- **内嵌实现**:`build-wgime-pure.py` 在构建时收集 comtypes + uiautomation 的纯 Python 源码(71 个模块,排除 test),打包 zip 内嵌进单文件;运行时解压到 `%LOCALAPPDATA%\wgime-py\site\thirdparty.zip` 并 `zipimport`(标准 import 机制,包结构/相对导入天然正确)
+- **效果**:单文件 ~148KB → ~487KB(zip 压缩后),目标机器零 pip 依赖;本机构建仍须 `pip install uiautomation`(构建脚本要从已装包读源码)
+- **踩坑**:comtypes 的 `_post_coinit` 是"同名模块+包共存",收集时须用 `m.ispkg` 区分——包写 `__init__.py`、模块写 `.py`,否则 zipimport 报 "is not a package"
+
+---
+
+## 2026-08-28 (丢弃 pythonnet 双轨版本)
+
+- 删除 `wgime-py/`（pythonnet + WinForms 双轨方案，已被纯 Python 版完全取代）
+- `trad.txt`（简繁表）与 `pywfreq.txt`（语料词频表）移到仓库根——纯 Python 版 `build-package.ps1` 从仓库根取这两个文件
+
+---
+
 ## 2026-08-27 (wgime-py-pure: 全部迁移 + 单文件化)
 
 - 其余插件: clock(置顶时钟)/calc(安全计算器)/chat 纯 Python + tkinter

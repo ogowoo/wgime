@@ -6,6 +6,9 @@
 code = qls
 name = 清空回收站
 desc = confirm 后调用 PowerShell Clear-RecycleBin
+version = 1.0
+author = ogowoo
+perm = destructive
 
 confirm 确定清空回收站吗?
 [powershell]

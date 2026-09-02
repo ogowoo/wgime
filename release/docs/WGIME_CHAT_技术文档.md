@@ -31,6 +31,7 @@
 | Cloudflare Relay | `itools-chat\cloudflare\worker.js`（45 行） | Cloudflare Worker + Durable Objects | 私有极简中继 `wss://chat.seee.uno`，每房间一个 DO 广播 |
 | 公共 MQTT broker | 第三方公共服务（EMQX / HiveMQ / Mosquitto） | MQTT 3.1.1 over WebSocket / TCP / TLS | 无服务器组网的核心 |
 | WgIme chat 插件 | `WgIme\plugins\chat.txt` | WgIme C# 插件（WinForms） | **2026-08-25 已重写**：relay/MQTT 双模式互通（M1+M2 完成），见 §8.2 |
+| 纯 Python 版 chat 插件 | `WgIme\wgime-py-pure\plugins\chat.py` | 纯 Python 插件（tkinter，CODE='lt'） | 与 C# 版插件同协议互通（relay/MQTT + AES-256-CBC），见 §7.4 |
 
 ### 1.2 三种组网模式
 
@@ -398,6 +399,17 @@ file-resend:{type, id, missing:[...], room}
 
 - 名称 `itools-chat-relay`，compatibility_date 2024-09-01，DO 迁移 tag v1
 - 行为见 §2.2；部署：`cd cloudflare && npx wrangler deploy`（需 Cloudflare 账号权限）
+
+### 7.4 纯 Python 版 chat 插件（`wgime-py-pure\plugins\chat.py`）
+
+纯 Python 版 WgIme 自带的 chat 插件，**与 C# 版 `plugins\chat.txt`（§8.2）走同一套 relay/MQTT 协议、与 PC/Android 各端互通**：
+
+- **传输分流**：与 §8.2 相同——broker 地址命中 `chat.seee.uno` → Cloudflare relay 裸 JSON 文本帧（§2.2）；其余 broker → MQTT 3.1.1 over WebSocket（`/mqtt` 路径 + 必须 `mqtt` 子协议，§2.1）。内置 broker 表同 PC 端 5 项（Cloudflare / HiveMQ-TLS / EMQX / Mosquitto / HiveMQ），WS 客户端为 `wspy` 模块（纯 Python 手写 WebSocket）。
+- **加密**：AES-256-CBC + HMAC-SHA256（Encrypt-then-MAC，`ivHex:ctHex:hmacHex` 三段格式），与 §4 规范字节级一致、可与各端互解；`cryptography` 库为可选依赖（装了才能用加密聊天）。
+- **编码**：`CODE='lt'`、NAME='聊天'，与 C# 版同一启动器编码，输入 `lt` 弹出聊天窗。docId 用 `'py-' + 10位hex`（§3.1：任意唯一字符串即可）。
+- **UI**：tkinter 聊天窗，已按 `ui.py`（窗体设计语言的 Python 实现，规范见 `docs/WGIME_窗体设计语言.md`）重做——深色控制台风格消息区 + 白卡圆角输入区 + flat 按钮的 Broker 选择（无边框圆角 + 自绘标题栏）。
+- **线程模型**：`run()` 在 tkinter 主线程建窗口；连接 / 接收全部走后台线程，UI 更新经 `queue.Queue` 队列回主线程（相当于 C# 版的 `SynchronizationContext.Post`），网络阻塞不冻结窗体。
+- **插件机制与 JSON IPC**：chat.py 是 `plugins/*.py` 模块插件（模块级 `CODE/NAME/DESC` + `run()` 入口，宿主内加载）；步骤 DSL 插件的 `[python]` 块则走**子进程隔离 + JSON IPC 契约**——入口 `handle(ctx) -> actions`，stdout 用 `@wgime <json>` 行协议回传动作（超时 60s，见 `docs/WGIME_插件规范.md`）。**别把 `[python]` 块改回同进程 `exec`**（会拖垮宿主）。
 
 ---
 

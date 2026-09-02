@@ -10,24 +10,27 @@ $dicts = Join-Path $pkg 'dicts'
 python (Join-Path $here 'build-wgime-pure.py')
 if (-not (Test-Path (Join-Path $dist 'wgime-py.py'))) { throw 'dist\wgime-py.py missing after build' }
 
-# 2. refresh package
+# 2. refresh package (清空内容再重建; 目录本身可能被某进程 cwd 占用, 不删目录只清内容)
 New-Item -ItemType Directory -Force $pkg | Out-Null
+Get-ChildItem $pkg -Recurse -Force | Remove-Item -Recurse -Force -EA SilentlyContinue
 New-Item -ItemType Directory -Force $dicts | Out-Null
 Copy-Item (Join-Path $dist 'wgime-py.py') $pkg -Force
 Copy-Item (Join-Path $here 'run-csharp-plugin.ps1') $pkg -Force   # [csharp] sidecar
 
-# 3. refresh dicts from the repo (C:\Tools\wgime)
-$src = 'C:\Tools\wgime'
-foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'config.txt', 'tools.txt')) {
+# 3. refresh dicts (码表 + import 产物) from the repo root -> package\dicts\
+$src = Split-Path $here -Parent
+foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'import_py.txt', 'import_wb.txt', 'import_ec.txt')) {
     $p = Join-Path $src $n
     if (Test-Path $p) { Copy-Item $p $dicts -Force } else { Write-Warning "missing $n in $src" }
 }
-# plugins\*.txt -> package\plugins\ (程序同级, 与 C# 版一致)
+# 4. config/tools/plugins 平级 -> package 根 (与 dicts 平级, 不与码表混)
+foreach ($n in @('config.txt', 'tools.txt')) {
+    $p = Join-Path $src $n
+    if (Test-Path $p) { Copy-Item $p $pkg -Force } else { Write-Warning "missing $n in $src" }
+}
 $pd = Join-Path $pkg 'plugins'
 New-Item -ItemType Directory -Force $pd | Out-Null
 Copy-Item (Join-Path $src 'plugins\*.txt') $pd -Force -ErrorAction SilentlyContinue
-# 纯 Python 插件 (wgime-py-pure\plugins\*.py) 也进 package\plugins\
-Copy-Item (Join-Path $here 'plugins\*.py') $pd -Force -ErrorAction SilentlyContinue
 
 $size = [math]::Round((Get-ChildItem -Recurse $pkg | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host ('package ready: ' + $pkg + ' (' + $size + ' MB)')

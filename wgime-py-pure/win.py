@@ -3,7 +3,24 @@
 import ctypes
 import ctypes.wintypes as w
 import os
-import subprocess
+
+# debug 日志(光标跟随耗时排查用): 设 WGIME_DEBUG=1 时才记录, 不拖慢正常输入.
+# 写 %LOCALAPPDATA%\wgime-py\debug.log (与 main.py _dfn 同文件, 便于一起看).
+_DEBUG_CARET = (os.environ.get('WGIME_DEBUG', '') == '1')
+
+
+def _dlog(text):
+    if not _DEBUG_CARET:
+        return
+    try:
+        la = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
+        d = os.path.join(la, 'wgime-py')
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'debug.log'), 'a', encoding='utf-8') as f:
+            f.write('%.3f [win] %s\n' % (__import__('time').time(), text))
+    except Exception:
+        pass
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -38,19 +55,22 @@ class INPUT(ctypes.Structure):
 
 
 def send_unicode(text, magic=MAGIC):
-    """per-char sendunicode; return count sent."""
+    """per-char sendunicode; 按 UTF-16 码元注入(支持 astral/emoji 代理对, 不再截断); return count sent."""
     text = text or ''
-    n = len(text) * 2
+    units = text.encode('utf-16-le', 'surrogatepass')   # 每 2 字节一个 UTF-16 码元
+    nunits = len(units) // 2
+    n = nunits * 2
     if n == 0:
         return 0
     arr = (INPUT * n)()
-    for i, ch in enumerate(text):
+    for i in range(nunits):
+        code = units[2 * i] | (units[2 * i + 1] << 8)
         lo = 2 * i
         arr[lo].type = 1
-        arr[lo].u.ki.wScan = ord(ch)
+        arr[lo].u.ki.wScan = code
         arr[lo].u.ki.dwFlags = 0x4                                   # KEYEVENTF_UNICODE down
         arr[lo + 1].type = 1
-        arr[lo + 1].u.ki.wScan = ord(ch)
+        arr[lo + 1].u.ki.wScan = code
         arr[lo + 1].u.ki.dwFlags = 0x4 | 0x2                         # UNICODE + KEYUP
         arr[lo].u.ki.dwExtraInfo = magic
         arr[lo + 1].u.ki.dwExtraInfo = magic
@@ -58,13 +78,15 @@ def send_unicode(text, magic=MAGIC):
 
 
 def send_unicode_qtfix(text, magic=MAGIC):
-    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避)."""
+    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避). 按 UTF-16 码元注入, 标点判断仅对 BMP."""
     items = []
-    for ch in text:
-        items.append(('uk', ord(ch)))
-        items.append(('ku', ord(ch)))
-        if ch >= '\u3000' and not (0x4E00 <= ord(ch) <= 0x9FFF) and not (0x3400 <= ord(ch) <= 0x4DBF) \
-                and not (0xF900 <= ord(ch) <= 0xFAFF):
+    units = text.encode('utf-16-le', 'surrogatepass')
+    for i in range(len(units) // 2):
+        code = units[2 * i] | (units[2 * i + 1] << 8)
+        items.append(('uk', code))
+        items.append(('ku', code))
+        if 0x3000 <= code <= 0xFFFF and not (0x4E00 <= code <= 0x9FFF) and not (0x3400 <= code <= 0x4DBF) \
+                and not (0xF900 <= code <= 0xFAFF):
             items.append(('uk', ord('X')))
             items.append(('ku', ord('X')))
             items.append(('dn', 0x08))
@@ -104,11 +126,16 @@ def send_key_backspace(magic=MAGIC):
     return user32.SendInput(2, arr, ctypes.sizeof(INPUT))
 
 
+_paste_gen = [0]   # 剪贴板粘贴代际: 连续粘贴时旧恢复线程不覆盖新内容
+
+
 def paste_text(text, magic=MAGIC):
-    """剪贴板粘贴 (提权窗口回退): 保存/恢复原剪贴板."""
+    """剪贴板粘贴 (提权窗口回退): 保存/恢复原剪贴板; 代际+读回校验防竞态覆盖."""
     prev = clipboard_text()
     if prev is not None and len(prev) == 0:
         prev = None                                            # 空原文不恢复
+    _paste_gen[0] += 1
+    gen = _paste_gen[0]
     clipboard_set(text)
     import time
     time.sleep(0.06)
@@ -127,27 +154,68 @@ def paste_text(text, magic=MAGIC):
     time.sleep(0.15)
     if prev:
         import threading
-        threading.Thread(target=lambda: (time.sleep(0.3), clipboard_set(prev)), daemon=True).start()
+        def restore():
+            time.sleep(0.3)
+            if _paste_gen[0] == gen and clipboard_text() == text:   # 无新粘贴且剪贴板仍是我们设的值才恢复
+                clipboard_set(prev)
+        threading.Thread(target=restore, daemon=True).start()
+
+
+# ---------- 剪贴板 (ctypes 原生, 零子进程/零编码问题) ----------
+user32.OpenClipboard.restype = w.BOOL
+user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+user32.GetClipboardData.restype = ctypes.c_void_p
+user32.GetClipboardData.argtypes = [w.UINT]
+user32.SetClipboardData.restype = ctypes.c_void_p
+user32.SetClipboardData.argtypes = [w.UINT, ctypes.c_void_p]
+user32.EmptyClipboard.restype = w.BOOL
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalAlloc.argtypes = [w.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 
 
 def clipboard_text():
-    try:
-        return subprocess.run(['powershell.exe', '-NoProfile', '-Command', 'Get-Clipboard'],
-                              capture_output=True, encoding='utf-8', creationflags=0x08000000).stdout.rstrip('\r\n')
-    except Exception:
+    """读剪贴板文本 (ctypes 原生, 零子进程/零编码问题); 非文本/失败返回 None."""
+    if not user32.OpenClipboard(0):
         return None
+    try:
+        h = user32.GetClipboardData(13)            # CF_UNICODETEXT
+        if not h:
+            return None
+        p = kernel32.GlobalLock(h)
+        if not p:
+            return None
+        try:
+            return ctypes.wstring_at(p)
+        finally:
+            kernel32.GlobalUnlock(h)
+    finally:
+        user32.CloseClipboard()
 
 
 def clipboard_set(text):
+    """写剪贴板文本 (ctypes 原生); 失败静默."""
+    if text is None:
+        text = ''
     try:
-        subprocess.run(['powershell.exe', '-NoProfile', '-Command', 'Set-Clipboard -Value %s' % _ps_quote(text)],
-                       capture_output=True, encoding='utf-8', creationflags=0x08000000)
+        user32.OpenClipboard(0)
     except Exception:
-        pass
-
-
-def _ps_quote(s):
-    return "'" + s.replace("'", "''") + "'"
+        return
+    try:
+        user32.EmptyClipboard()
+        data = (str(text) + '\0').encode('utf-16-le')
+        h = kernel32.GlobalAlloc(0x0002, len(data))   # GMEM_MOVEABLE
+        if not h:
+            return
+        p = kernel32.GlobalLock(h)
+        if p:
+            ctypes.memmove(p, data, len(data))
+            kernel32.GlobalUnlock(h)
+            user32.SetClipboardData(13, h)            # CF_UNICODETEXT
+    finally:
+        user32.CloseClipboard()
 
 
 # ---------- 光标跟随 ----------
@@ -166,20 +234,105 @@ class GUITHREADINFO(ctypes.Structure):
 
 
 _last_caret = [None]
-_uia = [None]
+_last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback' | 'focus' | 'uia'
+# caret 抖动检测: 记录最近几次 GUITI caret, 若方向反复横跳/大幅摆动则判不可信(浏览器等自绘应用),
+# 避免候选窗"跳舞". 用 deque 环形.
+import collections as _col
+_guiti_hist = _col.deque(maxlen=5)
+
+# ---------------- UIA 首选(可选) + 纯 Win32 回退 ----------------
+# UIA(comtypes/uiautomation)仅在可用时作为首选精确路径; 一旦探测故障即 _uia_disabled=True 锁死,
+# get_caret_pos 不再走 UIA, 回退到纯 ctypes Win32(不重复报 typelib/COM 错).
+_uia = [None]            # 缓存的 uiautomation 模块(惰性)
+_uia_el = [None]         # UIA 刷新的精确 caret 屏幕坐标缓存
+_uia_t = [0.0]           # 上次 UIA 检索时间
+_uia_fg = [0]            # 上次检索的前台 hwnd
+_uia_disabled = [False]  # UIA 已确认不可用锁死, 后续跳过
+_uia_import_broken = [False]
+_uia_bg_started = [False]  # 后台 UIA 线程只启动一次
 
 
-def get_caret_uia():
-    """UI Automation 光标 (现代应用 Edge/Explorer/Office, GetGUIThreadInfo 探测不到时)."""
+def _import_uia_robust():
+    """惰性导入 uiautomation(经 comtypes). 若 typelib/加载失败(用户环境 comtypes-UIA 不可用),
+    打补丁中和 _check_version 再试一次; 仍失败返回 None(由调用方置 _uia_disabled)."""
+    if _uia_import_broken[0]:
+        return None
+    try:
+        from comtypes import _tlib_version_checker as _tvc
+        _tvc._check_version = lambda *a, **k: None
+    except Exception:
+        pass
+    try:
+        import uiautomation as auto
+        return auto
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        pass
+    # 仍失败: 清 comtypes.gen 缓存重试一次(内存重新生成).
+    try:
+        import sys
+        for k in list(sys.modules):
+            if k.startswith('comtypes.gen.') and ('UIAutomation' in k or '944DE083' in k):
+                del sys.modules[k]
+        import comtypes.gen
+        for a in [a for a in dir(comtypes.gen) if 'UIAutomation' in a or '944DE083' in a]:
+            try:
+                delattr(comtypes.gen, a)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import uiautomation as auto
+        return auto
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        _uia_import_broken[0] = True
+        return None
+
+
+def _get_uia_caret():
+    """用 uiautomation 拿精确 caret 屏幕坐标(后台线程调用). 失败/异常即置 _uia_disabled, 返回 None."""
+    if _uia_disabled[0]:
+        return None
+    import time
     try:
         if _uia[0] is None:
-            import uiautomation as auto
+            auto = _import_uia_robust()
+            if auto is None:
+                _uia_disabled[0] = True
+                _dlog('uia: import failed -> UIA disabled')
+                return None
             _uia[0] = auto
         auto = _uia[0]
-        el = auto.GetFocusedControl()
+        fg = user32.GetForegroundWindow()
+        # 前台变了才重查; 否则仅在节流窗口外查(减少慢调用).
+        now = time.time()
+        if fg == _uia_fg[0] and (now - _uia_t[0]) < 0.15:
+            return _uia_el[0]
+        try:
+            el = auto.GetFocusedControl()
+        except BaseException:
+            # 线程内未初始化 UIA 或单例坏: 重置重试一次.
+            import uiautomation.uiautomation as _uu
+            try:
+                _uu._AutomationClient._instance = None
+            except Exception:
+                pass
+            try:
+                el = auto.GetFocusedControl()
+            except BaseException:
+                el = None
+        _uia_t[0] = now
+        _uia_fg[0] = fg
         if not el:
+            # 拿不到聚焦控件: 可能 UIA 在该环境整体不可用 -> 锁死, 回退 Win32.
+            _uia_disabled[0] = True
+            _dlog('uia: GetFocusedControl el=False -> UIA disabled')
             return None
-        # 精确光标: ITextPattern.GetSelection()
+        # TextPattern 选区矩形(精确 caret)
         try:
             tp = el.GetPattern(auto.PatternId.TextPattern)
             if tp:
@@ -188,61 +341,234 @@ def get_caret_uia():
                     rects = sel[0].GetBoundingRectangles()
                     if rects:
                         r = rects[0]
-                        return (int(r.left), int(r.bottom))
+                        ch = r.bottom - r.top
+                        if 4 <= ch <= 200 and (r.right - r.left) >= 0:
+                            pos = (int(r.left), int(r.bottom))
+                            _uia_el[0] = pos
+                            return pos
         except Exception:
             pass
-        # 回退: 聚焦控件边界 (只算小控件, 避免全屏/整窗)
-        r = el.BoundingRectangle
-        w = r.right - r.left
-        h = r.bottom - r.top
-        if r and 0 < w < 2000 and h < 400:
-            return (int(r.left), int(r.bottom))
-    except Exception:
-        pass
+    except BaseException:
+        _uia_disabled[0] = True
+        _dlog('uia: exc -> UIA disabled')
+        return None
     return None
 
 
+def _caret_bg_loop():
+    """后台线程: 周期用 UIA 刷新精确 caret 到 _uia_el[0]; UIA 不可用则退出(主线程走 Win32)."""
+    import time
+    try:
+        _dlog('uia: bg started')
+        while not _uia_disabled[0]:
+            _get_uia_caret()
+            time.sleep(0.12)
+        _dlog('uia: bg stopped (disabled)')
+    except Exception:
+        pass
+
+
+def ensure_caret_bg():
+    """启动 UIA 后台刷新线程(仅一次). UIA 不可用会自行停, 不影响 Win32 回退."""
+    import threading
+    if _uia_bg_started[0]:
+        return
+    _uia_bg_started[0] = True
+    try:
+        threading.Thread(target=_caret_bg_loop, daemon=True).start()
+    except Exception:
+        pass
+
+
 def get_caret_pos():
-    """光标屏幕坐标. GetGUIThreadInfo -> UIA -> 上次有效位 -> 前台窗口客户区."""
+    """光标屏幕坐标(主线程, 绝不阻塞). 顺序: UIA缓存(首选,后台刷新) -> GetGUIThreadInfo ->
+    聚焦输入框矩形 -> 输入感知鼠标 -> 上次有效位 -> 前台窗口底部. UIA 不可用时自动回退纯 Win32."""
+    import time as _t
+    _t0 = _t.time()
+    # UIA 缓存(后台线程刷新的精确 caret)首选; 主线程只读缓存, 绝不在此跑 UIA.
+    if not _uia_disabled[0] and _uia_el[0] is not None:
+        # UIA 缓存只在"前台窗口未变"时可靠(后台线程按前台刷新). 前台已变(刚切换应用)时缓存是旧窗口的
+        # 坐标, 用它会让候选窗先跳到旧位置再跳回来(表现为"刚输入就跳"). 故前台变时忽略缓存, 走下去用 GUITI.
+        if _uia_fg[0] == user32.GetForegroundWindow():
+            _last_caret_source[0] = 'uia'
+            _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
+            return _uia_el[0]
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
         g = GUITHREADINFO()
         g.cbSize = ctypes.sizeof(GUITHREADINFO)
-        if user32.GetGUIThreadInfo(tid, ctypes.byref(g)) and g.hwndCaret:
-            pt = POINT(g.rcCaret.left, g.rcCaret.bottom)
+        ok = bool(user32.GetGUIThreadInfo(tid, ctypes.byref(g)))
+        # 宽容判定(对齐 C# TryGetCaretScreenRect): 只要 hwndCaret 存在就采纳, 用 rcCaret.top 定位,
+        # 容忍退化 caret(某些 Electron/Qt 给的是 2x2/零尺寸, 但 (x,y) 真实跟踪光标).
+        if ok and g.hwndCaret:
+            pt = POINT(g.rcCaret.left, g.rcCaret.top)
             user32.ClientToScreen(g.hwndCaret, ctypes.byref(pt))
-            _last_caret[0] = (pt.x, pt.y)
-            return _last_caret[0]
-    except Exception:
-        pass
-    p = get_caret_uia()
-    if p:
-        _last_caret[0] = p
-        return p
+            # 防最小化坐标(-32000)与越界.
+            if pt.x > -10000 and pt.y > -10000:
+                cand = (pt.x, pt.y)
+                # 抖动检测: 若 caret 在历史里大幅往返/摆动(方向反复, 或单帧大幅跳), 判不可信,
+                # 退回鼠标. 真光标通常原地或小幅单向移动, 不会剧烈横跳.
+                if _caret_jittery(cand):
+                    _dlog('get_caret_pos: GUITI jittery reject cand=%s' % (cand,))
+                else:
+                    _last_caret[0] = cand
+                    _last_caret_source[0] = 'caret'
+                    _dlog('get_caret_pos: GUITI ok(%.1fms) hwndCaret=%s rc=(%d,%d,%d,%d) -> %s' % (
+                        (_t.time()-_t0)*1000, bool(g.hwndCaret),
+                        g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, cand))
+                    return cand
+            _dlog('get_caret_pos: GUITI degenerate(minimized?) hwndCaret=%s pt=(%d,%d)' % (
+                bool(g.hwndCaret), pt.x, pt.y))
+        else:
+            _dlog('get_caret_pos: GUITI fail(%.1fms) ok=%s hwndCaret=%s rcCaret=(%d,%d,%d,%d) fg=%s' % (
+                (_t.time()-_t0)*1000, ok, bool(g.hwndCaret),
+                g.rcCaret.left, g.rcCaret.top, g.rcCaret.right, g.rcCaret.bottom, fg))
+    except Exception as e:
+        _dlog('get_caret_pos: GUITI exc(%.1fms) %s' % ((_t.time()-_t0)*1000, repr(e)))
+    # GUITI 无 caret: 尝试聚焦输入框矩形(纯 Win32, 很多现代应用的文本控件是真 HWND).
+    fr = _focus_edit_rect()
+    if fr is not None:
+        _last_caret_source[0] = 'focus'
+        _dlog('get_caret_pos: focus-edit(%.1fms) -> %s' % ((_t.time()-_t0)*1000, fr))
+        return fr
+    # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用"输入感知鼠标位"作兜底.
+    mpos = _input_aware_mouse_pos()
+    if mpos is not None:
+        _last_caret_source[0] = 'mouse'
+        _dlog('get_caret_pos: mouse-fallback(%.1fms) -> %s' % ((_t.time()-_t0)*1000, mpos))
+        return mpos
     if _last_caret[0]:
+        _last_caret_source[0] = 'last'
+        _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
         return _last_caret[0]
+    _last_caret_source[0] = 'fallback'
+    _dlog('get_caret_pos: fallback-origin(%.1fms)' % ((_t.time()-_t0)*1000))
     return _foreground_client_origin()
 
 
+def _input_aware_mouse_pos():
+    """输入感知鼠标兜底位. 垂直 y = 鼠标 y(输入行常在鼠标附近高度); 水平 x:
+    若鼠标在前台窗口内 -> 用鼠标 x; 否则(鼠标停在工具栏/屏幕角落) -> 用前台窗口水平中央,
+    避免候选窗跑到屏幕角落. 返回 (x, y) 或 None."""
+    p = _mouse_pos()
+    if p is None:
+        return None
+    mx, my = p
+    fg = user32.GetForegroundWindow()
+    if fg:
+        r = RECT()
+        if user32.GetClientRect(fg, ctypes.byref(r)):
+            tl = POINT(0, 0)
+            user32.ClientToScreen(fg, ctypes.byref(tl))
+            # 前台窗口的屏幕矩形
+            win_l, win_t = tl.x, tl.y
+            win_r, win_b = tl.x + r.right, tl.y + r.bottom
+            if win_l <= mx <= win_r and win_t <= my <= win_b:
+                return mx, my           # 鼠标在窗口内, 直接用(光标列接近鼠标横向)
+            # 鼠标在窗口外 -> 水平取窗口中央, 垂直仍用鼠标 y(避免贴到屏幕角落)
+            return win_l + r.right // 2, my
+        # 拿不到窗口矩形, 退回鼠标点
+        return mx, my
+    return mx, my
+
+def _mouse_pos():
+    """鼠标光标屏幕坐标(非 UIA 兜底, 快速)."""
+    try:
+        p = POINT()
+        if user32.GetCursorPos(ctypes.byref(p)):
+            return p.x, p.y
+    except Exception:
+        pass
+    return None
+
+
+def _caret_jittery(cand):
+    """判断 GUITI caret 候选是否"抖动/漂移"不可信. 若候选相对历史位置大幅往返(单帧跳变大且方向
+    反复), 视为自绘应用的噪声(浏览器 etc), 返回 True -> 调用方退回鼠标. 真光标移动幅度小且方向一致."""
+    _guiti_hist.append(cand)
+    if len(_guiti_hist) < 2:
+        return False
+    # 连续两帧的位移
+    prev = _guiti_hist[-2]
+    dx = cand[0] - prev[0]
+    dy = cand[1] - prev[1]
+    import math as _m
+    dist = _m.hypot(dx, dy)
+    if dist > 120:      # 单帧跳超 120px(跨越整屏跳动), 很像噪声
+        return True
+    # 看最近 3 帧是否方向反复(先右后左 / 先上后下 来回横跳)
+    if len(_guiti_hist) >= 3:
+        p0 = _guiti_hist[-3]
+        d1 = (cand[0] - prev[0], cand[1] - prev[1])
+        d2 = (prev[0] - p0[0], prev[1] - p0[1])
+        # x 方向或 y 方向出现明显反向(>40px) => 横跳
+        if (d1[0] > 40 and d2[0] < -40) or (d1[0] < -40 and d2[0] > 40):
+            return True
+        if (d1[1] > 30 and d2[1] < -30) or (d1[1] < -30 and d2[1] > 30):
+            return True
+    return False
+
+
+def _focus_edit_rect():
+    """取当前聚焦窗口(GetFocus)的屏幕矩形, 作为"输入框"位置的近似. 纯 Win32(不依赖 UIA):
+    很多现代应用(Chrome/部分 Electron 对话框)的文本控件是真实 HWND, GetWindowRect 能拿到其
+    位置, 比鼠标更贴近输入框. 若能拿到且矩形合理(非全屏/非空), 返回 (x, y) 光标近似点."""
+    try:
+        hwnd = user32.GetFocus()
+        if not hwnd:
+            return None
+        r = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            return None
+        w = r.right - r.left
+        h = r.bottom - r.top
+        # 合理输入框: 宽 > 40, 高 8~90, 且不是全屏.
+        if w > 40 and 8 <= h <= 90 and w < 4000:
+            # 用输入框左边缘下方作为候选窗锚点(贴近光标列/行).
+            return r.left + 12, r.top + h // 2
+    except Exception:
+        pass
+    return None
+
+
 def _foreground_client_origin():
-    """前台窗口客户区左上角的屏幕坐标 (光标探测失败的回退)."""
+    """前台窗口底部居中的屏幕坐标(光标探测失败的回退, 贴近输入区而非左上角)."""
     try:
         fg = user32.GetForegroundWindow()
         if not fg:
             return None
+        r = RECT()
+        if user32.GetClientRect(fg, ctypes.byref(r)):
+            tl = POINT(0, 0)
+            user32.ClientToScreen(fg, ctypes.byref(tl))
+            # 底部居中附近(略靠左, 贴近常见输入区/任务栏上方), 宽高按 1/3 估算.
+            x = tl.x + r.right // 3
+            y = tl.y + max(r.bottom - 60, 0)
+            return x, y
         pt = POINT(0, 0)
         user32.ClientToScreen(fg, ctypes.byref(pt))
-        return pt.x + 12, pt.y + 40
+        return pt.x + 120, pt.y + 200
     except Exception:
         return None
 
 
 def screen_workarea():
-    sm = ctypes.windll.user32
     r = RECT()
-    sm.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)
+    user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)
     return r
+
+
+def set_topmost(hwnd):
+    """把窗口提到 topmost z-order 最顶(Win11 开始菜单等 Shell 层会比普通 topmost 更高, 用它压回)."""
+    try:
+        user32.SetWindowPos.restype = w.BOOL
+        user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, w.UINT]
+        flags = 0x0001 | 0x0002 | 0x0010                       # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        user32.SetWindowPos(ctypes.c_void_p(hwnd), ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
+    except Exception:
+        pass
 
 
 class MONITORINFO(ctypes.Structure):
@@ -279,6 +605,8 @@ def get_pixel(x, y):
         px = gdi32.GetPixel(hdc, x, y)
     finally:
         user32.ReleaseDC(0, hdc)
+    if px == 0xFFFFFFFF:      # CLR_INVALID: 取色失败(越屏/无DC) -> None, 避免误判为白色
+        return None
     return px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF
 
 
@@ -304,7 +632,6 @@ def foreground_process_name():
 
 def self_elevated():
     try:
-        from ctypes import wintypes
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False

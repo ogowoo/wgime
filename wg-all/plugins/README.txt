@@ -7,6 +7,12 @@
   code = qls            ; 启动编码 (小写 a-z, 必填, 唯一)
   name = 清空回收站      ; 显示名 (必填)
   desc = 说明            ; 可选
+  version = 1.0         ; 版本号 (可选, 插件管理显示)
+  author = 你的名字       ; 作者 (可选)
+  requires = none        ; 需要的运行时/依赖 (可选; 如 node / python3)
+  perm = low            ; 权限 (可选; low/network/run/registry/destructive)
+                         ;   network=联网, run=执行命令, registry=改注册表, destructive=删文件/清理
+                         ;   声明了非 low 权限的插件, 运行前会弹权限确认; [python]/[csharp] 同理可用模块级或块内 meta
 
   <步骤>                 ; 头部之后直到文件末尾都是步骤
 
@@ -44,6 +50,13 @@ C# 代码插件 (要窗体就用它):
         注意是 C# 5 语法 (.NET 4.x CodeDom)
   示例: clock.txt (输入 sz 弹现代风悬浮时钟: 时钟/闹钟/倒计时/秒表计次/番茄统计)
         chat.txt  (输入 lt 弹局域网聊天: 与 itools-chat (chat.bat) 互通, 无需服务器)
+
+Python 代码插件 + JSON IPC (子进程隔离, 超时熔断) (python 版 wgime-py-pure):
+  [python] ... [/python]            内嵌 Python 源码, 子进程运行 (崩溃/超时不影响输入法打字)
+  两种契约: 定义 run() 作普通脚本; 或定义 handle(ctx)->actions 走 JSON IPC:
+    handle(ctx): ctx = {code,name,buff,mode}; 返回动作列表, 示例:
+      return [{"action":"msg","text":"结果"}, {"action":"log","text":"..."}]
+  支持的宿主动作: msg=弹窗提示, log=记日志; 可自行扩展 (commit 上屏等)
 
 建议: 破坏性操作先 confirm; 步骤幂等; 长任务 msg 报进度。
 完整规范见仓库 docs\WGIME_插件规范.md; 窗体设计语言见 docs\WGIME_窗体设计语言.md。

@@ -11,9 +11,12 @@ import bisect
 import math
 import os
 import re
+import sys
 import threading
 import time
+from collections import deque
 
+RE_CAP = 500      # 近期热度滑动窗口: 最近上屏的 (mode, word) 数, 超出溢出最旧 -> 自动过期
 CAND_CAP = 60
 PAGE_SIZE = 9
 MODE_SUFFIX = ('mix', 'py', 'wb')
@@ -85,7 +88,7 @@ def sp_segment(seg, scheme):
         seg = seg[:1]                                # 零声母单韵母: aa/oo/ee -> a/o/e
     if scheme != 1 and seg == 'r':
         seg = 'er'                                   # 自然码/微软: er 单击 r
-    return seg.replace('üe', 'ue').replace('ü', 'v')  # 码表约定: lü->lv
+    return seg.replace('ü', 'v')   # 码表约定: lü->lv, lüe->lve (略/虐); 不要 'üe->ue'(会撞 lue 蓼/庐 码)
 
 
 def shuangpin_expand(keys, scheme):
@@ -188,11 +191,18 @@ def is_all_cjk(s):
 
 
 # ---------- config.txt (与 C# LoadConfig 同格式) ----------
+DEFAULT_LEARN_K = 5000   # 全量学习词频排序权重 (config learnk, 默认)
+DEFAULT_RECENT_K = 200   # 近期热度排序权重 (config recentk, 默认)
+
+
 def load_config(path):
-    """返回 dict: fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps"""
+    """解析 config.txt 返回 dict(与 C# LoadConfig 同格式):
+    fuzzy/showcode/hideidle/shuangpin/trad/sentence/assoc/starton/apps/paste/keyfix/
+    followcaret/theme/learnk/recentk/phrases."""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
-               paste=3, keyfix=True, followcaret=True, theme='dark')
+               paste=3, keyfix=True, followcaret=True, theme='dark',
+               learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K)
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -234,6 +244,16 @@ def load_config(path):
                     cfg['paste'] = {'on': 1, 'always': 1, 'off': 2, 'key': 3, 'unicode': 3}.get(v, 0)
                 elif k == 'keyfix':
                     cfg['keyfix'] = v in ('1', 'on', 'true')
+                elif k == 'learnk':
+                    try:
+                        cfg['learnk'] = max(0, int(v))
+                    except ValueError:
+                        pass
+                elif k == 'recentk':
+                    try:
+                        cfg['recentk'] = max(0, int(v))
+                    except ValueError:
+                        pass
                 elif k == 'followcaret':
                     cfg['followcaret'] = v not in ('0', 'off', 'false')
                 elif k == 'theme':
@@ -288,6 +308,21 @@ def build_sorted(d):
     return ks, [d[k] for k in ks]
 
 
+def overlay_import(target, imp):
+    """C# OverlayImport 语义: 已有候选保持优先, 新候选追加去重 (import_*.txt 叠加)."""
+    for k, v in imp.items():
+        cur = target.get(k)
+        if cur is None:
+            target[k] = v
+        else:
+            existing = set(cur.split(' '))
+            for w in v.split(' '):
+                if w and w not in existing:
+                    cur = cur + ' ' + w
+                    existing.add(w)
+            target[k] = cur
+
+
 def build_char_py(py):
     """char -> [pinyin...] (按 key 排序遍历, 与 BuildCharPy 一致)"""
     char_py = {}
@@ -337,6 +372,183 @@ def build_reverse(ec):
     return {k: ' '.join(v) for k, v in rev.items()}
 
 
+# ---------- 码表导入 (转换常见码表 -> import_py/wb/ec.txt, 对齐 C# ImportCodeTable) ----------
+def is_pure_ascii(s):
+    return bool(s) and all(ord(c) <= 0x7F for c in s)
+
+
+def is_all_digits(s):
+    return bool(s) and all('0' <= c <= '9' for c in s)
+
+
+def valid_code(s):
+    """^[a-z][a-z0-9']{0,31}$"""
+    if not s or len(s) > 32 or not ('a' <= s[0] <= 'z'):
+        return False
+    return all(('a' <= c <= 'z') or ('0' <= c <= '9') or c == "'" for c in s[1:])
+
+
+def skip_line(t):
+    """空 / # ; // --- ... / yaml 'key: value' 头"""
+    t = t.strip()
+    if not t:
+        return True
+    if t[0] in ('#', ';') or t.startswith('//') or t.startswith('---') or t.startswith('...'):
+        return True
+    ci = t.find(':')
+    return ci > 0 and (ci + 1 == len(t) or t[ci + 1] in (' ', '\t'))
+
+
+def read_import_text(path):
+    """读文件: 先按大小预检(>64MB 直接 None), 再 UTF-8 -> GB18030 -> GBK; 用 with 关句柄."""
+    try:
+        if os.path.getsize(path) > 64 * 1024 * 1024:
+            return None
+        with open(path, 'rb') as f:
+            b = f.read()
+        for enc in ('utf-8', 'gb18030', 'gbk'):
+            try:
+                return b.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                continue
+        return b.decode('utf-8', 'replace')
+    except OSError:
+        return None
+
+
+def detect_format(lines):
+    """1 = 词在前(Rime), 2 = 码在前, 0 = 未检测"""
+    word_first = code_first = seen = 0
+    for raw in lines:
+        if seen >= 200:
+            break
+        t = raw.strip()
+        if not t or skip_line(t):
+            continue
+        seen += 1
+        if '\t' in t:
+            word_first += 1
+            continue
+        sp = t.find(' ')
+        if sp < 1:
+            continue
+        if is_pure_ascii(t[:sp]):
+            code_first += 1
+        else:
+            word_first += 1
+    if word_first == 0 and code_first == 0:
+        return 0
+    return 1 if word_first >= code_first else 2
+
+
+def convert_file(text, fmt, acc):
+    """转换并追加到 acc {code: [words]}; 返回 (skipped, trunc_codes, trunc_total)"""
+    skipped = trunc_codes = trunc_total = 0
+    for raw in text.split('\n'):
+        t = raw.strip()
+        if not t or skip_line(t):
+            continue
+        tab = '\t' in t
+        fs = [f.strip() for f in (t.split('\t') if tab else t.split(' ')) if f.strip()]
+        if len(fs) < 2:
+            skipped += 1
+            continue
+        if is_all_digits(fs[-1]):
+            fs = fs[:-1]                                # 尾权重字段
+        if len(fs) < 2:
+            skipped += 1
+            continue
+        code = None
+        words = []
+        if fmt == 1:                                    # 词在前: word code [weight]
+            cd = fs[1].strip().lower()
+            if valid_code(cd):
+                code = cd
+                words.append(fs[0])
+            elif is_pure_ascii(fs[0]) and valid_code(fs[0].lower()):   # EN word + CN meanings
+                code = fs[0].strip().lower()
+                words = [w for w in fs[1:] if w]
+            else:
+                skipped += 1
+                continue
+        else:                                           # 码在前: code word word ...
+            cd = fs[0].strip().lower()
+            if not valid_code(cd):
+                skipped += 1
+                continue
+            code = cd
+            words = [w for w in fs[1:] if w]
+        if code is None or not words:
+            skipped += 1
+            continue
+        lst = acc.get(code)
+        if lst is None:
+            if len(acc) >= 500000:
+                trunc_total += 1
+                continue
+            lst = []
+            acc[code] = lst
+        for w in words:
+            if not w or w in lst:
+                continue
+            if ' ' in w:
+                skipped += 1
+                continue
+            if len(lst) >= 300:
+                trunc_codes += 1
+                break
+            lst.append(w)
+    return skipped, trunc_codes, trunc_total
+
+
+def load_import_base(path):
+    """读现有 import 文件 -> {code: [words]} (重导入幂等)"""
+    acc = {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                t = raw.strip()
+                if len(t) < 3:
+                    continue
+                sp = t.find(' ')
+                if sp < 1:
+                    continue
+                k = t[:sp].strip().lower()
+                lst = []
+                for w in t[sp + 1:].split(' '):
+                    if w and w not in lst:
+                        lst.append(w)
+                if k and lst:
+                    acc[k] = lst
+    except OSError:
+        pass
+    return acc
+
+
+def write_import_file(path, acc):
+    """写 import 文件: 'code w1 w2 ...' 每行, 按 code 排序, UTF-8 无 BOM"""
+    with open(path, 'w', encoding='utf-8') as f:
+        for k in sorted(acc.keys()):
+            f.write(k)
+            for w in acc[k]:
+                f.write(' ' + w)
+            f.write('\n')
+
+
+def suggest_target(file_name):
+    """0=五笔 1=拼音 2=英汉"""
+    n = (file_name or '').lower()
+    if 'wubi' in n or '五笔' in n or n.startswith('wb') or '_wb' in n or '-wb' in n:
+        return 0
+    if 'english' in n or '英汉' in n or n.startswith('ec') or '_ec' in n or '-ec' in n:
+        return 2
+    if 'pinyin' in n or '拼音' in n or '双拼' in n or '全拼' in n or n.startswith('py') or '_py' in n or '-py' in n:
+        return 1
+    if n.endswith('.yaml') or n.endswith('.yml') or n.endswith('.dict'):
+        return 0
+    return 1
+
+
 def fuzzy_variants(code):
     """单替换模糊音, 上限 16 (与 FuzzyVariants 一致)"""
     seen = set()
@@ -359,29 +571,80 @@ def fuzzy_variants(code):
     return out
 
 
+def _atomic_write(path, text):
+    """原子写文本(先 .tmp 再 os.replace), 避免写盘中断损坏关键数据文件."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 class Engine:
     CACHE_VER = 1
+
+    def _paths(self):
+        ps = [os.path.join(self.dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt')]
+        ps += [os.path.join(self.dict_dir, n) for n in ('import_py.txt', 'import_wb.txt', 'import_ec.txt')]
+        return ps
+
+    def _build(self):
+        self.py = parse_dict(os.path.join(self.dict_dir, 'py.txt'))
+        self.wb = parse_dict(os.path.join(self.dict_dir, 'wb.txt'))
+        self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
+        overlay_import(self.py, parse_dict(os.path.join(self.dict_dir, 'import_py.txt')))
+        overlay_import(self.wb, parse_dict(os.path.join(self.dict_dir, 'import_wb.txt')))
+        overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
+        self.pk, self.pv = build_sorted(self.py)
+        self.wk, self.wv = build_sorted(self.wb)
+        self.ek, self.ev = build_sorted(self.ec)
+        self.char_py = build_char_py(self.py)
+        self.acro = build_acro(self.py, self.char_py)
+        self.ce = build_reverse(self.ec)
+
+    def _build_wb_len(self):
+        """五笔码按长度分桶(用于 z 通配等长查询, 替代全表线性扫描)."""
+        self.wb_by_len = {}
+        for k in self.wb:
+            self.wb_by_len.setdefault(len(k), []).append(k)
 
     def __init__(self, dict_dir, data_dir):
         t0 = time.time()
         self.data_dir = data_dir
         self.dict_dir = dict_dir
+        self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
+        self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
         os.makedirs(data_dir, exist_ok=True)
-        paths = [os.path.join(dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt')]
-        paths.append(os.path.join(dict_dir, 'trad.txt'))
-        if not self._load_cache(paths):
-            self.py = parse_dict(paths[0])
-            self.wb = parse_dict(paths[1])
-            self.ec = parse_dict(paths[2])
-            self.pk, self.pv = build_sorted(self.py)
-            self.wk, self.wv = build_sorted(self.wb)
-            self.ek, self.ev = build_sorted(self.ec)
-            self.char_py = build_char_py(self.py)
-            self.acro = build_acro(self.py, self.char_py)
-            self.ce = build_reverse(self.ec)
-            self._save_cache(paths)
+        if not self._load_cache(self._paths()):
+            self._build()
+            self._save_cache(self._paths())
         self.load_ms = (time.time() - t0) * 1000
         self._init_state()
+
+    def _merge_user_words(self):
+        """把 userwords.txt 合并进 self.py 并重建索引 (启动/热重载共用, 避免导入码表后丢用户词)."""
+        if not self.user_words:
+            return
+        for w, c in self.user_words.items():
+            cur = self.py.get(c)
+            if cur:
+                if (' ' + cur + ' ').find(' ' + w + ' ') < 0:
+                    self.py[c] = cur + ' ' + w
+            else:
+                self.py[c] = w
+        self.pk, self.pv = build_sorted(self.py)
+
+    def reload(self):
+        """导入码表后热重载: 重建索引 + 刷新缓存 + 重放用户词(否则已造用户词丢失)."""
+        self._build()
+        self._build_wb_len()
+        self._merge_user_words()
+        self._save_cache(self._paths())
 
     def _cache_sig(self, paths):
         return [(os.path.getsize(p), int(os.path.getmtime(p))) if os.path.exists(p) else None for p in paths]
@@ -394,12 +657,15 @@ class Engine:
             import pickle
             with open(self._cache_path(), 'rb') as f:
                 obj = pickle.load(f)
+            # 完整性由 sig(码表 mtime/size) + pickle 加载异常保底;
+            # 之前对 95MB data 全量 pickle.dumps 算 md5 严重拖慢启动(~1s+), 已移除
             if obj.get('ver') != self.CACHE_VER or obj.get('sig') != self._cache_sig(paths):
                 return False
             (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
              self.ek, self.ev, self.char_py, self.acro, self.ce) = obj['data']
             return True
-        except Exception:
+        except Exception as e:
+            print('[wgime] dict-cache load failed: %r' % (e,), file=sys.stderr)   # 缓存损坏时留痕, 便于排查
             return False
 
     def _save_cache(self, paths):
@@ -420,21 +686,16 @@ class Engine:
         self.freq_m = [dict(), dict(), dict()]
         self.lastpick_m = [dict(), dict(), dict()]
         self.freq = {}
+        # 近期热度 (滑动窗口): 反映最近使用习惯, 自动过期
+        self.freq_recent = [dict(), dict(), dict()]
+        self.recent_log = deque()
         self._load_freq()
         self.freq_dirty = 0
         self.last_save = time.time()
-        self._save_lock = threading.Lock()
+        self._save_lock = threading.RLock()   # 词频/联想/近期状态锁(可重入): learn+save_freq 共用, 防保存线程遍历活 dict 时被写侧打断
         # 用户词 (五笔反查字表: 最长码)
         self.user_words = self.load_user_words()
-        if self.user_words:
-            for w, c in self.user_words.items():
-                cur = self.py.get(c)
-                if cur:
-                    if (' ' + cur + ' ').find(' ' + w + ' ') < 0:
-                        self.py[c] = cur + ' ' + w
-                else:
-                    self.py[c] = w
-            self.pk, self.pv = build_sorted(self.py)
+        self._merge_user_words()
         self.char_wb = {}
         for code in sorted(self.wb.keys()):
             if len(code) < 2:
@@ -442,11 +703,8 @@ class Engine:
             for w in self.wb[code].split(' '):
                 if len(w) == 1 and (w not in self.char_wb or len(code) > len(self.char_wb[w])):
                     self.char_wb[w] = code
-        # 简拼候选按词频重排 (ApplySwap: stable desc by combined freq)
-        for k in self.acro:
-            lst = self.acro[k]
-            if len(lst) > 1:
-                self.acro[k] = sorted(lst, key=lambda w: -self.freq.get(w, 0))
+        self._build_wb_len()   # 五笔 z 通配: 按码长分桶索引(替代全表线性扫描)
+        # 简拼候选顺序由 candidates() 的统一词频排序决定, 不再预排(避免与排序键不一致)
         # 造句词频 (pywfreq.txt: word:freq)
         self.word_freq = {}
         wtot = 0
@@ -473,12 +731,13 @@ class Engine:
         self.trad_map = None
         tp = os.path.join(self.dict_dir, 'trad.txt')
         try:
-            lines = open(tp, encoding='utf-8').read().split('\n')
+            with open(tp, encoding='utf-8-sig') as f:
+                lines = f.read().split('\n')
             self.trad_map = {}
             for i in range(min(len(lines[0]), len(lines[1]))):
                 if lines[0][i] not in self.trad_map:
                     self.trad_map[lines[0][i]] = lines[1][i]
-        except (OSError, IndexError):
+        except (OSError, IndexError, UnicodeError):
             self.trad_map = None
 
     # ---------- freq / lastpick persistence (与 C# 版同格式, 可互换) ----------
@@ -515,24 +774,80 @@ class Engine:
     def learn(self, code, w, mode):
         if not w:
             return
-        self.freq[w] = self.freq.get(w, 0) + 1
-        if len(self.freq) > 90000:
-            self.freq.pop(next(iter(self.freq)))
-        if 0 <= mode < 3:
-            fb = self.freq_m[mode]
-            fb[w] = fb.get(w, 0) + 1
-            if len(fb) > 30000:
-                fb.pop(next(iter(fb)))
-            if code:
-                lb = self.lastpick_m[mode]
-                lb[code] = w
-                if len(lb) > 30000:
-                    lb.pop(next(iter(lb)))
-        self.freq_dirty += 1
-        if self.freq_dirty >= 50 or time.time() - self.last_save >= 5:
-            self.freq_dirty = 0
-            self.last_save = time.time()
+        spawn = False
+        with self._save_lock:
+            self.freq[w] = self.freq.get(w, 0) + 1
+            if len(self.freq) > 90000:
+                self.freq.pop(next(iter(self.freq)))
+            if 0 <= mode < 3:
+                fb = self.freq_m[mode]
+                fb[w] = fb.get(w, 0) + 1
+                if len(fb) > 30000:
+                    fb.pop(next(iter(fb)))
+                if code:
+                    lb = self.lastpick_m[mode]
+                    lb[code] = w
+                    if len(lb) > 30000:
+                        lb.pop(next(iter(lb)))
+            self.freq_dirty += 1
+            if self.freq_dirty >= 50 or time.time() - self.last_save >= 5:
+                self.freq_dirty = 0
+                self.last_save = time.time()
+                spawn = True
+        if spawn:
             threading.Thread(target=self.save_freq, daemon=True).start()
+
+    # ---------- 近期热度 (滑动窗口) + 误学回滚 ----------
+    def touch_recent(self, mode, w):
+        """近期热度: 上屏即计一次; recent_log 超 RE_CAP 时溢出最旧, 自动过期."""
+        if mode >= 3 or not w:
+            return
+        with self._save_lock:
+            self.recent_log.append((mode, w))
+            fr = self.freq_recent[mode]
+            fr[w] = fr.get(w, 0) + 1
+            if len(self.recent_log) > RE_CAP:
+                om, ow = self.recent_log.popleft()
+                n = self.freq_recent[om].get(ow, 0)
+                if n <= 1:
+                    self.freq_recent[om].pop(ow, None)
+                else:
+                    self.freq_recent[om][ow] = n - 1
+
+    def _untouch_recent(self, mode, w):
+        """误学回滚: 从近期窗口移除该词一次."""
+        if mode >= 3 or not w:
+            return
+        with self._save_lock:
+            try:
+                self.recent_log.remove((mode, w))
+            except ValueError:
+                pass
+            n = self.freq_recent[mode].get(w, 0)
+            if n <= 1:
+                self.freq_recent[mode].pop(w, None)
+            else:
+                self.freq_recent[mode][w] = n - 1
+
+    def unlearn(self, w, code, mode):
+        """误学回滚: 撤销一次主动学习 (learn 的逆操作) + 近期窗口回滚."""
+        def dec(d, k):
+            n = d.get(k)
+            if n is None:
+                return
+            if n <= 1:
+                d.pop(k, None)
+            else:
+                d[k] = n - 1
+        with self._save_lock:
+            dec(self.freq, w)
+            if 0 <= mode < 3:
+                dec(self.freq_m[mode], w)
+                lb = self.lastpick_m[mode]
+                if code in lb:
+                    lb.pop(code, None)
+                self._untouch_recent(mode, w)
+            self.freq_dirty += 1   # 消费掉回滚, 触发后续落盘
 
     # ---------- 造句 (BestSentence: 单字/词一元格架, score=sum(log(f+1))-edges*log_total) ----------
     def best_sentence(self, code):
@@ -577,17 +892,18 @@ class Engine:
             return
         if not is_all_cjk(prev) or not is_all_cjk(cur):
             return
-        m = self.assoc.get(prev)
-        if m is None:
-            if len(self.assoc) >= 20000:
-                self.assoc.pop(next(iter(self.assoc)))
-            m = {}
-            self.assoc[prev] = m
-        m[cur] = m.get(cur, 0) + 1
-        if len(m) > 12:                              # 超上限: 丢最弱
-            weak = min(m, key=lambda k: m[k])
-            del m[weak]
-        self.freq_dirty += 1
+        with self._save_lock:
+            m = self.assoc.get(prev)
+            if m is None:
+                if len(self.assoc) >= 20000:
+                    self.assoc.pop(next(iter(self.assoc)))
+                m = {}
+                self.assoc[prev] = m
+            m[cur] = m.get(cur, 0) + 1
+            if len(m) > 12:                              # 超上限: 丢最弱
+                weak = min(m, key=lambda k: m[k])
+                del m[weak]
+            self.freq_dirty += 1
 
     def get_assoc(self, w, limit=9):
         m = self.assoc.get(w)
@@ -627,20 +943,31 @@ class Engine:
             pass
 
     def save_freq(self):
-        with self._save_lock:
-            try:
+        # 锁内做快照(防 UI 线程 learn/learn_assoc 并发写被打断), 锁外写盘(写盘不阻塞学习)
+        try:
+            with self._save_lock:
+                snaps = []
+                lasts = []
                 for m in range(3):
-                    snaps = sorted(self.freq_m[m].items(), key=lambda kv: -kv[1])[:20000]
-                    with open(os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
-                        for k, v in snaps:
-                            f.write('%s %d\n' % (k, v))
-                    lasts = list(self.lastpick_m[m].items())[:20000]
-                    with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
-                        for k, v in lasts:
-                            f.write('%s %s\n' % (k, v))
-                self._save_assoc()
-            except OSError:
-                pass
+                    snaps.append(sorted(self.freq_m[m].items(), key=lambda kv: -kv[1])[:20000])
+                    lasts.append(list(self.lastpick_m[m].items())[:20000])
+                assoc_snap = sorted(self.assoc.items(), key=lambda kv: -sum(kv[1].values()))[:20000]
+        except (OSError, RuntimeError, ValueError):
+            return
+        try:
+            for m in range(3):
+                with open(os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
+                    for k, v in snaps[m]:
+                        f.write('%s %d\n' % (k, v))
+                with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
+                    for k, v in lasts[m]:
+                        f.write('%s %s\n' % (k, v))
+            with open(os.path.join(self.data_dir, 'assoc.txt'), 'w', encoding='utf-8') as f:
+                for k, m in assoc_snap:
+                    tops = sorted(m.items(), key=lambda kv: -kv[1])[:8]
+                    f.write('%s\t%s\n' % (k, ' '.join('%s:%d' % (w, c) for w, c in tops)))
+        except OSError:
+            pass
 
     # ---------- candidate assembly (对齐 ShowCharatar) ----------
     def candidates(self, keys, mode, py_code=None):
@@ -725,22 +1052,25 @@ class Engine:
                         add(exact)
                     if len(cands) >= CAND_CAP:
                         break
-        # 词频排序 (稳定): 语料基础词频 (pywfreq) + 学习词频 (每次提交 +5000) → 常见词天然靠前
+        # 字频排序 (稳定): 语料先验 word_freq + 全量学习词频×learn_k + 近期热度×recent_k
+        # → 常见词天然靠前; 主动选过的词(learn)往上顶; 最近常打的词(近期滑动窗口)也靠前
         fb = self.freq_m[mode] if mode < 3 else self.freq
-        if len(cands) > 1 and (fb or self.word_freq):
-            cands = sorted(cands, key=lambda w: -(self.word_freq.get(w, 0) + fb.get(w, 0) * 5000))
+        fr = self.freq_recent[mode] if mode < 3 else {}
+        if len(cands) > 1 and (fb or self.word_freq or fr):
+            cands = sorted(cands, key=lambda w: -(
+                self.word_freq.get(w, 0)
+                + fb.get(w, 0) * self.learn_k
+                + fr.get(w, 0) * self.recent_k))
         if len(cands) > 1 and mode < 3:
             lp = self.lastpick_m[mode].get(keys)
             if lp and lp in cands:
                 cands.remove(lp)
                 cands.insert(0, lp)
-        # 五笔 z 通配 (仅纯五笔模式, 追加在最后, 不参与排序)
+        # 五笔 z 通配 (仅纯五笔模式, 追加在最后, 不参与排序) —— 用码长分桶索引, 只扫等长桶
         if mode == 2 and 'z' in keys:
-            for k in self.wk:
+            for k in self.wb_by_len.get(len(keys), []):
                 if len(cands) >= CAND_CAP:
                     break
-                if len(k) != len(keys):
-                    continue
                 ok = True
                 for i, ch in enumerate(k):
                     if keys[i] != 'z' and ch != keys[i]:
@@ -781,9 +1111,8 @@ class Engine:
             by_code = {}
             for w, c in self.user_words.items():
                 by_code.setdefault(c, []).append(w)
-            with open(os.path.join(self.data_dir, 'userwords.txt'), 'w', encoding='utf-8') as f:
-                for c, ws in by_code.items():
-                    f.write('%s %s\n' % (c, ' '.join(ws)))
+            text = ''.join('%s %s\n' % (c, ' '.join(ws)) for c, ws in by_code.items())
+            _atomic_write(os.path.join(self.data_dir, 'userwords.txt'), text)   # 原子写, 防损坏
         except OSError:
             pass
 

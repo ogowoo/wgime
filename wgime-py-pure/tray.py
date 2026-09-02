@@ -9,8 +9,26 @@ except Exception:
     HAS_TRAY = False
 
 import queue
+import ctypes as _ct
+
+
+def _is_zh():
+    try:
+        return (_ct.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF) == 0x04   # 主语言 0x04 = 中文
+    except Exception:
+        return True
+
+
+_ZH = _is_zh()
+
+
+def L(zh, en):
+    """C# 同款: 按系统 UI 语言返回中文或英文."""
+    return zh if _ZH else en
+
 
 MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+MODE_EN = ('Mixed', 'Pinyin', 'Wubi', 'Dict')
 # 与 C# 版一致: 模式汉字镂空 + Win11 强调色 (中/拼/五/译), 未激活灰
 MODE_CHARS = ('中', '拼', '五', '译')
 MODE_COLORS = ((0, 120, 212), (0, 183, 195), (202, 80, 16), (136, 23, 152))
@@ -55,6 +73,7 @@ class Tray:
     def _refresh(self):
         try:
             self.icon.icon = _icon_img(self.api['get_mode'](), self.api['is_active']())
+            self.icon.update_menu()   # 刷新菜单勾选态(checked 重求值), 否则切换后勾选不变、看起来"没反应"
         except Exception:
             pass
 
@@ -68,27 +87,66 @@ class Tray:
         if not HAS_TRAY:
             return False
         menu = pystray.Menu(
-            pystray.MenuItem('启用/禁用 (Shift 轻拍)', self._on(self.api['toggle'])),
+            # 开关
+            pystray.MenuItem(L('开关  (Shift 轻点)', 'On/Off  (Shift tap)'), self._on(self.api['toggle'])),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('模式',
+            # 模式
+            pystray.MenuItem(L('模式  (Ctrl+` 循环)', 'Mode  (Ctrl+` cycles)'),
                              pystray.Menu(
-                                 *(pystray.MenuItem(MODE_NAMES[m], self._on(lambda m=m: self.api['set_mode'](m)),
+                                 *(pystray.MenuItem(L(MODE_NAMES[m], MODE_EN[m]),
+                                                    self._on(lambda m=m: self.api['set_mode'](m)),
                                                     checked=lambda _it, m=m: self.api['get_mode']() == m)
                                    for m in range(4)))),
-            pystray.MenuItem('繁体输出 (Ctrl+Shift+F)', self._on(self.api['trad'])),
-            pystray.MenuItem('跟随光标', self._on(self.api['followcaret']),
-                             checked=lambda _it: self.api['get_followcaret']()),
-            pystray.MenuItem('主题',
+            # 选项
+            pystray.MenuItem(L('选项', 'Options'),
                              pystray.Menu(
-                                 pystray.MenuItem('深色 (C# 款)', self._on(lambda: self.api['set_theme']('dark')),
-                                                  checked=lambda _it: self.api['get_theme']() == 'dark'),
-                                 pystray.MenuItem('浅色', self._on(lambda: self.api['set_theme']('light')),
-                                                  checked=lambda _it: self.api['get_theme']() == 'light'))),
+                                 pystray.MenuItem(L('繁体输出  (Ctrl+Shift+F)', 'Trad output  (Ctrl+Shift+F)'),
+                                                  self._on(self.api['trad'])),
+                                 pystray.MenuItem(L('反查编码', 'Reverse code'),
+                                                  self._on(self.api['toggleshowcode']),
+                                                  checked=lambda _it: self.api['get_showcode']()),
+                                 pystray.MenuItem(L('整句输入', 'Sentence mode'),
+                                                  self._on(self.api['togglesentence']),
+                                                  checked=lambda _it: self.api['get_sentence']()),
+                                 pystray.MenuItem(L('联想', 'Association'),
+                                                  self._on(self.api['toggleassoc']),
+                                                  checked=lambda _it: self.api['get_assoc']()),
+                                 pystray.MenuItem(L('空闲隐藏', 'Hide when idle'),
+                                                  self._on(self.api['togglehideidle']),
+                                                  checked=lambda _it: self.api['get_hideidle']()),
+                                 pystray.MenuItem(L('候选窗跟随光标', 'Candidate board follows caret'),
+                                                  self._on(self.api['followcaret']),
+                                                  checked=lambda _it: self.api['get_followcaret']()),
+                                 pystray.MenuItem(L('主题', 'Theme'),
+                                                  pystray.Menu(
+                                                      pystray.MenuItem(L('深色', 'Dark'),
+                                                                       self._on(lambda: self.api['set_theme']('dark')),
+                                                                       checked=lambda _it: self.api['get_theme']() == 'dark'),
+                                                      pystray.MenuItem(L('浅色', 'Light'),
+                                                                       self._on(lambda: self.api['set_theme']('light')),
+                                                                       checked=lambda _it: self.api['get_theme']() == 'light'))))),
+            # 词库
+            pystray.MenuItem(L('词库', 'Dictionary'),
+                             pystray.Menu(
+                                 pystray.MenuItem(L('造词  (Ctrl+Alt+C)', 'Make Word  (Ctrl+Alt+C)'),
+                                                  self._on(self.api['makeword'])),
+                                 pystray.MenuItem(L('导入码表…', 'Import Table…'),
+                                                  self._on(self.api['import_table'])))),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('当前程序: 剪贴板上屏切换', self._on(self.api['apppaste'])),
-            pystray.MenuItem('当前程序: 标点吞字修复切换', self._on(self.api['appkeyfix'])),
+            # 这个程序
+            pystray.MenuItem(L('这个程序', 'This app'),
+                             pystray.Menu(
+                                 pystray.MenuItem(L('改用剪贴板上屏', 'Paste via clipboard'),
+                                                  self._on(self.api['apppaste'])),
+                                 pystray.MenuItem(L('标点吞字修复', 'Punct stale-char fix'),
+                                                  self._on(self.api['appkeyfix'])),
+                                 pystray.MenuItem(L('编辑配置 (config.txt)…', 'Edit config (config.txt)…'),
+                                                  self._on(self.api['open_config'])),
+                                 pystray.MenuItem(L('重载配置 (config/tools/插件)', 'Reload config (config/tools/plugins)'),
+                                                  self._on(self.api['reload'])))),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('退出', self._on(self.api['quit'])),
+            # 退出
+            pystray.MenuItem(L('退出', 'Exit'), self._on(self.api['quit'])),
         )
         self.icon = pystray.Icon('WgIme-Pure', _icon_img(self.api['get_mode'](), True), 'WgIme-Pure', menu)
         self.icon.run_detached()
