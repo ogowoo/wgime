@@ -294,7 +294,8 @@ def _import_uia_robust():
 
 
 def _probe_el_caret(auto, el):
-    """对单个 UIA 元素试 TextPattern 选区 -> 精确 caret 屏幕坐标 (无则 None)."""
+    """对单个 UIA 元素试 TextPattern 选区 -> 精确 caret 屏幕坐标 (无则 None).
+    y 用选区顶 r.top (行顶, 与 C#/GUITI 的 rcCaret.top 对齐, 候选框贴行下沿而不是行底下很远)."""
     try:
         tp = el.GetPattern(auto.PatternId.TextPattern)
         if tp:
@@ -304,8 +305,10 @@ def _probe_el_caret(auto, el):
                 if rects:
                     r = rects[0]
                     ch = r.bottom - r.top
-                    if 4 <= ch <= 200 and (r.right - r.left) >= 0:
-                        return (int(r.left), int(r.bottom))
+                    if 0 <= ch <= 240 and -10000 < r.left < 100000:
+                        # 折叠光标(选区 ~0 宽)用 r.top; 非折叠选区用 r.bottom 会偏低.
+                        y = int(r.top) if ch <= 4 else int(r.bottom)
+                        return (int(r.left), y)
     except Exception:
         pass
     return None

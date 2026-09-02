@@ -152,22 +152,11 @@ class CandBar:
                     y = max(ra.top, cy - h - 6)
                 if y < ra.top:
                     y = ra.top
-                # 低通平滑/直接贴: 位置只向目标挪 0.45 比例, 抹平剧烈抖动/累积漂移(治"越跳越右").
-                # 但"刚显示(从隐藏恢复)"或"目标与当前相差过远(跨窗口/跨行迁移)"时直接贴目标(重置平滑),
-                # 避免候选窗从"上一次打字的陈旧位置"慢慢滑过来 -> 表现为刚输入就"跳舞/飘过来".
+                # 直接贴目标 (C# 同款, 无滑行): 消除"向右下飘"(0.45 渐进滑行看着像漂移).
+                # 最小移动滞回: 仅对"已显示的小移动"生效(抑制微抖); 刚显示/跨窗口迁移时总是定位, 不提前 return.
                 cur = self._last_geom
                 relocate = (not was_visible) or (
                     cur is not None and (abs(x - cur[0]) > 200 or abs(y - cur[1]) > 60))
-                if cur is not None and not relocate:
-                    sx = cur[0] + int((x - cur[0]) * 0.45)
-                    sy = cur[1] + int((y - cur[1]) * 0.45)
-                    # 平滑后再次 clamp 到工作区.
-                    if sx + w > ra.right: sx = ra.right - w
-                    if sx < ra.left: sx = ra.left
-                    if sy + h > ra.bottom: sy = ra.bottom - h
-                    if sy < ra.top: sy = ra.top
-                    x, y = sx, sy
-                # 最小移动滞回: 仅对"已显示的小移动"生效(抑制微抖); 刚显示/跨窗口迁移时总是定位, 不提前 return.
                 if not relocate:
                     try:
                         cx0, cy0 = self.top.winfo_x(), self.top.winfo_y()
