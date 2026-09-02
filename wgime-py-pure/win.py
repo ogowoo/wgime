@@ -249,7 +249,9 @@ _EMBEDDED_CARET_HELPER = '# -*- coding: utf-8 -*-\n"""WgIme Caret Helper. UIA li
 def _helper_path():
     # Single-file distribution: materialize the isolated helper into a private cache.
     # UIA still runs out-of-process, so a provider crash cannot take down the keyboard hook.
-    root=os.path.join(os.environ.get('LOCALAPPDATA',os.path.expanduser('~')),'wgime-py','runtime')
+    # 独立子目录: runtime\ 下可能残留 pythonnet 时代的 python38 整包(_ctypes.pyd 等),
+    # 若 helper 与其同目录, 脚本目录(sys.path[0])会让 3.8 的 pyd 抢占导入 -> ImportError.
+    root=os.path.join(os.environ.get('LOCALAPPDATA',os.path.expanduser('~')),'wgime-py','runtime','caret-helper')
     os.makedirs(root,exist_ok=True)
     path=os.path.join(root,'wgime-caret-helper-v3-stable-embedded.py')
     data=_EMBEDDED_CARET_HELPER
