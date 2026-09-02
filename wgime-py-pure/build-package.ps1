@@ -22,10 +22,12 @@ foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'confi
     $p = Join-Path $src $n
     if (Test-Path $p) { Copy-Item $p $dicts -Force } else { Write-Warning "missing $n in $src" }
 }
-# plugins\*.txt (C# plugins / step DSL / [python]) -> dicts\plugins\
-$pd = Join-Path $dicts 'plugins'
+# plugins\*.txt -> package\plugins\ (程序同级, 与 C# 版一致)
+$pd = Join-Path $pkg 'plugins'
 New-Item -ItemType Directory -Force $pd | Out-Null
 Copy-Item (Join-Path $src 'plugins\*.txt') $pd -Force -ErrorAction SilentlyContinue
+# 纯 Python 插件 (wgime-py-pure\plugins\*.py) 也进 package\plugins\
+Copy-Item (Join-Path $here 'plugins\*.py') $pd -Force -ErrorAction SilentlyContinue
 
 $size = [math]::Round((Get-ChildItem -Recurse $pkg | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host ('package ready: ' + $pkg + ' (' + $size + ' MB)')

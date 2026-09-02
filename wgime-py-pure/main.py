@@ -131,7 +131,8 @@ TOOLS = []
 
 def reload_plugins():
     global STEP_PLUGINS, TOOLS
-    STEP_PLUGINS, _ = plugmod.load_plugins(os.path.join(DICT_DIR, 'plugins'), DATA_DIR)
+    # 插件目录: 程序同级 plugins\ (与 C# 版 plugins 跟程序同级一致), 词库在 dicts\
+    STEP_PLUGINS, _ = plugmod.load_plugins(os.path.join(BASE, 'plugins'), DATA_DIR)
     TOOLS = plugmod.load_tools(os.path.join(DICT_DIR, 'tools.txt'))
 
 
