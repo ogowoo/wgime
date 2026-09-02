@@ -293,6 +293,111 @@ def _import_uia_robust():
         return None
 
 
+def _probe_el_caret(auto, el):
+    """对单个 UIA 元素试 TextPattern 选区 -> 精确 caret 屏幕坐标 (无则 None)."""
+    try:
+        tp = el.GetPattern(auto.PatternId.TextPattern)
+        if tp:
+            sel = tp.GetSelection()
+            if sel and len(sel) > 0:
+                rects = sel[0].GetBoundingRectangles()
+                if rects:
+                    r = rects[0]
+                    ch = r.bottom - r.top
+                    if 4 <= ch <= 200 and (r.right - r.left) >= 0:
+                        return (int(r.left), int(r.bottom))
+    except Exception:
+        pass
+    return None
+
+
+_UIA_DISCOVER_BUDGET = 0.30   # HWND 发现总预算 (秒), 防慢应用拖垮后台线程
+_UIA_FEATURE = {}             # per-HWND: 上次命中光标的子 hwnd (发现优先走它)
+
+
+def _hwnd_render_children(top):
+    """枚举 top 的同进程子 HWND, 优先 render 宿主类 (Chromium/WebView/IE). 返回 [(hwnd,class,visible)]."""
+    out = []
+    try:
+        pid = w.DWORD()
+        user32.GetWindowThreadProcessId(w.HWND(top), ctypes.byref(pid))
+        top_pid = int(pid.value)
+
+        @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, ctypes.c_void_p)
+        def cb(ch, _):
+            try:
+                ch = int(ch)
+                cp = w.DWORD()
+                user32.GetWindowThreadProcessId(w.HWND(ch), ctypes.byref(cp))
+                if int(cp.value) == top_pid:
+                    cls = _hwnd_class(ch)
+                    lc = cls.lower()
+                    vis = bool(user32.IsWindowVisible(w.HWND(ch)))
+                    score = 0
+                    if 'renderwidgethost' in lc:
+                        score = 100
+                    elif 'webview' in lc or 'chrome' in lc or 'webview2' in lc:
+                        score = 90
+                    elif 'internet explorer_server' in lc:
+                        score = 80
+                    elif 'wndclass' in lc or vis:
+                        score = 20
+                    out.append((score, ch, cls, vis))
+            except Exception:
+                pass
+            return True
+        user32.EnumChildWindows(w.HWND(top), cb, None)
+    except Exception:
+        pass
+    out.sort(key=lambda x: (-x[0], not x[3]))
+    return out[:48]
+
+
+def _hwnd_class(hwnd):
+    try:
+        b = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(w.HWND(hwnd), b, 256)
+        return b.value or ''
+    except Exception:
+        return ''
+
+
+def _discover_hwnd_caret(auto, fg):
+    """前台 HWND 聚焦控件无光标时: 发现其 render 子 HWND 并逐个探测 TextPattern 光标."""
+    import time as _t
+    started = _t.time()
+    fav = _UIA_FEATURE.get(fg)
+    children = _hwnd_render_children(fg)
+    # 上次命中的优先, 其余按类名分
+    ordered = []
+    if fav:
+        ordered.append(fav)
+    ordered += [(c[1], c[2]) for c in children]
+    seen = set()
+    for hwnd, cls in ordered:
+        if hwnd in seen:
+            continue
+        seen.add(hwnd)
+        if _t.time() - started > _UIA_DISCOVER_BUDGET:
+            break
+        try:
+            el = auto.ElementFromHandle(hwnd)
+            if el:
+                try:
+                    p = _probe_el_caret(auto, el)
+                    if p:
+                        _UIA_FEATURE[fg] = (hwnd, cls)
+                        return p
+                finally:
+                    try:
+                        el = None
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return None
+
+
 def _get_uia_caret():
     """用 uiautomation 拿精确 caret 屏幕坐标(后台线程调用). 失败/异常即置 _uia_disabled, 返回 None."""
     if _uia_disabled[0]:
@@ -327,27 +432,23 @@ def _get_uia_caret():
                 el = None
         _uia_t[0] = now
         _uia_fg[0] = fg
+        # 1) 聚焦控件 TextPattern (记事本/标准控件快速路径)
+        if el:
+            p = _probe_el_caret(auto, el)
+            if p:
+                _uia_el[0] = p
+                return p
+        # 2) HWND 发现: 前台窗口的 render 子 HWND (Edge/微信/VS Code 等 Chromium/WebView 应用)
+        #    不因"聚焦控件拿不到"就锁死 UIA —— 这类应用光标在 render 子窗口里.
+        if fg:
+            p = _discover_hwnd_caret(auto, fg)
+            if p:
+                _uia_el[0] = p
+                return p
         if not el:
-            # 拿不到聚焦控件: 可能 UIA 在该环境整体不可用 -> 锁死, 回退 Win32.
+            # 完全拿不到聚焦控件: UIA 整体不可用 -> 锁死回退 Win32.
             _uia_disabled[0] = True
             _dlog('uia: GetFocusedControl el=False -> UIA disabled')
-            return None
-        # TextPattern 选区矩形(精确 caret)
-        try:
-            tp = el.GetPattern(auto.PatternId.TextPattern)
-            if tp:
-                sel = tp.GetSelection()
-                if sel and len(sel) > 0:
-                    rects = sel[0].GetBoundingRectangles()
-                    if rects:
-                        r = rects[0]
-                        ch = r.bottom - r.top
-                        if 4 <= ch <= 200 and (r.right - r.left) >= 0:
-                            pos = (int(r.left), int(r.bottom))
-                            _uia_el[0] = pos
-                            return pos
-        except Exception:
-            pass
     except BaseException:
         _uia_disabled[0] = True
         _dlog('uia: exc -> UIA disabled')
