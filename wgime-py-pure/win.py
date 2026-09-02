@@ -536,12 +536,8 @@ def get_caret_pos():
         _last_caret_source[0] = 'focus'
         _dlog('get_caret_pos: focus-edit(%.1fms) -> %s' % ((_t.time()-_t0)*1000, fr))
         return fr
-    # 现代应用无 Win32 caret: 光标大概率在鼠标附近(用户边点边打字). 用"输入感知鼠标位"作兜底.
-    mpos = _input_aware_mouse_pos()
-    if mpos is not None:
-        _last_caret_source[0] = 'mouse'
-        _dlog('get_caret_pos: mouse-fallback(%.1fms) -> %s' % ((_t.time()-_t0)*1000, mpos))
-        return mpos
+    # 鼠标兜底已禁用 (对齐 testing v3: "mouse fallback is intentionally disabled")——
+    # 否则输入法非激活/无候选时候选窗会跟着鼠标跑. 直接走 last / 前台窗口原点.
     if _last_caret[0]:
         _last_caret_source[0] = 'last'
         _dlog('get_caret_pos: last-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _last_caret[0]))
