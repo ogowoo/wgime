@@ -262,34 +262,52 @@ def reload_plugins():
 
 
 def load_py_plugins():
+    """Load embedded and external .py plugins together.
+
+    The old single-file branch returned immediately after embedded plugins, making
+    plugins/*.py such as qr_code.py impossible to load.
+    """
     global PLUGINS
-    PLUGINS = []
+    PLUGINS=[]
     try:
-        with open(os.path.join(DATA_DIR, 'plugins-disabled.txt'), encoding='utf-8') as f:
-            disabled = set(l.strip() for l in f if l.strip())
+        with open(os.path.join(DATA_DIR,'plugins-disabled.txt'),encoding='utf-8') as f:
+            disabled=set(l.strip() for l in f if l.strip())
     except OSError:
-        disabled = set()
-    if '_EMBEDDED_PLUGINS' in globals():                    # 单文件版: 用内嵌插件模块
-        for key in _EMBEDDED_PLUGINS:
-            m = _EMBEDDED_PLUGINS[key]
-            if getattr(m, 'CODE', None) not in disabled:
-                PLUGINS.append(m)
-        return
-    pdir = os.path.join(BASE, 'plugins')                    # 开发版: 扫描 plugins/*.py
-    if not os.path.isdir(pdir):
-        return
-    for fn in sorted(os.listdir(pdir)):
-        if not fn.endswith('.py'):
-            continue
-        modname = 'plug_' + fn[:-3]
-        try:
-            spec = importlib.util.spec_from_file_location(modname, os.path.join(pdir, fn))
-            m = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(m)
-            if hasattr(m, 'CODE') and hasattr(m, 'run') and m.CODE not in disabled:
-                PLUGINS.append(m)
-        except Exception as e:
-            _dfn('plugin load err %s %r' % (fn, e))
+        disabled=set()
+    seen=set()
+    if '_EMBEDDED_PLUGINS' in globals():
+        for key,m in _EMBEDDED_PLUGINS.items():
+            code=getattr(m,'CODE',None)
+            if code and code not in disabled and code not in seen:
+                PLUGINS.append(m);seen.add(code)
+    # Search script-side and application-side plugin directories. Do not stop after
+    # embedded modules. External plugins override an embedded plugin with same CODE.
+    pdirs=[]
+    for root in (BASE,APP_DIR):
+        pdir=os.path.join(root,'plugins')
+        if pdir not in pdirs:pdirs.append(pdir)
+    for pdir in pdirs:
+        if not os.path.isdir(pdir):continue
+        if pdir not in sys.path:sys.path.insert(0,pdir)
+        for fn in sorted(os.listdir(pdir)):
+            if not fn.lower().endswith('.py') or fn.startswith('_'):continue
+            path=os.path.join(pdir,fn);modname='wgime_ext_'+str(abs(hash(os.path.abspath(path))))+'_'+fn[:-3]
+            try:
+                spec=importlib.util.spec_from_file_location(modname,path)
+                if spec is None or spec.loader is None:raise ImportError('no module spec')
+                m=importlib.util.module_from_spec(spec);sys.modules[modname]=m
+                spec.loader.exec_module(m)
+                code=getattr(m,'CODE',None)
+                if not code or not callable(getattr(m,'run',None)):
+                    raise ValueError('plugin must define CODE and callable run()')
+                if code in disabled:continue
+                # External plugin wins over built-in with the same launch code.
+                PLUGINS[:]=[x for x in PLUGINS if getattr(x,'CODE',None)!=code]
+                PLUGINS.append(m);seen.add(code)
+                _dfn('plugin loaded %s code=%s'%(path,code))
+            except Exception as e:
+                sys.modules.pop(modname,None)
+                _dfn('plugin load err %s %r'%(path,e))
 
 
 def find_launcher(code):
@@ -512,6 +530,9 @@ _CLIP_FORCE = {'startmenuexperiencehost', 'searchhost', 'shellexperiencehost'}
 
 def effective_paste_mode():
     name = win.foreground_process_name()
+    # Modern Windows Notepad may render KEYEVENTF_UNICODE as tofu boxes. Use CF_UNICODETEXT paste.
+    if name in ('notepad', 'notepad.exe'):
+        return 1
     if name in APPMODES and APPMODES[name] in (1, 2, 3):
         return APPMODES[name]
     if name in _CLIP_FORCE:
@@ -1164,8 +1185,7 @@ def poll():
 root.after(15, poll)
 hook.start()
 set_active(CFG['starton'])
-# 光标跟随: 启动独立 Caret Helper 子进程(纯 ctypes UIA, 主进程绝不初始化 COM/UIA).
-# helper 常驻等 request_caret_refresh; 定位失败时 get_caret_pos 回退纯 Win32 链.
+# UIA 后台刷新精确 caret(首选); UIA 不可用会自动停, get_caret_pos 回退纯 Win32.
 try:
     win.ensure_caret_bg()
 except Exception:
