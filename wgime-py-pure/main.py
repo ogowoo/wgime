@@ -154,6 +154,7 @@ def apply_config():
     ime.trad = CFG['trad']
     engine.learn_k = CFG.get('learnk', 5000)   # 全量学习词频排序权重 (config learnk)
     engine.recent_k = CFG.get('recentk', 200)  # 近期热度排序权重 (config recentk)
+    hook.set_punct(CFG.get('cnpunct', True))   # 全角标点开关同步给钩子线程
 
 
 def reload_config():
@@ -190,8 +191,40 @@ def open_config_file():
 
 
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
-          LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC)
+          LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC,
+          PUNCT=0xFD)
 MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+
+
+# 中文标点映射 (对齐 C# MapPunct; vk | 0x200 = Shift 按住, hook 编码)
+_sq_open = [False]   # 单引号开闭交替状态
+_dq_open = [False]   # 双引号开闭交替状态
+
+
+def map_punct(vk, sh):
+    if vk == 0xBC:
+        return '《' if sh else '，'
+    if vk == 0xBE:
+        return '》' if sh else '。'
+    if vk == 0xBA:
+        return '：' if sh else '；'
+    if vk == 0xBF:
+        return '？' if sh else None          # 裸 / 透传
+    if vk == 0xDC:
+        return None if sh else '、'          # Shift+\ 透传 |
+    if vk == 0xDB:
+        return None if sh else '【'
+    if vk == 0xDD:
+        return None if sh else '】'
+    if vk == 0x34:
+        return '¥' if sh else None           # Shift+4
+    if vk == 0xDE:                           # 引号开闭交替
+        if sh:
+            _dq_open[0] = not _dq_open[0]
+            return '“' if _dq_open[0] else '”'
+        _sq_open[0] = not _sq_open[0]
+        return '‘' if _sq_open[0] else '’'
+    return None
 
 
 class Ime:
@@ -237,6 +270,8 @@ try:
         'get_sentence': lambda: CFG.get('sentence', True),
         'toggleassoc': lambda: toggle_assoc(),
         'get_assoc': lambda: CFG.get('assoc', True),
+        'togglecnpunct': lambda: toggle_cnpunct(),
+        'get_cnpunct': lambda: CFG.get('cnpunct', True),
         'togglehideidle': lambda: toggle_hideidle(),
         'get_hideidle': lambda: CFG.get('hideidle', True),
         'set_theme': lambda name: set_theme(name),
@@ -646,6 +681,15 @@ def toggle_assoc():
     _write_config('assoc', '1' if CFG['assoc'] else '0')
 
 
+def toggle_cnpunct():
+    """全/半角标点开关 (Ctrl+. 或托盘): 开=逗号句号等直接上屏全角中文标点."""
+    CFG['cnpunct'] = not CFG.get('cnpunct', True)
+    hook.set_punct(CFG['cnpunct'])
+    _dfn('cnpunct=%s' % CFG['cnpunct'])
+    _write_config('cnpunct', '1' if CFG['cnpunct'] else '0')
+    _refresh_tray()
+
+
 def set_theme(name):
     CFG['theme'] = name
     bar.set_theme(name)
@@ -984,8 +1028,50 @@ def makeword_clipboard():
     tools.show_makeword(DATA_DIR, engine, prefill)
 
 
+# 半角原样映射 (cnpunct=0 时组字中被 _CTRL_KEYS 吞进来的 ; [ ] 等回退用)
+_HALF_PUNCT = {
+    (0xBC, False): ',', (0xBC, True): '<', (0xBE, False): '.', (0xBE, True): '>',
+    (0xBA, False): ';', (0xBA, True): ':', (0xBF, False): '/', (0xBF, True): '?',
+    (0xDC, False): '\\', (0xDC, True): '|', (0xDB, False): '[', (0xDB, True): '{',
+    (0xDD, False): ']', (0xDD, True): '}', (0x34, False): '4', (0x34, True): '$',
+    (0xDE, False): "'", (0xDE, True): '"',
+}
+
+
+def handle_punct(vk, sh):
+    """中文标点键 (cnpunct=1 时 hook 吞标点键送到这里).
+    组字中先把当前页首候选上屏再上屏标点 (对齐 C# Hook_OnPunct); 默认候选上屏不强化词频(与空格一致)."""
+    # ; 微软双拼里是韵母 ing 编码键: 组字中当编码不当标点 (对齐 C# OnSemi, 要求 !sh)
+    if vk == VK['SEMI'] and CFG['shuangpin'] == 3 and ime.buf and not sh:
+        if ime.assoc_showing:
+            clear_assoc()
+        ime.buf += ';'
+        refresh()
+        return
+    # [ ] 组字中以词定字 (取首候选首/末字), 空候选或空闲才是书名号 【】 (对齐 C# OnPickChar 优先级)
+    if vk in (VK['LBRACKET'], VK['RBRACKET']) and ime.buf and ime.cands:
+        commit_char(0 if vk == VK['LBRACKET'] else 1)
+        return
+    if not CFG.get('cnpunct', True):
+        s = _HALF_PUNCT.get((vk, sh))              # 半角模式: 原样上屏
+    else:
+        s = map_punct(vk, sh)
+    if s is None:
+        return                                     # 无映射的组合 (防御; hook 正常不会吞这些)
+    if ime.buf and ime.cands and ime.buf != 'vf':
+        # 组字中按标点: 首候选先上屏 (对齐 C# Hook_OnPunct: Send(cands[0]); 启动器 ▶ 候选除外, 只收标点)
+        top = ime.cands[0]
+        if top != ime.app_cand:
+            inject(top)
+    if ime.buf or ime.assoc_showing:
+        reset()                                    # 清组字/联想/vf 符号面板, 再上屏标点
+    inject(s)
+
+
 def handle(vk):
     _dfn('kb %02x active=%s buf=%s' % (vk, ime.active, ime.buf))
+    sh = bool(vk & 0x200)                            # hook 编码: 标点键 Shift 状态
+    vk &= ~0x200
     if vk == VK['QUIT']:
         quit_app()
         return
@@ -1005,7 +1091,14 @@ def handle(vk):
     if vk == VK['MAKEWORD']:
         makeword_clipboard()
         return
+    if vk == VK['PUNCT']:                            # Ctrl+. 全/半角标点切换
+        toggle_cnpunct()
+        return
     if not ime.active:
+        return
+    # 中文标点 (cnpunct=1 时 hook 吞键): 组字中先上屏首候选再上屏标点
+    if vk in (0xBC, 0xBE, 0xBA, 0xBF, 0xDC, 0xDB, 0xDD, 0xDE) or (vk == 0x34 and sh):
+        handle_punct(vk, sh)
         return
     # vf 符号面板 (字母键不拦截, 继续组字 -> 退出面板)
     if CFG['shuangpin'] == 0 and ime.buf == 'vf' and not (0x41 <= vk <= 0x5A):

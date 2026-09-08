@@ -201,7 +201,7 @@ def load_config(path):
     followcaret/theme/learnk/recentk/phrases."""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
-               paste=3, keyfix=True, followcaret=True, theme='dark',
+               paste=3, keyfix=True, followcaret=True, theme='dark', cnpunct=True,
                learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K)
     try:
         with open(path, encoding='utf-8') as f:
@@ -256,6 +256,8 @@ def load_config(path):
                         pass
                 elif k == 'followcaret':
                     cfg['followcaret'] = v not in ('0', 'off', 'false')
+                elif k == 'cnpunct':
+                    cfg['cnpunct'] = v not in ('0', 'off', 'false')
                 elif k == 'theme':
                     cfg['theme'] = 'light' if v.lower() in ('light', '浅色', '白') else 'dark'
                 elif k == 'phrase':

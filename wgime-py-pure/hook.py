@@ -25,9 +25,11 @@ VK_MODE = 0xF9          # 合成: Ctrl+`
 VK_TRAD = 0xFA          # 合成: Ctrl+Shift+F
 VK_MAKEWORD = 0xFB      # 合成: Ctrl+Alt+C
 VK_QUIT = 0xFC          # 合成: Ctrl+Alt+Q 退出
+VK_PUNCT = 0xFD         # 合成: Ctrl+. 全/半角标点切换
 
 ACTIVE = [False]        # 输入法是否启用 (主线程写入, 钩子线程判定)
 COMPOSING = [False]     # 是否有拼音缓冲/联想 (主线程写入; 空缓冲时空格/退格/回车透传)
+PUNCT = [True]          # 全角标点开关 (主线程写入; 关闭时标点键透传半角)
 
 EVENTS = queue.Queue()
 
@@ -103,9 +105,20 @@ def _proc(nCode, wParam, lParam):
                         if ctrl and alt and vk == 0x43:        # Ctrl+Alt+C 造词 (激活态)
                             EVENTS.put(VK_MAKEWORD)
                             return 1
+                        if ctrl and not shift and not alt and vk == 0xBE:   # Ctrl+. 全/半角标点 (激活态)
+                            EVENTS.put(VK_PUNCT)
+                            return 1
                         winkey = _key_state(0x5B) or _key_state(0x5C)
                         if ctrl or alt or winkey:              # 带 Ctrl/Alt/Win 的快捷键: 透传
                             return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                        # 中文标点 (cnpunct 开时): 吞 , . ; / \ [ ] ' 及 Shift 变体 (《》？：等), Shift 状态随事件编码
+                        if PUNCT[0] and (
+                                vk in (0xBC, 0xBE, 0xBA, 0xDE)          # , . ; ' -> 任意 shift 都吞
+                                or (shift and vk == 0xBF)               # Shift+/ -> ？ (裸 / 透传)
+                                or (not shift and vk in (0xDC, 0xDB, 0xDD))   # \ [ ] -> 、 【 】 (Shift 变体透传 | { })
+                                or (shift and vk == 0x34 and not COMPOSING[0])):   # Shift+4 -> ¥ (组字中让位候选选择)
+                            EVENTS.put(vk | (0x200 if shift else 0))
+                            return 1
                         if shift:                              # Shift 修正键: 透传
                             return user32.CallNextHookEx(None, nCode, wParam, lParam)
                         if 0x41 <= vk <= 0x5A:                 # 裸字母: 吞 (开始拼音)
@@ -154,6 +167,11 @@ def start():
 
 def set_active(on):
     ACTIVE[0] = bool(on)
+
+
+def set_punct(on):
+    """全角标点开关 (主线程在配置加载/切换时同步进来)."""
+    PUNCT[0] = bool(on)
 
 
 drain = EVENTS.get
