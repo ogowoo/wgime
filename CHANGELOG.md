@@ -6,7 +6,22 @@
 
 ---
 
-## 2026-09-01 (wgime-py-pure: 运行模式 ime/tray - 合并 wgtray 方案 · python 版)
+## 2026-09-01 (wgime.bat: 运行模式 ime/tray - 合并 wgtray 方案 · C# bat 版)
+
+- wgime.bat 内嵌 C# (WordBoard) 增加**运行模式**支持, 对齐 python 版与合并 wgtray 目标:
+  - 静态字段 `TrayMode`; `LoadConfig` 读 `mode = ime|tray`(缺省 ime, 向后兼容)
+  - tray 模式: 构造隐藏候选条窗体(Opacity 0/Visible false)、不订阅展示、`OnLoad` 跳过
+    `Hook.Start()`(不装键盘 hook); `RefreshLabel` 候选窗永不显示、托盘图标固定"工"字
+    (`trayModeIcon` 缓存)
+  - 托盘菜单双模式: ime=原菜单; tray=工具箱风格(工具箱/内置工具: 网络/剪贴板/便签/取色/
+    插件管理/编辑配置/重载/数据目录) + 两个模式都加「运行模式 ▸ 输入法(IME)/托盘工具箱(Tray)」
+  - `RestartInMode(mode)`: 写 config `mode=` + 重启用自身 bat 生效
+  - `RefreshMenuChecks` 空判保护(tray 菜单无 IME 控制项)
+- 验证: `tests\rebuild-wgime-bat-payload.ps1` 瘦 DLL 编译通过(559KB); 真实启动日志
+  RUNMODE=ime / RUNMODE=tray 均正确; tray 模式进程存活、无 hook; wgime.bat 保持纯 CRLF
+- 注: 因 C# 段前部增行, build-wgtray.ps1 切片行号已失配(wgtray 将退役, 下轮处理)
+
+---
 
 目标: 把 wgtray(无输入法托盘工具箱)收敛为运行模式, 最终三版(bat/ps/py)各含 ime/tray。
 本轮落地 **python 版** (方案详见仓库根 MERGE-TRAY-PLAN.md):
