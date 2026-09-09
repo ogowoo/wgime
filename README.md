@@ -94,9 +94,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps
 
 **建议**：要双击即用 → bat 版；在意安全软件命令行告警（如公司机）→ ps1 版（程序不自带自启注册，自启用你自己的任务计划/启动文件夹）。
 
-## 分发（wg-all/）
+## 分发（release/）
 
-`wg-all\` 是合并分发目录：`install.bat`（ime/tray 入口）+ `WgIme.ps1`（单文件双模式）+ `config.txt` + `tools.txt` + `plugins\` + `README.txt`。只发行 ps1 版，不产生任何 .dll/.bat 启动器/快捷方式。
+`release\` 是完整分发目录：`wgime.bat`（bat 版，双击即用）+ `WgIme.ps1`（ps1 版，命令行干净规避 EDR）+ `config.txt`（含 `mode = ime|tray`）+ `tools.txt` + `plugins\` + 码表 txt + `docs\`。两版都支持 ime/tray 运行模式；ps1 版不产生任何 .dll/.bat 启动器/快捷方式。用 `sync-dist.ps1` 从仓库根刷新。
 
 ## 文件说明
 
@@ -107,13 +107,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps
 | `config.txt` | 共用配置（`mode = ime|tray` 运行模式 / 输入法键 / `app=` 应用 / `hotkey_*`） |
 | `tools.txt` | 工具箱配置（`[tab 标签页]` / `[按钮名]` / `code = xxx` 启动编码 / 步骤行） |
 | `plugins/` | 插件目录（步骤 DSL / 插件；规范见 [docs/WGIME_插件规范.md](docs/WGIME_插件规范.md)、窗体风格见 [docs/WGIME_窗体设计语言.md](docs/WGIME_窗体设计语言.md)） |
-| `build-wgime-ps1.ps1` | 从 wgime.bat 构建 WgIme.ps1（编译 DLL + base64 嵌入 + wg-all 同步） |
-| `vt-scan.ps1` | VirusTotal 一键扫描脚本（wg-all 分发文件） |
+| `build-wgime-ps1.ps1` | 从 wgime.bat 构建 WgIme.ps1（编译 DLL + base64 嵌入 + release 同步） |
+| `sync-dist.ps1` | 一键刷新 release 分发目录（config/tools/插件/码表/文档/wgime.bat） |
+| `vt-scan.ps1` | VirusTotal 一键扫描脚本（release 分发文件） |
 | `tests/` | 回归测试（wgime-ps1 等） |
 | `wgime-py-pure/` | **纯 Python 版**：`main.py`(状态机/注入/tray api) / `hook.py`(ctypes 键盘钩子) / `win.py`(ctypes Win32 注入+原生剪贴板+UIA 光标) / `bar.py`(无边框圆角候选条) / `engine.py`(码表/候选/词频/造句) / `plugins.py`(插件+步骤DSL) / `tools.py`(工具箱等) / `tray.py`(pystray 双语托盘) / `ui.py`(窗体设计语言实现) / `wspy.py`(WS 客户端) / `plugins\*.py`(Python 插件) |
 | `wgime-py-pure\build-wgime-pure.py` | 生成纯 Python 单文件 `dist\wgime-py.py`（内嵌全部模块+插件+第三方库） |
 | `wgime-py-pure\build-package.ps1` | 刷新纯 Python 版 `package\` 分发目录（单文件 + sidecar + dicts + 配置/插件） |
-| `wg-all/` | 合并分发目录（install.bat + WgIme.ps1 双模式 + 配置/插件/README） |
+| `release/` | 完整分发目录（wgime.bat + WgIme.ps1 + config/tools/plugins + 码表 + docs；用 sync-dist.ps1 刷新） |
 | `docs/` | 文档目录：使用说明 / 技术文档 / 插件规范 / 窗体设计语言 / TSF 评估 |
 
 ## 开发

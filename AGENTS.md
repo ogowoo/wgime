@@ -15,11 +15,11 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 | `wgime.bat` | **C# 源码真身** + bat 版（内嵌瘦 DLL + 码表 `###WGIME_DATA###` 数据块） | 改输入法/工具箱/插件核心逻辑一律改这里 |
 | `WgIme.ps1` | WgIme ps1 版（内嵌完整 DLL + 码表 trailer） | **从 wgime.bat 生成**，不要手改 |
 | `build-wgime-dll.ps1` | 编译 WgIme 完整 DLL（含码表 + WgImeLauncher + trailer） | 给 ps1 版用 |
-| `build-wgime-ps1.ps1` | 组装 WgIme.ps1（调 build-wgime-dll 到临时目录再 base64 嵌入） | 同步 root + wg-all + release |
+| `build-wgime-ps1.ps1` | 组装 WgIme.ps1（调 build-wgime-dll 到临时目录再 base64 嵌入） | 同步 root + release |
 | `tests\rebuild-wgime-bat-payload.ps1` | **重编译 wgime.bat 的内嵌瘦 DLL**（纯 WordBoard，555KB） | 改 wgime.bat 的 `$cs` 后必须跑这个 |
-| `config.txt` / `tools.txt` | 配置 / 工具箱模板 | root 与 wg-all、release 三方同步 |
+| `config.txt` / `tools.txt` | 配置 / 工具箱模板 | root 与 release 同步 |
 | `plugins\*.txt` | 插件（calc 种子 / clock / chat / clean-bin / qping / wgtranslate） | 三处同步 |
-| `sync-dist.ps1` | **一键刷分发目录**（config/tools/插件/码表/文档/wgime.bat → wg-all + release） | 改完这些文件后跑一次 |
+| `sync-dist.ps1` | **一键刷分发目录**（config/tools/插件/码表/文档/wgime.bat → release） | 改完这些文件后跑一次 |
 | `release\` | 纯成品目录 | 成品 + 码表 txt + config/tools + docs + plugins，不放 build/test |
 
 > **运行模式（ime/tray）**：wgtray 已于 2026-09 退役并收敛为 wgime 的运行模式——每个分发
@@ -32,12 +32,12 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 
 **改了 `wgime.bat` 的 C#（`$cs`）**：
 1. `powershell -File tests\rebuild-wgime-bat-payload.ps1`（重编译 bat 内嵌瘦 DLL）
-2. `powershell -File build-wgime-ps1.ps1`（重生成 WgIme.ps1 + 同步 wg-all/release）
+2. `powershell -File build-wgime-ps1.ps1`（重生成 WgIme.ps1 + 同步 release）
 3. `Copy-Item wgime.bat release\wgime.bat`（手动同步，build 脚本不复制它）
 4. 跑测试（见 §4）
 5. 更新 CHANGELOG.md + 相关 docs
 
-**改了 `config.txt`/`tools.txt`/插件 `plugins\*.txt`/码表 `py.txt`/`wb.txt`/`ec.txt`/`import_*`/文档 `docs\WGIME_*.md`/`wgime.bat`**：跑 `powershell -File sync-dist.ps1` 一键同步到 wg-all + release（替代手工 Copy-Item；码表只进 release，文档只进 release\docs，WGIME_*.md 不含 AGENTS/CHANGELOG）。
+**改了 `config.txt`/`tools.txt`/插件 `plugins\*.txt`/码表 `py.txt`/`wb.txt`/`ec.txt`/`import_*`/文档 `docs\WGIME_*.md`/`wgime.bat`**：跑 `powershell -File sync-dist.ps1` 一键同步到 release（替代手工 Copy-Item；码表只进 release，文档只进 release\docs，WGIME_*.md 不含 AGENTS/CHANGELOG）。
 
 ## 4. 测试
 

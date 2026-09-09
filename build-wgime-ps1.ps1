@@ -23,8 +23,8 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
 # ---- 1) build the DLL edition first (dicts/icon/emoji/trailer).
-#         Build it into a temp dir so the wg-all distribution folder
-#         keeps only the ps1 editions (no WgIme.bat / WgIme.dll). ----
+#         Build it into a temp dir; the release folder keeps only the
+#         ps1 editions (no WgIme.bat / WgIme.dll). ----
 $tmpOut = Join-Path $env:TEMP ("wgime-ps1-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
 New-Item $tmpOut -ItemType Directory -Force | Out-Null
 & (Join-Path $root 'build-wgime-dll.ps1') -OutDir $tmpOut
@@ -117,11 +117,7 @@ $outText = [string]::Join("`n", $lines)
 $out = Join-Path $root 'WgIme.ps1'
 [IO.File]::WriteAllText($out, $outText, (New-Object System.Text.UTF8Encoding($true)))
 Write-Output ("WgIme.ps1 written: {0} bytes" -f (Get-Item $out).Length)
-# also refresh the wg-all copy (distribution folder)
-$wgAllOut = Join-Path $root 'wg-all\WgIme.ps1'
-[IO.File]::WriteAllText($wgAllOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
-Write-Output ("wg-all\WgIme.ps1 written: {0} bytes" -f (Get-Item $wgAllOut).Length)
-# and the release folder (pure deliverables, no build/test files)
+# refresh the release folder (pure deliverables, no build/test files)
 $relOut = Join-Path $root 'release\WgIme.ps1'
 [IO.File]::WriteAllText($relOut, $outText, (New-Object System.Text.UTF8Encoding($true)))
 Write-Output ("release\WgIme.ps1 written: {0} bytes" -f (Get-Item $relOut).Length)
@@ -138,7 +134,6 @@ if ($NoPayload) {
 }
 if (-not $txtOut.Contains('[WgImeLauncher]::Run')) { throw 'FAIL: missing launcher entry' }
 Write-Output "checks OK (UTF-8 BOM, markers present)"
-# the wg-all distribution folder ships only the ps1 editions - the
 # DLL/bat intermediates live in the temp build dir, now removed
 Remove-Item $tmpOut -Recurse -Force -EA SilentlyContinue
 Write-Output "DONE - WgIme.ps1 ready"

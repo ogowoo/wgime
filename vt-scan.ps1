@@ -1,10 +1,10 @@
 # ============================================================
-#  vt-scan.ps1 - scan the wg-all distribution on VirusTotal
+#  vt-scan.ps1 - scan the release distribution on VirusTotal
 #
 #  Free API key: register at virustotal.com (free tier:
 #  4 requests/min, ~500/day). Run:
 #    powershell.exe -NoProfile -ExecutionPolicy Bypass -File vt-scan.ps1 -ApiKey <key>
-#    powershell.exe -NoProfile -ExecutionPolicy Bypass -File vt-scan.ps1 -ApiKey <key> -Path wg-all\WgIme.dll
+#    powershell.exe -NoProfile -ExecutionPolicy Bypass -File vt-scan.ps1 -ApiKey <key> -Path release\WgIme.ps1
 #
 #  For each file: if the SHA256 was already scanned, print the
 #  report; otherwise upload it and poll until the analysis
@@ -22,10 +22,10 @@ $ErrorActionPreference = 'Stop'
 if (-not $ApiKey) { throw 'provide -ApiKey (free key from virustotal.com)' }
 
 if ($Path.Count -eq 0) {
-    $base = Join-Path $PSScriptRoot 'wg-all'
+    $base = Join-Path $PSScriptRoot 'release'
     $Path = @(
         (Join-Path $base 'WgIme.ps1'),
-        (Join-Path $base 'install.bat')
+        (Join-Path $base 'wgime.bat')
     )
 }
 foreach ($p in $Path) { if (-not (Test-Path $p)) { throw "not found: $p" } }

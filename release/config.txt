@@ -39,3 +39,7 @@ hotkey_toolbox = ctrl+alt+t
 hotkey_plugins = ctrl+alt+p
 hotkey_menu    = ctrl+alt+w
 starton = 0
+
+; mode: 运行模式 ime=输入法(默认) / tray=纯托盘工具箱(wgtray 行为, 无键盘 hook)
+; 托盘菜单「运行模式」可切换, 切换后自动重启生效
+mode = ime

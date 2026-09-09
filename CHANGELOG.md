@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-09-09 (删除 wg-all 分发目录 - 分发统一收敛到 release)
+
+- 用户确认 wg-all 冗余: release 已含完整分发(wgime.bat + WgIme.ps1 + 码表 + docs + plugins),
+  wg-all 只是 ps1 子集副本(install.bat + WgIme.ps1 + config/tools/plugins)
+- git rm 整个 `wg-all\` (12 文件); 分发统一到 `release\`
+- 脚本同步: `build-wgime-ps1.ps1`(不再写 wg-all, 只写 root + release)、`build-wgime-dll.ps1`
+  (默认输出改临时目录)、`sync-dist.ps1`(只同步 release)、`vt-scan.ps1`(默认扫 release)
+- 文档: README.md / AGENTS.md 的 wg-all 引用全部改为 release; 删除已完成的
+  MERGE-TRAY-PLAN.md 方案文档
+- 验证: sync-dist.ps1 新逻辑运行正常(只刷 release)
+
+---
+
 ## 2026-09-09 (wgtray 退役 - 分发收敛为 bat/ps/py 三件套, 各含 ime/tray 运行模式)
 
 - **删除独立 WgTray 全部产物** (19 文件, git rm): 根 `wgtray.bat`/`wgtray-nopayload.bat`/
