@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-09-09 (wgime-py-pure: ime 模式托盘菜单只保留输入法控制项)
+
+- 用户反馈: py 版 ime 模式不应显示 tray 模式的工具类菜单
+- `tray.py _ime_items()`: 移除「工具箱… / 内置工具」组, ime 菜单 = 开关/模式/选项/
+  词库/这个程序/运行模式/退出; 工具在 ime 模式仍可用输入码 itools/net/clip/bj/ys 唤起
+- tray 模式菜单不变(工具箱/内置工具/插件管理/config 应用)
+- C# 版核对: wgime.bat ime 菜单本就不含工具项, 无需改
+- 重建 dist/package; AGENTS.md §8 / wgime-py-pure\README.md 描述同步
+
+---
+
 ## 2026-09-09 (删除 wg-all 分发目录 - 分发统一收敛到 release)
 
 - 用户确认 wg-all 冗余: release 已含完整分发(wgime.bat + WgIme.ps1 + 码表 + docs + plugins),

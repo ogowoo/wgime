@@ -205,10 +205,6 @@ class Tray:
                                  pystray.MenuItem(L('导入码表…', 'Import Table…'),
                                                   self._on(self.api['import_table'])))),
             pystray.Menu.SEPARATOR,
-            # 工具 (ime 模式亦可达: 等价输入码 itools)
-            pystray.MenuItem(L('工具箱…', 'Toolbox…'), self._on(self.api['toolbox'])),
-            self._tools_menu(),
-            pystray.Menu.SEPARATOR,
             # 这个程序
             pystray.MenuItem(L('这个程序', 'This app'),
                              pystray.Menu(

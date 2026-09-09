@@ -82,7 +82,9 @@ python wgime-py-pure\dist\wgime-py.py        # 单文件（插件需放到 %LOCA
 
 `config.txt` 的 `mode` 键定义启动形态（与 C# 版合并 wgtray 方案对齐）：
 
-- `mode = ime`（默认）：输入法 + 托盘菜单（现状）
+- `mode = ime`（默认）：输入法 + 托盘菜单 —— 只含输入法控制项
+  （开关/模式/选项/词库/这个程序），**不含** tray 的工具菜单；工具箱等工具在 ime
+  模式仍可用输入码 `itools`/`net`/`clip`/`bj`/`ys` 唤起
 - `mode = tray`：纯托盘工具箱 —— **不启动键盘 hook / 不建候选窗**，只出托盘
   图标（"工"字）+ 工具菜单（工具箱/内置工具/插件管理/config 应用/编辑配置），
   等价原 wgtray 行为
