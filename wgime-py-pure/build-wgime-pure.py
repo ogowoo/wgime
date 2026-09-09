@@ -27,12 +27,9 @@ def read(p):
 
 
 modsrc = {m: read(os.path.join(BASE, m + '.py')) for m in MODULES}
+# 插件不再内嵌进单文件: 全部作为外置 plugins\*.py 由 load_py_plugins 在运行时扫描加载.
+# 保持 PLUGIN_SRC 为空 dict, 单文件体积更小, 插件改起来不用重打包.
 plugsrc = {}
-pdir = os.path.join(BASE, 'plugins')
-if os.path.isdir(pdir):
-    for fn in sorted(os.listdir(pdir)):
-        if fn.endswith('.py'):
-            plugsrc[fn[:-3]] = read(os.path.join(pdir, fn))
 main_src = read(os.path.join(BASE, 'main.py'))
 
 
