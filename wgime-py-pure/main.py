@@ -124,7 +124,12 @@ else:
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
+_DFN_ON = bool(os.environ.get('WGIME_DEBUG'))   # 与 win._dlog 同开关: 不设环境变量时不写盘
+
+
 def _dfn(text):
+    if not _DFN_ON:                              # 每键都打日志; 门控掉避免逐键 open/write/close debug.log
+        return
     try:
         with open(os.path.join(DATA_DIR, 'debug.log'), 'a', encoding='utf-8') as f:
             f.write('%.3f %s\n' % (time.time(), text))
@@ -1270,12 +1275,12 @@ def poll():
         hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
         try:
             if root.winfo_exists():
-                root.after(15, poll)
+                root.after(8, poll)                # 键盘事件轮询间隔: 15→8ms, 降每键等待 (空转仅 queue 探测, 开销可忽略)
         except Exception:
             pass
 
 
-root.after(15, poll)
+root.after(8, poll)
 hook.start()
 set_active(CFG['starton'])
 # UIA 后台刷新精确 caret(首选); UIA 不可用会自动停, get_caret_pos 回退纯 Win32.

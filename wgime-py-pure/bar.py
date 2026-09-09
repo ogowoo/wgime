@@ -35,6 +35,9 @@ class CandBar:
         self._pad = 10
         self._fc = tkfont.Font(family='Microsoft YaHei UI', size=9)
         self._fd = tkfont.Font(family='Microsoft YaHei UI', size=11)
+        # measure 走 Tcl 很慢(~0.6ms/次), 一次 show 要测 ~20 串 -> 15ms. 按 (font,text) 缓存,
+        # 同串不重复测; 打字时相邻键候选大量重复, 命中率高. 清缓存: 换主题/字体时.
+        self._measure_cache = {}           # (id(font), text) -> px
         self._last_geom = None   # 低通平滑的上一次窗口位置 (x, y)
         self._hide_after = None  # 防抖隐藏的 after 句柄
         self._anchor = None
@@ -45,6 +48,17 @@ class CandBar:
         if name in THEMES:
             self.theme = name
             self.top.attributes('-alpha', THEMES[name]['alpha'])
+
+    def _measure(self, font, text):
+        """带缓存的 Font.measure (Tcl measure 每次 ~0.6ms, 一次 show 测几十串 -> 10ms+)."""
+        key = (id(font), text)
+        v = self._measure_cache.get(key)
+        if v is None:
+            v = font.measure(text)
+            self._measure_cache[key] = v
+            if len(self._measure_cache) > 20000:   # 防无限增长: 超出即清(下一键重建, 代价可忽略)
+                self._measure_cache.clear()
+        return v
 
     def _round_rect(self, c, x1, y1, x2, y2, r, **kw):
         r = min(r, (x2 - x1) // 2, (y2 - y1) // 2)
@@ -105,9 +119,9 @@ class CandBar:
         max_w = max(240, min((wa.right - wa.left) - 24, 880))
         def clip(s, n):
             return s if len(s) <= n else s[:n] + '…'
-        line1 = self._pad + self._fc.measure(header) + self._fc.measure(code)
+        line1 = self._pad + self._measure(self._fc, header) + self._measure(self._fc, code)
         page_ind = '◀ %d/%d ▶' % (page + 1, total) if total > 1 else ''
-        ind_w = self._fc.measure(page_ind) if page_ind else 0
+        ind_w = self._measure(self._fc, page_ind) if page_ind else 0
         # 动态收紧候选截断: 候选总宽超 max_w 时, 逐步缩短每个候选(24→8), 直到候选条不铺满屏,
         # 且每个候选仍可见(都剪短, 数字键/翻页可选); 到最小仍超则窗口封顶 max_w 自动裁
         cands = list(cands or [])
@@ -117,7 +131,7 @@ class CandBar:
             clipped = [clip(x, n) for x in cands]
             line2 = self._pad
             for i2, cnd in enumerate(clipped):
-                line2 += self._fd.measure('%d.%s' % (i2 + 1, cnd)) + 16
+                line2 += self._measure(self._fd, '%d.%s' % (i2 + 1, cnd)) + 16
             if line2 <= max_w or n <= 8:
                 break
         cands = clipped
@@ -130,7 +144,7 @@ class CandBar:
         y = 6
         x = self._pad
         c.create_text(x, y, anchor='nw', text=header, fill=t['accent'], font=self._fc)
-        x += self._fc.measure(header)
+        x += self._measure(self._fc, header)
         c.create_text(x, y, anchor='nw', text=code, fill=t['sub'], font=self._fc)
         if page_ind:
             c.create_text(w - self._pad, y, anchor='ne', text=page_ind, fill=t['sub'], font=self._fc)
@@ -139,7 +153,7 @@ class CandBar:
         x = self._pad
         for i, cand in enumerate(cands):
             text = '%d.%s' % (i + 1, cand)
-            tw = self._fd.measure(text)
+            tw = self._measure(self._fd, text)
             if i == sel:
                 self._round_rect(c, x - 4, y, x + tw + 8, y + 26, 6, fill=t['accent'])
                 c.create_text(x + 2, y + 13, anchor='w', text=text, fill='#FFFFFF', font=self._fd)
