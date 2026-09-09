@@ -202,7 +202,7 @@ def load_config(path):
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
                paste=3, keyfix=True, followcaret=True, theme='dark', cnpunct=True,
-               learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K)
+               mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K)
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -260,6 +260,9 @@ def load_config(path):
                     cfg['cnpunct'] = v not in ('0', 'off', 'false')
                 elif k == 'theme':
                     cfg['theme'] = 'light' if v.lower() in ('light', '浅色', '白') else 'dark'
+                elif k == 'mode':
+                    # 运行模式: ime=输入法(默认) / tray=纯托盘工具箱(现 wgtray 行为)
+                    cfg['mode'] = v.strip().lower() if v.strip().lower() in ('ime', 'tray') else 'ime'
                 elif k == 'phrase':
                     sp = v.find('\t')
                     if sp < 1:

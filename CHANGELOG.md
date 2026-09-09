@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-09-01 (wgime-py-pure: 运行模式 ime/tray - 合并 wgtray 方案 · python 版)
+
+目标: 把 wgtray(无输入法托盘工具箱)收敛为运行模式, 最终三版(bat/ps/py)各含 ime/tray。
+本轮落地 **python 版** (方案详见仓库根 MERGE-TRAY-PLAN.md):
+
+- `config.txt` 新增 `mode = ime|tray` (缺省 ime, 向后兼容; C# 版共享 config 同步加键, C# 侧暂忽略无害)
+  - ime = 输入法(现状); tray = 纯托盘工具箱: **不启动键盘 hook / 不建候选窗**,
+    托盘出"工"字图标 + 工具菜单(工具箱/内置工具/插件管理/config 应用/编辑配置)
+- `engine.load_config`: 解析/归一化 mode 键(非法值回退 ime)
+- `main.py`: `is_tray_mode()` 分支 → 启动序尾部 tray 时不 `hook.start()`;
+  `switch_mode()` 写回 config + 无控制台重启自身生效; TRAY api 增 get_runmode/switch_runmode
+  与工具入口 toolbox/nettools/clipboard/notes/color/pluginmgr/run_app/apps
+- `tray.py`: 按运行模式构建菜单(ime 保留原菜单+工具入口+运行模式子菜单; tray=wgtray 式菜单),
+  `_tool_icon_img()` 工字图标
+- 验证: py_compile / config 解析(mode=tray/ime/bogus) / 双菜单构建 / main.py tray 与 ime 模式
+  真实启动 4-5s 存活 / 单文件 dist 内嵌含新逻辑且 tray 模式启动正常 / package 与 dist 字节一致
+- 文档: wgime-py-pure\README.md「运行模式」节、AGENTS.md §8、根 config.txt 注释
+
+---
+
 ## 2026-09-01 (wgime-py-pure: python 分发目录彻底去 C# 插件 - 只留 .py + 步骤 DSL)
 
 - 用户决策: python 版内置插件全部 .py 化, C# 插件源不再进 python 分发

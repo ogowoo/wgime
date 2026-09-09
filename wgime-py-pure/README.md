@@ -77,3 +77,19 @@ python wgime-py-pure\dist\wgime-py.py        # 单文件（插件需放到 %LOCA
 ```
 
 `WGIME_DEBUG=1` 保留控制台看错误；托盘菜单「这个程序 → 重载配置」可热重载 config/tools/插件。
+
+## 运行模式（ime / tray）
+
+`config.txt` 的 `mode` 键定义启动形态（与 C# 版合并 wgtray 方案对齐）：
+
+- `mode = ime`（默认）：输入法 + 托盘菜单（现状）
+- `mode = tray`：纯托盘工具箱 —— **不启动键盘 hook / 不建候选窗**，只出托盘
+  图标（"工"字）+ 工具菜单（工具箱/内置工具/插件管理/config 应用/编辑配置），
+  等价原 wgtray 行为
+
+两模式的托盘菜单都含「运行模式 ▸ 输入法 (IME) / 托盘工具箱 (Tray)」子菜单：
+点击会写回 `config.txt` 的 `mode=` 并**自动重启进程**生效（切换后状态干净）。
+
+实现位置：`engine.load_config`(mode 键) → `main.is_tray_mode()`(分支) →
+启动序尾部 `if is_tray_mode(): 不 hook.start()` → `main.switch_mode()`(写配置+重启) →
+`tray.py`(按模式构建不同菜单 + `_tool_icon_img` 工字图标)。

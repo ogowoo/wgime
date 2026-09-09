@@ -162,6 +162,15 @@ def apply_config():
     hook.set_punct(CFG.get('cnpunct', True))   # 全角标点开关同步给钩子线程
 
 
+def is_tray_mode():
+    """运行模式: config mode=tray = 纯托盘工具箱 (对齐 wgtray, 无键盘 hook/候选窗).
+    缺省 ime(输入法); mode 键由 engine.load_config 归一化为 'ime'/'tray'."""
+    try:
+        return CFG.get('mode', 'ime') == 'tray'
+    except Exception:
+        return False
+
+
 def reload_config():
     """重载配置 + 工具箱 + 插件 + pastemode (对齐 C# ReloadConfig).
     改完 config.txt / tools.txt / plugins / pastemode.txt 后不必重启,
@@ -285,6 +294,18 @@ try:
         'makeword': lambda: makeword_clipboard(),
         'reload': lambda: reload_config(),
         'open_config': lambda: open_config_file(),
+        # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
+        'get_runmode': lambda: CFG.get('mode', 'ime'),
+        'switch_runmode': lambda m: switch_mode(m),
+        # --- tray 模式工具入口 (等价 wgtray 托盘菜单; ime 模式亦可用) ---
+        'toolbox': lambda: tools.show_toolbox(TOOLS, APP_DIR),
+        'nettools': lambda: tools.show_nettools(),
+        'clipboard': lambda: tools.show_clipboard(),
+        'notes': lambda: tools.show_notes(DATA_DIR),
+        'color': lambda: tools.show_color(),
+        'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, load_py_plugins),
+        'run_app': lambda code: _run_app_by_code(code),
+        'apps': lambda: list(sorted((CFG.get('apps') or {}).items())),
     })
 except Exception as e:
     _dfn('tray start err %r' % e)
@@ -719,6 +740,46 @@ def quit_app():
     os._exit(0)                                         # 强制结束进程 (quit 场景)
 
 
+def switch_mode(new_mode):
+    """托盘「运行模式」切换: 写回 config mode=ime|tray, 然后重启进程生效.
+    对齐 C# 侧设计: 切换不热改 hook/菜单, 重启后按新 mode 干净启动."""
+    new_mode = 'ime' if new_mode == 'ime' else 'tray'
+    _write_config('mode', new_mode)
+    _dfn('switch mode -> %s' % new_mode)
+    try:
+        if 'TRAY' in globals() and TRAY and getattr(TRAY, 'icon', None):
+            TRAY.icon.stop()
+    except Exception:
+        pass
+    try:
+        engine.save_freq()
+    except Exception:
+        pass
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    # 以无控制台方式重启自身 (WGIME_RELAUNCHED=1 防 _relaunch_if_console_python 二次跳转)
+    try:
+        import subprocess
+        exe = (sys.executable or '').lower()
+        launcher = sys.executable
+        if exe.endswith('python.exe') or exe.endswith('python3.exe'):
+            pw = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')
+            if os.path.exists(pw):
+                launcher = pw
+        env = dict(os.environ)
+        env['WGIME_RELAUNCHED'] = '1'
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        subprocess.Popen([launcher] + sys.argv, cwd=os.getcwd(),
+                         startupinfo=si, creationflags=0x08000000, env=env)
+    except Exception as e:
+        _dfn('switch_mode relaunch err %r' % e)
+    os._exit(0)
+
+
 def record_commit(w, code):
     now = time.time()
     if not w or len(w) > 4 or not is_all_cjk(w):
@@ -1088,6 +1149,18 @@ def run_launcher(l):
             _dfn('launch err %r' % ex)
 
 
+def _run_app_by_code(code):
+    """托盘/工具箱按 config.txt 的 app= 编码启动程序 (对齐 wgtray LaunchApp)."""
+    try:
+        apps = CFG.get('apps') or {}
+        if code not in apps:
+            return
+        name, cmd, args = apps[code]
+        run_launcher((name, 'app', (cmd, args)))
+    except Exception as ex:
+        _dfn('run app err %r' % ex)
+
+
 def _show_builtin(kind):
     try:
         if kind == 'toolbox':
@@ -1360,11 +1433,13 @@ def poll():
 
 
 root.after(8, poll)
-hook.start()
-set_active(CFG['starton'])
-# UIA 后台刷新精确 caret(首选); UIA 不可用会自动停, get_caret_pos 回退纯 Win32.
-try:
-    win.ensure_caret_bg()
-except Exception:
-    pass
+if is_tray_mode():
+    _dfn('runmode=tray (no keyboard hook)')
+else:
+    hook.start()
+    set_active(CFG['starton'])
+    try:
+        win.ensure_caret_bg()
+    except Exception:
+        pass
 root.mainloop()
