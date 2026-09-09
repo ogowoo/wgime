@@ -31,6 +31,8 @@ foreach ($n in @('config.txt', 'tools.txt')) {
 $pd = Join-Path $pkg 'plugins'
 New-Item -ItemType Directory -Force $pd | Out-Null
 Copy-Item (Join-Path $src 'plugins\*.txt') $pd -Force -ErrorAction SilentlyContinue
+# 纯 Python 插件 (.py) 也拷进 package\plugins: 生产环境外部插件目录 (load_py_plugins 扫 APP_DIR/plugins)
+Copy-Item (Join-Path $here 'plugins\*.py') $pd -Force -ErrorAction SilentlyContinue
 
 $size = [math]::Round((Get-ChildItem -Recurse $pkg | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host ('package ready: ' + $pkg + ' (' + $size + ' MB)')
