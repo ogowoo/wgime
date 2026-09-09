@@ -26,7 +26,7 @@ wgime-py-pure/
 ├── build-package.ps1       # 重建 dist\ + 组装 package\（含码表 dicts\、config/tools、plugins 平级拷贝）
 ├── run-csharp-plugin.ps1   # [csharp] sidecar 回退（PowerShell + CodeDom）；默认直调 csc.exe 缓存编译
 ├── dist\wgime-py.py        # 单文件发布（内嵌全部模块；不内嵌插件，插件从外部目录加载）
-├── package\                # 可拷贝分发目录（build 产物，不入库；插件 = 根 plugins\*.txt + 本目录 plugins\*.py）
+├── package\                # 可拷贝分发目录（build 产物，不入库；插件 = 步骤DSL txt(见下) + 本目录 plugins\*.py）
 └── testing\                # 个人迭代实验（untracked，不入库；含 caret-helper 系列参考实现）
 ```
 
@@ -38,7 +38,9 @@ powershell -NoProfile -File build-package.ps1     # 重建 dist\wgime-py.py 并�
 
 - `dist\wgime-py.py`：单文件（模块内嵌 + 第三方 zip 内嵌），可直接 `python dist\wgime-py.py`
 - `package\`：可整体拷贝的生产目录——`wgime-py.py` + `dicts\`(码表) + `config.txt`/`tools.txt` +
-  `plugins\`（步骤 DSL `*.txt` 来自仓库根 `plugins\`；纯 Python 插件 `*.py` 来自本目录 `plugins\`）+
+  `plugins\`（构建时从仓库根 `plugins\` 只拷贝**步骤 DSL** 类 `*.txt`，如 clean-bin/qping/README；
+  含完整 `[csharp]` 插件块的 txt 已被同功能 `.py` 取代、不再进入 python 分发；纯 Python 插件
+  `*.py` 来自本目录 `plugins\`）+
   `run-csharp-plugin.ps1`
 - 本机构建需要已 `pip install uiautomation`（读源码打包），**分发文件零 pip 依赖**
 
@@ -51,11 +53,14 @@ powershell -NoProfile -File build-package.ps1     # 重建 dist\wgime-py.py 并�
 
 - `plugins\*.py`：纯 Python 插件（本目录源码；构建时拷入 `package\plugins\`，`load_py_plugins`
   扫描 APP_DIR/plugins）。manifest：模块级 `CODE/NAME/DESC/VERSION/AUTHOR/PERM`；`run()` 建 UI。
-- `plugins\*.txt`（仓库根）：步骤 DSL / `[python]` 块 / `[csharp]`。运行 C# 插件时直调
-  `csc.exe`（v4.0.30319 系统自带，/target:winexe，md5 缓存到 `%LOCALAPPDATA%\wgime-py\runtime\csc\`），
-  失败回退 `run-csharp-plugin.ps1`（PowerShell+CodeDom）。
+- `plugins\*.py`（本目录）：纯 Python 插件。manifest：模块级 `CODE/NAME/DESC/VERSION/AUTHOR/PERM`；
+  `run()` 建 UI。构建时拷入 `package\plugins\`（`load_py_plugins` 扫 APP_DIR/plugins）。
+- `plugins\*.txt`（仓库根，仅步骤 DSL）：步骤 DSL / `[python]` 块由 `run_steps` 执行；
+  含 `[csharp]` 插件块的 txt 属于 C# 版共享源（wgime.bat 分发用），**不进入 python 分发**——
+  python 侧有同功能 `.py`（calc/chat/clock/wgtranslate/qr 均已 1:1 移植）。如确有需在 python 版
+  运行遗留 C# txt 插件，`_run_csharp_plugin`/`run-csharp-plugin.ps1` sidecar 仍可用（直调 csc.exe，
+  md5 缓存到 `%LOCALAPPDATA%\wgime-py\runtime\csc\`）。
 - `.py` 与 `.txt` 同名 CODE 时，`.py` 优先（`load_py_plugins` 先于步骤插件注册）。
-
 ## 重要约定（改动前必读 AGENTS.md）
 
 - 光标跟随 = 独立 Caret Helper 子进程（纯 ctypes vtable），主进程绝不初始化 COM/UIA（AGENTS.md §17）

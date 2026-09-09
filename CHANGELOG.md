@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-01 (wgime-py-pure: python 分发目录彻底去 C# 插件 - 只留 .py + 步骤 DSL)
+
+- 用户决策: python 版内置插件全部 .py 化, C# 插件源不再进 python 分发
+- `build-package.ps1`: 拷 txt 进 `package\plugins\` 时跳过含完整 `[csharp]` 插件块的
+  txt(calc/chat/clock/wgtranslate 的 C# 源), 只留步骤 DSL(clean-bin/qping) + 文档(README.txt,
+  含 [csharp] 示例块但无 code 头, 不注册为插件)
+- 删除 `testing\wgime-qr-clean-border-style-v2.5.txt`(qr C# 源归档, 已由 wgime-qr.py 取代)
+- 效果: `package\plugins\` = calc.py/chat.py/clock.py/wgime-qr.py/wgtranslate.py(5 个 .py)
+  + clean-bin.txt/qping.txt(步骤 DSL) + README.txt(文档), 无任何 [csharp] 插件;
+  真实加载验证: STEP_PLUGINS 只剩 qls/qping(steps), PLUGINS 5 个 .py 全在
+- `[csharp]` 运行能力(直调 csc / run-csharp-plugin.ps1 回退)仍保留作兼容, 只是分发不再带 C# 插件
+- 仓库根 `plugins\*.txt`(C# 版共享源, wgime.bat/wg-all/release)不受影响, 保留
+- AGENTS.md / wgime-py-pure\README.md 同步更新
+
+---
+
 ## 2026-09-01 (仓库整理: 目录重组 B+A - 清垃圾 + 纯 Python 版 README/包说明 + 插件源统一)
 
 - 执行 `REORGANIZE-PLAN.md` 的推荐组合 B+A:

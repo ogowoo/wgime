@@ -31,7 +31,19 @@ foreach ($n in @('config.txt', 'tools.txt')) {
 }
 $pd = Join-Path $pkg 'plugins'
 New-Item -ItemType Directory -Force $pd | Out-Null
-Copy-Item (Join-Path $src 'plugins\*.txt') $pd -Force -ErrorAction SilentlyContinue
+# plugins\*.txt -> package\plugins: ship only step-DSL/doc txt into python dist.
+# txt files with a full [csharp] plugin block (C# calc/chat/clock/wgtranslate) are
+# replaced by the same-function .py plugins and must NOT be copied (no csc path in
+# production). README.txt keeps its [csharp] example block but has no code header
+# so it is never registered as a plugin - keep it as documentation.
+Get-ChildItem (Join-Path $src 'plugins\*.txt') -ErrorAction SilentlyContinue | ForEach-Object {
+    $t = $_.Name
+    if ($t -ne 'README.txt') {
+        $raw = Get-Content $_.FullName -Raw
+        if ($raw -match '(?s)\[csharp\].*?\[/csharp\]') { return }   # pure C# plugin source -> skip
+    }
+    Copy-Item $_.FullName $pd -Force
+}
 # 纯 Python 插件 (.py) 也拷进 package\plugins: 生产环境外部插件目录 (load_py_plugins 扫 APP_DIR/plugins)
 Copy-Item (Join-Path $here 'plugins\*.py') $pd -Force -ErrorAction SilentlyContinue
 
