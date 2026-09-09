@@ -1,23 +1,18 @@
-# WgIme + WgTray — 免安装的单文件输入法与托盘工具箱
+# WgIme — 免安装的单文件输入法（含托盘工具箱运行模式）
 
-**WgIme**：免安装的单文件悬浮输入法 —— 支持拼音 / 五笔 / 混合 / 英汉词典四种模式，带词频学习、简拼、模糊音、造词、码表导入与固化、整句连打、应用启动器、`tools.txt` 工具箱与 `plugins\*.txt` 插件。
+**WgIme**：免安装的单文件悬浮输入法 —— 支持拼音 / 五笔 / 混合 / 英汉词典四种模式，带词频学习、简拼、模糊音、造词、码表导入与固化、整句连打、应用启动器、`tools.txt` 工具箱与 `plugins\*.txt` 插件。每个分发文件同时内置 **托盘工具箱运行模式**（`tray`，原独立 WgTray 已收敛为运行模式）。
 
-**WgTray**：无输入法的托盘工具箱 —— 只有任务栏托盘菜单，完全复用 WgIme 的 `tools.txt` 工具箱、`plugins\*.txt` 插件与 `config.txt` 应用配置（无键盘钩子 / 无候选窗 / 无词典数据）。
+运行模式由 `config.txt` 的 `mode` 键定义（`ime`=输入法，默认 / `tray`=纯托盘工具箱——无键盘钩子/候选窗/词典交互，只有托盘工具菜单），托盘菜单「运行模式」可随时切换（写 config + 自动重启）。三种分发形态功能一致，按环境取舍：
 
-两个程序各自都有 **bat 版（带载荷）** 与 **ps1 版** 两种形态，功能完全一致，按环境取舍：
-
-| 文件 | 程序 | 形态 | 说明 | 体积 |
-|---|---|---|---|---|
-| `wgime.bat` | WgIme | **bat 版（带载荷）** | cmd 引导 + 内嵌 C# 源码 + 内嵌基础码表，启动时内存编译 | ~3.3MB |
-| `WgIme.ps1` | WgIme | **ps1 版** | PS 引导 + 内嵌 base64 预编译 DLL（含全部词库/图标/emoji 资源），运行时解出加载 | ~39MB |
-| `wgtray.bat` | WgTray | **bat 版（带载荷）** | cmd 引导 + 内嵌 C# + 预编译 DLL 载荷，所有机器可跑（含受限语言模式机器） | ~380KB |
-| `wgtray-nopayload.bat` | WgTray | bat 纯源码版 | 只有 C# 源码明文，启动时内存编译，杀软检测面更小 | ~227KB |
-| `WgTray.ps1` | WgTray | **ps1 版** | PS 引导 + 内嵌 base64 预编译 DLL，运行时解出加载 | ~380KB |
-| `wgime-py-pure\dist\wgime-py.py` | WgIme | **Python 纯版（单文件）** | 纯 Python 重实现，内嵌全部模块+插件+第三方库(zip)，零 .NET、免安装 | ~556KB |
+| 文件 | 形态 | 说明 | 体积 |
+|---|---|---|---|
+| `wgime.bat` | **bat 版（带载荷）** | cmd 引导 + 内嵌 C# 源码 + 内嵌基础码表，启动时内存编译 | ~3.3MB |
+| `WgIme.ps1` | **ps1 版** | PS 引导 + 内嵌 base64 预编译 DLL（含全部词库/图标/emoji 资源），运行时解出加载 | ~39MB |
+| `wgime-py-pure\dist\wgime-py.py` | **Python 纯版（单文件）** | 纯 Python 重实现，内嵌全部模块+插件+第三方库(zip)，零 .NET、免安装 | ~587KB |
 
 > **bat 版 vs ps1 版**：bat 版靠 cmd 引导双击即用（`wgime.bat` 内嵌基础码表自包含）；ps1 版启动命令行只有 `powershell -File xxx.ps1`（无 `Add-Type`/`.dll`/`::Run` 明文），规避 EDR 对"隐藏 PowerShell 加载 DLL"行为模式的命令行告警。取含详见下文「bat 版 vs ps1 版」。
 
-A single-file, install-free overlay IME (pinyin / wubi / mixed / EN-CN dictionary) plus a tray-only toolbox for Windows — each available as a bat edition (embedded payload) and a ps1 edition (embedded base64 prebuilt DLL).
+A single-file, install-free overlay IME (pinyin / wubi / mixed / EN-CN dictionary) for Windows — each distribution runs as **IME mode** or **tray-toolbox mode** (config `mode=ime|tray`, switchable from the tray menu).
 
 ## WgIme 输入法
 
@@ -30,29 +25,40 @@ A single-file, install-free overlay IME (pinyin / wubi / mixed / EN-CN dictionar
 - **应用启动器**：编码唤出应用——内置 `jsq` 计算器 / `itools` 工具箱 / `net` 网络工具 / `clip` 剪贴板历史 / `bj` 便签 / `ys` 颜色拾取 / `plugins` 插件管理；config.txt 可挂任意程序/目录/网址
 - **更多**：中文标点、vf 符号/emoji 面板（彩色 Fluent emoji）、v 模式（大写金额/千分位）、简繁切换、rq/sj/xq 动态候选、五笔 z 通配符、反查编码、自定义短语、快捷键全配置化、候选窗光标跟随（UIA 三级回退）、空闲自动隐藏、微信 4.x 等 Qt 应用标点吞字修复（keyfix）
 
-## WgTray 托盘菜单
+## 运行模式（ime / tray）
+
+一个分发文件两种运行形态，`config.txt` 的 `mode` 键决定启动方式（缺省 `ime`）：
+
+- **ime（输入法）**：键盘钩子 + 候选窗 + 组字，托盘菜单含开关/模式/词库/选项/工具/运行模式
+- **tray（托盘工具箱，原 WgTray）**：不装键盘钩子/候选窗，托盘出"工"字图标 + 工具菜单
+  （工具箱 / 内置工具 / 插件管理 / config 应用 / 编辑配置），只做托盘工具
+
+托盘菜单 **运行模式 ▸ 输入法 (IME) / 托盘工具箱 (Tray)** 可随时切换（写回 config 并自动重启）。
+
+tray 模式完整提供原 WgTray 能力：
 
 - **工具箱…** —— `tools.txt` 驱动的多标签工具窗体（`[tab 标签页]` / `[cols 列数]` / `[按钮名]` / 步骤行；支持 `msg/confirm/run/shell/shellx/open/kill/wait/reg-set/reg-del/file-del/mkdir` 与 `[shell]`/`[powershell]`/`[shellx]`/`[psx]` 多行块，详见 tools.txt 文件头注释）
-- **插件** —— `plugins\*.txt` 里启用的插件（步骤 DSL 与 `[csharp]` 代码插件都支持）+ **插件管理**（运行/列表/启用禁用/编辑/删除/新建模板/打开目录）
-- **内置工具** —— 计算器（plugins\calc.txt）/ 网络工具（ping/tracert/DNS/HTTP/端口/子网计算）/ 剪贴板历史 / 便签 / 颜色拾取
+- **插件** —— `plugins\*.txt` 里启用的插件（步骤 DSL 与 `[python]` 块）+ **插件管理**（运行/列表/启用禁用/编辑/删除/新建模板/打开目录）
+- **内置工具** —— 网络工具（ping/tracert/DNS/HTTP/端口/子网计算）/ 剪贴板历史 / 便签 / 颜色拾取
 - **应用 (config.txt)** —— `app = 编码 名称 命令` 条目
 - **配置** —— 编辑 config.txt / 重载配置 / 数据目录
-- **全局快捷键** —— `Ctrl+Alt+T` 工具箱 / `Ctrl+Alt+P` 插件管理 / `Ctrl+Alt+W` 光标处菜单，config.txt 的 `hotkey_*` 键可改（`none` 禁用）
+
+> C# 版（bat/ps1）共用 WordBoard 代码：`TrayMode` 静态标志读自 config，tray 时跳过 `Hook.Start()`、
+> 隐藏候选窗体、托盘菜单切换为工具风格；python 版由 `main.is_tray_mode()` 分支同样处理。
 
 ## 开机自启
 
 程序**不自带**计划任务注册（无 `-Install` / `-RemoveTask`，托盘菜单也没有"开机自启"项）——自动启动由你自己的工具负责（如任务计划程序、启动文件夹、组策略），把启动命令加进去即可：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1      # 输入法
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1     # 托盘工具箱
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1      # 按 config mode 启动 (ime/tray)
 ```
 
 > 这样做的原因：不写计划任务、不在程序里调用 schtasks，减少安全软件（EDR/杀软）对"隐藏 PowerShell 自启动"行为模式的告警面；需要自启的用户自己挂任务。
 
 ## 快速开始
 
-1. 双击 `wgime.bat`（输入法，托盘出现"中"字图标）/ 双击 `wgtray.bat`（托盘工具箱，托盘出现"工"字图标）；ps1 版用 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1`（或 `WgTray.ps1`）
+1. 双击 `wgime.bat`（默认输入法，托盘"中"字图标）；要托盘工具箱模式，编辑 config.txt `mode = tray`（或托盘菜单「运行模式」切换）后启动；ps1 版用 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1`
 2. 首次运行自动播种 `tools.txt` / `plugins\` / `config.txt` 示例（不覆盖已有文件）
 3. 输入法：任意文本框输入拼音/五笔，候选条跟随光标出现（`Shift` 轻点开关，`` Ctrl+` `` 切换模式）
 4. 改完 tools.txt / plugins / config.txt 后：托盘菜单 **配置 → 重载配置** 即时生效
@@ -65,29 +71,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1     # 托盘�
 ```powershell
 # WgIme ps1 版（从 wgime.bat 提取 C# 编译 DLL + 组包）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgime-ps1.ps1
-# WgTray 各版（从 wgime.bat 切分复用代码；默认输出 WgTray.ps1）
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1            # WgTray.ps1（ps1 版，带载荷）
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1 -Bat       # wgtray.bat（bat 版，带预编译 DLL 载荷）
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-wgtray.ps1 -Bat -NoPayload   # wgtray-nopayload.bat（bat 纯源码版）
-# 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild-tray.ps1
 # 测试
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1   # WgIme ps1 版回归
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray-ps1.tests.ps1  # WgTray ps1 版回归
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgtray.tests.ps1      # WgTray 两版回归
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload-consistency.ps1
 ```
 
-> `wgime.bat`（bat 版主源，含全部 C# 与基础码表）已入库；`build-wgime-ps1.ps1` / `build-wgtray.ps1` 都从它提取/切分代码。根目录 `py.txt`/`wb.txt`/`ec.txt`/`import_*.txt` 是本地构建用扩展码表（gitignored，全部词库已编入 `WgIme.ps1` 载荷与 wgime.bat 基础表）。
+> `wgime.bat`（bat 版主源，含全部 C# 与基础码表）已入库；`build-wgime-ps1.ps1` 从它提取代码。
+> 根目录 `py.txt`/`wb.txt`/`ec.txt`/`import_*.txt` 是本地构建用扩展码表（gitignored，全部词库已编入 `WgIme.ps1` 载荷与 wgime.bat 基础表）。原独立 WgTray 分发文件（wgtray.bat / WgTray.ps1 / wgtray-nopayload.bat）已退役并由 git 删除——`mode=tray` 完全替代（历史版本在早期 git 提交中）。
 
 ## bat 版 vs ps1 版（取舍分析）
 
 两套形态功能完全一致（同一套代码、同一套测试），区别只在"程序集怎么来"与"启动命令行长什么样"：
 
 **bat 版（带载荷）**
-- 程序集 = bat 内嵌的 base64 预编译 DLL（WgTray）/ 内嵌 C# 源码 + 基础码表（WgIme），双击即用
-- 优点：双击直接跑（cmd 引导）、无 `-File` 命令行依赖；WgTray 带载荷版所有机器都能启动（受限语言模式机器）
-- 缺点：cmd 引导 + 内嵌 blob 是杀软经典扫描模式，误报面比 ps1 版大
+- 程序集 = bat 内嵌 C# 源码 + 基础码表，启动时内存编译
+- 优点：双击直接跑（cmd 引导）、无 `-File` 命令行依赖
+- 缺点：cmd 引导 + 内嵌源码是杀软经典扫描模式，误报面比 ps1 版大
 
 **ps1 版**
 - 程序集 = ps1 内嵌的 base64 预编译 DLL，运行时解出到 `%LOCALAPPDATA%\wgime\*.dll` 加载
@@ -98,38 +96,32 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
 
 ## 分发（wg-all/）
 
-`wg-all\` 是合并分发目录：`install.bat`（all/ime/tray 三种模式）+ `WgIme.ps1` + `WgTray.ps1` + `config.txt` + `tools.txt` + `plugins\` + `README.txt`。只发行 ps1 版，不产生任何 .dll/.bat 启动器/快捷方式。
+`wg-all\` 是合并分发目录：`install.bat`（ime/tray 入口）+ `WgIme.ps1`（单文件双模式）+ `config.txt` + `tools.txt` + `plugins\` + `README.txt`。只发行 ps1 版，不产生任何 .dll/.bat 启动器/快捷方式。
 
 ## 文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `wgime.bat` | WgIme 程序本体 + 构建主源（bat 版带载荷，内嵌 C# + 基础码表；纯 CRLF 无 BOM） |
-| `WgIme.ps1` | WgIme ps1 版（PS 引导 + 内嵌 base64 预编译 DLL） |
-| `wgtray.bat` | WgTray 程序本体（带预编译 DLL 载荷版，保底所有机器） |
-| `wgtray-nopayload.bat` | WgTray 纯源码版（启动内存编译，杀软检测面小） |
-| `WgTray.ps1` | WgTray ps1 版（PS 引导 + 内嵌 base64 预编译 DLL） |
-| `config.txt` | 共用配置（WgIme 输入法键 + WgTray 的 app=/hotkey_*；互相兼容） |
+| `wgime.bat` | 程序本体 + 构建主源（bat 版带载荷，内嵌 C# + 基础码表；纯 CRLF 无 BOM） |
+| `WgIme.ps1` | ps1 版（PS 引导 + 内嵌 base64 预编译 DLL） |
+| `config.txt` | 共用配置（`mode = ime|tray` 运行模式 / 输入法键 / `app=` 应用 / `hotkey_*`） |
 | `tools.txt` | 工具箱配置（`[tab 标签页]` / `[按钮名]` / `code = xxx` 启动编码 / 步骤行） |
-| `plugins/` | 插件目录（步骤 DSL / C# 插件；规范见 [docs/WGIME_插件规范.md](docs/WGIME_插件规范.md)、窗体风格见 [docs/WGIME_窗体设计语言.md](docs/WGIME_窗体设计语言.md)） |
+| `plugins/` | 插件目录（步骤 DSL / 插件；规范见 [docs/WGIME_插件规范.md](docs/WGIME_插件规范.md)、窗体风格见 [docs/WGIME_窗体设计语言.md](docs/WGIME_窗体设计语言.md)） |
 | `build-wgime-ps1.ps1` | 从 wgime.bat 构建 WgIme.ps1（编译 DLL + base64 嵌入 + wg-all 同步） |
-| `build-wgtray.ps1` | 生成 wgtray.bat / wgtray-nopayload.bat / WgTray.ps1（从 wgime.bat 切分复用代码） |
-| `rebuild-tray.ps1` | 修改 wgtray.bat 内嵌 C# 后重建 DLL 载荷（Windows PowerShell 5.1） |
-| `wgtray_glue.cs.txt` / `wgtray_ps_body.txt` / `wgtray_seed_patches.txt` | WgTray 构建模板（UTF-8；构建脚本本身保持 ASCII，兼容 PS 5.1 的 ANSI 解析） |
 | `vt-scan.ps1` | VirusTotal 一键扫描脚本（wg-all 分发文件） |
-| `tests/` | 回归测试（wgime-ps1 / wgtray-ps1 / wgtray 两版 / 载荷一致性） |
+| `tests/` | 回归测试（wgime-ps1 等） |
 | `wgime-py-pure/` | **纯 Python 版**：`main.py`(状态机/注入/tray api) / `hook.py`(ctypes 键盘钩子) / `win.py`(ctypes Win32 注入+原生剪贴板+UIA 光标) / `bar.py`(无边框圆角候选条) / `engine.py`(码表/候选/词频/造句) / `plugins.py`(插件+步骤DSL) / `tools.py`(工具箱等) / `tray.py`(pystray 双语托盘) / `ui.py`(窗体设计语言实现) / `wspy.py`(WS 客户端) / `plugins\*.py`(Python 插件) |
 | `wgime-py-pure\build-wgime-pure.py` | 生成纯 Python 单文件 `dist\wgime-py.py`（内嵌全部模块+插件+第三方库） |
 | `wgime-py-pure\build-package.ps1` | 刷新纯 Python 版 `package\` 分发目录（单文件 + sidecar + dicts + 配置/插件） |
-| `wg-all/` | 合并分发目录（install.bat + 双 ps1 版 + 配置/插件/README） |
+| `wg-all/` | 合并分发目录（install.bat + WgIme.ps1 双模式 + 配置/插件/README） |
 | `docs/` | 文档目录：使用说明 / 技术文档 / 插件规范 / 窗体设计语言 / TSF 评估 |
 
 ## 开发
 
-- 修改输入法/工具箱 C# 一律改 `wgime.bat`（唯一源码真身）；`build-wgime-ps1.ps1` 重新出 ps1 版
-- 修改 wgtray.bat 内嵌 C# 后运行 `rebuild-tray.ps1`；改动托盘壳（wgtray_glue.cs.txt）/ 引导段（wgtray_ps_body.txt）后运行 `build-wgtray.ps1` 整体重建
-- 运行测试：`tests\wgime-ps1.tests.ps1` + `tests\wgtray-ps1.tests.ps1` + `tests\wgtray.tests.ps1`
-- 文件约束：wgime.bat / wgtray.bat 纯 CRLF / 无 BOM（cmd.exe 依赖 CRLF 解析批处理头，见 .gitattributes）；.ps1 构建脚本保持 ASCII（Windows PS 5.1 按 ANSI 读取），非 ASCII 内容一律放 UTF-8 模板
+- 修改 C# 一律改 `wgime.bat`（唯一源码真身）；`build-wgime-ps1.ps1` 重新出 ps1 版
+- 运行模式改动点：`TrayMode` 字段(读 config mode) / 构造中托盘菜单分支与候选隐藏 / `OnLoad` 跳过 `Hook.Start` / `RestartInMode`(写 config+重启) / `RefreshLabel` tray 图标
+- 运行测试：`tests\wgime-ps1.tests.ps1`
+- 文件约束：wgime.bat 纯 CRLF / 无 BOM（cmd.exe 依赖 CRLF 解析批处理头，见 .gitattributes）；.ps1 构建脚本保持 ASCII（Windows PS 5.1 按 ANSI 读取），非 ASCII 内容一律放 UTF-8 模板
 
 ## 项目演进
 
@@ -141,6 +133,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\check-tray-payload
   2. 单一程序 → **双程序**：WgIme（输入法）+ WgTray（无输入法的托盘工具箱）
   3. 每种程序 → **bat / ps1 双形态**（bat 双击即用，ps1 命令行干净规避 EDR 告警）
   4. 词库散落 → **全部内嵌**（压缩 trailer，文件夹不再需要 txt）
+  5. **双程序 → 单程序双模式**（2026-09）：WgTray 退役，`config.txt mode = ime|tray` 定义运行模式，
+     托盘菜单「运行模式」切换 + 自动重启；bat/ps/py 三版一致支持
 - **新增子系统**：托盘菜单、插件系统（DSL + C# 代码插件 + 管理器）、应用启动器、网络工具、时钟插件（多提醒方式）、聊天插件（MQTT+加密，与 itools-chat 互通）、tools.txt 按钮启动编码。
 - **性能与稳定性**：词库加载优化（批量缓存读 + 并行建表 + 缓存命中跳过解压）、修复长时间运行上屏卡顿（词频保存后台化 + 内存上限）。
 - **安全与合规**：去 base64 降 ML 误报面、移除快捷方式/计划任务自启、控制台自隐藏、词库原始二进制。
@@ -167,4 +161,4 @@ Windows 10/11，Windows PowerShell 5.1（系统自带），无需安装。
 
 ## License
 
-代码部分（`wgime.bat`、`wgtray.bat`、构建脚本、`tests/`、`docs/`）遵循 MIT 协议，详情见各文件头注释。随附的插件示例（`plugins/`）仅限个人使用，分发前请确认各自许可。
+代码部分（`wgime.bat`、构建脚本、`tests/`、`docs/`）遵循 MIT 协议，详情见各文件头注释。随附的插件示例（`plugins/`）仅限个人使用，分发前请确认各自许可。

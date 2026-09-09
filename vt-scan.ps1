@@ -24,11 +24,8 @@ if (-not $ApiKey) { throw 'provide -ApiKey (free key from virustotal.com)' }
 if ($Path.Count -eq 0) {
     $base = Join-Path $PSScriptRoot 'wg-all'
     $Path = @(
-        (Join-Path $base 'WgIme.dll'),
-        (Join-Path $base 'WgTray.dll'),
-        (Join-Path $base 'install.bat'),
-        (Join-Path $base 'WgIme.bat'),
-        (Join-Path $base 'WgTray.bat')
+        (Join-Path $base 'WgIme.ps1'),
+        (Join-Path $base 'install.bat')
     )
 }
 foreach ($p in $Path) { if (-not (Test-Path $p)) { throw "not found: $p" } }

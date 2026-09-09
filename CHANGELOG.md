@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-09 (wgtray 退役 - 分发收敛为 bat/ps/py 三件套, 各含 ime/tray 运行模式)
+
+- **删除独立 WgTray 全部产物** (19 文件, git rm): 根 `wgtray.bat`/`wgtray-nopayload.bat`/
+  `WgTray.ps1`/`WgTray-nopayload.ps1`, 构建链 `build-wgtray.ps1`/`build-wgtray-dll.ps1`/
+  `rebuild-tray.ps1`/`wgtray_glue.cs.txt`/`wgtray_ps_body.txt`/`wgtray_seed_patches.txt`,
+  tests `wgtray.tests.ps1`/`wgtray-ps1.tests.ps1`/`check-tray-payload-consistency.ps1`,
+  分发 release/wg-all 的 6 个 WgTray 文件 —— `mode=tray` 完全替代 (历史在早期 git 提交)
+- **wg-all\install.bat**: 改为单入口 WgIme.ps1 (config mode 决定形态); 参数 ime/tray 强制写 config 后启动
+- **vt-scan.ps1**: 扫描清单更新为 WgIme.ps1 + install.bat
+- **release\wgime.bat** 同步为最新 (含 tray 模式); release 顶层只剩 wgime.bat/WgIme.ps1/config/tools/plugins/dicts/docs
+- **文档**: README.md(头部/运行模式/构建/文件说明/演进/许可)、release\README.txt、wg-all\README.txt、AGENTS.md(§1-§5/§7) 全面更新为"单程序双模式"
+- 分发最终形态: `wgime.bat`(bat) + `WgIme.ps1`(ps1) + `wgime-py-pure`(py), 每版都支持 `mode=ime|tray`
+
+---
+
 ## 2026-09-09 (wgime: 修复运行模式消息循环 bug + ps1 版重建获得 ime/tray)
 
 - **修复严重 bug**: 上一提交 0b76208 在清理诊断日志时误删了 RunApp 的

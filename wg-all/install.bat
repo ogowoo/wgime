@@ -1,45 +1,45 @@
 @echo off
 rem ============================================================
-rem  install.bat - Wg one-shot launcher (fake installer)
-rem  Both editions are single-file ps1 payload editions (embedded
-rem  base64 DLL, extracted at runtime; no separate dll files):
-rem    WgIme.ps1   full IME (pinyin/wubi/mixed/EN-CN)
-rem    WgTray.ps1  tray toolbox (tools.txt / plugins / config apps)
-rem  This bat is the single entry point.
-rem  Autostart is NOT built in (no -Install / no scheduled task / no
-rem  tray item): if you want launch-at-logon, add one of these commands
-rem  to your own task scheduler / startup folder:
-rem    powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgIme.ps1
-rem    powershell.exe -NoProfile -ExecutionPolicy Bypass -File WgTray.ps1
+rem  install.bat - Wg single launcher (one file, two run modes)
+rem  One program file runs both shapes - switch with config mode:
+rem    WgIme.ps1   ime mode  = full IME (pinyin/wubi/mixed/EN-CN)
+rem                tray mode = tray toolbox (tools.txt / plugins /
+rem                            config apps) - no keyboard hook
+rem  config.txt key:  mode = ime|tray   (default ime)
+rem  tray menu "Run mode" switches and restarts, or pass an
+rem  argument here to force a mode before launching.
 rem
 rem  Usage:
-rem    install.bat          start ALL (IME + tray toolbox)
-rem    install.bat ime      start only the IME
-rem    install.bat tray     start only the tray toolbox
+rem    install.bat          start per current config.txt mode
+rem    install.bat ime      force mode=ime and start
+rem    install.bat tray     force mode=tray and start
 rem
-rem  Errors are logged to %TEMP%\WgIme_error.log / WgTray_error.log
+rem  Errors are logged to %TEMP%\WgIme_error.log
 rem ============================================================
+setlocal
 set "WG_DIR=%~dp0"
 set "MODE=%~1"
-if "%MODE%"=="" set "MODE=all"
-if /i "%MODE%"=="ime" goto :ime
-if /i "%MODE%"=="tray" goto :tray
-:all
-echo  [Wg] starting IME + tray toolbox ...
-start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgIme.ps1')
-start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgTray.ps1')
-goto :done
-:ime
-echo  [Wg] starting IME ...
-start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgIme.ps1')
-goto :done
-:tray
-echo  [Wg] starting tray toolbox ...
-start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File (Join-Path $env:WG_DIR 'WgTray.ps1')
-:done
+
+rem ---- optional: force config.txt mode before launching ----
+if /i "%MODE%"=="ime" goto :setime
+if /i "%MODE%"=="tray" goto :settray
+goto :launch
+
+:setime
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:WG_DIR 'config.txt'; $s=[IO.File]::ReadAllText($p); if($s -match '(?m)^mode\s*=\s*\w+'){ $s=[regex]::Replace($s,'(?m)^mode\s*=\s*\w+','mode = ime') } else { $s=$s.TrimEnd()+[Environment]::NewLine+'mode = ime' }; [IO.File]::WriteAllText($p,$s,(New-Object System.Text.UTF8Encoding($false)))"
+goto :launch
+
+:settray
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:WG_DIR 'config.txt'; $s=[IO.File]::ReadAllText($p); if($s -match '(?m)^mode\s*=\s*\w+'){ $s=[regex]::Replace($s,'(?m)^mode\s*=\s*\w+','mode = tray') } else { $s=$s.TrimEnd()+[Environment]::NewLine+'mode = tray' }; [IO.File]::WriteAllText($p,$s,(New-Object System.Text.UTF8Encoding($false)))"
+goto :launch
+
+:launch
+echo  [Wg] starting (mode from config.txt) ...
+start "" powershell.exe -NoProfile -NoLogo -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "%WG_DIR%WgIme.ps1"
 echo.
-echo  [Wg] done - tray icons: WgIme (IME) / WgTray (toolbox)
+echo  [Wg] done - tray icon per config mode (IME or toolbox)
+echo  switch mode anytime from the tray menu: Run mode - IME / Tray
 echo  autostart is not built in - use your own task scheduler if needed
-echo  press any key to close this window ...
 pause >nul
+endlocal
 exit /b
