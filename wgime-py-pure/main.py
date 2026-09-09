@@ -962,6 +962,93 @@ def _confirm_plugin(payload):
     return _mb.askyesno('插件权限', '插件「%s」需要权限: %s%s\n确定运行?' % (meta['name'], risk, extra))
 
 
+# [csharp] 插件宿主: 追加在插件源码之后, 不能用 using (C# 要求 using 在 namespace 成员之前),
+# 全限定名; [STAThread] 保持与旧 PowerShell sidecar 的 -STA 一致 (WinForms 需要).
+_CSC_HOST = r'''
+public static class WgPluginHost {
+    [System.STAThread]
+    static void Main() {
+        foreach (var t in System.Reflection.Assembly.GetExecutingAssembly().GetTypes()) {
+            var m = t.GetMethod("Run", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (m != null) {
+                System.Windows.Forms.Application.EnableVisualStyles();
+                m.Invoke(null, null);
+                System.Windows.Forms.Application.Run();
+                return;
+            }
+        }
+    }
+}
+'''
+
+
+def _find_csc():
+    """找 .NET Framework 自带 csc.exe (系统组件, 无需安装)."""
+    for root in (r'C:\Windows\Microsoft.NET\Framework64\v4.0.30319',
+                 r'C:\Windows\Microsoft.NET\Framework\v4.0.30319'):
+        p = os.path.join(root, 'csc.exe')
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _run_csharp_plugin(payload):
+    """[csharp] 插件: 直接调系统自带 csc.exe 编译成独立 exe 并运行 (不再经 PowerShell+CodeDom sidecar).
+    产物按源码 md5 缓存在 DATA_DIR/runtime/csc/, 二次启动零编译. csc 缺失/编译失败回退 ps1 sidecar."""
+    import subprocess
+    text = open(payload.path, encoding='utf-8').read()
+    m = re.search(r'(?s)\[csharp\]\s*(.*?)\[/csharp\]', text)
+    if not m:
+        _dfn('csharp plugin %s: no [csharp] block' % payload.name)
+        return
+    src = m.group(1)
+    full = src + '\n' + _CSC_HOST
+    csc = _find_csc()
+    if not csc:
+        _run_csharp_plugin_ps1(payload)
+        return
+    import hashlib
+    h = hashlib.md5(full.encode('utf-8')).hexdigest()[:16]
+    outdir = os.path.join(DATA_DIR, 'runtime', 'csc')
+    try:
+        os.makedirs(outdir, exist_ok=True)
+    except Exception:
+        pass
+    cs = os.path.join(outdir, 'p_%s.cs' % h)
+    exe = os.path.join(outdir, 'p_%s.exe' % h)
+    if not os.path.isfile(exe):
+        open(cs, 'w', encoding='utf-8').write(full)
+        wpflib = os.path.join(os.path.dirname(csc), 'WPF')
+        args = [csc, '/nologo', '/target:winexe', '/out:' + exe, cs,
+                '/r:System.dll', '/r:System.Core.dll', '/r:System.Data.dll',
+                '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll',
+                '/lib:' + wpflib,
+                '/r:WindowsBase.dll', '/r:PresentationCore.dll', '/r:PresentationFramework.dll']
+        r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if r.returncode != 0 or not os.path.isfile(exe):
+            _dfn('csharp compile fail %s: %s' % (payload.name, (r.stdout or r.stderr or '')[:400]))
+            _run_csharp_plugin_ps1(payload)          # 编译失败回退 (理论上同一编译器也会失败, 但保底)
+            return
+    try:
+        subprocess.Popen([exe], creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except Exception as ex:
+        _dfn('csharp launch err %r' % ex)
+
+
+def _run_csharp_plugin_ps1(payload):
+    """回退: 旧 sidecar PowerShell + CodeDom (csc.exe 不可用/直编失败时)."""
+    runner = os.path.join(BASE, 'run-csharp-plugin.ps1')
+    if not os.path.exists(runner):
+        runner = os.path.join(APP_DIR, 'run-csharp-plugin.ps1')
+    try:
+        import subprocess
+        subprocess.Popen(['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
+                          '-File', runner, payload.path], creationflags=0x08000000)
+    except Exception as ex:
+        _dfn('csharp plugin err %r' % ex)
+
+
 def run_launcher(l):
     name, kind, payload = l
     # ② 高权限插件运行前确认 (联网/执行命令/注册表/破坏性)
@@ -981,16 +1068,8 @@ def run_launcher(l):
         ctx = {'code': payload.code, 'name': payload.name, 'buff': ime.buf, 'mode': ime.mode}
         threading.Thread(target=_run_python_plugin_actions, args=(payload, ctx), daemon=True).start()
         return
-    if kind == 'csharp':                                   # [csharp] 插件: sidecar PowerShell + CodeDom
-        runner = os.path.join(BASE, 'run-csharp-plugin.ps1')
-        if not os.path.exists(runner):
-            runner = os.path.join(APP_DIR, 'run-csharp-plugin.ps1')
-        try:
-            import subprocess
-            subprocess.Popen(['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
-                              '-File', runner, payload.path], creationflags=0x08000000)
-        except Exception as ex:
-            _dfn('csharp plugin err %r' % ex)
+    if kind == 'csharp':                                   # [csharp] 插件: 直编 csc.exe+缓存 (后台线程, 不阻塞打字)
+        threading.Thread(target=_run_csharp_plugin, args=(payload,), daemon=True).start()
         return
     if kind == 'builtin':
         _show_builtin(payload)
