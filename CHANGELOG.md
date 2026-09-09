@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-09 (wgime: 修复运行模式消息循环 bug + ps1 版重建获得 ime/tray)
+
+- **修复严重 bug**: 上一提交 0b76208 在清理诊断日志时误删了 RunApp 的
+  `Application.Run(form)` 消息循环(整行随 RUNAPP 日志行一起被过滤), 导致 ime/tray 启动后
+  RunApp 立即返回、进程秒退(托盘消失)。本轮发现并恢复:
+  `if (TrayMode) { Application.Run(); } else { Application.Run(form); }`
+  - tray 模式: 候选条窗体隐藏, 用**无参 Application.Run()** 消息循环(对齐 wgtray 的
+    TrayApp 做法), 进程常驻托盘
+  - ime 模式: 原 `Application.Run(form)` 恢复
+- 重建: `tests\rebuild-wgime-bat-payload.ps1`(瘦 DLL 559KB) + `build-wgime-ps1.ps1`
+  (WgIme.ps1 39.4MB, 同步 wg-all/release)
+- 验证: bat ime 存活 16s+ / bat tray 存活(RUNMODE=tray) / ps1 tray 存活 25s+
+  (RUNMODE=tray) —— 三版 ime/tray 消息泵均常驻
+- 注: WgIme.ps1 ps1 版经 WgImeLauncher → WordBoard.RunApp 调用, 自动继承 tray 模式
+
+---
+
 ## 2026-09-01 (wgime.bat: 运行模式 ime/tray - 合并 wgtray 方案 · C# bat 版)
 
 - wgime.bat 内嵌 C# (WordBoard) 增加**运行模式**支持, 对齐 python 版与合并 wgtray 目标:
@@ -22,6 +39,8 @@
 - 注: 因 C# 段前部增行, build-wgtray.ps1 切片行号已失配(wgtray 将退役, 下轮处理)
 
 ---
+
+## 2026-09-01 (wgime-py-pure: 运行模式 ime/tray - 合并 wgtray 方案 · python 版)
 
 目标: 把 wgtray(无输入法托盘工具箱)收敛为运行模式, 最终三版(bat/ps/py)各含 ime/tray。
 本轮落地 **python 版** (方案详见仓库根 MERGE-TRAY-PLAN.md):
