@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-09-01 (仓库整理: 目录重组 B+A - 清垃圾 + 纯 Python 版 README/包说明 + 插件源统一)
+
+- 执行 `REORGANIZE-PLAN.md` 的推荐组合 B+A:
+  - 清 `tests\interop\` 49 个调试日志/截图, 清全仓 4 处 `__pycache__`
+  - 删 `wgime-py-pure\plugins\clock.txt`(与仓库根 `plugins\clock.txt` 相同的 C# 源副本);
+    `wgime-qr-clean-border-style-v2.5.txt`(C# qr 源唯一副本)归档到 `wgime-py-pure\testing\`(untracked, 不参与加载)
+  - 纯 Python 版源码 `plugins\` 现在只含 `.py`(calc/chat/clock/wgime-qr/wgtranslate), 不再混 C# 源
+- 新增 `wgime-py-pure\README.md`(子项目说明: 结构/构建/数据目录/插件/重要约定)
+- 新增 `wgime-py-pure\package-readme.txt` 并让 `build-package.ps1` 把它拷成 `package\README.txt`
+  (分发包目录说明, 以后构建自动带上; release/wg-all 的 README.txt 已有, 不动)
+- `.gitignore` 已覆盖 package/__pycache__/interop 产物; `testing\` 为个人实验区保持 untracked
+- AGENTS.md §8 纯 Python 插件描述更新为"插件不内嵌, 生产从外部插件目录加载"
+- 行为无变化: 插件加载逻辑/权限模型/C# sidecar/词频/候选框等一律未动
+
 ## 2026-08-31 (wgime-py-pure: 修候选框"刚输入就跳/飘过来" - 开始输入即直贴光标 + UIA 缓存前台变化守卫)
 
 - 用户反馈: 上一步修复后候选框仍"刚输入时会跳来跳去", 且疑似字频不再调整

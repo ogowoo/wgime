@@ -16,6 +16,7 @@ Get-ChildItem $pkg -Recurse -Force | Remove-Item -Recurse -Force -EA SilentlyCon
 New-Item -ItemType Directory -Force $dicts | Out-Null
 Copy-Item (Join-Path $dist 'wgime-py.py') $pkg -Force
 Copy-Item (Join-Path $here 'run-csharp-plugin.ps1') $pkg -Force   # [csharp] sidecar
+Copy-Item (Join-Path $here 'package-readme.txt') (Join-Path $pkg 'README.txt') -Force   # 目录说明（源在 package-readme.txt，勿手改 package\README.txt）
 
 # 3. refresh dicts (码表 + import 产物) from the repo root -> package\dicts\
 $src = Split-Path $here -Parent
