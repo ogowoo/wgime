@@ -83,19 +83,19 @@ def parse_plugin(path):
 
 
 def load_plugins(plugin_dir, data_dir):
-    """返回 (plugins, disabled_codes)"""
+    """返回 (plugins, disabled_codes). 禁用名单 = 小写文件名 (对齐 C# DisabledPlugins)."""
     plugins = []
     disabled = set()
     try:
         with open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') as f:
-            disabled = set(l.strip() for l in f if l.strip())
+            disabled = set(l.strip().lower() for l in f if l.strip())   # 统一小写, 文件名大小写不敏感
     except OSError:
         pass
     for path in sorted(glob.glob(os.path.join(plugin_dir, '*.txt'))):
         p = parse_plugin(path)
         if p.error:
             continue
-        p.enabled = os.path.basename(p.path) not in disabled
+        p.enabled = os.path.basename(p.path).lower() not in disabled    # 按文件名判定 (对齐 C#)
         plugins.append(p)
     return plugins, disabled
 

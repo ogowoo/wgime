@@ -364,14 +364,15 @@ def load_py_plugins():
     PLUGINS=[]
     try:
         with open(os.path.join(DATA_DIR,'plugins-disabled.txt'),encoding='utf-8') as f:
-            disabled=set(l.strip() for l in f if l.strip())
+            disabled=set(l.strip().lower() for l in f if l.strip())   # 禁用名单 = 小写文件名 (对齐 C#)
     except OSError:
         disabled=set()
     seen=set()
     if '_EMBEDDED_PLUGINS' in globals():
         for key,m in _EMBEDDED_PLUGINS.items():
             code=getattr(m,'CODE',None)
-            if code and code not in disabled and code not in seen:
+            # 内嵌插件没有磁盘文件, 管理器只能按 code 禁 (生产分发不内嵌插件, 此分支仅供自定义构建)
+            if code and code.lower() not in disabled and code not in seen:
                 PLUGINS.append(m);seen.add(code)
     # Search script-side and application-side plugin directories. Do not stop after
     # embedded modules. External plugins override an embedded plugin with same CODE.
@@ -393,7 +394,7 @@ def load_py_plugins():
                 code=getattr(m,'CODE',None)
                 if not code or not callable(getattr(m,'run',None)):
                     raise ValueError('plugin must define CODE and callable run()')
-                if code in disabled:continue
+                if fn.lower() in disabled:continue                     # 按文件名禁用 (对齐 C#; 管理器写的就是文件名)
                 # External plugin wins over built-in with the same launch code.
                 PLUGINS[:]=[x for x in PLUGINS if getattr(x,'CODE',None)!=code]
                 PLUGINS.append(m);seen.add(code)
