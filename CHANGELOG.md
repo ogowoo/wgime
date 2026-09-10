@@ -11,10 +11,15 @@
 - **GitHub release v1.2.7** 已发布 (tag 指向 `f512c28`): 三个资产 `wgime-v1.2.7-bat.zip`(1.64MB)/
   `wgime-v1.2.7-ps1.zip`(25.99MB)/`wgime-v1.2.7-python.zip`(24.27MB); release body 走显式 UTF-8 字节,
   中文无问号. 本轮只有纯 Python 版有变化(bat/ps1 与 v1.2.6 内容相同), 为整体下载一并附上.
-- **新增 `tests\build-release-assets.ps1`**: 一键产出三个发布 zip. 两条踩坑经验写进脚本:
+- **新增 `tests\build-release-assets.ps1`**: 一键产出三个发布 zip. 三条踩坑经验写进脚本:
   ① `.NET ZipFile.CreateFromDirectory` 在 Windows 上写 `\` 分隔条目 —— 改为逐条
   `CreateEntryFromFile` 并统一转 `/`(脚本自检, 出现反斜杠条目直接 throw);
-  ② 源目录必须取长路径(`Get-Item -LiteralPath`), 用 8.3 短路径会把 `ADMINI~1` 带进 zip 条目名.
+  ② 源目录必须取长路径(`Get-Item -LiteralPath`), 用 8.3 短路径会把 `ADMINI~1` 带进 zip 条目名;
+  ③ **python zip 取自 `wgime-py-pure\package\`(构建产物), 改完源码必须先在 `wgime-py-pure\` 跑
+  `build-package.ps1`** —— 否则会把**上一个构建**发出去(本轮实际踩到: v1.2.7 首次上传的 python 包
+  缺了 `数据目录…` 那次改动, 靠"下载已发布资产与本地 dist 比对"才发现); 现已加**哈希守卫**:
+  `package\wgime-py.py` 与 `dist\wgime-py.py` 不一致直接 throw. 顺带确认: dist 重复构建的字节漂移
+  只发生在内嵌第三方 zip 容器(84 条目内容逐字节相同), 模块源码部分稳定.
 - **新增 `tests\publish-release.ps1`**: 创建/更新 release + 上传资产. body 用 `HttpWebRequest` +
   `[Text.Encoding]::UTF8.GetBytes()` 显式发送(规避 PS 5.1 把中文 body 变 `?` 的老坑, 见 AGENTS §7);
   上传超时放宽到 15 分钟(25MB 资产会超过默认 120s). Token 来源顺序: `-Token` → `$env:GITHUB_TOKEN`

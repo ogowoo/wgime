@@ -84,9 +84,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 - 主分支 `master`（唯一活跃分支）。原独立 WgTray 程序已于 2026-09 退役（收敛为 `mode=tray` 运行模式），历史版本见早期 tag/提交。
 - 提交后推 `origin/master`。release 发版本用 GitHub API + zip，**已脚本化**（2026-09-10）：
   1. `powershell -NoProfile -ExecutionPolicy Bypass -File tests\build-release-assets.ps1 -Version 1.2.7`
-     → 产出 `bat`/`ps1`/`python` 三个 zip（stage 在仓库内 `.release-stage-v127\`）。
-     两条坑已写进脚本：`.NET ZipFile.CreateFromDirectory` 写 `\` 分隔条目（改逐条 `CreateEntryFromFile` + 转 `/`，
-     脚本自检）、源目录必须长路径（8.3 短路径会把 `ADMINI~1` 带进条目名）。
+     → 产出 `bat`/`ps1`/`python` 三个 zip（stage 在仓库内 `.release-stage-v127\`）。`-OnlyPython` 只重做 python 包。
+     三条坑已写进脚本：`.NET ZipFile.CreateFromDirectory` 写 `\` 分隔条目（改逐条 `CreateEntryFromFile` + 转 `/`，
+     脚本自检）、源目录必须长路径（8.3 短路径会把 `ADMINI~1` 带进条目名）、**python 包取自
+     `wgime-py-pure\package\`，改完源码必须先跑 `wgime-py-pure\build-package.ps1`**（否则发出去的是上一个构建；
+     脚本已加哈希守卫：`package\wgime-py.py` ≠ `dist\wgime-py.py` 直接 throw）。
   2. 把 release body 存成 UTF-8 文件，`powershell -NoProfile -ExecutionPolicy Bypass -File tests\publish-release.ps1
      -Version 1.2.7 -BodyFile <body.md> -AssetsDir <stage 目录>`（脚本自己创建 release + 上传三个资产；
      同 tag 已存在时改走 PATCH + 覆盖同名资产）。

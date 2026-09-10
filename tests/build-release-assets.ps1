@@ -16,7 +16,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$OutDir,
-    [switch]$SkipPython
+    [switch]$SkipPython,
+    [switch]$OnlyPython
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -54,6 +55,7 @@ function New-Zip([string]$srcDir, [string]$zipPath) {
 
 # 1) bat / ps1: main file + shared companions from release\
 foreach ($kind in @('bat', 'ps1')) {
+    if ($OnlyPython) { break }
     $main = if ($kind -eq 'bat') { 'wgime.bat' } else { 'WgIme.ps1' }
     if (-not (Test-Path (Join-Path $rel $main))) { throw "missing release\$main" }
     $src = Join-Path $OutDir $kind
@@ -71,6 +73,18 @@ foreach ($kind in @('bat', 'ps1')) {
 if (-not $SkipPython) {
     if (-not (Test-Path (Join-Path $pkg 'wgime-py.py'))) {
         throw "missing wgime-py-pure\package\wgime-py.py - run build-package.ps1 first"
+    }
+    # Guard: package\ is a build output refreshed by build-package.ps1. Shipping a stale
+    # one silently publishes the previous build (happened once), so refuse unless it is
+    # byte-identical to the current dist\ build.
+    $distFile = Join-Path $repo 'wgime-py-pure\dist\wgime-py.py'
+    $pkgFile = Join-Path $pkg 'wgime-py.py'
+    if (Test-Path $distFile) {
+        $h1 = (Get-FileHash $distFile -Algorithm SHA256).Hash
+        $h2 = (Get-FileHash $pkgFile -Algorithm SHA256).Hash
+        if ($h1 -ne $h2) {
+            throw "package\wgime-py.py is stale (differs from dist\wgime-py.py) - run wgime-py-pure\build-package.ps1 first"
+        }
     }
     New-Zip $pkg (Join-Path $OutDir "wgime-v$Version-python.zip")
 }
