@@ -156,6 +156,7 @@ if not os.environ.get('WGIME_NO_SINGLETON'):
         sys.exit(0)
 
 engine = Engine(DICT_DIR, DATA_DIR)
+_dfn('startup: engine load=%.0fms (对齐 C# 的启动计时日志)' % engine.load_ms)
 
 CFG = {'sentence': True, 'assoc': True, 'trad': False, 'starton': True, 'shuangpin': 0,
        'apps': {}, 'hideidle': True, 'showcode': False, 'paste': 3, 'keyfix': True}
