@@ -294,6 +294,8 @@ try:
         'get_theme': lambda: CFG.get('theme', 'dark'),
         'import_table': lambda: tools.show_import(engine, DICT_DIR),
         'makeword': lambda: makeword_clipboard(),
+        'batchmakeword': lambda: tools.show_batch_makeword(engine, DATA_DIR),
+        'userwords': lambda: tools.show_user_words(engine),
         'reload': lambda: reload_config(),
         'open_config': lambda: open_config_file(),
         # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
@@ -328,6 +330,7 @@ def reload_plugins():
     global STEP_PLUGINS, TOOLS
     STEP_PLUGINS, _ = plugmod.load_plugins(os.path.join(APP_DIR, 'plugins'), DATA_DIR)
     TOOLS = plugmod.load_tools(os.path.join(APP_DIR, 'tools.txt'))
+    tools.set_tools_cache(TOOLS)                     # code= 启动编码: 缓存工具数据供 find_launcher 查询
 
 
 def load_py_plugins():
@@ -380,9 +383,7 @@ def load_py_plugins():
 
 
 def find_launcher(code):
-    if code in CFG['apps']:
-        name, cmd, args = CFG['apps'][code]
-        return (name, 'app', (cmd, args))
+    """启动编码 -> 启动器. 冲突优先级对齐 C# (后注册者胜): 插件 > tools.txt code= > config app= > 内置别名."""
     for m in PLUGINS:
         if getattr(m, 'CODE', None) == code:
             return (getattr(m, 'NAME', code), 'plugin', m)
@@ -391,6 +392,13 @@ def find_launcher(code):
             if p.kind == 'csharp':
                 return (p.name, 'csharp', p)                # [csharp]: sidecar PowerShell 编译运行
             return (p.name, 'python' if p.kind == 'python' else 'step', p)
+    for t in TOOLS:                                         # tools.txt 按钮 code= (对齐 C# Apps["tool:"+code])
+        for btn in t.get('buttons', []):
+            if btn.get('code') == code:
+                return ('工具: ' + btn.get('name', code), 'tool', code)
+    if code in CFG['apps']:
+        name, cmd, args = CFG['apps'][code]
+        return (name, 'app', (cmd, args))
     b = {'itools': ('工具箱', 'toolbox'), 'tools': ('工具箱', 'toolbox'),
          'jlb': ('剪贴板历史', 'clipboard'), 'clip': ('剪贴板历史', 'clipboard'),
          'bj': ('便签', 'notes'), 'notes': ('便签', 'notes'),
@@ -896,11 +904,8 @@ def set_active(on):
 
 
 def run_steps_bg(body):
-    """步骤 DSL 插件后台执行; msgbox/confirm marshal 回主线程 (tkinter 线程安全)."""
+    """步骤 DSL 插件后台执行; msg 步骤走托盘气泡(对齐 C# ShowBalloonTip), confirm marshal 回主线程."""
     from tkinter import messagebox as _mb
-
-    def _msg(title, text):
-        root.after(0, lambda: _mb.showinfo(title, text))
 
     def _confirm(text):
         ev = threading.Event()
@@ -918,7 +923,7 @@ def run_steps_bg(body):
 
     def work():
         try:
-            fails = plugmod.run_steps(body, lambda m: _dfn('step %s' % m), _msg, _confirm)
+            fails = plugmod.run_steps(body, lambda m: _dfn('step %s' % m), _notify, _confirm)
             if fails:
                 _dfn('steps fails %d' % fails)
         except Exception as ex:
@@ -1143,6 +1148,9 @@ def run_launcher(l):
     if kind == 'builtin':
         _show_builtin(payload)
         return
+    if kind == 'tool':                                     # tools.txt 按钮 code= (对齐 C# RunToolCode)
+        threading.Thread(target=tools.run_tool_code, args=(payload, _notify), daemon=True).start()
+        return
     if kind == 'app':
         cmd, args = payload
         try:
@@ -1155,6 +1163,19 @@ def run_launcher(l):
                 os.startfile(cmd)
         except Exception as ex:
             _dfn('launch err %r' % ex)
+
+
+def _notify(title, text):
+    """托盘气泡提示 (对齐 C# ShowBalloonTip); 无托盘时退回弹窗."""
+    try:
+        if TRAY is not None and TRAY.notify(title, text):
+            return
+    except Exception:
+        pass
+    tools._msgbox(title, text)
+
+
+tools.set_notifier(_notify)                            # 工具步骤 msg / 工具结果走托盘气泡
 
 
 def _run_app_by_code(code):

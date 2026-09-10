@@ -11,6 +11,21 @@ import win as w32
 import ui
 
 
+_TOOLS_CACHE = []                                    # 工具数据缓存 (code= 启动编码消费方)
+_NOTIFIER = [None]                                   # 托盘气泡回调 (main 启动时注册, 对齐 C# trayRef.ShowBalloonTip)
+
+
+def set_tools_cache(tabs):
+    """main.reload_plugins 在 load_tools 后调用, 缓存工具数据供 code= 启动编码查询."""
+    global _TOOLS_CACHE
+    _TOOLS_CACHE = tabs
+
+
+def set_notifier(fn):
+    """main 启动时注册托盘气泡函数 (msg 步骤/工具结果用气泡, 对齐 C# ShowBalloonTip)."""
+    _NOTIFIER[0] = fn
+
+
 def _bg(fn):
     threading.Thread(target=fn, daemon=True).start()
 
@@ -25,6 +40,18 @@ def _msgbox(title, text):
             messagebox.showinfo(title, text)
     except Exception:
         pass
+
+
+def _tip(title, text):
+    """气泡提示 (优先托盘气泡, 无托盘退回弹窗) —— 对齐 C# ShowBalloonTip."""
+    fn = _NOTIFIER[0]
+    if fn is not None:
+        try:
+            fn(title, text)
+            return
+        except Exception:
+            pass
+    _msgbox(title, text)
 
 
 def _confirm(text):
@@ -49,52 +76,154 @@ def _confirm(text):
     return res[0]
 
 
-# ---------- 工具箱 (tools.txt tab/按钮 -> 步骤 DSL; 自绘标签页) ----------
+# ---------- 工具箱 (复刻 C# ToolsForm: 标签/磁贴滚动/日志控制台/防重入/单例) ----------
+_toolbox_win = [None]
+
+
 def show_toolbox(tools, dict_dir):
+    """工具箱: tools.txt 标签页 + 磁贴按钮; 底部深色日志控制台逐步可见."""
     if not tools:
         _msgbox('工具箱', 'tools.txt 无内容')
         return
-    win, content = ui.make_window('WgIme 工具箱', 520, 420)
-    W, H = 520, 420
+    if _toolbox_win[0] is not None:                      # 单例: 已开则激活 (对齐 C# ShowTools)
+        try:
+            if _toolbox_win[0].winfo_exists():
+                _toolbox_win[0].deiconify()
+                _toolbox_win[0].lift()
+                return
+        except Exception:
+            pass
+        _toolbox_win[0] = None
+    win, content = ui.make_window('WgIme 工具箱', 560, 470)
+    _toolbox_win[0] = win
+    W, H = 560, 470
     tabbar = tk.Frame(content, bg=ui.BG)
     tabbar.place(x=10, y=8, width=W - 20, height=34)
     body = tk.Frame(content, bg=ui.BG)
-    body.place(x=10, y=48, width=W - 20, height=H - 48 - 14)
+    body.place(x=10, y=46, width=W - 20, height=H - 46 - 118)
+    logarea = ui.console_text(content, x=10, y=H - 118, w=W - 20, h=104)   # 底部深色日志
+    logarea.configure(state='disabled')
+
+    def log(s):
+        win.after(0, lambda: (logarea.configure(state='normal'), logarea.insert('end', s + '\n'),
+                              logarea.see('end'), logarea.configure(state='disabled')))
+
     pages = []
     tabbtns = []
+    running = [False]
 
     def show_tab(i):
         for j, p in enumerate(pages):
             p.place_forget()
-        pages[i].place(x=0, y=0, width=W - 20, height=H - 62)
+        pages[i].place(x=0, y=0, width=W - 20, height=H - 46 - 118)
+        pages[i].lift()
         for j, b in enumerate(tabbtns):
             b.configure(fg=ui.ACCENT if j == i else ui.SUB)
 
+    def run_action(btn, name, steps):
+        if running[0]:                                   # 防重入 (对齐 C# 点击即禁用)
+            return
+        running[0] = True
+        try:
+            btn.configure(bg=ui.SURF2)
+        except Exception:
+            pass
+        log('== %s ==' % name)
+
+        def work():
+            def _log(m):
+                log(m)
+
+            def _step(shown, delta, slines):
+                # C# RunAction: 先输出本步日志(sb), 再打 [ok]/[失败] 行
+                if delta:
+                    log('  [失败] %s  ->  %s' % (shown, slines[-1] if slines else ''))
+                else:
+                    log('  [ok] %s' % shown)
+
+            try:
+                r = plugmod.run_steps(steps, _log, _tip, _confirm, on_step=_step)
+                if getattr(r, 'aborted', False):
+                    log('-- 已取消 --')
+                else:
+                    log('-- %s --' % ('完成' if r == 0 else '完成, %d 个步骤失败' % r))
+            except Exception as ex:
+                log('-- 失败: %s --' % ex)
+            finally:
+                running[0] = False
+                try:
+                    btn.configure(bg=ui.CARD)
+                except Exception:
+                    pass
+        threading.Thread(target=work, daemon=True).start()
+
+    ntabs = len(tools)
     for i, tab in enumerate(tools):
-        tb = ui.flat_button(tabbar, tab['name'], (lambda i=i: show_tab(i)), x=i * 92, y=0, w=84, h=28)
+        # 标签宽度自适应 (对齐 C#: min(110, (W-28)/tab数))
+        tw = min(110, (W - 20 - 8) // max(1, ntabs))
+        tb = ui.flat_button(tabbar, tab['name'], (lambda i=i: show_tab(i)), x=i * tw, y=0, w=tw - 6, h=28)
         tabbtns.append(tb)
         page = tk.Frame(body, bg=ui.BG)
+        # 磁贴区用 Canvas + 内层 Frame 实现滚动 (对齐 C# viewport + 滚动条)
+        canvas = tk.Canvas(page, bg=ui.BG, bd=0, highlightthickness=0)
+        vsb = tk.Scrollbar(page, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        inner = tk.Frame(canvas, bg=ui.BG)
+        inner.bind('<Configure>', lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
+        canvas.create_window((0, 0), window=inner, anchor='nw')
+        canvas.place(x=0, y=0, width=W - 20 - 12, height=H - 46 - 118)
+        vsb.place(x=W - 20 - 12, y=0, width=12, height=H - 46 - 118)
         cols = max(1, min(6, tab.get('cols', 2)))
-        btns = tab['buttons']
-        for bi, b in enumerate(btns):
-            bw = (W - 20 - (cols - 1) * 8) // cols
-            btn = ui.flat_button(page, b['name'], (lambda s='\n'.join(b['steps']): _run_tool_steps(s)),
-                                 x=(bi % cols) * (bw + 8), y=(bi // cols) * 46, w=bw, h=38)
+        for bi, b in enumerate(tab['buttons']):
+            bw = (W - 20 - 12 - (cols - 1) * 10 - 2 * 14) // cols
+            holder = []
+            # 按钮引用经 holder 传入 (防重入时改色需要真实 widget; 默认参数在创建时拿不到自己)
+            holder.append(ui.flat_button(
+                inner, b['name'],
+                (lambda nm=b['name'], s='\n'.join(b['steps']), hd=holder: run_action(hd[0], nm, s)),
+                x=14 + (bi % cols) * (bw + 10), y=14 + (bi // cols) * 56, w=bw, h=46))
         pages.append(page)
     show_tab(0)
 
+    def on_close():
+        _toolbox_win[0] = None
+        win.destroy()
 
-def _run_tool_steps(steps):
-    """后台线程执行工具步骤, msgbox/confirm 经 marshal 回主线程, 不阻塞工具箱/输入法."""
-    def work():
-        try:
-            fails = plugmod.run_steps(steps, lambda m: print('[tool]', m), _msgbox, _confirm)
-            if fails:
-                _msgbox('工具箱', '部分步骤失败 (%d)' % fails)
-        except Exception as ex:
-            _msgbox('工具箱', '失败: %s' % ex)
-    threading.Thread(target=work, daemon=True).start()
+    win.protocol('WM_DELETE_WINDOW', on_close)
+    win.bind('<Escape>', lambda e: on_close())
 
+
+def run_tool_code(code, notify=None):
+    """从启动器以 code= 触发 tools.txt 按钮 (对齐 C# RunToolCode: 无窗体, 汇总输出后气泡提示)."""
+    global _TOOLS_CACHE
+    act = None
+    for tab in _TOOLS_CACHE:
+        for b in tab.get('buttons', []):
+            if b.get('code') == code:
+                act = b
+                break
+        if act is not None:
+            break
+    if act is None:
+        (notify or _tip)('工具', '没有匹配此编码的按钮: %s' % code)
+        return False
+    lines = []
+
+    def _log(m):
+        s = str(m).strip()
+        if s:
+            lines.append(s)
+
+    try:
+        r = plugmod.run_steps('\n'.join(act['steps']), _log, _tip, _confirm)
+        aborted = getattr(r, 'aborted', False)
+        tail = ('已取消' if aborted else
+                '完成' if r == 0 else '完成, %d 个步骤失败' % r)
+        body = ' | '.join(lines) if lines else tail
+        (notify or _tip)(act.get('name', '工具'), body)
+    except Exception as ex:
+        (notify or _tip)(act.get('name', '工具'), '失败: %s' % ex)
+    return True
 
 # ---------- 剪贴板历史 (复刻 C# ClipForm: 事件去重+移置顶+容量200+清空+单击复制) ----------
 _CLIPT = []
@@ -1380,6 +1509,116 @@ def show_makeword(data_dir, engine, prefill=''):
     ui.flat_button(content, '造词', do_make, primary=True, x=14, y=152, w=100, h=32)
     ui.flat_button(content, '取消', win.destroy, x=120, y=152, w=90, h=32)
     wentry.focus_set()
+
+
+# ---------- 用户词表 (复刻 C# UserWordsDialog + ManageUserWords) ----------
+def show_user_words(engine):
+    """用户词表: 列表(词/编码) + 全选/全不选/删除选中; 删除后后台重建词库 (对齐 C# BuildDicts+ApplySwap)."""
+    if not engine.user_words:
+        _msgbox('用户词表', '还没有用户词。用「造词」或「批量造词…」添加。')
+        return
+    win, content = ui.make_window('WgIme 用户词表 (选中后点删除)', 420, 342)
+    lb = tk.Listbox(content, bg=ui.CARD, fg=ui.TEXT, font=ui.font(9.5, mono=True),
+                    selectmode='extended', activestyle='none',
+                    highlightthickness=1, highlightbackground=ui.BORDER, bd=0)
+    lb.place(x=14, y=10, width=392, height=272)
+    items = sorted(engine.user_words.items(), key=lambda kv: kv[0])
+    for w, c in items:
+        lb.insert('end', '%s\t%s' % (w, c))
+    status = tk.Label(content, text='共 %d 个词' % len(items), bg=ui.BG, fg=ui.SUB, font=ui.font(8.5))
+    status.place(x=14, y=288)
+
+    def sel_all():
+        lb.selection_set(0, 'end')
+
+    def sel_none():
+        lb.selection_clear(0, 'end')
+
+    def do_del():
+        idx = list(lb.curselection())
+        if not idx:
+            status.config(text='没有选中任何词', fg=ui.RED)
+            return
+        words = [items[i][0] for i in idx]
+        for i in reversed(idx):
+            lb.delete(i)
+        n = engine.remove_user_words(words)
+        status.config(text='已删除 %d 个词, 正在重建词库…' % n, fg=ui.ACCENT)
+
+        def work():
+            try:
+                engine.reload()                        # 重建索引 (对齐 C# BuildDicts + ApplySwap)
+                win.after(0, lambda: status.config(text='已删除 %d 个词, 词库已重建' % n, fg=ui.GREEN))
+            except Exception as ex:
+                win.after(0, lambda: status.config(text='重建失败: %s' % ex, fg=ui.RED))
+        threading.Thread(target=work, daemon=True).start()
+
+    ui.flat_button(content, '全选', sel_all, x=14, y=302, w=80, h=28)
+    ui.flat_button(content, '全不选', sel_none, x=102, y=302, w=80, h=28)
+    ui.flat_button(content, '删除选中', do_del, primary=True, x=218, y=302, w=96, h=28)
+    ui.flat_button(content, '关闭', win.destroy, x=322, y=302, w=84, h=28)
+
+
+# ---------- 批量造词 (复刻 C# BatchMakeWords + ConfirmWordsDialog) ----------
+def show_batch_makeword(engine, data_dir=None):
+    """批量造词: 选文件(每行一个词) -> 收集 2-8 汉字去重 -> 确认 -> 批量造词."""
+    from tkinter import filedialog
+    import engine as engmod
+
+    path = filedialog.askopenfilename(
+        title='选择词表文件 (每行一个词)',
+        filetypes=[('文本文件', '*.txt'), ('所有文件', '*.*')])
+    if not path:
+        return
+    text = engmod.read_import_text(path)               # UTF-8 / GB18030 自动识别, 64MB 上限
+    if text is None:
+        _msgbox('批量造词', '文件超过 64MB 或无法读取')
+        return
+    words = []
+    seen = set()
+    skipped = 0
+    for raw in text.split('\n'):
+        w = raw.strip()
+        if not w:
+            continue
+        if not (2 <= len(w) <= 8) or not engmod.is_all_cjk(w):
+            skipped += 1
+            continue
+        if w in seen:
+            skipped += 1
+            continue
+        seen.add(w)
+        words.append(w)
+    if not words:
+        _msgbox('批量造词', '没有发现 2-8 个汉字的词')
+        return
+    if not _confirm_dialog('批量造词', '检测到 %d 个词 (跳过 %d 行)。\n全部用拼音编码造词?' % (len(words), skipped)):
+        return
+    added, sk = engine.add_user_words_batch(words)
+    _tip('批量造词', '已造词 %d 个 (跳过 %d 个: 已存在或无编码)' % (added, sk))
+
+
+def _confirm_dialog(title, text):
+    """是/否 确认框 (ui 设计系统风格; 返回 True=确定)."""
+    win = tk.Toplevel()
+    win.title(title)
+    win.attributes('-topmost', True)
+    win.resizable(False, False)
+    win.configure(bg=ui.BG)
+    res = {'ok': False}
+    tk.Label(win, text=text, bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5), justify='left',
+             wraplength=340).place(x=14, y=16)
+
+    def ok():
+        res['ok'] = True
+        win.destroy()
+
+    win.protocol('WM_DELETE_WINDOW', win.destroy)      # 点 X = 取消
+    ui.flat_button(win, '确定', ok, primary=True, x=176, y=104, w=96, h=28)
+    ui.flat_button(win, '取消', win.destroy, x=282, y=104, w=96, h=28)
+    win.geometry('400x152')
+    win.wait_window()
+    return res['ok']
 
 
 # ---------- 插件管理 ----------

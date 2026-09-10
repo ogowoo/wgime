@@ -95,3 +95,25 @@ python wgime-py-pure\dist\wgime-py.py        # 单文件（插件需放到 %LOCA
 实现位置：`engine.load_config`(mode 键) → `main.is_tray_mode()`(分支) →
 启动序尾部 `if is_tray_mode(): 不 hook.start()` → `main.switch_mode()`(写配置+重启) →
 `tray.py`(按模式构建不同菜单 + `_tool_icon_img` 工字图标)。
+
+## 内置工具（1:1 对齐 C# 版窗体）
+
+`tools.py` 的内置工具按 C# 同名窗体逐个复刻（视觉按 `ui.py` 设计系统落地，功能与交互对齐）：
+
+| C# 窗体 | python | 要点 |
+|---|---|---|
+| ToolsForm | `show_toolbox` | 560x470, `tools.txt` 标签页 + `[cols N]` 磁贴滚动, 底部日志控制台逐步打 `[ok]`/`[失败]`, 防重入, 单例 |
+| NetToolsForm | `show_nettools` | 7 页签(独立日志缓冲), 手写 DNS, 子网全家桶(标准库 `ipaddress`), Ping/Tracert/端口/HTTP/本机 |
+| ClipForm | `show_clipboard` | 去重+移置顶, 容量 200, 0.3s 轮询, 单击即复制 |
+| NoteForm | `show_notes` | 多便签(≤9), 800ms 防抖自动保存, 6 色主题, 旧 `notes.txt` 迁移 |
+| ColorForm | `show_color` | 全局鼠标钩子点取+锁定, HEX/rgb/HSV, 右键取消 |
+| PluginMgrForm | `show_plugin_mgr` | 列表 + 重载/启停/打开目录/编辑/删除/新建模板/运行 |
+| UserWordsDialog | `show_user_words` | 用户词表: 多选 + 全选/全不选/删除选中 → 落盘 `userwords.txt` 后后台重建词库 |
+| ConfirmWordsDialog | `show_batch_makeword` | 批量造词: 选词表文件(每行一词) → 2-8 汉字去重 → 确认 → 一次性造词 |
+| ImportDialog | `show_import` | 导入码表: 选文件 → 检测格式 → 目标词库确认 → 写 `import_*.txt` + 热重载 |
+| BakeDialog | 无（不适用） | python 版码表就是 `py/wb/ec.txt` + `import_*.txt`（恒为持久叠加层），导入即固化，无需烘焙回单文件 |
+
+**`code = xxx` 启动编码**（tools.txt 按钮行）：与 C# 一致注册成启动器候选。输入该编码上屏即
+等价点击该按钮（无窗体，结果走**托盘气泡**汇总）；冲突优先级对齐 C#（后注册者胜）：
+插件 > `tools.txt` 的 `code=` > `config.txt` 的 `app=` > 内置别名（`itools`/`net`/`clip`/`bj`/`ys`/`plugins`）。
+`msg` 步骤同样走托盘气泡（无托盘时自动退回弹窗）。

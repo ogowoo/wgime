@@ -112,6 +112,16 @@ class Tray:
         except Exception:
             return 'ime'
 
+    def notify(self, title, text):
+        """托盘气泡 (对齐 C# ShowBalloonTip)。返回是否已发出."""
+        try:
+            if self.icon is None:
+                return False
+            self.icon.notify(str(text), str(title))
+            return True
+        except Exception:
+            return False
+
     def _on(self, fn):
         def wrap(_icon, _item):
             # 入队给主线程执行 (tkinter 不能跨线程调用), 随后刷新图标
@@ -220,6 +230,11 @@ class Tray:
                              pystray.Menu(
                                  pystray.MenuItem(L('造词  (Ctrl+Alt+C)', 'Make Word  (Ctrl+Alt+C)'),
                                                   self._on(self.api['makeword'])),
+                                 pystray.MenuItem(L('批量造词… (文件, 每行一个词)', 'Batch Make Words… (file, one word per line)'),
+                                                  self._on(self.api['batchmakeword'])),
+                                 pystray.MenuItem(L('用户词表…', 'User Words…'),
+                                                  self._on(self.api['userwords'])),
+                                 pystray.Menu.SEPARATOR,
                                  pystray.MenuItem(L('导入码表…', 'Import Table…'),
                                                   self._on(self.api['import_table'])))),
             pystray.Menu.SEPARATOR,

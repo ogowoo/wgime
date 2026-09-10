@@ -194,126 +194,315 @@ REG_HIVES = {'HKCU': winreg.HKEY_CURRENT_USER, 'HKLM': winreg.HKEY_LOCAL_MACHINE
              'HKCR': winreg.HKEY_CLASSES_ROOT, 'HKU': winreg.HKEY_USERS, 'HKCC': winreg.HKEY_CURRENT_CONFIG}
 
 
-def run_steps(body, log, msgbox, confirm):
-    """body: 步骤 DSL 文本. log(msg), msgbox(title,text), confirm(text)->bool"""
+class StepResult(int):
+    """步骤执行结果 = 失败数 (int 直接用); .aborted 标记 confirm 被拒导致中止 (对齐 C# ExecToolStep 的 abort)."""
+
+    def __new__(cls, fails, aborted=False):
+        o = super().__new__(cls, fails)
+        o.aborted = aborted
+        return o
+
+
+def run_steps(body, log, msgbox, confirm, on_step=None):
+    """body: 步骤 DSL 文本. log(msg), msgbox(title,text), confirm(text)->bool.
+    on_step(shown, fails_delta, step_lines) 每步结束后回调 (工具箱控制台 [ok]/[失败] 行; 对齐 C# RunAction).
+    返回 StepResult(失败数, .aborted). 语义对齐 C# ExecToolStep: confirm 拒绝 = abort 中止本按钮全部后续步骤."""
     lines = body.split('\n')
     i = 0
     fails = 0
+    aborted = False
     while i < len(lines):
-        t = lines[i].strip()
+        raw = lines[i].rstrip('\r')
+        t = raw.strip()
         i += 1
         if not t or t[0] in ';#':
             continue
-        # 多行脚本块
-        bm = re.match(r'^\[(shell|cmd|powershell|ps|shellx|psx)\]\s*$', t, re.I)
+        step_lines = []
+
+        def _slog(m, _sl=step_lines, _log=log):
+            _sl.append(str(m))
+            _log(m)
+
+        def _done(shown, delta):
+            if on_step:
+                try:
+                    on_step(shown, delta, step_lines)
+                except Exception:
+                    pass
+
+        # 多行脚本块 (别名: shell/cmd, powershell/ps, shellx/cmdx, powershellx/psx; 闭标签与开标签同名)
+        bm = re.match(r'^\[(shell|cmd|powershell|ps|shellx|cmdx|powershellx|psx)\]\s*$', t, re.I)
         if bm:
             tag = bm.group(1).lower()
+            shown = '[%s] 多行脚本块' % ('cmd' if tag in ('cmd', 'cmdx') else
+                                        'powershell' if tag in ('ps', 'powershellx') else
+                                        'shell' if tag == 'shellx' else tag)
             block = []
-            end_tag = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/powershell]',
-                       'shellx': '[/shellx]', 'psx': '[/psx]'}[tag]
+            end_tag = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/ps]',
+                       'shellx': '[/shellx]', 'cmdx': '[/cmdx]', 'powershellx': '[/powershellx]', 'psx': '[/psx]'}[tag]
             while i < len(lines) and lines[i].strip() != end_tag:
                 block.append(lines[i])
                 i += 1
             i += 1  # skip end tag
             try:
-                _run_block(tag, '\n'.join(block), log)
+                _run_block(tag, '\n'.join(block), _slog)
+                _done(shown, 0)
             except Exception as e:
                 fails += 1
-                log('块执行失败: %s' % e)
+                _slog('块执行失败: %s' % e)
+                _done(shown, 1)
             continue
         sp = t.find(' ')
         verb = (t[:sp] if sp > 0 else t).lower()
         arg = t[sp + 1:].strip() if sp > 0 else ''
-        # ② 破坏性动词: 执行前确认 (用户拒绝则跳过该步并计入 fail)
+        # 破坏性动词: 执行前确认 (拒绝则跳过该步并计 fail)
         if verb in DESTRUCTIVE_VERBS and confirm and not confirm('插件要执行[%s] %s\n确定继续?' % (verb, arg[:50])):
             fails += 1
-            log('确认被拒: %s' % verb)
+            _slog('确认被拒: %s' % verb)
+            _done(raw, 1)
             continue
         try:
-            fails += _run_verb(verb, arg, log, msgbox, confirm)
+            r = _run_verb(verb, arg, _slog, msgbox, confirm)
+            if r == 'abort':
+                aborted = True
+                log('已取消')
+                break
+            fails += r
+            _done(raw, r)
+        except _UserAbort:
+            aborted = True
+            log('已取消')
+            break
         except Exception as e:
             fails += 1
-            log('%s 失败: %s' % (verb, e))
-    return fails
+            _slog('%s 失败: %s' % (verb, e))
+            _done(raw, 1)
+    return StepResult(fails, aborted)
+
+
+class _UserAbort(RuntimeError):
+    """confirm 拒绝: 中止本按钮后续步骤 (对齐 C# confirm 返回 abort)."""
+
+
+def _tool_rest(arg):
+    return arg.strip()
+
+
+def _tool_path(rest):
+    s = rest.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1]
+    return os.path.expandvars(s)
+
+
+def _confirm_args(arg, confirm):
+    """confirm 文本 [| title=标题] [| buttons=yesno|okcancel|ok] [| default=1|2]; 拒绝 -> _UserAbort."""
+    msg = arg
+    title = 'WgIme'
+    buttons = 'yesno'
+    default_no = True
+    pipe = arg.find('|')
+    if pipe >= 0:
+        msg = arg[:pipe].strip()
+        for opt in arg[pipe + 1:].split('|'):
+            eq = opt.find('=')
+            if eq < 1:
+                continue
+            k = opt[:eq].strip().lower()
+            v = opt[eq + 1:].strip()
+            if k == 'title':
+                title = v
+            elif k == 'buttons':
+                buttons = v
+            elif k == 'default':
+                default_no = v != '1'
+    msg = os.path.expandvars(msg)
+    if buttons == 'ok':
+        msgbox(title, msg)                       # buttons=ok: 纯提示, 永不中止
+        return
+    if not confirm(msg):
+        raise _UserAbort()
+
+
+def _run_hidden(cmdline, log):
+    """隐藏子进程, 捕获 stdout/stderr 进日志 (对齐 C# RunHidden)."""
+    r = subprocess.run(cmdline, shell=isinstance(cmdline, str), capture_output=True, text=True,
+                       encoding='mbcs', errors='replace', timeout=120)
+    if r.stdout and r.stdout.strip():
+        log('  out: ' + r.stdout.strip())
+    log('  exit %s' % r.returncode)
+    return 0 if r.returncode == 0 else 1
 
 
 def _run_verb(verb, arg, log, msgbox, confirm):
     if verb == 'msg':
         msgbox('提示', os.path.expandvars(arg))
     elif verb == 'confirm':
-        if not confirm(os.path.expandvars(arg)):
-            raise RuntimeError('user-abort')
+        _confirm_args(arg, confirm)
     elif verb == 'run':
         parts = tokenize(arg)
         if parts:
-            r = subprocess.run(parts, capture_output=True, timeout=120)
-            log('run %s -> %s' % (parts[0], r.returncode))
+            return _run_hidden(parts, log)
     elif verb == 'shell':
-        r = subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True, capture_output=True, timeout=120)
-        log('shell -> %s' % r.returncode)
+        return _run_hidden('cmd /c ' + os.path.expandvars(arg), log)
     elif verb == 'shellx':
         subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True,
                        creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=86400)
     elif verb == 'open':
-        os.startfile(os.path.expandvars(arg))
+        os.startfile(_tool_path(arg))
     elif verb == 'kill':
         img = arg.replace('"', '').replace('&', '').replace('|', '').replace('<', '').replace('>', '').replace('^', '')
         if not re.match(r'^[\w. -]+$', img):
             raise RuntimeError('bad image name: %s' % arg)
-        subprocess.run(['taskkill', '/f', '/im', img + '.exe'], capture_output=True, timeout=60)
+        # 按名杀全部实例并计数 (对齐 C# Process.GetProcessesByName)
+        n = 0
+        for proc in _list_procs_by_name(img):
+            try:
+                proc.kill()
+                n += 1
+            except Exception:
+                pass
+        log('  killed %d x %s' % (n, img))
     elif verb == 'wait':
         time.sleep(int(arg) / 1000.0)
     elif verb == 'mkdir':
-        os.makedirs(os.path.expandvars(arg), exist_ok=True)
+        os.makedirs(_tool_path(arg), exist_ok=True)
     elif verb == 'file-del':
-        target = os.path.expandvars(arg)
-        base = re.split(r'[*?\[]', target)[0].rstrip('\\/ ')   # 去掉 glob 元字符后再判根
-        if re.match(r'^[A-Za-z]:$', base) or re.match(r'^\\\\[^\\]+\\[^\\]+$', base):
-            raise RuntimeError('refuse drive/UNC root')
-        for p in glob.glob(target):
-            try:
-                if os.path.isdir(p):
-                    shutil.rmtree(p, ignore_errors=True)
-                else:
-                    os.remove(p)
-            except OSError as e:
-                log('file-del skip %s: %s' % (p, e))
+        return _file_del(arg, log)
     elif verb == 'reg-set':
-        parts = tokenize(arg)
-        if len(parts) >= 4:
-            hive, sub = parts[0].split('\\', 1)
-            name = None if parts[1] == '-' else parts[1]
-            typ = parts[2].lower()
-            data = parts[3]
-            with winreg.CreateKey(REG_HIVES[hive.upper()], sub) as key:   # with 自动 CloseKey, 防句柄泄漏
-                if typ == 'dword':
-                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
-                elif typ == 'qword':
-                    winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
-                elif typ == 'expand':
-                    winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
-                elif typ == 'multi':
-                    winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
-                else:
-                    winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
+        _reg_set(arg)
     elif verb == 'reg-del':
-        parts = tokenize(arg)
-        if parts:
-            hive, sub = parts[0].split('\\', 1)
-            if len(parts) > 1:
-                with winreg.OpenKey(REG_HIVES[hive.upper()], sub, 0, winreg.KEY_SET_VALUE) as key:
-                    winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
-            else:
-                winreg.DeleteKey(REG_HIVES[hive.upper()], sub)
+        _reg_del(arg)
     else:
         log('未知动词: %s' % verb)
         return 1
     return 0
 
 
+def _list_procs_by_name(name):
+    """按进程名(不含 .exe)列进程对象; 用 psutil 若无则 wmic 回退, 失败返回空."""
+    try:
+        import psutil
+        out = []
+        for p in psutil.process_iter(['name']):
+            try:
+                if p.info['name'] and p.info['name'].lower() == (name.lower() + '.exe'):
+                    out.append(p)
+            except Exception:
+                pass
+        return out
+    except Exception:
+        pass
+    # 无 psutil: 用 taskkill (无法逐个计数, 记 1)
+    class _P:
+        def kill(self):
+            subprocess.run(['taskkill', '/f', '/im', name + '.exe'], capture_output=True, timeout=60)
+    return [_P()]
+
+
+def _file_del(arg, log):
+    """删文件/目录, 通配符; 拒删盘根/UNC 根; 锁定项跳过并记录; 计数 (对齐 C# file-del)."""
+    spec = _tool_path(arg)
+    base = re.split(r'[*?\[]', spec)[0].rstrip('\\/ ')
+    if re.match(r'^[A-Za-z]:$', base) or re.match(r'^\\\\[^\\]+\\[^\\]+$', base):
+        raise RuntimeError('refuse drive/UNC root')
+    n = 0
+    fail = 0
+    skipped = []
+
+    def _del(p, is_dir):
+        nonlocal n, fail
+        try:
+            if is_dir:
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+            n += 1
+        except OSError:
+            fail += 1
+            if len(skipped) < 8:
+                skipped.append(p)
+
+    if '*' in spec or '?' in spec:
+        for pth in glob.glob(spec):
+            _del(pth, os.path.isdir(pth))
+    elif os.path.isdir(spec):
+        _del(spec, True)
+    elif os.path.exists(spec):
+        _del(spec, False)
+    for sk in skipped:
+        log('  skip: ' + sk)
+    log('  deleted %d%s' % (n, ', skipped %d (in use / locked)' % fail if fail else ''))
+    return 0
+
+
+def _reg_split(full):
+    pth = full.replace('/', '\\')
+    i = pth.find('\\')
+    hive_name = (pth[:i] if i >= 0 else pth).upper()
+    sub = pth[i + 1:] if i >= 0 else ''
+    hive = REG_HIVES[hive_name]
+    return hive, sub
+
+
+def _reg_set(arg):
+    parts = tokenize(arg)
+    if len(parts) >= 4:
+        hive, sub = _reg_split(os.path.expandvars(parts[0]))
+        name = None if parts[1] == '-' else parts[1]
+        typ = parts[2].lower()
+        data = ' '.join(parts[3:])
+        with winreg.CreateKey(hive, sub) as key:
+            if typ == 'dword':
+                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
+            elif typ == 'qword':
+                winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
+            elif typ == 'expand':
+                winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
+            elif typ == 'multi':
+                winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
+            elif typ == 'binary':                          # 对齐 C# binary(hex)
+                hx = data.replace(' ', '').replace('-', '')
+                winreg.SetValueEx(key, name, 0, winreg.REG_BINARY, bytes.fromhex(hx))
+            else:
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
+
+
+def _reg_del(arg):
+    parts = tokenize(arg)
+    if parts:
+        hive, sub = _reg_split(os.path.expandvars(parts[0]))
+        if len(parts) > 1:
+            with winreg.OpenKey(hive, sub, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
+        else:
+            _delete_subkey_tree(hive, sub)
+
+
+def _delete_subkey_tree(hive, sub):
+    """递归删子键树 (对齐 C# DeleteSubKeyTree)."""
+    try:
+        with winreg.OpenKey(hive, sub, 0, winreg.KEY_READ) as key:
+            names = []
+            i = 0
+            while True:
+                try:
+                    names.append(winreg.EnumKey(key, i))
+                    i += 1
+                except OSError:
+                    break
+            for n in names:
+                _delete_subkey_tree(key, n)
+    except OSError:
+        pass
+    winreg.DeleteKey(hive, sub)
+
+
 def _run_block(tag, content, log):
-    visible = tag in ('shellx', 'psx')
-    if tag in ('shell', 'cmd', 'shellx'):
+    """多行脚本块 (对齐 C# RunScriptBlock): shell/cmd->.cmd(ANSI), powershell/ps->.ps1(UTF-8 BOM+OutputEncoding),
+    shellx/cmdx->可见 .cmd, powershellx/psx->可见 .ps1."""
+    visible = tag in ('shellx', 'cmdx', 'powershellx', 'psx')
+    if tag in ('shell', 'cmd', 'shellx', 'cmdx'):
         ext, cmdline = '.cmd', 'cmd /c'
         data = content.encode('mbcs', errors='replace')          # ANSI
     else:
@@ -328,7 +517,10 @@ def _run_block(tag, content, log):
                 else 'cmd /c start "wgpy" /wait cmd /k "%s %s & echo. & echo [按任意键关闭] & pause>nul"' % (cmdline, path)
             subprocess.run(cmd, shell=True, timeout=86400)
         else:
-            r = subprocess.run('%s "%s"' % (cmdline, path), shell=True, capture_output=True, timeout=300)
+            r = subprocess.run('%s "%s"' % (cmdline, path), shell=True, capture_output=True, text=True,
+                               encoding='mbcs', errors='replace', timeout=300)
+            if r.stdout and r.stdout.strip():
+                log('  out: ' + r.stdout.strip())
             log('block -> %s' % r.returncode)
     finally:
         try:

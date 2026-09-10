@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-09-10 (wgime-py-pure: 内置工具 1:1 收尾 - 工具箱 ToolsForm + tools.txt 启动编码 + 用户词表/批量造词)
+
+接上轮「内置工具 1:1 复刻」, 补齐工具箱本体与剩余 C# 内置对话框。
+
+- **工具箱** (`show_toolbox`, C# ToolsForm 342 行): 560x470, 标签页按 `[cols N]` 磁贴平铺 (Canvas+滚动条),
+  底部深色日志控制台(H-118); **逐步日志对齐 C# RunAction**: 先输出该步日志, 再打 `  [ok] <原始行>` /
+  `  [失败] <原始行>  ->  <原因>`, 收尾 `-- 完成 --` / `-- 完成, N 个步骤失败 --` / `-- 已取消 --`;
+  防重入(运行中再点直接忽略, 按钮变底色), 单例(已开则 deiconify+lift)
+- **步骤执行层语义补齐** (`plugins.run_steps`): 新增 `on_step` 回调(工具箱逐步日志用) 与
+  `StepResult`(int 子类, 带 `.aborted`)——confirm 拒绝 = abort 中止本按钮**全部后续步骤**(对齐 C# ExecToolStep),
+  与「破坏性动词确认被拒 = 只跳过该步」区分开
+- **`code = xxx` 启动编码消费** (对齐 C# `Apps[code] = {"工具:名称","tool:"+code}`): `main.find_launcher`
+  扫描 tools.txt 按钮 code 命中后返回 `工具: 名称` 候选, 上屏即后台执行该按钮(等价点击), 结果以
+  **托盘气泡**汇总 (`tools.run_tool_code`: 输出行 ` | ` 拼接, 无输出则用完成/失败/已取消文案);
+  冲突优先级按 C# 后注册者胜重排: 插件 > tools.txt code= > config app= > 内置别名
+- **气泡取代弹窗** (对齐 C# ShowBalloonTip): `msg` 步骤与工具执行结果走托盘气泡
+  (`tray.Tray.notify` + `tools.set_notifier`), 无托盘时自动退回弹窗
+- **批量造词** (`show_batch_makeword`, C# BatchMakeWords + ConfirmWordsDialog): 选 txt 词表(UTF-8/GB18030
+  自动识别, 64MB 上限) → 收集 2-8 汉字去重 → 「检测到 N 个词 (跳过 M 行)」确认框 → 一次性注入
+- **用户词表** (`show_user_words`, C# UserWordsDialog + ManageUserWords): 列表(词/编码, 按词序排列,
+  多选) + 全选/全不选/删除选中/关闭; 删除只先落盘 userwords.txt, 随后后台 `engine.reload()` 重建词库
+  (对齐 C# BuildDicts + ApplySwap); engine 新增 `add_user_words_batch`(一次排序一次落盘) 与
+  `remove_user_words`; 托盘「词库」菜单补齐 造词/批量造词…/用户词表…/导入码表…
+- **固化码表**: python 版无内嵌码表数据块(py/wb/ec.txt 即源文件, import_*.txt 恒为持久叠加层),
+  导入即固化, 故不做 C# 的「烘焙回 bat」对话框; 已在 README 说明
+
+验证: py_compile 全绿; 冒烟 — 六个内置窗口建窗+销毁 OK; confirm 拒绝中止后续步骤(fails=0/aborted=True,
+后续 `run` 未执行) / 接受继续; 块别名 `[shell]…[/shell]` 逐步日志与 on_step 契约正确; `qlj` 命中
+`('工具: 清理我的临时文件','tool','qlj')`、`itools/net` 仍走内置、未知编码返回 None; `run_tool_code`
+命中执行+气泡汇总(`out: HI3 | exit 0`)、未命中给提示; 批量造词 5 行→2 词(重复/非汉字/超长各跳过);
+用户词表删除→userwords.txt 落盘→reload 后拼音表已清除; dist 重建(659KB)含全部新入口.
+
+---
+
 ## 2026-09-09 (wgime-py-pure: 内置工具 1:1 复刻 C# 版 - 网络工具/便签/剪贴板/取色器)
 
 用户要求: py 版 wgime-py.py 的内置工具(非 plugins 目录)全部 1:1 复刻 C# 版对应窗体。

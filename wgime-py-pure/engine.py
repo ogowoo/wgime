@@ -1121,6 +1121,71 @@ class Engine:
         except OSError:
             pass
 
+    def add_user_words_batch(self, words):
+        """批量造词 (对齐 C# BatchAddWords): 一次性注入 + 一次排序 + 一次落盘. 返回 (added, skipped)."""
+        added = 0
+        skipped = 0
+        if not words:
+            return added, skipped
+        wb_changed = False
+        new_ini = {}
+        for word in words:
+            if word in self.user_words:
+                skipped += 1
+                continue
+            code = self.code_for(word)
+            if code is None:
+                skipped += 1
+                continue
+            cur = self.py.get(code)
+            if cur and (' ' + cur + ' ').find(' ' + word + ' ') >= 0:
+                skipped += 1
+                continue
+            self.user_words[word] = code
+            self.py[code] = (cur + ' ' + word) if cur else word
+            wbc = self.wubi_code_for(word)                  # 双注册: 同时进五笔表
+            if wbc:
+                curw = self.wb.get(wbc)
+                if not (curw and (' ' + curw + ' ').find(' ' + word + ' ') >= 0):
+                    self.wb[wbc] = (curw + ' ' + word) if curw else word
+                    wb_changed = True
+            ini = []
+            ok = True
+            for ch in word:
+                ps = self.char_py.get(ch)
+                if ps:
+                    ini.append(ps[0][0])
+                else:
+                    ok = False
+                    break
+            if ok:
+                lst = new_ini.setdefault(''.join(ini), [])
+                if word not in lst:
+                    lst.append(word)
+            added += 1
+        if added:
+            self.pk, self.pv = build_sorted(self.py)
+            if wb_changed:
+                self.wk, self.wv = build_sorted(self.wb)
+            for k, ws in new_ini.items():
+                lst = self.acro.setdefault(k, [])
+                for w in ws:
+                    if w not in lst:
+                        lst.append(w)
+            self.save_user_words()
+        return added, skipped
+
+    def remove_user_words(self, words):
+        """删除用户词 (对齐 C# ManageUserWords): 从 userwords.txt 移除并落盘; 返回删除数.
+        调用方随后 engine.reload() 才会把已合进 self.py 的词真正去掉 (对齐 C# BuildDicts+ApplySwap)."""
+        n = 0
+        for w in words:
+            if self.user_words.pop(w, None) is not None:
+                n += 1
+        if n:
+            self.save_user_words()
+        return n
+
     def code_for(self, w):
         """全拼码 (CodeFor: 每字取第一个拼音)"""
         out = []
