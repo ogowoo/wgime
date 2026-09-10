@@ -109,14 +109,17 @@ def send_unicode(text, magic=MAGIC):
 
 
 def send_unicode_qtfix(text, magic=MAGIC):
-    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避). 按 UTF-16 码元注入, 标点判断仅对 BMP."""
+    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避). 按 UTF-16 码元注入, 标点判断仅对 BMP.
+    代理对(emoji 等 astral 字符)按 C# UnicodeCommitQtFix **不算 trigger**: 否则每个代理半码都会
+    插一对 X+Back, 上屏 emoji 时会带出多余的擦除动作."""
     items = []
     units = text.encode('utf-16-le', 'surrogatepass')
     for i in range(len(units) // 2):
         code = units[2 * i] | (units[2 * i + 1] << 8)
         items.append(('uk', code))
         items.append(('ku', code))
-        if 0x3000 <= code <= 0xFFFF and not (0x4E00 <= code <= 0x9FFF) and not (0x3400 <= code <= 0x4DBF) \
+        if 0x3000 <= code <= 0xFFFF and not (0xD800 <= code <= 0xDFFF) \
+                and not (0x4E00 <= code <= 0x9FFF) and not (0x3400 <= code <= 0x4DBF) \
                 and not (0xF900 <= code <= 0xFAFF):
             items.append(('uk', ord('X')))
             items.append(('ku', ord('X')))
