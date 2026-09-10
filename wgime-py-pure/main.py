@@ -186,6 +186,8 @@ def reload_config():
     load_appmodes()                                 # 重读 pastemode.txt
     try:
         _refresh_tray()                             # 托盘勾选/图标按新配置刷新
+        if TRAY and getattr(TRAY, 'rebuild', None):
+            TRAY.rebuild()                          # 插件/应用子菜单随配置重载重建
     except Exception:
         pass
     _dfn('reload config ok (theme=%s, tools=%d, plugins=%d)' %
@@ -303,9 +305,15 @@ try:
         'clipboard': lambda: tools.show_clipboard(),
         'notes': lambda: tools.show_notes(DATA_DIR),
         'color': lambda: tools.show_color(),
-        'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, load_py_plugins),
+        'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
+                                                   run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
+                                                   plugin_dir_fn=_plugin_dir),
         'run_app': lambda code: _run_app_by_code(code),
         'apps': lambda: list(sorted((CFG.get('apps') or {}).items())),
+        # --- 插件 (托盘菜单列出 + 运行; 插件管理器复用) ---
+        'list_plugins': lambda: _list_plugin_files(),
+        'run_plugin_file': lambda path: _run_plugin_file(path),
+        'plugin_dir': lambda: _plugin_dir(),
     })
 except Exception as e:
     _dfn('tray start err %r' % e)
@@ -1161,6 +1169,124 @@ def _run_app_by_code(code):
         _dfn('run app err %r' % ex)
 
 
+def _reload_all_plugins():
+    """插件管理器/托盘用: 重扫 plugins (.py + .txt) + tools, 不动整体 config."""
+    reload_plugins()                                # plugins/*.txt + tools.txt -> STEP_PLUGINS/TOOLS
+    load_py_plugins()                               # plugins/*.py -> PLUGINS
+
+
+# ---------- 插件列举/运行 (托盘菜单 + 插件管理器共用) ----------
+def _plugin_dir():
+    return os.path.join(APP_DIR, 'plugins')
+
+
+def _list_plugin_files():
+    """列举 plugins 目录下的插件文件: [{file, name, code, kind, enabled}].
+    .py 取模块 manifest (CODE/NAME/PERM), .txt 取头部解析. 对齐 C# RefreshList."""
+    out = []
+    try:
+        for fn in sorted(os.listdir(_plugin_dir())):
+            low = fn.lower()
+            if not (low.endswith('.txt') or low.endswith('.py')):
+                continue
+            if low == 'readme.txt' or fn.startswith('_'):
+                continue
+            path = os.path.join(_plugin_dir(), fn)
+            if low.endswith('.py'):
+                # .py 模块插件: 读属性(不 import, 用静态文本扫 manifest 行即可快速列清单)
+                info = _py_plugin_meta_static(path)
+                if not info:
+                    continue
+                out.append(info)
+            else:
+                p = plugmod.parse_plugin(path)
+                if p.error:
+                    continue
+                out.append({'file': path, 'name': p.name, 'code': p.code, 'kind': p.kind,
+                            'enabled': getattr(p, 'enabled', True), 'version': getattr(p, 'version', ''),
+                            'perm': getattr(p, 'perm', 'low'), 'desc': getattr(p, 'desc', '')})
+    except OSError:
+        pass
+    return out
+
+
+def _py_plugin_meta_static(path):
+    """读 .py 插件的模块级 manifest(不 import, 正则扫 CODE/NAME/... 字面量)."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = re.search(r'^\s*CODE\s*=\s*[\'"]([^\'"]+)[\'"]', text, re.M)
+    if not m:
+        return None
+    def _get(k, d=''):
+        mm = re.search(r'^\s*%s\s*=\s*[\'"]([^\'"]*)[\'"]' % k, text, re.M)
+        return mm.group(1) if mm else d
+    return {'file': path, 'name': _get('NAME', m.group(1)), 'code': m.group(1), 'kind': 'py',
+            'enabled': os.path.basename(path).lower() not in _read_disabled(), 'version': _get('VERSION'),
+            'perm': _get('PERM', 'low'), 'desc': _get('DESC')}
+
+
+def _read_disabled():
+    try:
+        with open(os.path.join(DATA_DIR, 'plugins-disabled.txt'), encoding='utf-8') as f:
+            return set(l.strip().lower() for l in f if l.strip())
+    except OSError:
+        return set()
+
+
+def _run_plugin_file(path):
+    """按文件运行插件: .py 用已加载模块的 run() (无则即时加载); .txt 走 steps/[python]/[csharp]."""
+    fn = os.path.basename(path)
+    low = fn.lower()
+    if low.endswith('.py'):
+        # 已加载则复用模块, 否则按 load_py_plugins 同款即时加载并运行; 运行前权限确认
+        for m in PLUGINS:
+            if getattr(m, '__file__', None) and os.path.normpath(getattr(m, '__file__')) == os.path.normpath(path):
+                if _confirm_plugin(m):
+                    try:
+                        m.run()
+                    except Exception as ex:
+                        _dfn('run py plugin err %r' % ex)
+                return
+        _run_py_file_once(path)
+        return
+    p = plugmod.parse_plugin(path)
+    if p.error:
+        _dfn('plugin parse err %s %s' % (path, p.error))
+        return
+    if not _confirm_plugin(p):
+        return
+    if p.kind == 'csharp':
+        threading.Thread(target=_run_csharp_plugin, args=(p,), daemon=True).start()
+    elif p.kind == 'python':
+        ctx = {'code': p.code, 'name': p.name, 'buff': ime.buf, 'mode': ime.mode}
+        threading.Thread(target=_run_python_plugin_actions, args=(p, ctx), daemon=True).start()
+    else:
+        run_steps_bg(p.body)
+
+
+def _run_py_file_once(path):
+    """未加载的 .py 插件即时加载并运行 run() (对齐 load_py_plugins 的加载方式)."""
+    modname = 'wgime_ext_' + str(abs(hash(os.path.abspath(path)))) + '_' + os.path.basename(path)[:-3]
+    try:
+        spec = importlib.util.spec_from_file_location(modname, path)
+        if spec is None or spec.loader is None:
+            raise ImportError('no module spec')
+        m = importlib.util.module_from_spec(spec)
+        sys.modules[modname] = m
+        spec.loader.exec_module(m)
+        if not getattr(m, 'CODE', None) or not callable(getattr(m, 'run', None)):
+            raise ValueError('plugin must define CODE and callable run()')
+        if not _confirm_plugin(m):
+            return
+        m.run()
+    except Exception as e:
+        sys.modules.pop(modname, None)
+        _dfn('run py file err %s %r' % (path, e))
+
+
 def _show_builtin(kind):
     try:
         if kind == 'toolbox':
@@ -1174,7 +1300,9 @@ def _show_builtin(kind):
         elif kind == 'nettools':
             tools.show_nettools()
         elif kind == 'pluginmgr':
-            tools.show_plugin_mgr(PLUGINS, DATA_DIR, load_py_plugins)
+            tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
+                                  run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
+                                  plugin_dir_fn=_plugin_dir)
     except Exception as ex:
         _dfn('builtin err %s %r' % (kind, ex))
 

@@ -129,6 +129,24 @@ class Tray:
                                                      self._on(lambda: self.api['switch_runmode']('tray')),
                                                      checked=lambda _it: self._runmode() == 'tray')))
 
+    def _plugins_menu(self):
+        """托盘「插件」子菜单: 列出 plugins 目录插件, 点击即运行; 尾部加插件管理入口."""
+        try:
+            plugins = self.api['list_plugins']()
+        except Exception:
+            plugins = []
+        items = []
+        for p in plugins:
+            if not p.get('enabled', True):
+                continue
+            label = '%s  (%s)' % (p.get('name'), p.get('code'))
+            items.append(pystray.MenuItem(label, self._on(lambda f=p['file']: self.api['run_plugin_file'](f))))
+        if not items:
+            items.append(pystray.MenuItem(L('(无插件 — 放 plugins\\*.py/txt)', '(no plugins — put plugins\\*.py/txt)'), None, enabled=False))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem(L('插件管理…', 'Plugin manager…'), self._on(self.api['pluginmgr'])))
+        return pystray.MenuItem(L('插件', 'Plugins'), pystray.Menu(*items))
+
     def _tools_menu(self):
         return pystray.MenuItem(L('内置工具', 'Built-in tools'),
                                 pystray.Menu(
@@ -229,7 +247,7 @@ class Tray:
             # 工具箱
             pystray.MenuItem(L('工具箱…', 'Toolbox…'), self._on(self.api['toolbox'])),
             self._tools_menu(),
-            pystray.MenuItem(L('插件管理…', 'Plugin manager…'), self._on(self.api['pluginmgr'])),
+            self._plugins_menu(),
             self._apps_menu(),
             pystray.Menu.SEPARATOR,
             # 配置
@@ -245,6 +263,20 @@ class Tray:
             # 退出
             pystray.MenuItem(L('退出', 'Exit'), self._on(self.api['quit'])),
         )
+
+    def rebuild(self):
+        """重建菜单 (插件/应用列表随配置变化, reload 后调用). pystray 菜单结构需整体替换."""
+        if not HAS_TRAY or self.icon is None:
+            return
+        try:
+            if self._runmode() == 'tray':
+                items = self._tray_items()
+            else:
+                items = self._ime_items()
+            self.icon.menu = pystray.Menu(*items)
+            self.icon.update_menu()
+        except Exception:
+            pass
 
     def start(self):
         if not HAS_TRAY:

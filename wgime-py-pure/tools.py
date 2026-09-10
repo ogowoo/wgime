@@ -363,39 +363,153 @@ def show_makeword(data_dir, engine, prefill=''):
 
 
 # ---------- 插件管理 ----------
-def show_plugin_mgr(plugins, data_dir, reload_fn):
-    win, content = ui.make_window('WgIme 插件管理', 400, 320)
-    frame = tk.Frame(content, bg=ui.BG)
-    frame.place(x=12, y=10, width=376, height=270)
-    vars_ = []
+# ---------- 插件管理 (复刻 C# PluginMgrForm: 重载/启停/打开目录/编辑/删除/新建/运行) ----------
+def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_fn=None, plugin_dir_fn=None):
+    """完整插件管理器(对齐 C# 版 PluginMgrForm):
+    列表(名称/编码/类型/启停/文件) + 按钮(重载/启用禁用/打开目录/编辑/删除/新建模板/运行)."""
+    import subprocess
+    pdir = plugin_dir_fn() if plugin_dir_fn else os.path.join(data_dir, 'plugins')
     try:
-        disabled = set(l.strip() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
+        os.makedirs(pdir, exist_ok=True)
     except OSError:
-        disabled = set()
-    pmap = {'network': '联网', 'run': '执行命令', 'registry': '注册表', 'destructive': '破坏'}
-    for m in plugins:
-        code = getattr(m, 'CODE', '?')
-        name = getattr(m, 'NAME', code)
-        ver = str(getattr(m, 'VERSION', '') or '')
-        aut = str(getattr(m, 'AUTHOR', '') or '')
-        perm = str(getattr(m, 'PERM', 'low') or 'low')
-        info = (' [v%s%s]' % (ver, ('@' + aut) if aut else '')) if ver else ((' [' + aut + ']') if aut else '')
-        risk = ('  ⚠%s' % pmap.get(perm, perm)) if perm in pmap else ''
-        v = tk.BooleanVar(value=(code not in disabled))
-        cb = tk.Checkbutton(frame, text='%s (%s)%s%s  %s' % (name, code, info, risk, getattr(m, 'DESC', '')), variable=v,
-                            anchor='w', bg=ui.BG, fg=ui.TEXT, font=ui.font(9.5), activebackground=ui.BG)
-        cb.pack(fill='x')
-        vars_.append((code, v))
+        pass
 
-    def apply():
-        dis = set(code for code, v in vars_ if not v.get())
+    win, content = ui.make_window('WgIme 插件管理', 560, 420)
+    # 顶部按钮条
+    bar = tk.Frame(content, bg=ui.BG)
+    bar.place(x=10, y=10, width=540, height=34)
+    lst = tk.Listbox(content, font=ui.font(9.5), bg=ui.CARD, fg=ui.TEXT, bd=0,
+                     highlightthickness=1, highlightbackground=ui.BORDER, selectbackground=ui.ACCENT,
+                     activestyle='none', selectmode='single')
+    lst.place(x=10, y=52, width=540, height=300)
+    # 底部说明
+    ui.flat_button(content, '关闭', win.destroy, x=470, y=372, w=78, h=32)
+
+    _rows = []
+
+    def _meta(p):
+        if hasattr(p, 'CODE'):
+            return {'name': getattr(p, 'NAME', getattr(p, 'CODE', '?')), 'code': getattr(p, 'CODE', '?'),
+                    'kind': 'py', 'file': getattr(p, '__file__', None), 'perm': getattr(p, 'PERM', 'low'),
+                    'desc': getattr(p, 'DESC', ''), 'ver': str(getattr(p, 'VERSION', '') or '')}
+        return {'name': p.name or os.path.basename(p.path), 'code': p.code or '?', 'kind': p.kind,
+                'file': p.path, 'perm': getattr(p, 'perm', 'low'), 'desc': getattr(p, 'desc', ''),
+                'ver': getattr(p, 'version', '')}
+
+    def _disabled_set():
+        try:
+            return set(l.strip().lower() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
+        except OSError:
+            return set()
+
+    def _save_disabled(dis):
         try:
             open(os.path.join(data_dir, 'plugins-disabled.txt'), 'w', encoding='utf-8').write('\n'.join(sorted(dis)))
         except OSError:
             pass
+
+    def refresh():
+        lst.delete(0, 'end')
+        _rows[:] = []
+        dis = _disabled_set()
+        # 目录下全部插件文件 (list_files_fn 提供, 含 .py/.txt, 含禁用项)
+        if list_files_fn:
+            for info in list_files_fn():
+                disd = info.get('file', '').lower() and os.path.basename(info['file']).lower() in dis
+                typ = {'py': 'py', 'csharp': 'C#', 'python': 'py块', 'steps': 'DSL'}.get(info.get('kind'), info.get('kind'))
+                state = '已禁用' if disd else '启用'
+                ver = (' v%s' % info['version']) if info.get('version') else ''
+                lst.insert('end', '%s  (%s)  [%s]  %s%s  — %s' % (info.get('name'), info.get('code'), typ, state, ver, os.path.basename(info['file'])))
+                _rows.append(info)
+        else:
+            # 兜底: 只列已加载 .py 模块 (plugins 参数)
+            for m in plugins:
+                mt = _meta(m)
+                disd = mt['code'] in dis
+                lst.insert('end', '%s  (%s)  [py]  %s%s' % (mt['name'], mt['code'], '已禁用' if disd else '启用', os.path.basename(mt['file'] or '')))
+                _rows.append(mt)
+
+    def sel():
+        i = lst.curselection()
+        return _rows[i[0]] if i and 0 <= i[0] < len(_rows) else None
+
+    def on_reload():
         reload_fn()
-        _msgbox('插件管理', '已应用并重载')
-    ui.flat_button(content, '应用', apply, primary=True, x=12, y=282, w=90, h=30)
+        refresh()
+
+    def on_toggle():
+        r = sel()
+        if not r or not r.get('file'):
+            return
+        dis = _disabled_set()
+        fn = os.path.basename(r['file']).lower()
+        if fn in dis:
+            dis.discard(fn)
+        else:
+            dis.add(fn)
+        _save_disabled(dis)
+        reload_fn()
+        refresh()
+
+    def on_open_dir():
+        try:
+            os.startfile(pdir)
+        except Exception:
+            pass
+
+    def on_edit():
+        r = sel()
+        if not r or not r.get('file'):
+            return
+        try:
+            os.startfile(r['file'])
+        except Exception:
+            pass
+
+    def on_delete():
+        r = sel()
+        if not r or not r.get('file'):
+            return
+        if not messagebox.askyesno('删除插件', '删除插件文件 %s ?' % os.path.basename(r['file']), parent=win):
+            return
+        try:
+            os.remove(r['file'])
+        except OSError:
+            pass
+        reload_fn()
+        refresh()
+
+    def on_new():
+        try:
+            os.makedirs(pdir, exist_ok=True)
+            f = os.path.join(pdir, 'new-%s.py' % time.strftime('%H%M%S'))
+            with open(f, 'w', encoding='utf-8') as fh:
+                fh.write("# -*- coding: utf-8 -*-\n\"\"\"WgIme 纯 Python 插件 (规范: docs/WGIME_插件规范.md).\"\"\"\n\nCODE = 'mycode'\nNAME = '我的插件'\nDESC = ''\nPERM = 'low'\n\n\ndef run():\n    # 在这里实现插件逻辑 (窗口用 ui.py 设计系统, 不建 tk.Tk())\n    pass\n")
+            os.startfile(f)
+        except Exception:
+            pass
+        reload_fn()
+        refresh()
+
+    def on_run():
+        r = sel()
+        if not r or not r.get('file'):
+            return
+        if run_file_fn:
+            run_file_fn(r['file'])
+        else:
+            _msgbox('插件管理', '该插件无运行入口')
+
+    x = 10
+    for cap, fn, prim, w in (('重载', on_reload, False, 56), ('启用/禁用', on_toggle, False, 84),
+                             ('打开目录', on_open_dir, False, 80), ('编辑', on_edit, False, 56),
+                             ('删除…', on_delete, False, 66), ('新建模板…', on_new, False, 92),
+                             ('运行', on_run, True, 60)):
+        ui.flat_button(bar, cap, fn, primary=prim, x=x, y=2, w=w, h=30)
+        x += w + 8
+    lst.bind('<Double-Button-1>', lambda e: on_run())
+    win.bind('<Escape>', lambda e: win.destroy())
+    refresh()
 
 
 # ---------- 导入码表 (转换常见码表 -> import_py/wb/ec.txt) ----------

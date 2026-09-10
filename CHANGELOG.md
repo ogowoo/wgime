@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-09 (wgime-py-pure: 托盘菜单插件列出运行 + 插件管理器复刻 C# 完整功能)
+
+- 用户反馈: tray 菜单应列出 plugins 目录插件并可直接运行; py 版插件管理器只会看列表无管理功能
+- **托盘「插件」子菜单** (`tray._plugins_menu`): 枚举 plugins 目录全部插件(.py/.txt, 过滤禁用),
+  点击即运行; 尾部接「插件管理…」; 两模式菜单均含
+- **main 插件接口**: `_list_plugin_files()`(静态扫 manifest 列清单, .py 读 CODE/NAME/PERM, .txt 走
+  parse_plugin) + `_run_plugin_file()`(.py 复用已加载模块/即时加载后权限确认运行; .txt 按 kind 走
+  steps/[python]/[csharp] 分派) + `_plugin_dir()` + `_reload_all_plugins()`(插件管理器专用轻量重载)
+- **插件管理器复刻 C#** (`tools.show_plugin_mgr` 重写): 列表(名称/编码/类型/启停/版本/文件) +
+  按钮条(重载/启用禁用/打开目录/编辑/删除…/新建模板…/运行) + 双击运行 + Esc 关闭;
+  类型区分 py/C#/py块/DSL, 状态区分启停, 删除/新建带确认, 新建生成 .py 模板
+- 插件管理器签名扩展: `show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn, list_files_fn, plugin_dir_fn)`
+  (main 两处调用点已带 run/list/dir 回调)
+- 验证: py_compile 全绿; 插件列举(7 个: 5 py + 2 steps)正确识别 kind/code/enabled; 插件子菜单
+  构建正确; 单文件 dist 内嵌含全部新逻辑; dist/package 字节一致
+
+---
+
 ## 2026-09-09 (wgime-py-pure: ime 模式托盘菜单只保留输入法控制项)
 
 - 用户反馈: py 版 ime 模式不应显示 tray 模式的工具类菜单
