@@ -78,6 +78,35 @@ python wgime-py-pure\dist\wgime-py.py        # 单文件（插件需放到 %LOCA
 
 `WGIME_DEBUG=1` 保留控制台看错误；托盘菜单「这个程序 → 重载配置」可热重载 config/tools/插件。
 
+## 可配置快捷键（与 C# 版同一套键名 / 缺省值）
+
+`config.txt` 里的 `hotkey_*`（全局快捷键，修饰键 `ctrl/alt/shift/win` 用 `+` 连接）与 `key_*`
+（候选操作键，单个键名）两版通用；写 `none` 禁用，写错则忽略该行、保持缺省：
+
+```ini
+hotkey_toggle   = shift_tap      ; 开关输入法 (shift_tap = 轻点 Shift; 也可写 ctrl+alt+t 之类)
+hotkey_mode     = ctrl+grave     ; 模式循环
+hotkey_makeword = ctrl+alt+c     ; 造词
+hotkey_trad     = ctrl+shift+f   ; 简繁切换
+key_first       = space          ; 上屏当前候选
+key_pageup      = minus          ; 上一页  (PgUp/PgDn 在组字中恒可用)
+key_pagedown    = plus           ; 下一页
+key_back        = backspace      ; 删编码
+key_cancel      = esc            ; 取消组字
+key_raw         = enter          ; 原样上屏编码
+key_pickfirst   = lbracket       ; 以词定字 (首字)
+key_picklast    = rbracket       ; 以词定字 (末字)
+```
+
+键名可用：`space enter esc backspace tab pgup pgdn home end left right up down grave minus plus
+lbracket rbracket semicolon quote comma period slash backslash f1`~`f12`，以及单个字母/数字。
+纯 Python 版另外自带 `F8`（硬开关）与 `Ctrl+Alt+Q`（退出）两个 C# 没有的键；
+`hotkey_toggle` 配成非 `shift_tap` 时，Shift 轻拍随之停用（与 C# 一致）。
+
+另：纯 Python 版启动时会取命名互斥体 `WgImePySingleInstance` 做**单实例**保护（C# 版是
+`WgImeSingleInstance`，两者互不干扰），重复启动会提示「已在运行」并退出；测试脚本可用
+环境变量 `WGIME_NO_SINGLETON=1` 跳过该检查。
+
 ## 运行模式（ime / tray）
 
 `config.txt` 的 `mode` 键定义启动形态（与 C# 版合并 wgtray 方案对齐）：

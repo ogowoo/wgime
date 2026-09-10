@@ -202,7 +202,8 @@ def load_config(path):
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
                paste=3, keyfix=True, followcaret=True, theme='dark', cnpunct=True,
-               mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K)
+               mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
+               hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
         with open(path, encoding='utf-8') as f:
             for raw in f:
@@ -263,6 +264,13 @@ def load_config(path):
                 elif k == 'mode':
                     # 运行模式: ime=输入法(默认) / tray=纯托盘工具箱(现 wgtray 行为)
                     cfg['mode'] = v.strip().lower() if v.strip().lower() in ('ime', 'tray') else 'ime'
+                elif k in ('hotkey_toggle', 'hotkey_mode', 'hotkey_makeword', 'hotkey_trad'):
+                    # 可配置快捷键 (原样收下; hook.configure 用 C# 同名解析器处理, 无效值忽略)
+                    cfg['hotkeys'][k[len('hotkey_'):]] = v
+                elif k in ('key_first', 'key_pageup', 'key_pagedown', 'key_back',
+                           'key_cancel', 'key_raw', 'key_pickfirst', 'key_picklast'):
+                    # 候选操作键 (单个键名; none = 禁用)
+                    cfg['ckeys'][k[len('key_'):]] = v
                 elif k == 'phrase':
                     sp = v.find('\t')
                     if sp < 1:
@@ -624,6 +632,7 @@ class Engine:
         self.dict_dir = dict_dir
         self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
         self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
+        self.assoc_enabled = True        # config assoc (main.apply_config 同步): 关掉则不学也不显示联想
         os.makedirs(data_dir, exist_ok=True)
         if not self._load_cache(self._paths()):
             self._build()
@@ -893,6 +902,8 @@ class Engine:
 
     # ---------- 联想 (与 C# Assoc 一致: prev commit -> cur counts) ----------
     def learn_assoc(self, prev, cur):
+        if not self.assoc_enabled:                       # config assoc=0 / 托盘关闭: 不学习 (对齐 C# LearnAssoc)
+            return
         if not prev or not cur or prev == cur or len(prev) > 8 or len(cur) > 8:
             return
         if not is_all_cjk(prev) or not is_all_cjk(cur):
@@ -911,6 +922,8 @@ class Engine:
             self.freq_dirty += 1
 
     def get_assoc(self, w, limit=9):
+        if not self.assoc_enabled:                       # 关闭联想时不提供候选 (对齐 C# ShowAssoc 的 AssocEnabled 判断)
+            return []
         m = self.assoc.get(w)
         if not m:
             return []

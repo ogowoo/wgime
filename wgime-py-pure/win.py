@@ -25,10 +25,41 @@ def _dlog(text):
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 gdi32 = ctypes.windll.gdi32
-
 MAGIC = 0x5747494D      # 'WGIM': 自家注入事件的 dwExtraInfo 标记
 user32.SendInput.restype = w.UINT
 user32.SendInput.argtypes = [w.UINT, ctypes.c_void_p, ctypes.c_int]
+
+
+# ---------- 启动早期用的 Win32 小工具 (不依赖 tkinter) ----------
+def message_box(text, title='WgIme', flags=0x40):
+    """Win32 消息框 (0x40=信息, 0x30=警告, 0x10=错误). 启动早期/单实例提示用, 不建 tk."""
+    try:
+        user32.MessageBoxW.restype = ctypes.c_int
+        user32.MessageBoxW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, w.UINT]
+        return int(user32.MessageBoxW(None, str(text), str(title), int(flags)))
+    except Exception:
+        return 0
+
+
+def single_instance(name):
+    """命名互斥体单实例 (对齐 C# WgImeSingleInstance).
+    返回句柄(需保持存活到进程结束); 已有实例在跑 -> None; 出错 -> 'error' (不拦启动)."""
+    try:
+        # 专用 use_last_error=True 的 kernel32: 才能可靠读取 ERROR_ALREADY_EXISTS
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k32.CreateMutexW(None, 1, str(name))
+        err = ctypes.get_last_error()
+        if not h:
+            return 'error'
+        if err == 183:                            # ERROR_ALREADY_EXISTS
+            k32.CloseHandle(h)
+            return None
+        return h
+    except Exception:
+        return 'error'
 
 
 # ---------- SendInput (UNICODE) ----------

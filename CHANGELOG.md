@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-09-10 (对齐项: 可配置快捷键/候选键 (hotkey_* / key_*) + 单实例 + 联想开关真生效)
+
+一轮 C#↔Python 差异审计后补的功能对齐 (都不是"新功能", 而是 Python 版缺/写死的地方):
+
+- **`hotkey_*` / `key_*` 配置键在 Python 版完全没被读取** (C# 支持可配置快捷键与候选操作键,
+  Python 侧键位全写死在 `VK['SPACE']`/`hook._CTRL_KEYS` 里, 用户改了 config 毫无反应):
+  - `hook.py` 新增 `vk_from_name` / `parse_hotkey` / `configure` / `_rebuild_swallow` 与 `HOTKEYS`/`KEYS`
+    状态 (键名表/修饰键严格匹配/none=禁用/无效值忽略, 全部对齐 C# `VkFromName`/`ParseHotkey`/`MatchMods`)
+  - `engine.load_config` 原样收下 `hotkey_*`/`key_*` (缺省留在 hook, 删行即回缺省);
+    `main.apply_config()` 调 `hook.configure(...)` 安装, `main.handle()` 的按键分派全部改读 `hook.KEYS`
+  - 语义对齐: 热键在"输入法未激活"时也生效 (C# 判定在 IsLocked 之前); `hotkey_toggle` 配成非 `shift_tap`
+    时 Shift 轻拍停用; 组字中吞的候选键 = 配置键 + PgUp/PgDn 常驻; `key_pickfirst/last` 改键后
+    `[`/`]` 回归"【】"标点
+- **单实例保护**: Python 版原来可以双开 (两个键盘钩子互相吞键 + 两个托盘图标)。新增
+  `win.single_instance()` (ctypes 命名互斥体, 对齐 C# `WgImeSingleInstance`) + `win.message_box()`
+  (纯 Win32 弹窗, 启动早期不建 tk); 名字用 `WgImePySingleInstance`, 与 C# 版互不干扰;
+  测试可用 `WGIME_NO_SINGLETON=1` 跳过
+- **联想开关以前是"假开关"**: 托盘「联想」与 `assoc = 0` 只翻转勾选态, 实际照学照显示。
+  新增 `engine.assoc_enabled` (由 `main.apply_config` 同步), `learn_assoc` 提前返回、`get_assoc`
+  返回空、`main.show_assoc` 提前返回 —— 对齐 C# `AssocEnabled` 对学习与显示的双重门控
+- `config.txt` 补上两版共用的 `hotkey_*` / `key_*` 说明与缺省值 (老 WgTray 的
+  `hotkey_toolbox/plugins/menu` 标注为退役遗留, 两版都不再读取)
+
+验证 (全部实测, 无键盘注入): `vk_from_name` 34 例 / `parse_hotkey` 11 例逐项对齐 C#;
+`hook.configure` 缺省→自定义→回缺省三态正确 (`none` 禁用、非法值保持缺省、swallow 集含 PgUp/PgDn);
+把 main.py 的"主循环"段切掉后 exec, 用桩 commit/inject 探针跑按键分派 22 项: 缺省 space→commit、
+enter→原样上屏、esc→reset、`[`/`]` 组字中→以词定字 (空闲→【】)、`key_first=enter` 后 space 无动作、
+`key_cancel=none` 后 esc 无动作、`key_pickfirst=none` 后 `[` 回到【、`key_pickfirst=tab` 后 tab 定字、
+`key_pageup=pgup` 后 PgUp 翻页; 单实例互斥体同进程/跨进程重复启动均被拦、持有者退出后可用;
+联想关闭后学习与显示都被拒。
+
+---
+
 ## 2026-09-10 (发布 v1.2.7 + 发布流程脚本化)
 
 - **GitHub release v1.2.7** 已发布 (tag 指向 `f512c28`): 三个资产 `wgime-v1.2.7-bat.zip`(1.64MB)/

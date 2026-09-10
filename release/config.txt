@@ -35,10 +35,27 @@ assoc = 1
 ; app = cc	清理并统计	cmd	/c (del /q "%TEMP%\*" & echo done)
 ; 注意: 想删除目录/处理占用文件, 用 tools.txt 的 file-del 动词更安全 (自动跳过占用, 不中断, 记日志)
 ; hotkey_*: WgTray 全局快捷键 (格式 ctrl/alt/shift/win + 键, 如 ctrl+alt+t; none 禁用; WgIme 输入法忽略这些键)
+; 注: WgTray 已退役(收敛为 mode=tray), 下面三行是历史遗留, 两种实现都不再读取, 留着不影响任何行为
 hotkey_toolbox = ctrl+alt+t
 hotkey_plugins = ctrl+alt+p
 hotkey_menu    = ctrl+alt+w
 starton = 0
+
+; ---------- 可配置快捷键 (C# 版与纯 Python 版共用同一套键名与缺省值) ----------
+; hotkey_*: 修饰键 ctrl/alt/shift/win 用 + 连接主键 (示例 ctrl+alt+c); shift_tap = 轻点 Shift; none = 禁用; 写错则忽略该行
+hotkey_toggle = shift_tap
+hotkey_mode = ctrl+grave
+hotkey_makeword = ctrl+alt+c
+hotkey_trad = ctrl+shift+f
+; key_*: 候选操作键 (单个键名; none = 禁用; 键名如 space/enter/esc/backspace/tab/grave/minus/plus/lbracket/rbracket/pgup/pgdn/f1-f12/单字母数字)
+key_first = space
+key_pageup = minus
+key_pagedown = plus
+key_back = backspace
+key_cancel = esc
+key_raw = enter
+key_pickfirst = lbracket
+key_picklast = rbracket
 
 ; mode: 运行模式 ime=输入法(默认) / tray=纯托盘工具箱(wgtray 行为, 无键盘 hook)
 ; 托盘菜单「运行模式」可切换, 切换后自动重启生效

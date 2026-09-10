@@ -146,6 +146,15 @@ from engine import (Engine, dynamic_candidates, vmode_candidates, is_all_cjk,
 import plugins as plugmod
 from bar import CandBar
 
+# 单实例 (对齐 C# 的 WgImeSingleInstance 互斥体): 双开会导致钩子互相吞键/两个托盘图标.
+# 名字带 Py 后缀, 与 C# 版互不干扰 (两种实现可以并存运行). WGIME_NO_SINGLETON=1 供测试脚本跳过.
+_SINGLETON = [None]
+if not os.environ.get('WGIME_NO_SINGLETON'):
+    _SINGLETON[0] = win.single_instance('WgImePySingleInstance')
+    if _SINGLETON[0] is None:
+        win.message_box('WgIme (Python 版) 已在运行。\n请先从托盘退出正在运行的实例再启动。', 'WgIme', 0x30)
+        sys.exit(0)
+
 engine = Engine(DICT_DIR, DATA_DIR)
 
 CFG = {'sentence': True, 'assoc': True, 'trad': False, 'starton': True, 'shuangpin': 0,
@@ -159,7 +168,9 @@ def apply_config():
     ime.trad = CFG['trad']
     engine.learn_k = CFG.get('learnk', 5000)   # 全量学习词频排序权重 (config learnk)
     engine.recent_k = CFG.get('recentk', 200)  # 近期热度排序权重 (config recentk)
+    engine.assoc_enabled = CFG.get('assoc', True)   # config assoc=0 / 托盘关闭: 不学习也不显示联想 (对齐 C# AssocEnabled)
     hook.set_punct(CFG.get('cnpunct', True))   # 全角标点开关同步给钩子线程
+    hook.configure(CFG.get('hotkeys'), CFG.get('ckeys'))   # hotkey_* / key_* -> 钩子线程 (对齐 C# LoadConfig)
 
 
 def is_tray_mode():
@@ -527,6 +538,9 @@ def reset():
 
 
 def show_assoc():
+    if not CFG.get('assoc', True):                   # 联想关闭: 不出联想候选 (对齐 C# ShowAssoc)
+        ime.assoc_showing = False
+        return
     if ime.last_commit and ime.mode < 3:
         lst = engine.get_assoc(ime.last_commit)
         if lst:
@@ -1365,8 +1379,10 @@ def handle_punct(vk, sh):
         refresh()
         return
     # [ ] 组字中以词定字 (取首候选首/末字), 空候选或空闲才是书名号 【】 (对齐 C# OnPickChar 优先级)
-    if vk in (VK['LBRACKET'], VK['RBRACKET']) and ime.buf and ime.cands:
-        commit_char(0 if vk == VK['LBRACKET'] else 1)
+    # 键位按 config key_pickfirst/key_picklast (缺省 [ ]), 且只在还有候选时算"定字"
+    _pk1, _pk2 = hook.KEYS.get('pickfirst', 0), hook.KEYS.get('picklast', 0)
+    if vk in (_pk1, _pk2) and _pk1 != _pk2 and ime.buf and ime.cands:
+        commit_char(0 if vk == _pk1 else 1)
         return
     if not CFG.get('cnpunct', True):
         s = _HALF_PUNCT.get((vk, sh))              # 半角模式: 原样上屏
@@ -1388,6 +1404,7 @@ def handle(vk):
     _dfn('kb %02x active=%s buf=%s' % (vk, ime.active, ime.buf))
     sh = bool(vk & 0x200)                            # hook 编码: 标点键 Shift 状态
     vk &= ~0x200
+    K = hook.KEYS                                    # 候选操作键按 config key_* 解析 (0 = 该键已禁用, 永不匹配)
     if vk == VK['QUIT']:
         quit_app()
         return
@@ -1431,13 +1448,13 @@ def handle(vk):
                     reset()
                     ime.sym_cat = 0
             return
-        if vk == VK['SPACE'] and ime.sym_cat > 0:
+        if vk == K['first'] and ime.sym_cat > 0:
             if ime.cands:
                 inject(ime.cands[ime.page * 9])
                 reset()
                 ime.sym_cat = 0
             return
-        if vk == VK['BACK']:
+        if vk == K['back']:
             if ime.sym_cat > 0:
                 ime.sym_cat = 0
                 refresh()
@@ -1445,17 +1462,17 @@ def handle(vk):
                 ime.buf = 'v'
                 refresh()
             return
-        if vk == VK['ESC']:
+        if vk == K['cancel']:
             reset()
             ime.sym_cat = 0
             return
-        if vk in (VK['MINUS'], VK['EQUALS']):
+        if vk in (K['pageup'], K['pagedown']) and K['pageup'] != K['pagedown']:
             tp = (len(ime.cands) + 8) // 9
             if tp > 0:
-                ime.page = (ime.page + (1 if vk == VK['EQUALS'] else -1) + tp) % tp
+                ime.page = (ime.page + (1 if vk == K['pagedown'] else -1) + tp) % tp
                 show_page()
             return
-        if vk == VK['ENTER']:
+        if vk == K['raw']:
             reset()
             ime.sym_cat = 0
             return
@@ -1473,7 +1490,7 @@ def handle(vk):
         if len(ime.buf) > 32:
             ime.buf = ime.buf[:32]
         refresh()
-    elif vk == VK['SPACE']:
+    elif vk == K['first']:
         if ime.assoc_showing and not ime.buf:
             clear_assoc()
             bar.hide()
@@ -1507,11 +1524,9 @@ def handle(vk):
                 refresh()
         else:
             win.send_unicode(str(d))
-    elif vk == VK['LBRACKET']:
-        commit_char(0)
-    elif vk == VK['RBRACKET']:
-        commit_char(1)
-    elif vk == VK['BACK']:
+    elif vk in (K['pickfirst'], K['picklast']) and K['pickfirst'] != K['picklast']:
+        commit_char(0 if vk == K['pickfirst'] else 1)
+    elif vk == K['back']:
         if ime.assoc_showing and not ime.buf:
             _rollback_last_learn()                   # ② 误学回滚: 刚上屏的词被退格删除, 撤销上次主动学习
             clear_assoc()                            # 联想态退格: 退出联想
@@ -1519,16 +1534,16 @@ def handle(vk):
         elif ime.buf:
             ime.buf = ime.buf[:-1]
             refresh()
-    elif vk == VK['ESC']:
+    elif vk == K['cancel']:
         reset()
-    elif vk == VK['ENTER']:
+    elif vk == K['raw']:
         if ime.buf:
             inject(ime.buf)
         reset()
-    elif vk in (VK['MINUS'], VK['EQUALS']):
+    elif vk in (K['pageup'], K['pagedown']) and K['pageup'] != K['pagedown']:
         tp = (len(ime.cands) + 8) // 9
         if tp > 0:
-            ime.page = (ime.page + (1 if vk == VK['EQUALS'] else -1) + tp) % tp
+            ime.page = (ime.page + (1 if vk == K['pagedown'] else -1) + tp) % tp
             show_page()
 
 
