@@ -133,8 +133,14 @@ def is_high_perm(meta):
 
 
 # ---------- tools.txt (工具箱) ----------
+_TOOL_BLOCK_TAGS = frozenset(
+    ('shell', 'cmd', 'powershell', 'ps', 'shellx', 'cmdx', 'powershellx', 'psx',
+     '/shell', '/cmd', '/powershell', '/ps', '/shellx', '/cmdx', '/powershellx', '/psx'))
+
+
 def load_tools(path):
-    """[tab 名] / [cols N] / [按钮名] / code = xx / 步骤行"""
+    """[tab 名] / [cols N] / [按钮名] (或 [button 名]) / code = xx / 步骤行
+    对齐 C# LoadTools: 多行块开/闭标签不算按钮; code= 可写在按钮步骤之后; [button 名] 也识别."""
     tabs = [{'name': '工具', 'cols': 2, 'buttons': []}]
     btn = None
     try:
@@ -154,12 +160,19 @@ def load_tools(path):
                     except ValueError:
                         pass
                     continue
-                if s.startswith('[') and s.endswith(']') and not re.match(r'^\[(shell|cmd|powershell|ps|shellx|psx|/shell|/powershell|/shellx|/psx)\]$', s, re.I):
-                    btn = {'name': s[1:-1].strip(), 'code': None, 'steps': []}
+                if s.startswith('[') and s.endswith(']'):
+                    inner = s[1:-1].strip()
+                    if inner.lower() in _TOOL_BLOCK_TAGS:      # [shell]...[/powershellx] 等块标签不是按钮 (对齐 C#)
+                        if btn is not None:
+                            btn['steps'].append(t)
+                        continue
+                    if inner.startswith('button '):            # C# 也认 [button 名] 前缀
+                        inner = inner[7:].strip()
+                    btn = {'name': inner or '?', 'code': None, 'steps': []}
                     tabs[-1]['buttons'].append(btn)
                     continue
                 m = re.match(r'^code\s*=\s*(\S+)$', s, re.I)
-                if m and btn is not None and not btn['steps']:
+                if m and btn is not None:                      # C#: code= 可写在步骤之后 (原来要求必须在步骤前)
                     btn['code'] = m.group(1).lower()
                     continue
                 if btn is not None:

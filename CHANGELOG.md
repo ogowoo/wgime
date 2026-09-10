@@ -1,6 +1,26 @@
-# 更新记录 (Changelog)
+## 2026-09-10 (对齐项: tools.txt 结构解析维度 - 块别名被当成按钮的真 bug)
 
-> 本文件记录 WgIme 的每次代码更新。以后任何更新都追加到本文件顶部(新版本在最上)。
+第六轮差异审计换到**tools.txt / 插件 txt 的加载解析** (C# `LoadTools` vs python `load_tools`):
+
+- **`[cmdx]` / `[powershellx]` / `[/cmd]` / `[/ps]` 等标签被当成"按钮" (真 bug)**: python 的
+  按钮判定用的是**不完整的排除正则** (只列了 shell/cmd/powershell/ps/shellx/psx 与 4 个闭标签),
+  于是 `[cmdx]`、`[powershellx]` 会被建成名为 "cmdx"/"powershellx" 的假按钮, 块内容也错位成它的
+  步骤。C# 的 LoadTools 明确把这 8 个开标签当块处理 (闭标签由开标签推导)。现用完整 frozenset
+  (8 开 + 8 闭) 判定, 并对齐 C# 的 "闭标签必须与开标签匹配"(`[ps]` 只由 `[/ps]` 收尾)
+- 顺带补齐两个 C# 解析细节: **`[button 名]` 前缀** (python 原来把 "button 名" 整个当按钮名)、
+  **`code = xx` 可写在步骤之后** (python 原来要求必须在步骤前, 否则忽略)
+- 审计确认一致: tab/cols/按钮/`code=`/步骤的**结构**在真实 `tools.txt` 与合成样例上逐项相同;
+  `run_steps` 的块执行语义与 C# `ParseToolSteps`+`ExecToolStep` 相同 (含 `[cmdx]`/`[powershellx]`
+  生成 shellblockx/psblockx、`[ps]`/`[cmd]` 的正常配对)
+- 反向差异盘点 (python 有 C# 没有, **暂不动 C# 侧**: 改动 wgime.bat 需走瘦 DLL + ps1 + 15 项测试
+  整条链, 属独立特性决策): `cnpunct`/Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、
+  候选条主题、`learnk`/`recentk`、剪贴板「粘贴上屏」、`_CLIP_FORCE`(开始菜单强制剪贴板上屏)、
+  tray 的整句/联想/全角标点开关 —— 已记入 AGENTS "反向差异" 清单, 待用户定夺
+- C# `inDialog`(模态框期间让按键直通) **有意不跟进**: python 的造词/导入对话框含文本框, 需要输入法可用
+
+验证: 真实 tools.txt 结构 (2 tab / 6 按钮 / `code=qlj` / cols) 与 C# 直译逐项相同;
+合成样例 `[button 名]`+`code=` 后置+四种块别名结构与 C# 完全相同;
+块语义 3 组 (别名配对 / `[ps]`+`[/powershell]` 混闭按 C# 规则吃到 `[/ps]` / 全部四别名) 逐项正确
 
 ---
 

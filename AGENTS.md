@@ -78,6 +78,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 23. **双拼 (shuangpin>0) 下的门控**（C# `if (Shuangpin == 0)`）：rq/sj/xq 动态候选、v 金额候选、**启动器候选**都不挂（两键即音节会撞码）；`digit_as_code()` 也要带 `CFG['shuangpin'] == 0`。另 `refresh()` 开头要有 C# 的两处面板复位：`sym_cat>0 && buf != 'vf'` 与 `shuangpin>0` 时清 `sym_cat`。
 24. **五笔唯一四码自动上屏**要排除启动器候选：`refresh()` 里条件含 `cands[0] != ime.app_cand`（对齐 C# `!appSet.Contains(cands[0])`），否则会"自动启动程序"。
 25. **状态反馈 = 托盘气泡（不是弹窗、也不是只写日志）**：C# 所有 `TrayTip`/`ShowBalloonTip` 调用点在 python 都有对应：`msg` 步骤、工具/插件执行结果（`开始执行…`/`完成`/`已取消`/失败）、per-app 上屏与 keyfix 切换结果、启动失败、[csharp] 插件编译/运行错误、造词剪贴板无汉字、钩子安装失败（`hook.start()` 同步返回成功与否 + `last_error()`，main 气泡）。python 侧统一走 `main._notify` → `TRAY.notify`（pystray），无托盘时退回 `tools._msgbox`；tools 层走 `tools._tip`。别再给这类结果提示写回 `_msgbox` 或只写 `_dfn`。
+26. **tools.txt / 插件 txt 的块标签集合要完整**：`plugins.py` 的 `_TOOL_BLOCK_TAGS` 必须含 **8 个开标签**（shell/cmd/powershell/ps/shellx/cmdx/powershellx/psx）**与 8 个闭标签**——原来正则漏了 `cmdx`/`powershellx`/`[/cmd]`/`[/ps]` 等，会把块标签建成假按钮、块内容错位。另外 `load_tools` 要认 `[button 名]` 前缀、`code = xx` 允许写在步骤之后（都对齐 C# `LoadTools`）。块标签在 steps 里保留原文，由 `run_steps` 执行期配对（闭标签必须与开标签对应：`[ps]` 只由 `[/ps]` 收尾，同 C#）。
+27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、造词对话框（C# 是剪贴板直造）。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
