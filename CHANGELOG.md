@@ -26,6 +26,9 @@
 - **联想开关以前是"假开关"**: 托盘「联想」与 `assoc = 0` 只翻转勾选态, 实际照学照显示。
   新增 `engine.assoc_enabled` (由 `main.apply_config` 同步), `learn_assoc` 提前返回、`get_assoc`
   返回空、`main.show_assoc` 提前返回 —— 对齐 C# `AssocEnabled` 对学习与显示的双重门控
+- **简繁切换不持久化**: Ctrl+Shift+F / 托盘切了简繁, 重启后回到 config 里的旧值 (C# 会
+  `SaveConfigKey("trad", …)`)。新增 `main.toggle_trad()` = 翻转 + `_write_config('trad', …)` +
+  reset + 刷新托盘, 键盘与托盘两条路径共用
 - `config.txt` 补上两版共用的 `hotkey_*` / `key_*` 说明与缺省值 (老 WgTray 的
   `hotkey_toolbox/plugins/menu` 标注为退役遗留, 两版都不再读取)
 

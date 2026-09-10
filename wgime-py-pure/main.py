@@ -292,7 +292,7 @@ try:
     TRAY = _tray_mod.Tray(root, {
         'toggle': lambda: set_active(not ime.active),
         'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
-        'trad': lambda: (setattr(ime, 'trad', not ime.trad), reset()),
+        'trad': lambda: toggle_trad(),
         'quit': lambda: quit_app(),
         'is_active': lambda: ime.active,
         'get_mode': lambda: ime.mode,
@@ -706,6 +706,15 @@ def _write_config(key, value):
             f.write('\n'.join(lines))
     except OSError:
         pass
+
+
+def toggle_trad():
+    """简繁输出切换 (Ctrl+Shift+F / 托盘): 立即生效 + 写回 config.txt (对齐 C# Hook_OnToggleTrad 的持久化)."""
+    ime.trad = not ime.trad
+    _dfn('trad=%s' % ime.trad)
+    _write_config('trad', '1' if ime.trad else '0')
+    reset()
+    _refresh_tray()
 
 
 def toggle_followcaret():
@@ -1417,9 +1426,7 @@ def handle(vk):
         _refresh_tray()
         return
     if vk == VK['TRAD']:
-        ime.trad = not ime.trad
-        reset()
-        _refresh_tray()
+        toggle_trad()
         return
     if vk == VK['MAKEWORD']:
         makeword_clipboard()
