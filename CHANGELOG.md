@@ -1,3 +1,27 @@
+# 更新记录 (Changelog)
+
+> 本文件记录 WgIme 的每次代码更新。以后任何更新都追加到本文件顶部(新版本在最上)。
+
+---
+
+## 2026-09-10 (发布 v1.2.8 — 六轮 C#↔Python 差异审计的 27 项对齐)
+
+- **GitHub release v1.2.8** 已发布 (tag 指向 `ee24358`, 与本地 HEAD 一致): 三个资产
+  `wgime-v1.2.8-bat.zip`(1.64MB) / `wgime-v1.2.8-ps1.zip`(25.99MB) / `wgime-v1.2.8-python.zip`(24.28MB);
+  release body 1903 字符, 中文无问号 (显式 UTF-8 字节发送)
+- **发布后回验** (连续两次发布都做, 防 v1.2.7 那种"发了旧构建"事故): 下载线上 python 包 → 解出
+  `wgime-py.py` 与本地 `dist\wgime-py.py` **逐字符完全一致** (672044 字符), 且新入口
+  (`_TOOL_BLOCK_TAGS` / `build_rev_wb` / `single_instance` / `toggle_trad` / `run_tool_code` /
+  `assoc_enabled`) 全部在包内
+- 本版只改纯 Python 版 (bat/ps1 与 v1.2.7 内容相同); 内容为六轮审计的行为对齐, 无新功能:
+  配置与快捷键 (AGENTS §18-20) / 输入算法 (反查方向·英汉表隔离·双拼门控·通配序, §21-24) /
+  注入与步骤 DSL (emoji keyfix·%env% 展开位置·paste=off) / 工具栏与状态反馈
+  (tools.txt 块标签·插件启停·气泡反馈, §16·25-26) / 候选条 (空闲提示·`[模式|开]`) / 插件契约
+- AGENTS §5 新增 18–27 条把这一批的语义与"别再改回去"的约束固化; §5.27 记录**反向差异清单**
+  (python 有 C# 没有的功能, 以及 C# `inDialog` 有意不跟进)
+
+---
+
 ## 2026-09-10 (对齐项: tools.txt 结构解析维度 - 块别名被当成按钮的真 bug)
 
 第六轮差异审计换到**tools.txt / 插件 txt 的加载解析** (C# `LoadTools` vs python `load_tools`):
