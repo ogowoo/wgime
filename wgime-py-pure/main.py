@@ -965,13 +965,16 @@ def commit(i):
         begin_assoc(text)
         # 近期热度: 所有上屏都计入 (反映最近使用习惯, 滑动窗口自动过期) —— 功能④
         engine.touch_recent(ime.mode, text)
-        # ① 字频学习只对"主动选择"(非默认第1位/非动态)生效, 避免空格确认默认词被误强化
+        # ① 字频学习只对"主动选择"(非默认第1位/非动态)生效, 避免空格确认默认词被误强化 (python 有意保留)
         if i > 0:
             engine.learn(code, text, ime.mode)
-            record_commit(text, code)
             _last_learn = (text, code, ime.mode)
         else:
             _last_learn = None
+        # 自动造词链 (对齐 C# RecordCommit: 每次上屏都记一笔 —— 空格/默认候选、五笔唯一四码自动上屏
+        # 同样参与; 只有动态候选/面板符号不参与)。原来这一句被塞在 `if i > 0` 里, 于是"空格逐字确认"
+        # 这种最常见的上屏路径永远不进 recent 链, 自动造词几乎不触发。
+        record_commit(text, code)
 
 
 def digit_as_code():
@@ -1492,6 +1495,7 @@ def handle_punct(vk, sh):
         top = ime.cands[0]
         if top != ime.app_cand:
             inject(top)
+            record_commit(top, ime.buf)     # 对齐 C# Hook_OnPunct 的 RecordCommit (自动造词链; 词频仍不强化)
     if ime.buf or ime.assoc_showing:
         reset()                                    # 清组字/联想/vf 符号面板, 再上屏标点
     inject(s)

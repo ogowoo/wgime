@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-09-10 (第十三轮审计: 上屏路径 — 空格/标点自动上屏漏记「自动造词链」)
+
+换维度: 把 C# 的**每一条上屏路径**与 python 对齐。C# 在三个地方调 `Learn` + `RecordCommit`:
+① `Hook_OnSpaced`(866-882, 空格与数字选候选**共用同一段代码**) ② `Hook_OnPunct`(895, 组字中按标点
+先把首候选上屏) ③ 五笔唯一四码自动上屏(5246-5256)。python `commit()` 却把
+`record_commit(text, code)` 塞在 `if i > 0`(主动选择)里面。
+
+- **后果**: "打全拼 + 空格逐字确认"这条最常见的上屏路径**永远不往 `ime.recent` 记**, 而
+  `record_commit` 是**自动造词**(90 秒内连续 2–4 个单字且编码可验证 → 自动成词; 技术文档 §9 有记)
+  的唯一入口 → python 的自动造词实际只在"按数字选候选"时才会触发; `handle_punct` 的
+  "按标点自动上屏首候选"更是完全不走这条链(C# 895 走)
+- **修法**: `record_commit` 移出 `i > 0` 门控 —— 空格/默认候选、五笔唯一四码自动上屏(走 `commit(0)`)
+  都记; `handle_punct` 在自动上屏首候选时补记一笔。**词频学习(`engine.learn`/LastPick 置顶)仍按
+  AGENTS §14 只对"主动选择"生效, 空格确认默认词照旧不强化** —— 这次只恢复自动造词链
+- **验证**: 新建 headless 状态机 harness(真 `engine` + 真状态机, 只把副作用出口打桩:
+  `win.send_unicode/paste_text/send_key_backspace`、`bar.show/hide`、`engine.learn/learn_assoc/
+  touch_recent/add_user_word/save_freq`; 进程内 `LOCALAPPDATA` 指向临时目录 + `WGIME_DICT_DIR`
+  指向仓库根, **不碰用户数据**), 对 **git HEAD 版 main.py** 与当前版跑同一组用例:
+  - HEAD: 空格上屏不进 recent ✗ / 连续空格逐字不造词 ✗ / 标点自动上屏不记链 ✗ → 3 DIFFS
+  - 当前: **6/6 OK** —— 空格进链、连续两字自动 `add_user_word(字1字2, 码1码2)`、数字选候选
+    (学词频 + 记链)、动态候选与启动器"不学不记"、空格路径仍不学词频
+  - dist 内嵌 main 源码与磁盘 `main.py` **逐字节相同**; `dist==package` SHA256 相同(`61692F93…`)
+
+---
+
 ## 2026-09-10 (第十二轮审计: 键盘 hook 吞键表 — 修 Shift+操作键在组字中漏给应用)
 
 换维度: 把 C# `KeyboardHookProc`(wgime.bat 293-385) 的**判定矩阵**与 python `hook._proc` 逐例对齐
