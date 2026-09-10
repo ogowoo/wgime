@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-09-10 (发布 v1.2.9 — 冷启动反馈窗 + 健壮性三修)
+
+- **GitHub release v1.2.9**: 三个资产 `wgime-v1.2.9-{bat,ps1,python}.zip`; 本版只改纯 Python 版,
+  内容是第七、八轮审计的 4 项改动(冷启动反馈窗 + 健壮性三修), 其中一项是**启动崩溃修复**
+- **高危修复**: 用户把 `config.txt` 存成 ANSI(GBK) 时 Python 版启动即崩(`UnicodeDecodeError`),
+  C# 侧是替换式解码不会崩 —— 新增 `engine.read_text()`(utf-8-sig → gbk → utf-8+replace) 并统一到
+  config/tools/plugins/pastemode/disabled/userwords/freq/assoc 等全部用户可改文本读取点
+- 未闭合的多行块改为**整块丢弃**(对齐 C# `ParseToolSteps`/`LoadTools`), 不再把后续行当脚本执行
+- 冷启动(无缓存 ~12s)期间显示「WgIme 正在加载词库…」置顶小窗(对齐 C# 候选条的"(词库加载中...)"),
+  建表完成即销毁; 为此 `root = tk.Tk()` 提到建表之前(全文件只建一次 Tk root)
+- 发布后回验: 下载线上 python 包 → `wgime-py.py` 与本地 `dist\wgime-py.py` 逐字符一致, 且含
+  `read_text` / `_TOOL_BLOCK_TAGS` / `_dict_cache_stale` 等新入口
+
+---
+
 ## 2026-09-10 (对齐项: 异常/边界压力维度 - ANSI 保存的 config 不再崩启动 + 未闭合块丢弃)
 
 第八轮差异审计换到**健壮性/边界** (畸形 config/tools/插件/码表、缺文件、超长输入、并发 reload,
