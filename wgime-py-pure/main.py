@@ -206,6 +206,15 @@ def open_config_file():
         _dfn('open config err %r' % e)
 
 
+def open_data_dir():
+    """打开数据目录 (词频/用户词/码表缓存/便签; 对齐 C# OpenDataDir)."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        os.startfile(DATA_DIR)
+    except Exception as e:
+        _dfn('open data dir err %r' % e)
+
+
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC,
           PUNCT=0xFD)
@@ -298,6 +307,7 @@ try:
         'userwords': lambda: tools.show_user_words(engine),
         'reload': lambda: reload_config(),
         'open_config': lambda: open_config_file(),
+        'open_datadir': lambda: open_data_dir(),
         # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
         'get_runmode': lambda: CFG.get('mode', 'ime'),
         'switch_runmode': lambda m: switch_mode(m),
