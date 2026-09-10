@@ -109,7 +109,9 @@ CN_BIG = ('', '万', '亿', '兆', '京')
 
 
 def upper_amount(ds):
-    """1234 -> 壹仟贰佰叁拾肆元整 (与 C# UpperAmount 一致)"""
+    """1234 -> 壹仟贰佰叁拾肆元整 (与 C# UpperAmount 一致); 非数字返回 None (防御: C# 只在校验过数字后调用)"""
+    if not ds or not ds.isdigit():
+        return None
     s = ds.lstrip('0')
     if not s:
         return '零元整'
@@ -205,94 +207,108 @@ def load_config(path):
                mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
-        with open(path, encoding='utf-8') as f:
-            for raw in f:
-                t = raw.strip()
-                if not t or t[0] in '#;':
-                    continue
-                eq = t.find('=')
-                if eq < 1:
-                    continue
-                k = t[:eq].strip().lower()
-                v = t[eq + 1:].strip()
-                if k == 'fuzzy':
-                    if not v or v in ('none', 'off'):
-                        cfg['fuzzy'] = []
-                    else:
-                        pairs = []
-                        for pair in v.split(','):
-                            d = pair.find('-')
-                            if 0 < d < len(pair) - 1:
-                                pairs.append((pair[:d].strip(), pair[d + 1:].strip()))
-                        if pairs:
-                            cfg['fuzzy'] = pairs
-                elif k == 'showcode':
-                    cfg['showcode'] = v in ('1', 'on', 'true')
-                elif k == 'hideidle':
-                    cfg['hideidle'] = v in ('1', 'on', 'true')
-                elif k == 'shuangpin':
-                    cfg['shuangpin'] = {'xiaohe': 1, '小鹤': 1, 'flypy': 1, 'ziranma': 2, '自然码': 2,
-                                        'zrm': 2, 'ms': 3, '微软': 3, 'mspy': 3}.get(v, 0)
-                elif k == 'trad':
-                    cfg['trad'] = v in ('1', 'on', 'true')
-                elif k == 'sentence':
-                    cfg['sentence'] = v not in ('0', 'off', 'false')
-                elif k == 'assoc':
-                    cfg['assoc'] = v not in ('0', 'off', 'false')
-                elif k == 'starton':
-                    cfg['starton'] = v in ('1', 'on', 'true')
-                elif k == 'paste':
-                    cfg['paste'] = {'on': 1, 'always': 1, 'off': 2, 'key': 3, 'unicode': 3}.get(v, 0)
-                elif k == 'keyfix':
-                    cfg['keyfix'] = v in ('1', 'on', 'true')
-                elif k == 'learnk':
-                    try:
-                        cfg['learnk'] = max(0, int(v))
-                    except ValueError:
-                        pass
-                elif k == 'recentk':
-                    try:
-                        cfg['recentk'] = max(0, int(v))
-                    except ValueError:
-                        pass
-                elif k == 'followcaret':
-                    cfg['followcaret'] = v not in ('0', 'off', 'false')
-                elif k == 'cnpunct':
-                    cfg['cnpunct'] = v not in ('0', 'off', 'false')
-                elif k == 'theme':
-                    cfg['theme'] = 'light' if v.lower() in ('light', '浅色', '白') else 'dark'
-                elif k == 'mode':
-                    # 运行模式: ime=输入法(默认) / tray=纯托盘工具箱(现 wgtray 行为)
-                    cfg['mode'] = v.strip().lower() if v.strip().lower() in ('ime', 'tray') else 'ime'
-                elif k in ('hotkey_toggle', 'hotkey_mode', 'hotkey_makeword', 'hotkey_trad'):
-                    # 可配置快捷键 (原样收下; hook.configure 用 C# 同名解析器处理, 无效值忽略)
-                    cfg['hotkeys'][k[len('hotkey_'):]] = v
-                elif k in ('key_first', 'key_pageup', 'key_pagedown', 'key_back',
-                           'key_cancel', 'key_raw', 'key_pickfirst', 'key_picklast'):
-                    # 候选操作键 (单个键名; none = 禁用)
-                    cfg['ckeys'][k[len('key_'):]] = v
-                elif k == 'phrase':
-                    sp = v.find('\t')
-                    if sp < 1:
-                        sp = v.find(' ')
-                    if sp > 0:
-                        cfg.setdefault('phrases', {})[v[:sp].strip().lower()] = v[sp + 1:].strip()
-                elif k == 'app':
-                    ap = v.split('\t')
-                    if len(ap) >= 3:
-                        code, name, cmd = ap[0], ap[1], ap[2]
-                        args = ap[3] if len(ap) > 3 else ''
-                    else:
-                        m = re.match(r'^(\S+)\s+(\S+)\s+("(?:[^"]*)"|\'[^\']*\'|\S+)(?:\s+(.*))?$', v)
-                        if not m:
-                            continue
-                        code, name, cmd, args = m.group(1), m.group(2), m.group(3).strip('"\''), m.group(4) or ''
-                    code = code.strip().lower()
-                    if code:
-                        cfg['apps'][code] = (name.strip(), os.path.expandvars(cmd.strip()), os.path.expandvars(args.strip()))
+        text = read_text(path)                     # 宽松解码: ANSI/GBK 另存的 config.txt 也能读, 不崩
+        for raw in text.split('\n'):
+            t = raw.strip()
+            if not t or t[0] in '#;':
+                continue
+            eq = t.find('=')
+            if eq < 1:
+                continue
+            k = t[:eq].strip().lower()
+            v = t[eq + 1:].strip()
+            if k == 'fuzzy':
+                if not v or v in ('none', 'off'):
+                    cfg['fuzzy'] = []
+                else:
+                    pairs = []
+                    for pair in v.split(','):
+                        d = pair.find('-')
+                        if 0 < d < len(pair) - 1:
+                            pairs.append((pair[:d].strip(), pair[d + 1:].strip()))
+                    if pairs:
+                        cfg['fuzzy'] = pairs
+            elif k == 'showcode':
+                cfg['showcode'] = v in ('1', 'on', 'true')
+            elif k == 'hideidle':
+                cfg['hideidle'] = v in ('1', 'on', 'true')
+            elif k == 'shuangpin':
+                cfg['shuangpin'] = {'xiaohe': 1, '小鹤': 1, 'flypy': 1, 'ziranma': 2, '自然码': 2,
+                                    'zrm': 2, 'ms': 3, '微软': 3, 'mspy': 3}.get(v, 0)
+            elif k == 'trad':
+                cfg['trad'] = v in ('1', 'on', 'true')
+            elif k == 'sentence':
+                cfg['sentence'] = v not in ('0', 'off', 'false')
+            elif k == 'assoc':
+                cfg['assoc'] = v not in ('0', 'off', 'false')
+            elif k == 'starton':
+                cfg['starton'] = v in ('1', 'on', 'true')
+            elif k == 'paste':
+                cfg['paste'] = {'on': 1, 'always': 1, 'off': 2, 'key': 3, 'unicode': 3}.get(v, 0)
+            elif k == 'keyfix':
+                cfg['keyfix'] = v in ('1', 'on', 'true')
+            elif k == 'learnk':
+                try:
+                    cfg['learnk'] = max(0, int(v))
+                except ValueError:
+                    pass
+            elif k == 'recentk':
+                try:
+                    cfg['recentk'] = max(0, int(v))
+                except ValueError:
+                    pass
+            elif k == 'followcaret':
+                cfg['followcaret'] = v not in ('0', 'off', 'false')
+            elif k == 'cnpunct':
+                cfg['cnpunct'] = v not in ('0', 'off', 'false')
+            elif k == 'theme':
+                cfg['theme'] = 'light' if v.lower() in ('light', '浅色', '白') else 'dark'
+            elif k == 'mode':
+                # 运行模式: ime=输入法(默认) / tray=纯托盘工具箱(现 wgtray 行为)
+                cfg['mode'] = v.strip().lower() if v.strip().lower() in ('ime', 'tray') else 'ime'
+            elif k in ('hotkey_toggle', 'hotkey_mode', 'hotkey_makeword', 'hotkey_trad'):
+                # 可配置快捷键 (原样收下; hook.configure 用 C# 同名解析器处理, 无效值忽略)
+                cfg['hotkeys'][k[len('hotkey_'):]] = v
+            elif k in ('key_first', 'key_pageup', 'key_pagedown', 'key_back',
+                       'key_cancel', 'key_raw', 'key_pickfirst', 'key_picklast'):
+                # 候选操作键 (单个键名; none = 禁用)
+                cfg['ckeys'][k[len('key_'):]] = v
+            elif k == 'phrase':
+                sp = v.find('\t')
+                if sp < 1:
+                    sp = v.find(' ')
+                if sp > 0:
+                    cfg.setdefault('phrases', {})[v[:sp].strip().lower()] = v[sp + 1:].strip()
+            elif k == 'app':
+                ap = v.split('\t')
+                if len(ap) >= 3:
+                    code, name, cmd = ap[0], ap[1], ap[2]
+                    args = ap[3] if len(ap) > 3 else ''
+                else:
+                    m = re.match(r'^(\S+)\s+(\S+)\s+("(?:[^"]*)"|\'[^\']*\'|\S+)(?:\s+(.*))?$', v)
+                    if not m:
+                        continue
+                    code, name, cmd, args = m.group(1), m.group(2), m.group(3).strip('"\''), m.group(4) or ''
+                code = code.strip().lower()
+                if code:
+                    cfg['apps'][code] = (name.strip(), os.path.expandvars(cmd.strip()), os.path.expandvars(args.strip()))
     except OSError:
         pass
     return cfg
+
+
+def read_text(path):
+    """宽松读文本 (用户可手改的 txt 一定能读进来, 不因编码崩溃):
+    先 utf-8-sig(兼容 BOM) -> 再 gbk(中文 Windows 记事本另存 ANSI 的常见结果) -> 最后 utf-8+replace。
+    只用 OSError 表示"文件不可读", 编码问题一律降级处理 —— C# 侧 File.ReadAllLines(UTF8) 也是替换式解码, 不会抛。"""
+    with open(path, 'rb') as f:
+        b = f.read()
+    for enc in ('utf-8-sig', 'gbk'):
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode('utf-8', 'replace')
 
 
 def parse_dict(path):
@@ -773,26 +789,24 @@ class Engine:
         for m in range(3):
             p = os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m])
             try:
-                with open(p, encoding='utf-8') as f:
-                    for line in f:
-                        sp = line.rstrip('\n').rfind(' ')
-                        if sp < 1:
-                            continue
-                        try:
-                            n = int(line[sp + 1:])
-                        except ValueError:
-                            continue
-                        self.freq_m[m][line[:sp]] = n
+                for line in read_text(p).split('\n'):
+                    sp = line.rstrip('\n').rfind(' ')
+                    if sp < 1:
+                        continue
+                    try:
+                        n = int(line[sp + 1:])
+                    except ValueError:
+                        continue
+                    self.freq_m[m][line[:sp]] = n
             except OSError:
                 pass
             p = os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m])
             try:
-                with open(p, encoding='utf-8') as f:
-                    for line in f:
-                        sp = line.find(' ')
-                        if sp < 1:
-                            continue
-                        self.lastpick_m[m][line[:sp]] = line[sp + 1:].rstrip('\n')
+                for line in read_text(p).split('\n'):
+                    sp = line.find(' ')
+                    if sp < 1:
+                        continue
+                    self.lastpick_m[m][line[:sp]] = line[sp + 1:].rstrip('\n')
             except OSError:
                 pass
         for b in self.freq_m:
@@ -945,22 +959,21 @@ class Engine:
 
     def _load_assoc(self):
         try:
-            with open(os.path.join(self.data_dir, 'assoc.txt'), encoding='utf-8') as f:
-                for line in f:
-                    tab = line.find('\t')
-                    if tab < 1:
+            for line in read_text(os.path.join(self.data_dir, 'assoc.txt')).split('\n'):
+                tab = line.find('\t')
+                if tab < 1:
+                    continue
+                m = {}
+                for t in line[tab + 1:].strip().split(' '):
+                    c = t.rfind(':')
+                    if c < 1:
                         continue
-                    m = {}
-                    for t in line[tab + 1:].strip().split(' '):
-                        c = t.rfind(':')
-                        if c < 1:
-                            continue
-                        try:
-                            m[t[:c]] = int(t[c + 1:])
-                        except ValueError:
-                            pass
-                    if m:
-                        self.assoc[line[:tab]] = m
+                    try:
+                        m[t[:c]] = int(t[c + 1:])
+                    except ValueError:
+                        pass
+                if m:
+                    self.assoc[line[:tab]] = m
         except OSError:
             pass
 
@@ -1123,15 +1136,14 @@ class Engine:
     def load_user_words(self):
         uw = {}
         try:
-            with open(os.path.join(self.data_dir, 'userwords.txt'), encoding='utf-8') as f:
-                for raw in f:
-                    t = raw.strip()
-                    sp = t.find(' ')
-                    if sp < 1:
-                        continue
-                    for w in t[sp + 1:].split(' '):
-                        if w:
-                            uw[w] = t[:sp]
+            for raw in read_text(os.path.join(self.data_dir, 'userwords.txt')).split('\n'):
+                t = raw.strip()
+                sp = t.find(' ')
+                if sp < 1:
+                    continue
+                for w in t[sp + 1:].split(' '):
+                    if w:
+                        uw[w] = t[:sp]
         except OSError:
             pass
         return uw

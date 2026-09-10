@@ -16,6 +16,8 @@ import tempfile
 import time
 import winreg
 
+import engine as engmod          # 用它的宽松 read_text (engine 不 import plugins, 无循环; dist 里 engine 先于 plugins 装载)
+
 
 class Plugin(object):
     def __init__(self, path):
@@ -35,7 +37,7 @@ class Plugin(object):
 def parse_plugin(path):
     p = Plugin(path)
     try:
-        text = open(path, encoding='utf-8').read()
+        text = engmod.read_text(path)          # 宽松解码 (用户可能用 ANSI 记事本另存)
     except OSError as e:
         p.error = str(e)
         return p
@@ -87,8 +89,9 @@ def load_plugins(plugin_dir, data_dir):
     plugins = []
     disabled = set()
     try:
-        with open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') as f:
-            disabled = set(l.strip().lower() for l in f if l.strip())   # 统一小写, 文件名大小写不敏感
+        for l in engmod.read_text(os.path.join(data_dir, 'plugins-disabled.txt')).split('\n'):
+            if l.strip():
+                disabled.add(l.strip().lower())        # 统一小写, 文件名大小写不敏感
     except OSError:
         pass
     for path in sorted(glob.glob(os.path.join(plugin_dir, '*.txt'))):
@@ -144,39 +147,38 @@ def load_tools(path):
     tabs = [{'name': '工具', 'cols': 2, 'buttons': []}]
     btn = None
     try:
-        with open(path, encoding='utf-8') as f:
-            for raw in f:
-                t = raw.rstrip('\n')
-                s = t.strip()
-                if not s or s[0] in ';#':
+        for raw in engmod.read_text(path).split('\n'):
+            t = raw.rstrip('\n')
+            s = t.strip()
+            if not s or s[0] in ';#':
+                continue
+            if s.startswith('[tab ') and s.endswith(']'):
+                tabs.append({'name': s[5:-1].strip(), 'cols': 2, 'buttons': []})
+                btn = None
+                continue
+            if s.startswith('[cols ') and s.endswith(']'):
+                try:
+                    tabs[-1]['cols'] = max(1, min(6, int(s[6:-1].strip())))
+                except ValueError:
+                    pass
+                continue
+            if s.startswith('[') and s.endswith(']'):
+                inner = s[1:-1].strip()
+                if inner.lower() in _TOOL_BLOCK_TAGS:      # [shell]...[/powershellx] 等块标签不是按钮 (对齐 C#)
+                    if btn is not None:
+                        btn['steps'].append(t)
                     continue
-                if s.startswith('[tab ') and s.endswith(']'):
-                    tabs.append({'name': s[5:-1].strip(), 'cols': 2, 'buttons': []})
-                    btn = None
-                    continue
-                if s.startswith('[cols ') and s.endswith(']'):
-                    try:
-                        tabs[-1]['cols'] = max(1, min(6, int(s[6:-1].strip())))
-                    except ValueError:
-                        pass
-                    continue
-                if s.startswith('[') and s.endswith(']'):
-                    inner = s[1:-1].strip()
-                    if inner.lower() in _TOOL_BLOCK_TAGS:      # [shell]...[/powershellx] 等块标签不是按钮 (对齐 C#)
-                        if btn is not None:
-                            btn['steps'].append(t)
-                        continue
-                    if inner.startswith('button '):            # C# 也认 [button 名] 前缀
-                        inner = inner[7:].strip()
-                    btn = {'name': inner or '?', 'code': None, 'steps': []}
-                    tabs[-1]['buttons'].append(btn)
-                    continue
-                m = re.match(r'^code\s*=\s*(\S+)$', s, re.I)
-                if m and btn is not None:                      # C#: code= 可写在步骤之后 (原来要求必须在步骤前)
-                    btn['code'] = m.group(1).lower()
-                    continue
-                if btn is not None:
-                    btn['steps'].append(t)
+                if inner.startswith('button '):            # C# 也认 [button 名] 前缀
+                    inner = inner[7:].strip()
+                btn = {'name': inner or '?', 'code': None, 'steps': []}
+                tabs[-1]['buttons'].append(btn)
+                continue
+            m = re.match(r'^code\s*=\s*(\S+)$', s, re.I)
+            if m and btn is not None:                      # C#: code= 可写在步骤之后 (原来要求必须在步骤前)
+                btn['code'] = m.group(1).lower()
+                continue
+            if btn is not None:
+                btn['steps'].append(t)
     except OSError:
         pass
     return [t for t in tabs if t['buttons']]
@@ -256,6 +258,9 @@ def run_steps(body, log, msgbox, confirm, on_step=None):
             while i < len(lines) and lines[i].strip() != end_tag:
                 block.append(lines[i])
                 i += 1
+            if i >= len(lines):                      # 未找到闭标签: C# ParseToolSteps/LoadTools 会整块丢弃, 这里同样不执行
+                _slog('块未闭合 (缺 %s), 已跳过' % end_tag)
+                continue
             i += 1  # skip end tag
             try:
                 _run_block(tag, '\n'.join(block), _slog)

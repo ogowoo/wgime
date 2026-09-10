@@ -1679,7 +1679,8 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
 
     def _disabled_set():
         try:
-            return set(l.strip().lower() for l in open(os.path.join(data_dir, 'plugins-disabled.txt'), encoding='utf-8') if l.strip())
+            import engine as _eng
+            return set(l.strip().lower() for l in _eng.read_text(os.path.join(data_dir, 'plugins-disabled.txt')).split('\n') if l.strip())
         except OSError:
             return set()
 

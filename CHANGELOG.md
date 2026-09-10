@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-09-10 (对齐项: 异常/边界压力维度 - ANSI 保存的 config 不再崩启动 + 未闭合块丢弃)
+
+第八轮差异审计换到**健壮性/边界** (畸形 config/tools/插件/码表、缺文件、超长输入、并发 reload,
+共 30 余个用例):
+
+- **高危: 用户把 config.txt 存成 ANSI(GBK) 会让 python 版启动就崩** (`UnicodeDecodeError`) —— 中文
+  Windows 下记事本"另存为 ANSI"很常见。C# 的 `File.ReadAllLines(UTF8)` 是**替换式解码不抛**。
+  新增 `engine.read_text()` (`utf-8-sig` → `gbk` → `utf-8+replace`, 只以 OSError 表示不可读),
+  并把**所有用户可改文本**的读取点改用它: config.txt / tools.txt / plugins\*.txt / pastemode.txt /
+  plugins-disabled.txt / userwords.txt / userdict_*.txt / lastpick_*.txt / assoc.txt
+  (含 main/tools/plugins/engine 四处读取逻辑)
+- **未闭合的多行块原来会被执行**: C# `ParseToolSteps`/`LoadTools` 只在遇到闭标签时才把块入 steps,
+  行尾仍没闭合就整块丢弃; python 会把后面所有行当脚本体跑掉。现同样丢弃并记一条 `块未闭合…已跳过`
+- `upper_amount` 加非数字防御 (原来 `upper_amount("abc")` 抛 IndexError; C# 也只在校验后调用,
+  但 python 侧多一层保护无副作用)
+- 其余 30 例全部通过 (无需改): 空/超长(1MB)/垃圾行的 config、BOM+值含 `=`、非法 int、目录当文件;
+  tools.txt 空文件/步骤在按钮前/未闭合引号/cols 非法/只有 tab/二进制内容/名字含 `]`;
+  插件 txt 缺 code/空 body/垃圾 perm/空 [csharp]·[python] 块; 坏码表目录/损坏缓存 pickle/空码表文件;
+  超长编码(10k)/33 字符整句/`v`+17 位/孤立代理字符; `reload()` 与 3 线程同时读候选(零异常)
+- 真实加载路径复核 (不是只看单函数): `load_py_plugins` 对语法错误/顶层抛异常/缺 CODE 的 .py
+  只跳过不崩; `_list_plugin_files` (插件管理器列举) 走 AST 不执行坏文件; `_run_py_file_once` 有兜底
+
+---
+
 ## 2026-09-10 (对齐项: 性能路径维度 - 冷启动反馈窗 + 启动/缓存实测基线)
 
 第七轮差异审计换到**启动与缓存性能路径** (全程实测, 数字记入 AGENTS §6):

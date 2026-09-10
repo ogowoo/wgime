@@ -142,7 +142,7 @@ import win
 import hook
 import tools
 from engine import (Engine, dynamic_candidates, vmode_candidates, is_all_cjk,
-                    load_config, shuangpin_expand, SYM_CAT_NAMES, SYM_CATS)
+                    load_config, shuangpin_expand, SYM_CAT_NAMES, SYM_CATS, read_text)
 import plugins as plugmod
 from bar import CandBar
 
@@ -412,8 +412,7 @@ def load_py_plugins():
     global PLUGINS
     PLUGINS=[]
     try:
-        with open(os.path.join(DATA_DIR,'plugins-disabled.txt'),encoding='utf-8') as f:
-            disabled=set(l.strip().lower() for l in f if l.strip())   # 禁用名单 = 小写文件名 (对齐 C#)
+        disabled=set(l.strip().lower() for l in read_text(os.path.join(DATA_DIR,'plugins-disabled.txt')).split('\n') if l.strip())   # 禁用名单 = 小写文件名 (对齐 C#)
     except OSError:
         disabled=set()
     seen=set()
@@ -638,16 +637,15 @@ def load_appmodes():
     global APPMODES
     APPMODES = {}
     try:
-        with open(os.path.join(DATA_DIR, 'pastemode.txt'), encoding='utf-8') as f:
-            for raw in f:
-                t = raw.strip()
-                if not t or t[0] == '#':
-                    continue
-                sp = t.find('=')
-                if sp < 1:
-                    continue
-                name, mode = t[:sp].strip().lower(), t[sp + 1:].strip().lower()
-                APPMODES[name] = {'clipboard': 1, 'on': 1, 'off': 2, 'sendkeys': 2, 'keyfix': 4, 'keyplain': 5}.get(mode, 3)
+        for raw in read_text(os.path.join(DATA_DIR, 'pastemode.txt')).split('\n'):
+            t = raw.strip()
+            if not t or t[0] == '#':
+                continue
+            sp = t.find('=')
+            if sp < 1:
+                continue
+            name, mode = t[:sp].strip().lower(), t[sp + 1:].strip().lower()
+            APPMODES[name] = {'clipboard': 1, 'on': 1, 'off': 2, 'sendkeys': 2, 'keyfix': 4, 'keyplain': 5}.get(mode, 3)
     except OSError:
         pass
 
@@ -1366,8 +1364,7 @@ def _py_plugin_meta_static(path):
 
 def _read_disabled():
     try:
-        with open(os.path.join(DATA_DIR, 'plugins-disabled.txt'), encoding='utf-8') as f:
-            return set(l.strip().lower() for l in f if l.strip())
+        return set(l.strip().lower() for l in read_text(os.path.join(DATA_DIR, 'plugins-disabled.txt')).split('\n') if l.strip())
     except OSError:
         return set()
 
