@@ -16,6 +16,10 @@
   建表完成即销毁; 为此 `root = tk.Tk()` 提到建表之前(全文件只建一次 Tk root)
 - 发布后回验: 下载线上 python 包 → `wgime-py.py` 与本地 `dist\wgime-py.py` 逐字符一致, 且含
   `read_text` / `_TOOL_BLOCK_TAGS` / `_dict_cache_stale` 等新入口
+- 小插曲(已修): 发版脚本原来把 `target_commitish` 传成 `master`, GitHub 按**远端** master 解析,
+  而本地那次 dist 刷新提交还没 push → v1.2.9 的 tag 落在 `4abb843`(前一提交), 而非 `3142cf5`。
+  两者**代码内容相同**(只差内嵌第三方 zip 容器的几十字节, MODULES/PLUGIN_SRC 逐字节一致),
+  发布的 python 包与本地 dist 完全一致, 故不影响使用; 脚本已改为传本地 HEAD sha 并加未 push 告警。
 
 ---
 
