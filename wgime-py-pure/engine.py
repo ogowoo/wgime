@@ -434,7 +434,7 @@ def read_import_text(path):
                 return b.decode(enc)
             except (UnicodeDecodeError, LookupError):
                 continue
-        return b.decode('utf-8', 'replace')
+        return b.decode('gbk', 'replace')              # 兜底: C# 的 GBK 解码永不失败, 用 gbk+replace 对齐 (不再 utf-8-replace)
     except OSError:
         return None
 

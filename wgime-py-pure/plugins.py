@@ -171,15 +171,15 @@ def load_tools(path):
 
 # ---------- 步骤 DSL 执行器 ----------
 def tokenize(s):
-    """双引号 + %env% 展开"""
-    s = os.path.expandvars(s)
+    """空白切分 + 双引号分组, 不做 %env% 展开 (对齐 C# ToolToks; 展开只在各动词里按 C# 规则做).
+    注意: C# 用 char.IsWhiteSpace, 所以 tab 也算分隔符; 未闭合的引号吃到行尾."""
     out = []
     cur = ''
     q = False
     for ch in s:
         if ch == '"':
             q = not q
-        elif ch == ' ' and not q:
+        elif ch.isspace() and not q:
             if cur:
                 out.append(cur)
                 cur = ''
@@ -336,17 +336,18 @@ def _run_hidden(cmdline, log):
 
 def _run_verb(verb, arg, log, msgbox, confirm):
     if verb == 'msg':
-        msgbox('提示', os.path.expandvars(arg))
+        msgbox('WgIme', arg)                         # C# msg: 气泡标题 WgIme, 原样显示不展开
     elif verb == 'confirm':
         _confirm_args(arg, confirm)
     elif verb == 'run':
         parts = tokenize(arg)
         if parts:
+            parts[0] = os.path.expandvars(parts[0])  # C# 只展开程序名 (tk[1]), 参数原样
             return _run_hidden(parts, log)
     elif verb == 'shell':
-        return _run_hidden('cmd /c ' + os.path.expandvars(arg), log)
+        return _run_hidden('cmd /c ' + arg, log)     # cmd 自己展开 %env%, 对齐 C# (不预先展开)
     elif verb == 'shellx':
-        subprocess.run('cmd /c ' + os.path.expandvars(arg), shell=True,
+        subprocess.run('cmd /c ' + arg, shell=True,  # 同上: 交给 cmd 展开
                        creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=86400)
     elif verb == 'open':
         os.startfile(_tool_path(arg))
