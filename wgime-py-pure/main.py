@@ -435,7 +435,7 @@ def find_launcher(code):
 
 # ---------- 显示 ----------
 def show_page():
-    header = '[%s] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')
+    header = '[%s|开] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')   # 对齐 C#: [模式|开] 头
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
     total = (len(ime.cands) + 8) // 9
     follow = CFG.get('followcaret', True)
@@ -448,8 +448,8 @@ def show_page():
         # 缓冲非空即显示 (即使无候选) —— 无候选时也能看到已输入的编码, 不会"消失"
         bar.show(header, ime.buf, page_c, ime.sel, ime.page, total, follow)
     elif not CFG.get('hideidle', True):
-        # hideidle=0: 常驻候选窗, 固定屏幕右下角(贴任务栏), 不跟随
-        bar.show(header.rstrip(), '', [], 0, 0, 1, False, 'bottom-right')
+        # hideidle=0: 常驻候选窗, 固定屏幕右下角(贴任务栏), 不跟随; 显示 C# 同款空闲提示 (对齐 RefreshLabel)
+        bar.show(header.rstrip(), '(Shift开关 Ctrl+` 模式 vf符号)', [], 0, 0, 1, False, 'bottom-right')
     else:
         bar.hide()
 
