@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-09-10 (第十二轮审计: 键盘 hook 吞键表 — 修 Shift+操作键在组字中漏给应用)
+
+换维度: 把 C# `KeyboardHookProc`(wgime.bat 293-385) 的**判定矩阵**与 python `hook._proc` 逐例对齐
+(哪个键在什么修饰键/是否组字下被吞、吞了发什么事件)。
+
+- **关键事实**: C# 的 `bare = !ModifierDown()`, 而 `ModifierDown()` **只含 Ctrl/Alt/LWin/RWin, 不含 Shift**
+  (124-130 行) —— 所以组字中 `Shift` + 数字/退格/Esc/回车/空格/PgUp/PgDn/配置翻页键(`-`/`=`)
+  在 C# 里**照样被吞**; 只有 `a-z`、`;`(SemiAsCode)、以词定字键 `[`/`]` 显式要求 `!sh`
+- **python 原先把 `if shift: 透传` 放在这些分支之前**, 于是组字中按住 Shift 按这些键会漏给应用:
+  Shift+退格变成"删应用里上一个字"(输入法缓冲不动)、Shift+数字把 `$%^&` 打进文档而不是选候选、
+  Shift+空格插入空格而不是选首候选、Shift+PgDn 不再翻页 …… 共 **19 例**行为不一致
+- **修法**: 按 C# 判定次序重排 —— 数字 → `_swallow`(退格/取消/回车/空格/翻页键, 只要求 bare) →
+  `_swallow_pick`(以词定字, 额外要求 `!sh`) → 中文标点(MapPunct 语义: `/` 只有 Shift 有映射,
+  `\ [ ]` 只有裸键有映射) → 再 `if shift` 透传 → 裸字母。`_rebuild_swallow` 相应拆成两组
+  (`_swallow` / `_swallow_pick`), 组字中用不到的 pick 键从 bare 组里移出
+
+**验证**: 伪造 `KBDLLHOOKSTRUCT` + 伪造 `_key_state` 直接调 `hook._proc`, 跑 **89 例**判定矩阵
+(0-9 × Shift × 组字/空闲、退格/Esc/回车/空格/PgUp/PgDn/`-`/`=`/`[`/`]`/`, . ; ' / \ $`、a-z、方向键、
+Ctrl/Alt/Win 组合、输入法未激活、cnpunct 关) → 与逐行从 C# 推出的期望 **0 差异**;
+事件编码抽查: Shift+`;`→`0x2BA`、Shift+4(空闲)→`0x234`(¥)、裸 `;`→`0xBA`、裸 `/`→透传、
+Shift+`\`→透传。before/after 对照(同一矩阵跑 HEAD 版 hook.py)恰好只有那 19 例改变, 无其它副作用。
+分发件里的 hook 与磁盘逐字节相同, 用**分发件的 hook** 重跑矩阵同样 0 差异。
+构建: `py_compile` 通过, dist==package SHA256 相同(`3CE91B20…`)。
+
+**有意保留**: python 额外的 F8 硬开关、Ctrl+Alt+Q 退出、Ctrl+. 全角标点开关都在 C# 判定之前的
+独立分支, 且带 Ctrl/Alt/Win 一律透传(不劫持系统快捷键)。
+
+---
+
 ## 2026-09-10 (第十一轮审计: 插件/工具箱步骤 DSL 动词语义 — 修 `confirm` 三处 + 4 处对齐)
 
 换维度: 把 C# `ExecToolStep`(wgime.bat 2258-2363) 的 16 个动词与 python `plugins._run_verb`/`run_steps`

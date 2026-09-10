@@ -130,14 +130,20 @@ def configure(hotkeys=None, ckeys=None):
 
 
 def _rebuild_swallow():
-    """组字中要吞掉的候选操作键 (对齐 C#: 配置键 + PgUp/PgDn 常驻)."""
-    s = set(v for v in KEYS.values() if v)
-    s.add(0x21)                                   # PgUp: 组字中恒翻页
-    s.add(0x22)                                   # PgDn
-    _swallow[0] = s
+    """组字中要吞掉的候选操作键, 按 C# KeyboardHookProc 的**分支条件**分两组:
+    ① `_swallow`  = 只要求 bare(不含 Ctrl/Alt/Win, **Shift 可以按着**)的键: 退格/取消/回车/首候选(空格)
+       + 配置的翻页键 + PgUp/PgDn 常驻 (C# 352-371: VkBack/VkCancel/VkRaw/VkFirst/VkPage*);
+    ② `_swallow_pick` = C# 372 行额外要求 `!sh` 的以词定字键 (VkPickFirst/VkPickLast)。
+    两组都只在"组字/联想/符号面板"中生效 (C# 的 HasCode 条件)。"""
+    keys = dict(KEYS)
+    bare = [keys.get('back', 0), keys.get('cancel', 0), keys.get('raw', 0), keys.get('first', 0),
+            keys.get('pageup', 0), keys.get('pagedown', 0), 0x21, 0x22]
+    _swallow[0] = set(v for v in bare if v)
+    _swallow_pick[0] = set(v for v in (keys.get('pickfirst', 0), keys.get('picklast', 0)) if v)
 
 
 _swallow = [set()]
+_swallow_pick = [set()]
 
 ACTIVE = [False]        # 输入法是否启用 (主线程写入, 钩子线程判定)
 COMPOSING = [False]     # 是否有拼音缓冲/联想 (主线程写入; 空缓冲时空格/退格/回车透传)
@@ -235,7 +241,21 @@ def _proc(nCode, wParam, lParam):
                         winkey = _key_state(0x5B) or _key_state(0x5C)
                         if ctrl or alt or winkey:              # 带 Ctrl/Alt/Win 的快捷键: 透传
                             return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                        # --- 组字/联想/符号面板中的候选操作键 (对齐 C# 的判定次序: 数字 -> 退格/取消/回车/首候选/翻页
+                        #     -> 以词定字)。注意这些分支在 C# 里只要求 bare, **Shift 按着也照吞** (只有 a-z 与以词定字
+                        #     要求 !sh) —— 原来这里先 `if shift: 透传`, 导致 Shift+数字/空格/退格在组字中漏给应用。
+                        if COMPOSING[0]:
+                            if 0x30 <= vk <= 0x39:             # 0-9: 选候选 / v 模式续码 (C# 346-351)
+                                EVENTS.put(vk)
+                                return 1
+                            if vk in _swallow[0]:              # 退格/取消/回车/空格 + 翻页键 + PgUp/PgDn 常驻
+                                EVENTS.put(vk)
+                                return 1
+                            if not shift and vk in _swallow_pick[0]:   # 以词定字 (C# 372: 额外要求 !sh)
+                                EVENTS.put(vk)
+                                return 1
                         # 中文标点 (cnpunct 开时): 吞 , . ; / \ [ ] ' 及 Shift 变体 (《》？：等), Shift 状态随事件编码
+                        # (C# 把 MapPunct 放在最后判定, 返回 null 的组合=透传: Shift+/ 有 ？, Shift+\ [ ] 无 => 透传)
                         if PUNCT[0] and (
                                 vk in (0xBC, 0xBE, 0xBA, 0xDE)          # , . ; ' -> 任意 shift 都吞
                                 or (shift and vk == 0xBF)               # Shift+/ -> ？ (裸 / 透传)
@@ -245,14 +265,7 @@ def _proc(nCode, wParam, lParam):
                             return 1
                         if shift:                              # Shift 修正键: 透传
                             return user32.CallNextHookEx(None, nCode, wParam, lParam)
-                        if 0x41 <= vk <= 0x5A:                 # 裸字母: 吞 (开始拼音)
-                            EVENTS.put(vk)
-                            return 1
-                        if 0x30 <= vk <= 0x39 and COMPOSING[0]:   # 数字: 仅组字/联想时吞(候选选择/v模式), 裸数字透传(C# 对齐)
-                            EVENTS.put(vk)
-                            return 1
-                        # 候选操作键 (config key_*; 含 PgUp/PgDn 常驻): 仅缓冲有效时吞 (对齐 C# HasCode 条件)
-                        if vk in _swallow[0] and COMPOSING[0]:
+                        if 0x41 <= vk <= 0x5A:                 # 裸字母: 吞 (开始拼音; C# 同样要求 !sh)
                             EVENTS.put(vk)
                             return 1
                         # 其余键透传 (无缓冲时空格/退格/回车交给应用)
