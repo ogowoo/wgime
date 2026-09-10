@@ -76,7 +76,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps
 ```
 
 > `wgime.bat`（bat 版主源，含全部 C# 与基础码表）已入库；`build-wgime-ps1.ps1` 从它提取代码。
-> 根目录 `py.txt`/`wb.txt`/`ec.txt`/`import_*.txt` 是本地构建用扩展码表（gitignored，全部词库已编入 `WgIme.ps1` 载荷与 wgime.bat 基础表）。原独立 WgTray 分发文件（wgtray.bat / WgTray.ps1 / wgtray-nopayload.bat）已退役并由 git 删除——`mode=tray` 完全替代（历史版本在早期 git 提交中）。
+> 根目录 `py.txt`/`wb.txt`/`ec.txt`/`import_*.txt` 是构建用码表——**已入库跟踪**（`build-wgime-dll.ps1` 用它们生成 `WgIme.ps1` 的 trailer、`wgime.bat` 的数据块 refresh 也读它们；见 AGENTS §5.5）。原独立 WgTray 分发文件（wgtray.bat / WgTray.ps1 / wgtray-nopayload.bat）已退役并由 git 删除——`mode=tray` 完全替代（历史版本在早期 git 提交中）。
 
 ## bat 版 vs ps1 版（取舍分析）
 

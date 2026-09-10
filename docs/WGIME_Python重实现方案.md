@@ -294,4 +294,5 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 - **插件方案对齐 C#**（`plugins\*.txt` + `tools.txt` + `config.txt`）：步骤 DSL 插件（clean-bin/qping 等）直接跑；`[python]` 块（替代 `[csharp]`）exec 运行；`[csharp]` 块经 **sidecar**（`run-csharp-plugin.ps1` PowerShell+CodeDom 编译运行，独立进程弹窗）——C# 插件也能跑
 - **候选框圆角真透明**（transparentcolor，替代 SetWindowRgn 裁边残影）+ 修宽度溢出
 - **C++/DLL**：纯版可用 ctypes `LoadLibrary`+导出函数调用 C++ DLL 插件（可行，未做插件实例）
-- **遗留大补**：WgTray（托盘工具箱独立程序）、hotkey_* 全局热键、emoji PNG 图片版
+- **遗留大补**：emoji PNG 图片版（表情候选现为文本渲染）
+  > 2026-09 追记：原列表中的 **WgTray** 已退役并收敛为 `mode=tray` 运行模式（ime/tray 双模式，托盘「运行模式」切换），**hotkey_\*** 全局热键已在 `hook.py` 落地（`vk_from_name`/`parse_hotkey`/`configure`，与 C# 共用 config 键），两项均已做完，仅 emoji PNG 图片版仍缺。

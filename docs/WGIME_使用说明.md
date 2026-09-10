@@ -41,7 +41,7 @@ config.txt 并自动重启进程生效。也可以直接编辑 config.txt 的 `m
 | 按键 | 功能 |
 |---|---|
 | **Shift 轻点**（单独按下松开） | 开 / 关输入法 |
-| **Ctrl + `**（反引号） | 切换模式：混合 → 拼音 → 五笔 → 词典 → 混合… |
+| **Ctrl + 反引号**（`` ` ``） | 切换模式：混合 → 拼音 → 五笔 → 词典 → 混合… |
 | **Ctrl + Alt + C** | 造词（先把 2-8 个汉字复制到剪贴板） |
 | 字母 a-z | 输入编码 |
 | 空格 | 选第 1 个候选 |
@@ -188,7 +188,7 @@ config.txt 并自动重启进程生效。也可以直接编辑 config.txt 的 `m
 | `trad = 1/0` | 繁体输出（也可 `Ctrl+Shift+F` 或托盘"简繁输出"临时切换） | 0 |
 | `starton = 1/0` | 启动时输入法默认开/关（`Shift` 轻点随时切换） | 1 |
 | `hotkey_toggle = shift_tap` | 开关输入法；也可写组合键如 `ctrl+space`，`shift_tap`=轻点 Shift，`none`=禁用 | shift_tap |
-| `hotkey_mode = ctrl+grave` | 切换模式（默认 Ctrl+`） | ctrl+grave |
+| `hotkey_mode = ctrl+grave` | 切换模式（默认 Ctrl+反引号） | ctrl+grave |
 | `hotkey_makeword = ctrl+alt+c` | 造词 | ctrl+alt+c |
 | `hotkey_trad = ctrl+shift+f` | 简繁输出切换 | ctrl+shift+f |
 | `key_first = space` | 选第 1 候选 | space |

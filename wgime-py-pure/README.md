@@ -64,7 +64,7 @@ powershell -NoProfile -File build-package.ps1     # 重建 dist\wgime-py.py 并�
 ## 重要约定（改动前必读 AGENTS.md）
 
 - 光标跟随 = 独立 Caret Helper 子进程（纯 ctypes vtable），主进程绝不初始化 COM/UIA（AGENTS.md §17）
-- 候选条宽度上限 `min(工作区宽-24, 720)`，超宽动态截断候选（AGENTS.md §15）
+- 候选条宽度上限 `max(240, min(工作区宽-24, 880))`，超宽动态截断候选（AGENTS.md §15）
 - 词频排序 = 语料先验 + 学习词频 + 近期热度，是有意保留的升级（AGENTS.md §14）
 - 改数据目录逻辑必须同步 `main.py`(DATA_DIR) 与 `build-wgime-pure.py`(preamble `_third_dir`)
 - 插件权限模型：`perm=network/run/registry/destructive` 运行前确认（AGENTS.md §16）

@@ -432,7 +432,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 ### 12.1 运行环境
 
 - **Python 3.13+，仅用标准库 `ctypes` + `tkinter`，零 .NET 依赖**——不装 PowerShell 也能跑。
-- 第三方库 `pystray` / `uiautomation` / `comtypes` 已内嵌进单文件（见 §12.3），`cryptography` 可选。
+- 第三方库 `pystray`（托盘）/ `uiautomation` / `comtypes` 已内嵌进单文件（见 §12.3），`cryptography` 可选。**注意**：主进程不再 `import uiautomation/comtypes`——光标跟随走独立 Caret Helper 子进程（纯 ctypes 直调 UIAutomationCore，见 §12.2 `win.py`），`uiautomation/comtypes` 仅是历史内嵌残留（保留是避免老环境 import 失败），别按它们写新代码。
 - 数据目录 `%LOCALAPPDATA%\wgime-py`；若命中 Microsoft Store 版 Python（其 AppContainer 会虚拟化 `%LOCALAPPDATA%`），自动切换到 `USERPROFILE\wgime-py`，并把虚拟化位置的旧数据搬过去。
 
 ### 12.2 模块职责（均为 `wgime-py-pure\*.py`）
@@ -441,8 +441,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 |---|---|
 | `main.py` | 程序入口与状态机；注入调度、托盘 `api` 注册表；插件权限确认 |
 | `hook.py` | ctypes 直调 `WH_KEYBOARD_LL` 全局低级钩子；钩子线程只入事件队列，主线程 `poll` 消费（避免在钩子回调里做 UI/慢操作） |
-| `win.py` | ctypes Win32 封装：文本注入、原生剪贴板读写、UIA 光标跟随（现代应用经内嵌 `uiautomation`） |
-| `bar.py` | 无边框圆角候选条（候选渲染、翻页、宽度上限 `min(工作区宽-24, 720px)`） |
+| `win.py` | ctypes Win32 封装：文本注入、原生剪贴板读写、单实例互斥体、UIA 光标跟随（**独立 Caret Helper 子进程**：内嵌纯 ctypes 源码落盘到 `runtime\wgime-caret-helper-v3-stable-embedded.py`，JSONL IPC，主进程绝不初始化 COM/UIA） |
+| `bar.py` | 无边框圆角候选条（候选渲染、翻页、宽度上限 `max(240, min(工作区宽-24, 880px))`，超宽逐档截断候选） |
 | `engine.py` | 码表加载/解析、候选检索、词频（语料先验 + 学习词频 + 近期热度）、造句 |
 | `plugins.py` | 插件加载与执行：插件 Manifest/权限模型、步骤 DSL、`[python]` 块子进程 + JSON IPC |
 | `tools.py` | 工具箱（tools.txt DSL） |
@@ -464,6 +464,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 - **注入上屏**：管理员权限窗口/部分 UWP 应用可能拒绝注入；游戏全屏输入不支持。Qt 应用（微信 4.x）的 VK_PACKET 陈旧字符问题已由 keyfix 全局修复（§3.4）；顽固程序可按进程覆盖（pastemode.txt）。
 - 单实例（Mutex `WgImeSingleInstance`）。
 - 码表词条不支持内嵌空格；每码候选上限 60（显示）、每码存储上限 300（导入）。
-- 钩子放行一切含 Ctrl/Alt/Win 的组合键，无法自定义组合快捷键。
+- 钩子默认放行一切含 Ctrl/Alt/Win 的组合键，**只有 `hotkey_*` 配置的热键被吞掉**：`hotkey_toggle`（缺省 `shift_tap`=轻拍 Shift）/`hotkey_mode`（缺省 Ctrl+反引号，键名 `grave`）/`hotkey_makeword`（缺省 Ctrl+Alt+C）/`hotkey_trad`（缺省 Ctrl+Shift+F），`none` = 禁用该热键；候选操作键 `key_first/pageup/pagedown/back/cancel/raw/pickfirst/picklast` 同理（详见使用说明 §9）。
 - 不支持 .scel（搜狗二进制词库）等二进制格式导入。
 - 固化码表后 bat 体积增大到约十几 MB（码表存入独立数据块，不参与脚本解析，启动速度不受影响；词典加载本身仍走 `wgime.mb` 缓存）。

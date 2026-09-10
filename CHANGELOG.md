@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-09-10 (第九轮审计: 文档与代码一致性 — 清掉 5 处陈旧断言)
+
+本轮不查功能差异, 改查**文档是否还说得对**(文档腐化 = 后续会话按错文档改代码)。逐条与代码/`git ls-files` 对照:
+
+- `docs\WGIME_技术文档.md` §12.2 `win.py` 行仍写"UIA 光标跟随(现代应用经内嵌 `uiautomation`)", 与
+  §17 的架构(主进程**绝不**初始化 COM/UIA, 跟随走独立 Caret Helper 子进程)矛盾 —— 改为子进程描述
+- 同文件 §12.1 补注: `uiautomation`/`comtypes` 只是历史内嵌残留, 主进程已不 import, 别按它们写新代码
+- 同文件 §12.2 `bar.py` 行、`wgime-py-pure\README.md` 约定行仍写候选条宽上限 **720px**, 实际自 `199f0bd`
+  起是 `max(240, min(工作区宽-24, 880))`(AGENTS §15 早已更正, 这两处漏了)
+- 同文件 §13「已知局限(C# 版)」仍写"无法自定义组合快捷键", 但 C# 早已支持 `hotkey_*`/`key_*`
+  (`KeyBordHook.ParseHotkey`/`SetKeyConfig`/`MatchMods`, 见 `wgime.bat` 213/236/1725-1736 行) —— 改为
+  说明默认放行 Ctrl/Alt/Win 组合、仅被配置的热键吞掉
+- `README.md` 写码表"已 gitignore", 但 `git ls-files` 显示 `py.txt/wb.txt/ec.txt/import_*.txt` **是入库跟踪的**
+  (AGENTS §5.5) —— 改为"已入库跟踪"并注明用途
+- `docs\WGIME_Python重实现方案.md` 的"遗留大补"仍列 WgTray 与 hotkey_* —— 两者其实都已完成
+  (WgTray → `mode=tray`; hotkey_* → `hook.py`), 加"2026-09 追记"只留 emoji PNG 图片版
+- 顺带修 2 处 Markdown 反引号失配(使用说明 §「常用按键」的 `Ctrl + \`` 与 §9 的 `Ctrl+\`` 会把
+  后续文字吞进代码段/吃掉加粗), 改写为「Ctrl + 反引号」并附 `` ` `` 写法
+- 同步: `sync-dist.ps1` 已把三份文档刷进 `release\docs\`; 使用说明 §9 快捷键表、码表上限(300/码、50 万)
+  逐条核对**无误**, 未改
+
+---
+
 ## 2026-09-10 (发布 v1.2.9 — 冷启动反馈窗 + 健壮性三修)
 
 - **GitHub release v1.2.9**: 三个资产 `wgime-v1.2.9-{bat,ps1,python}.zip`; 本版只改纯 Python 版,
