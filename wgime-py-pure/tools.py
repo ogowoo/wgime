@@ -80,6 +80,26 @@ def _confirm(text):
 _toolbox_win = [None]
 
 
+def _bind_wheel(widget, canvas):
+    """给 widget 及其全部子控件绑滚轮 -> canvas 滚动 (tkinter 事件不向父冒泡, 必须逐个绑)."""
+    def wheel(e):
+        try:
+            canvas.yview_scroll(-1 if e.delta > 0 else 1, 'units')
+        except Exception:
+            pass
+        return 'break'
+
+    def walk(w):
+        try:
+            w.bind('<MouseWheel>', wheel)
+        except Exception:
+            pass
+        for c in w.winfo_children():
+            walk(c)
+
+    walk(widget)
+
+
 def show_toolbox(tools, dict_dir):
     """工具箱: tools.txt 标签页 + 磁贴按钮; 底部深色日志控制台逐步可见."""
     if not tools:
@@ -182,6 +202,8 @@ def show_toolbox(tools, dict_dir):
                 inner, b['name'],
                 (lambda nm=b['name'], s='\n'.join(b['steps']), hd=holder: run_action(hd[0], nm, s)),
                 x=14 + (bi % cols) * (bw + 10), y=14 + (bi // cols) * 56, w=bw, h=46))
+        # 滚轮滚动磁贴区 (对齐 C# WheelFilter: 指针在磁贴上也滚得动)
+        _bind_wheel(page, canvas)
         pages.append(page)
     show_tab(0)
 
