@@ -615,23 +615,31 @@ def save_appmodes():
 def toggle_app_paste():
     name = win.foreground_process_name()
     if not name:
+        _notify('切换失败', '无法获取当前程序')            # 对齐 C# TrayTip(切换失败)
         return
     if APPMODES.get(name) == 1:
         del APPMODES[name]
+        msg = name + ' 已恢复默认上屏'
     else:
         APPMODES[name] = 1
+        msg = name + ' 改用剪贴板上屏'
     save_appmodes()
+    _notify('上屏方式', msg)                            # 对齐 C# TrayTip(上屏方式, name + …)
 
 
 def toggle_app_keyfix():
     name = win.foreground_process_name()
     if not name:
+        _notify('切换失败', '无法获取当前程序')            # 对齐 C# TrayTip(切换失败)
         return
     if APPMODES.get(name) in (4, 5):
         del APPMODES[name]
+        msg = name + ' 已恢复全局默认'
     else:
         APPMODES[name] = 5 if CFG.get('keyfix', True) else 4
+        msg = name + (' 已单独关闭' if CFG.get('keyfix', True) else ' 已单独开启')
     save_appmodes()
+    _notify('标点吞字修复', msg)                        # 对齐 C# TrayTip(标点吞字修复, name + …)
 
 
 # 开始菜单/搜索/Shell 宿主: SendInput UNICODE 注入会被这类 UI 吞掉(候选上屏不进去), 强制剪贴板上屏
@@ -950,8 +958,9 @@ def set_active(on):
     _dfn('active=%s' % on)
 
 
-def run_steps_bg(body):
-    """步骤 DSL 插件后台执行; msg 步骤走托盘气泡(对齐 C# ShowBalloonTip), confirm marshal 回主线程."""
+def run_steps_bg(body, name='插件'):
+    """步骤 DSL 插件后台执行; msg 步骤走托盘气泡(对齐 C# ShowBalloonTip), confirm marshal 回主线程.
+    开始/结果也走托盘气泡 (对齐 C# RunCodePlugin 的 开始执行…/结果提示)."""
     from tkinter import messagebox as _mb
 
     def _confirm(text):
@@ -968,13 +977,19 @@ def run_steps_bg(body):
         ev.wait()
         return result[0]
 
+    _notify(name, '开始执行…')
+
     def work():
         try:
-            fails = plugmod.run_steps(body, lambda m: _dfn('step %s' % m), _notify, _confirm)
-            if fails:
-                _dfn('steps fails %d' % fails)
+            r = plugmod.run_steps(body, lambda m: _dfn('step %s' % m), _notify, _confirm)
+            aborted = getattr(r, 'aborted', False)
+            tail = '已取消' if aborted else ('完成' if r == 0 else '完成, %d 个步骤失败' % r)
+            _notify(name, tail)
+            if r:
+                _dfn('steps fails %d' % r)
         except Exception as ex:
             _dfn('steps err %r' % ex)
+            _notify(name, '执行出错: %s' % ex)
     threading.Thread(target=work, daemon=True).start()
 
 
@@ -1149,12 +1164,14 @@ def _run_csharp_plugin(payload):
                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if r.returncode != 0 or not os.path.isfile(exe):
             _dfn('csharp compile fail %s: %s' % (payload.name, (r.stdout or r.stderr or '')[:400]))
+            _notify('插件编译失败', '%s: %s' % (payload.name, (r.stdout or r.stderr or '').strip()[:160]))   # 对齐 C# TrayTip
             _run_csharp_plugin_ps1(payload)          # 编译失败回退 (理论上同一编译器也会失败, 但保底)
             return
     try:
         subprocess.Popen([exe], creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except Exception as ex:
         _dfn('csharp launch err %r' % ex)
+        _notify('插件运行出错', '%s: %s' % (payload.name, ex))        # 对齐 C# TrayTip(插件运行出错)
 
 
 def _run_csharp_plugin_ps1(payload):
@@ -1183,7 +1200,7 @@ def run_launcher(l):
             _dfn('plugin run err %r' % ex)
         return
     if kind == 'step':                                     # 步骤 DSL 插件 (plugins/*.txt)
-        run_steps_bg(payload.body)
+        run_steps_bg(payload.body, payload.name)
         return
     if kind == 'python':                                   # [python] 块插件: 子进程+超时熔断 + JSON IPC; 后台线程跑, 不阻塞主线程打字
         ctx = {'code': payload.code, 'name': payload.name, 'buff': ime.buf, 'mode': ime.mode}
@@ -1210,6 +1227,7 @@ def run_launcher(l):
                 os.startfile(cmd)
         except Exception as ex:
             _dfn('launch err %r' % ex)
+            _notify('启动失败', '%s: %s' % (name, ex))     # 对齐 C# TrayTip(启动失败)
 
 
 def _notify(title, text):
@@ -1332,7 +1350,7 @@ def _run_plugin_file(path):
         ctx = {'code': p.code, 'name': p.name, 'buff': ime.buf, 'mode': ime.mode}
         threading.Thread(target=_run_python_plugin_actions, args=(p, ctx), daemon=True).start()
     else:
-        run_steps_bg(p.body)
+        run_steps_bg(p.body, p.name)
 
 
 def _run_py_file_once(path):
@@ -1378,6 +1396,9 @@ def _show_builtin(kind):
 def makeword_clipboard():
     t = (win.clipboard_text() or '').strip()
     prefill = t if 2 <= len(t) <= 8 and is_all_cjk(t) else ''
+    if not prefill:
+        # 剪贴板里没有 2-8 个汉字: C# 会弹警告气泡 (python 保留造词对话框可手输, 只是不给预填)
+        _notify('造词', '剪贴板里没有 2-8 个汉字 (先复制汉字, 或在对话框里手输)')
     tools.show_makeword(DATA_DIR, engine, prefill)
 
 
@@ -1631,7 +1652,8 @@ root.after(8, poll)
 if is_tray_mode():
     _dfn('runmode=tray (no keyboard hook)')
 else:
-    hook.start()
+    if not hook.start():                     # 钩子装不上: 对齐 C# 的"钩子失败"错误气泡 (不再静默)
+        _notify('WgIme (Python) 已启动', '键盘钩子安装失败 (err %s), 输入法按键将不工作。' % hook.last_error())
     set_active(CFG['starton'])
     try:
         win.ensure_caret_bg()

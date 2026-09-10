@@ -281,15 +281,41 @@ def _pump():
 
 
 _started = [False]
+_installed = [False]      # 钩子是否装上 (对齐 C# Hook.Installed)
+_last_err = [0]           # 安装失败时的 Win32 错误码
+_install_done = threading.Event()
 
 
 def start():
+    """装全局键盘钩子并在该线程跑消息泵; 返回钩子是否安装成功 (等安装完成再返回, 上限 2s).
+    对齐 C# Hook.Start() 的同步安装 —— main 据此给"钩子失败"提示."""
     if _started[0]:
-        return
+        return _installed[0]
     _started[0] = True
     _hook[0] = HOOKPROC(_proc)
-    th = threading.Thread(target=lambda: (user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook[0], None, 0), _pump()), daemon=True)
-    th.start()
+
+    def work():
+        try:
+            h = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook[0], None, 0)
+            _installed[0] = bool(h)
+            if not h:
+                _last_err[0] = ctypes.get_last_error()
+        except Exception:
+            try:
+                _last_err[0] = ctypes.get_last_error()
+            except Exception:
+                pass
+        finally:
+            _install_done.set()
+        _pump()
+
+    threading.Thread(target=work, daemon=True).start()
+    _install_done.wait(2.0)
+    return _installed[0]
+
+
+def last_error():
+    return _last_err[0]
 
 
 def set_active(on):

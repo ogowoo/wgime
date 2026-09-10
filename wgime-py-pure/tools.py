@@ -103,7 +103,7 @@ def _bind_wheel(widget, canvas):
 def show_toolbox(tools, dict_dir):
     """工具箱: tools.txt 标签页 + 磁贴按钮; 底部深色日志控制台逐步可见."""
     if not tools:
-        _msgbox('工具箱', 'tools.txt 无内容')
+        _tip('工具箱', 'tools.txt 为空或不存在——在 wgime.py 同目录建一个即可添加功能')   # 对齐 C# TrayTip
         return
     if _toolbox_win[0] is not None:                      # 单例: 已开则激活 (对齐 C# ShowTools)
         try:
@@ -1594,7 +1594,7 @@ def show_batch_makeword(engine, data_dir=None):
         return
     text = engmod.read_import_text(path)               # UTF-8 / GB18030 自动识别, 64MB 上限
     if text is None:
-        _msgbox('批量造词', '文件超过 64MB 或无法读取')
+        _tip('批量造词', '文件超过 64MB 或无法读取')    # 对齐 C# TrayTip(警告)
         return
     words = []
     seen = set()
@@ -1612,7 +1612,7 @@ def show_batch_makeword(engine, data_dir=None):
         seen.add(w)
         words.append(w)
     if not words:
-        _msgbox('批量造词', '没有发现 2-8 个汉字的词')
+        _tip('批量造词', '没有发现 2-8 个汉字的词')     # 对齐 C# TrayTip(警告)
         return
     if not _confirm_dialog('批量造词', '检测到 %d 个词 (跳过 %d 行)。\n全部用拼音编码造词?' % (len(words), skipped)):
         return
