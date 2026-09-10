@@ -9,6 +9,19 @@
 ## 2026-09-10 (对齐项: 输入算法维度 - 反查编码方向 / 双拼下的动态候选 / 英汉表参与模式)
 
 第二轮差异审计换维度: 不查配置与界面, 查**输入算法的数据与规则**。
+同轮后半段还审计了注入路径与几个纯函数, 一并记录:
+
+- **keyfix 下 emoji 被误判为 trigger**: C# `UnicodeCommitQtFix` 把代理对(astral/emoji)视为**非** trigger
+  原样注入; python 只判断 `code >= 0x3000`, 于是 emoji 的高/低代理半码(0xD83D/0xDE00)都被当成全角标点,
+  每个半码插一对 X+Back —— 上屏 emoji 会带出多余擦除动作。已排除 0xD800..0xDFFF
+- **`paste = off` (mode 2)** 原来只是 `pass` 后继续走 keyfix 注入; C# 该分支是 SendKeys(**不套** keyfix)。
+  python 无 .NET SendKeys, 现在明确退回"普通 key 注入且不做 qtfix", 与 C# 分支语义一致
+- **_build_wb_len 桶内改按码 ordinal 升序**: C# `AddWubiWildcard` 是 `foreach(OrderBy(key))`,
+  python 原来按字典插入序 → z 通配候选顺序可能与 C# 不同 (AGENTS §11 点名的同一类坑)
+- `is_all_cjk("")` 原来返回 True (C# 返回 False), 已补 `bool(s)`
+- 审计确认**已一致**(无需改): 金额 `UpperAmount`/`Thousands` 35 例(含 16 位上限/前导零/跨组零)、
+  v 模式候选顺序与边界、`BestSentence` 7 组输入、SendInput 事件序列 13 例(含 emoji 混排)、
+  z 通配自身顺序(exact 优先 + 通配按码升序)
 
 - **反查编码方向搞反了** (`showcode`): C# `CodeHint` 是"五笔模式显**拼音**码, 其余模式显**五笔**码",
   python 恰好相反 (拼音模式显示拼音码 = 把你刚打的码再显示一遍, 毫无意义)。现按 C# 修正, 并新增

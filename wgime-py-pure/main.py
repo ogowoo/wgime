@@ -680,8 +680,11 @@ def inject(text):
         win.paste_text(text)
         _dfn('paste %r' % text)
         return
-    if m == 2:                                       # SendKeys 兜底: 无 .NET, 退回 key 注入
-        pass
+    if m == 2:                                       # paste=off: C# 走 SendKeys(不套 keyfix); 无 .NET 时退回普通 key 注入
+        time.sleep(0.03)
+        n = win.send_unicode(text)
+        _dfn('inject(sendkeys-fallback) %r sent=%s' % (text, n))
+        return
     time.sleep(0.03)                                 # 让被吞按键的 keyup 先排空
     fix = effective_keyfix()
     if fix and not win.self_elevated() and win.foreground_elevated():
