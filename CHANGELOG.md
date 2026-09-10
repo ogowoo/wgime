@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-09-10 (第十五轮审计: 候选窗定位/跟随链 — 逐条核对, 未发现差异)
+
+换维度: C# `FollowCaretNow`(5132-5144) + `RefreshLabel` 的宽度钳制(5294-5299) vs python `bar.show` 的跟随分支。
+
+- **逐条一致(核对无误, 未改代码)**: ① 跟随用的工作区 = **光标所在显示器**
+  (C# `Screen.FromPoint(cr.Left, cr.Bottom)` / python `win.workarea_at()` → `MonitorFromPoint
+  (MONITOR_DEFAULTTONEAREST)` + `GetMonitorInfoW`); ② **宽度上限取主屏**工作区(C# `Screen.PrimaryScreen
+  .WorkingArea` / python `win.screen_workarea()` → `SPI_GETWORKAREA`); ③ x 钳进工作区、`y+h` 超下边界就
+  翻到光标上方; ④ 拿不到 helper 结果时有确定性兜底(每窗口 anchor → 上次可见位 → `get_caret_pos`)，
+  不会乱跳
+- **有意差异(保留)**: python **每键**都重贴(35/80ms 两次 IPC 精修), C# 只在组字首键(`keys.Length == 1`)
+  贴一次(AGENTS §17 的既定升级); python 宽度封顶 **880**(AGENTS §15, C# 只按主屏右边界);
+  python 对开始菜单/搜索类 Shell UI 固定右下角(避开浮窗); python 的"翻到上方"用
+  `光标点 - h - 6`(helper 返回**点**而非矩形), C# 用 `cr.Top - Height - 6`
+- **验证**: 真 `CandBar` + 真 Win32 工作区(实测主屏 1918x992), 伪造 helper 光标位置跑 **9 项几何断言
+  全部通过**: 正常位 = 光标下方 +6 / 贴右边界 x 钳到 `right-w` / 贴下边界翻上且不出界 /
+  左上角钳进工作区 / 宽度 ≤ `max(240, min(工作区宽-24, 880))` / Shell UI 固定右下角
+
+---
+
 ## 2026-09-10 (第十四轮: 状态机 headless 回归固化成 `tests\pure-state-harness.py`)
 
 第十三轮那个 harness 原来只在 `%TEMP%` 里, 这轮固化进仓库, 以后改状态机/上屏路径可以直接跑:
