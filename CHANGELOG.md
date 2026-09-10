@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-10 (发布 v1.2.7 + 发布流程脚本化)
+
+- **GitHub release v1.2.7** 已发布 (tag 指向 `f512c28`): 三个资产 `wgime-v1.2.7-bat.zip`(1.64MB)/
+  `wgime-v1.2.7-ps1.zip`(25.99MB)/`wgime-v1.2.7-python.zip`(24.27MB); release body 走显式 UTF-8 字节,
+  中文无问号. 本轮只有纯 Python 版有变化(bat/ps1 与 v1.2.6 内容相同), 为整体下载一并附上.
+- **新增 `tests\build-release-assets.ps1`**: 一键产出三个发布 zip. 两条踩坑经验写进脚本:
+  ① `.NET ZipFile.CreateFromDirectory` 在 Windows 上写 `\` 分隔条目 —— 改为逐条
+  `CreateEntryFromFile` 并统一转 `/`(脚本自检, 出现反斜杠条目直接 throw);
+  ② 源目录必须取长路径(`Get-Item -LiteralPath`), 用 8.3 短路径会把 `ADMINI~1` 带进 zip 条目名.
+- **新增 `tests\publish-release.ps1`**: 创建/更新 release + 上传资产. body 用 `HttpWebRequest` +
+  `[Text.Encoding]::UTF8.GetBytes()` 显式发送(规避 PS 5.1 把中文 body 变 `?` 的老坑, 见 AGENTS §7);
+  上传超时放宽到 15 分钟(25MB 资产会超过默认 120s). Token 来源顺序: `-Token` → `$env:GITHUB_TOKEN`
+  → `$env:GH_TOKEN` → **Windows 凭据管理器**(`git:https://github.com`, 用 `CredRead` 直读) →
+  `git credential fill`(放最后: GCM 可能弹 UI 卡死整条流程, 本轮就踩到过).
+
+---
+
 ## 2026-09-10 (wgime-py-pure: 内置工具 1:1 收尾 - 工具箱 ToolsForm + tools.txt 启动编码 + 用户词表/批量造词)
 
 接上轮「内置工具 1:1 复刻」, 补齐工具箱本体与剩余 C# 内置对话框。
