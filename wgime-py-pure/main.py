@@ -155,8 +155,57 @@ if not os.environ.get('WGIME_NO_SINGLETON'):
         win.message_box('WgIme (Python 版) 已在运行。\n请先从托盘退出正在运行的实例再启动。', 'WgIme', 0x30)
         sys.exit(0)
 
+def _dict_cache_stale():
+    """缓存缺失/比任一码表旧 -> 本次启动会重建索引 (冷启动 10s+).
+    与 engine._load_cache 的判定同源(此处只用 mtime 做廉价预判, 仅用于决定要不要显示加载窗)."""
+    try:
+        cache = os.path.join(DATA_DIR, 'dict-cache.pkl')
+        if not os.path.exists(cache):
+            return True
+        ct = os.path.getmtime(cache)
+        for n in ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt',
+                  'import_py.txt', 'import_wb.txt', 'import_ec.txt'):
+            p = os.path.join(DICT_DIR, n)
+            if os.path.exists(p) and os.path.getmtime(p) > ct:
+                return True
+        return False
+    except OSError:
+        return False
+
+
+# 建表在下面同步进行; 冷启动 10s+ 期间总得给点反馈 (对齐 C# 候选条的"(词库加载中...)"提示)
+root = tk.Tk()
+root.withdraw()
+_splash = None
+if _dict_cache_stale():
+    try:
+        _splash = tk.Toplevel(root)
+        _splash.overrideredirect(True)
+        _splash.attributes('-topmost', True)
+        _splash.configure(bg='#3B3836')
+        tk.Label(_splash, text='WgIme 正在加载词库…', bg='#3B3836', fg='#FFFFFF',
+                 font=('Microsoft YaHei UI', 11)).place(x=0, y=12, width=320, height=26)
+        tk.Label(_splash, text='首次启动需建立索引, 请稍候 (之后走缓存, 秒开)', bg='#3B3836', fg='#B0ACA8',
+                 font=('Microsoft YaHei UI', 8)).place(x=0, y=40, width=320, height=20)
+        try:
+            _sw, _sh = 320, 72
+            _wa = win.screen_workarea()
+            _splash.geometry('%dx%d+%d+%d' % (_sw, _sh, _wa.left + (_wa.right - _wa.left - _sw) // 2,
+                                              _wa.bottom - _sh - 120))
+        except Exception:
+            _splash.geometry('320x72+100+100')
+        _splash.update()                      # 立刻画出来(不等 mainloop)
+    except Exception:
+        _splash = None
+
 engine = Engine(DICT_DIR, DATA_DIR)
 _dfn('startup: engine load=%.0fms (对齐 C# 的启动计时日志)' % engine.load_ms)
+if _splash is not None:
+    try:
+        _splash.destroy()
+    except Exception:
+        pass
+    _splash = None
 
 CFG = {'sentence': True, 'assoc': True, 'trad': False, 'starton': True, 'shuangpin': 0,
        'apps': {}, 'hideidle': True, 'showcode': False, 'paste': 3, 'keyfix': True}
@@ -283,8 +332,7 @@ class Ime:
 ime = Ime()
 apply_config()
 
-root = tk.Tk()
-root.withdraw()
+# root 已在建表前创建(用于冷启动加载窗), 这里直接用它建候选条
 bar = CandBar(root)
 bar.set_theme(CFG.get('theme', 'dark'))
 

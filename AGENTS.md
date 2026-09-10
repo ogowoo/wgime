@@ -88,6 +88,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 - **词频保存后台化**：`SaveFreq` 走线程池（`freqSaving` 防堆积），退出时 `SaveFreqSync` 同步落盘。内存上限：FreqM/LastPickM 各 3 万、Freq 9 万、Assoc key 2 万。
 - **启动计时日志**：`startup: LoadFreq+BuildDicts=XXXms ApplySwap=YYYms`。
 - **固化码表预生成缓存**：`BakeTables` 固化后（无论是否勾选"删除源文件"）`PrebuildCacheAfterBake` 用 bake 后的输入重算 md5 并复用内存字典直接写 `wgime.mb`，下次启动命中缓存，跳过 ~10-24s 冷重建。md5 的 overlay 文件字节用 `SafeRead` 读实际状态；它对新码表 `TrimEnd` 末尾换行，与 `Get-DictSeg` 读数据块时的 `TrimEnd` 字节级一致，否则 md5 对不上。保留源文件时下次启动的 overlay 是幂等的（`AddDictLine` 覆盖 + `MergeUserWords` 只追加），冷启动结果等于内存字典。
+- **python 版启动实测（2026-09-10 量过，改动前先看这组数）**：冷启动 ≈ **12s**（`ec` 解析 1.1s + `build_reverse` 3.3s + `build_acro` 2.0s + `build_char_py` 0.45s + 三组 `build_sorted` 0.5s + **写 90MB 缓存 2.4s**）；热启动 ≈ **2.9s**（其中 `pickle.load` 90MB ≈ 2.1-2.4s）。每键热路径都很便宜（`candidates("ni")` 0.05ms / `candidates("zhongguo")` 0.25ms / `best_sentence` 0.07ms），**别去动热路径**。
+- **缓存内容别"精简"**：`pk/pv/wk/wv/ek/ev` 六个派生数组看着冗余（占缓存 90MB 里的 ~57MB），但实测把它们从缓存里去掉改成启动时 `build_sorted` 重建是**净亏 308ms**（缓存只省 13.5MB，重建要 487ms）——已量化验证，保持现状。`ce`（`build_reverse` 3.3s）与 `acro`（2.0s）必须留在缓存。zlib 压缩缓存也不划算（145MB→42MB 但解压 +652ms）。
+- **冷启动反馈窗（python 版）**：`_dict_cache_stale()`（缓存缺失或比任一码表旧）为真时，在 `Engine()` 之前显示一个 320x72 的"WgIme 正在加载词库…"无边框置顶小窗，建表完成后销毁（对齐 C# 候选条的"(词库加载中...)"）。为此 `root = tk.Tk()` 已提到建表之前，**全文件只创建一次 Tk root**（`bar = CandBar(root)` 复用同一个），别再在启动后段新建 root。
 
 ## 7. Git / 分支
 
@@ -104,7 +107,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
      同 tag 已存在时改走 PATCH + 覆盖同名资产）。
 - **发 release 的中文坑**：release body 必须用 `HttpWebRequest` + `[Text.Encoding]::UTF8.GetBytes(json)` 显式 UTF-8 字节发送（`publish-release.ps1` 已内置）。**不要用 `Invoke-RestMethod` + `ConvertTo-Json`**——PowerShell 5.1 会把中文 body 编码成 `?`（曾导致 v1.2.0~v1.2.4 的 release 描述全变问号）。
 - **Token**：`publish-release.ps1` 依次取 `-Token` → `$env:GITHUB_TOKEN` → `$env:GH_TOKEN` → Windows 凭据管理器（`git:https://github.com`，`CredRead` 直读）→ `git credential fill`。**把 `git credential fill` 放最后**：GCM 有时会弹 UI 卡死整条发布流程（2026-09-10 实际踩到，表现为脚本长时间无输出且没建 release）。另：本机 WinINET 代理 `127.0.0.1:10808` 常年失效，脚本已 `[Net.WebRequest]::DefaultWebProxy = $null` 直连。
-- 版本 tag：`v1.0.0` ~ `v1.2.7`（后续版本递增）。插件更新不单独发 release。
+- 版本 tag：`v1.0.0` ~ `v1.2.8`（后续版本递增）。插件更新不单独发 release。
 
 ## 8. 当前状态速览
 
