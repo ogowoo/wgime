@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-09-09 (wgime-py-pure: 内置工具 1:1 复刻 C# 版 - 网络工具/便签/剪贴板/取色器)
+
+用户要求: py 版 wgime-py.py 的内置工具(非 plugins 目录)全部 1:1 复刻 C# 版对应窗体。
+tools.py 四个内置工具按 C# NetToolsForm/NoteForm/ClipForm/ColorForm 重写:
+
+- **网络工具** (`show_nettools` 重写, C# 808 行): 7 页签 (Ping/Tracert/DNS/HTTP/端口/子网/本机),
+  每页**独立日志缓冲**(切页不丢); 探测全为模块级纯函数: 手写 DNS UDP 协议(可选服务器+7记录类型+TTL/
+  NXDOMAIN), 子网全家桶用标准库 ipaddress(计算/拆分N子网/范围转最小CIDR/掩码速查表/地址类型),
+  端口检测带耗时+原因+13常用端口扫描, HTTP 带状态码/Server/Content-Type/Body字节/TTFB+总耗时/
+  HTTPError 状态码提取, Ping 带参数(次数0=∞/包大小)+丢包率与RTT统计+停止按钮(Popen 自持可终止),
+  Tracert 逐跳(TTL递增+done即停), 本机枚举网卡(ipconfig /all 解析)+公网IP; 每页清除/保存/复制全部
+- **便签** (`show_notes` 重写, C# 358 行): 多便签标签(上限9/chip标题取首行/删除后稠密重编号/
+  notes-meta活动tab持久化/旧notes.txt迁移), 800ms防抖自动保存+已保存状态提示, 6色Win11 pastel主题
+  +色点切换+note-color持久化, 窄滚动条, 单例防多开
+- **剪贴板** (`show_clipboard` 重写, C# 83 行): 全局去重+移置顶(对齐 ClipPush), 容量 200, 0.3s 轮询
+  (tk 无 WM_CLIPBOARDUPDATE 钩子折中), 清空历史按钮, 单击/双击条目即复制回剪贴板, Esc关闭; 保留
+  python 独有「粘贴上屏」
+- **取色器** (`show_color` 重写, C# 100 行): 鼠标钩子点取+锁定(WH_MOUSE_LL, 吞掉点击, 右键取消,
+  取完卸钩, 回调防GC), 三格式显示 HEX/rgb/HSV(自实现 RGB→HSV 对齐 ColorHsv), 复制 HEX; ctypes
+  低级钩子回调线程自带 GetMessage 消息泵
+
+验证: py_compile 全绿; 子网/拆分/CIDR/速查表纯逻辑自检正确; 四工具建窗冒烟全部 OK; dist/package
+重建(654KB)且字节一致; 内置工具函数全部存在.
+
+剩余: 工具箱 ToolsForm(C# 342 行: 日志控制台/磁贴滚动/confirm管道选项+中止语义/防重入/code=启动编码
+消费/块别名 cmdx·powershellx/[ps]闭标签/reg binary·删树) 留待下轮.
+
+---
+
 ## 2026-09-09 (wgime-py-pure: 托盘菜单插件列出运行 + 插件管理器复刻 C# 完整功能)
 
 - 用户反馈: tray 菜单应列出 plugins 目录插件并可直接运行; py 版插件管理器只会看列表无管理功能
