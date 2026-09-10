@@ -108,9 +108,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
   2. 把 release body 存成 UTF-8 文件，`powershell -NoProfile -ExecutionPolicy Bypass -File tests\publish-release.ps1
      -Version 1.2.7 -BodyFile <body.md> -AssetsDir <stage 目录>`（脚本自己创建 release + 上传三个资产；
      同 tag 已存在时改走 PATCH + 覆盖同名资产）。
+     **务必先 `git push` 再 publish**：脚本已改用 `target_commitish = 本地 HEAD sha`（不再传 `master`，
+     否则 GitHub 按**远端** master 解析，会把 tag 打到上一个提交 —— v1.2.9 就踩了这条，tag 落在
+     `4abb843` 而 dist 刷新提交是 `3142cf5`），并在 HEAD≠origin/master 时打 `Write-Warning` 提醒。
+  3. 每次发完都做**回验**：下载线上 python zip → 解出 `wgime-py.py` 与本地 `dist\wgime-py.py` 逐字符比对，
+     并检查 release body 无 `?`、tag 指向本地 HEAD（v1.2.7 曾把上一个构建发出去，靠这步才发现）。
 - **发 release 的中文坑**：release body 必须用 `HttpWebRequest` + `[Text.Encoding]::UTF8.GetBytes(json)` 显式 UTF-8 字节发送（`publish-release.ps1` 已内置）。**不要用 `Invoke-RestMethod` + `ConvertTo-Json`**——PowerShell 5.1 会把中文 body 编码成 `?`（曾导致 v1.2.0~v1.2.4 的 release 描述全变问号）。
 - **Token**：`publish-release.ps1` 依次取 `-Token` → `$env:GITHUB_TOKEN` → `$env:GH_TOKEN` → Windows 凭据管理器（`git:https://github.com`，`CredRead` 直读）→ `git credential fill`。**把 `git credential fill` 放最后**：GCM 有时会弹 UI 卡死整条发布流程（2026-09-10 实际踩到，表现为脚本长时间无输出且没建 release）。另：本机 WinINET 代理 `127.0.0.1:10808` 常年失效，脚本已 `[Net.WebRequest]::DefaultWebProxy = $null` 直连。
-- 版本 tag：`v1.0.0` ~ `v1.2.8`（后续版本递增）。插件更新不单独发 release。
+- 版本 tag：`v1.0.0` ~ `v1.2.9`（后续版本递增）。插件更新不单独发 release。
 
 ## 8. 当前状态速览
 

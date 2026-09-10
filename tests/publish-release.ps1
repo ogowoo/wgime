@@ -18,6 +18,7 @@ param(
     [string]$Repo = 'ogowoo/wgime',
     [string]$Name = '',
     [string]$Token = '',
+    [string]$TargetSha = '',
     [switch]$Draft
 )
 $ErrorActionPreference = 'Stop'
@@ -115,8 +116,21 @@ function Invoke-GH([string]$Method, [string]$Url, [byte[]]$Bytes, [string]$Conte
     return $null
 }
 
-# 1) create (or reuse) the release
-$payload = @{ tag_name = $tag; target_commitish = 'master'; name = $Name; body = $body; draft = [bool]$Draft }
+# 1) create (or reuse) the release.
+# target_commitish MUST be the exact local HEAD sha, not 'master': GitHub resolves a branch
+# name against the REMOTE at creation time, so publishing before pushing tags the previous
+# commit (v1.2.9 actually hit this). Warn loudly when the commit is not pushed yet.
+$here2 = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoDir = Split-Path -Parent $here2
+$headSha = (& git -C $repoDir rev-parse HEAD).Trim()
+$target = if ($TargetSha) { $TargetSha } else { $headSha }
+$upstream = (& git -C $repoDir rev-parse "origin/master" 2>$null)
+if ($upstream) { $upstream = $upstream.Trim() }
+if ($upstream -and $target -ne $upstream) {
+    Write-Warning "local HEAD $target != origin/master $upstream - push first, else the tag will point at the wrong commit"
+}
+"target commit: $target"
+$payload = @{ tag_name = $tag; target_commitish = $target; name = $Name; body = $body; draft = [bool]$Draft }
 $json = $payload | ConvertTo-Json -Depth 4 -Compress
 $rel = $null
 try {
