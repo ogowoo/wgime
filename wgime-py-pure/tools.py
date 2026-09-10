@@ -54,23 +54,32 @@ def _tip(title, text):
     _msgbox(title, text)
 
 
-def _confirm(text):
-    """线程安全确认: 主线程 askyesno, 后台线程阻塞等待结果."""
+def _confirm(text, title='WgIme', buttons='yesno', default_no=True):
+    """线程安全确认: 主线程弹框, 后台线程阻塞等待结果.
+    title/buttons/default_no 对应 C# ExecToolStep confirm 的 title= / buttons=yesno|okcancel|ok / default=
+    (C# 缺省按钮是 MessageBoxDefaultButton.Button2 = "否", 这里同样默认 NO, 防误触确认框直接回车执行)."""
     ev = threading.Event()
     res = [False]
+
+    def _ask():
+        if buttons == 'okcancel':
+            return messagebox.askokcancel(title, text,
+                                          default=(messagebox.CANCEL if default_no else messagebox.OK))
+        return messagebox.askyesno(title, text, default=(messagebox.NO if default_no else messagebox.YES))
+
     try:
         r = getattr(tk, '_default_root', None)
         if r:
             def ask():
                 try:
-                    res[0] = messagebox.askyesno('确认', text)
+                    res[0] = _ask()
                 except Exception:
                     pass
                 ev.set()
             r.after(0, ask)
             ev.wait()
         else:
-            return messagebox.askyesno('确认', text)
+            return _ask()
     except Exception:
         return False
     return res[0]

@@ -86,6 +86,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 
 31. **config 键的"取值语义"以 C# 为准，白/黑名单别搞混**（第十轮审计发现 `followcaret` 搞混了）：C# `LoadConfig`（wgime.bat 1663-1747）里 **白名单**（`v=="1"||v=="on"||v=="true"`，非法值一律判"关"）= `showcode`/`keyfix`/`followcaret`/`hideidle`/`trad`/`starton`；**黑名单**（`v!="0"&&v!="off"&&v!="false"`，非法值判"开"）= `sentence`/`assoc`。python 侧逐键照此（`engine.load_config`）；python 独有键 `cnpunct` 用黑名单。`paste`（on/always→1, off→2, key/unicode→3, 其余→0）、`shuangpin`（xiaohe/小鹤/flypy→1, ziranma/自然码/zrm→2, ms/微软/mspy→3, 其余→0）、`mode`（仅 `tray` 生效）、`fuzzy`（none/off/空→清空；一对都解析不出则保持缺省）也都与 C# 逐值对齐过（275 组用例）。**改 `load_config` 后要重建 dist + package**（dist 内嵌模块源码）。有意保留：非法 `hotkey_*`/`key_*` C# 保持当前字段、python 回缺省；python 多认单引号 `app =` 命令。
 
+32. **步骤 DSL（`plugins.py` `run_steps`/`_run_verb`）的动词语义对齐 C# `ExecToolStep`**（第十一轮审计）：① `confirm` 的 `title=`/`buttons=`/`default=` 三项必须**真的生效**（`_confirm_args(arg, confirm, **msgbox**)` —— `msgbox` 是参数，原来漏传导致 `buttons=ok` 直接 `NameError` 崩；`okcancel` 走 OK/Cancel，缺省按钮是"否"对齐 C# `MessageBoxDefaultButton.Button2`），回调签名 `confirm(text, title, buttons, default_no)`，保留单参数旧回调兼容；② `kill` 只看**第一个 token**（C# `tk[1]`），不是整行 rest；③ 缺参动词（`run` 无程序名、`reg-set` <4 token、`reg-del` 无键路径）必须**记一步失败**，不能静默成功（C# 是 `tk[n]` 越界抛异常）；④ 多行块控制台显示名按 C# 映射：`cmd→[shell]`、`shellx|cmdx→[shellx]`、`powershellx→[psx]`、`powershell|ps→[powershell]`。python 有意保留：破坏性动词执行前强确认（§16）、块开标签大小写不敏感、`file-del C:\*` 拒删（C# 会真删 C 盘根）。改完 `plugins.py`/`tools.py`/`main.py` 要重建 dist + package。
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 - **缓存命中跳过 trailer 解压**：`WgImeLauncher.ComputeTrailerHash`（压缩字节 md5，不解压）→ `BuildDicts` 用它查 `.mb` 缓存；miss 才 `ExtractDictsFull` 解压（经 `TrailerExtractor` 委托）。

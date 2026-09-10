@@ -1011,13 +1011,19 @@ def run_steps_bg(body, name='插件'):
     开始/结果也走托盘气泡 (对齐 C# RunCodePlugin 的 开始执行…/结果提示)."""
     from tkinter import messagebox as _mb
 
-    def _confirm(text):
+    def _confirm(text, title='WgIme', buttons='yesno', default_no=True):
+        """title/buttons/default_no 对齐 C# ExecToolStep confirm (缺省按钮 = "否")."""
         ev = threading.Event()
         result = [False]
 
         def ask():
             try:
-                result[0] = _mb.askyesno('确认', text)
+                if buttons == 'okcancel':
+                    result[0] = _mb.askokcancel(title, text,
+                                                default=(_mb.CANCEL if default_no else _mb.OK))
+                else:
+                    result[0] = _mb.askyesno(title, text,
+                                             default=(_mb.NO if default_no else _mb.YES))
             except Exception:
                 pass
             ev.set()

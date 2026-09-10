@@ -249,9 +249,11 @@ def run_steps(body, log, msgbox, confirm, on_step=None):
         bm = re.match(r'^\[(shell|cmd|powershell|ps|shellx|cmdx|powershellx|psx)\]\s*$', t, re.I)
         if bm:
             tag = bm.group(1).lower()
-            shown = '[%s] 多行脚本块' % ('cmd' if tag in ('cmd', 'cmdx') else
-                                        'powershell' if tag in ('ps', 'powershellx') else
-                                        'shell' if tag == 'shellx' else tag)
+            # 控制台行标签对齐 C# ShowTools/RunAction: shell|cmd->[shell], shellx|cmdx->[shellx],
+            # powershell|ps->[powershell], powershellx|psx->[psx]
+            shown = '[%s] 多行脚本块' % ('shell' if tag in ('shell', 'cmd') else
+                                        'shellx' if tag in ('shellx', 'cmdx') else
+                                        'powershell' if tag in ('powershell', 'ps') else 'psx')
             block = []
             end_tag = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/ps]',
                        'shellx': '[/shellx]', 'cmdx': '[/cmdx]', 'powershellx': '[/powershellx]', 'psx': '[/psx]'}[tag]
@@ -313,7 +315,7 @@ def _tool_path(rest):
     return os.path.expandvars(s)
 
 
-def _confirm_args(arg, confirm):
+def _confirm_args(arg, confirm, msgbox):
     """confirm 文本 [| title=标题] [| buttons=yesno|okcancel|ok] [| default=1|2]; 拒绝 -> _UserAbort."""
     msg = arg
     title = 'WgIme'
@@ -338,7 +340,13 @@ def _confirm_args(arg, confirm):
     if buttons == 'ok':
         msgbox(title, msg)                       # buttons=ok: 纯提示, 永不中止
         return
-    if not confirm(msg):
+    # 对齐 C# ExecToolStep: title/buttons/default 三项都生效; 缺省按钮是"否"(MessageBoxDefaultButton.Button2,
+    # 防误触), buttons=okcancel 走 OK/Cancel 语义 (OK/Yes = 继续)
+    try:
+        ok = confirm(msg, title, buttons, default_no)
+    except TypeError:                            # 兼容只接受文本的旧回调(第三方/嵌入式调用)
+        ok = confirm(msg)
+    if not ok:
         raise _UserAbort()
 
 
@@ -356,12 +364,13 @@ def _run_verb(verb, arg, log, msgbox, confirm):
     if verb == 'msg':
         msgbox('WgIme', arg)                         # C# msg: 气泡标题 WgIme, 原样显示不展开
     elif verb == 'confirm':
-        _confirm_args(arg, confirm)
+        _confirm_args(arg, confirm, msgbox)
     elif verb == 'run':
         parts = tokenize(arg)
-        if parts:
-            parts[0] = os.path.expandvars(parts[0])  # C# 只展开程序名 (tk[1]), 参数原样
-            return _run_hidden(parts, log)
+        if not parts:
+            raise RuntimeError('run 缺少程序名')      # C# tk[1] 越界 -> 记一步失败 (不能静默成功)
+        parts[0] = os.path.expandvars(parts[0])  # C# 只展开程序名 (tk[1]), 参数原样
+        return _run_hidden(parts, log)
     elif verb == 'shell':
         return _run_hidden('cmd /c ' + arg, log)     # cmd 自己展开 %env%, 对齐 C# (不预先展开)
     elif verb == 'shellx':
@@ -370,7 +379,8 @@ def _run_verb(verb, arg, log, msgbox, confirm):
     elif verb == 'open':
         os.startfile(_tool_path(arg))
     elif verb == 'kill':
-        img = arg.replace('"', '').replace('&', '').replace('|', '').replace('<', '').replace('>', '').replace('^', '')
+        _toks = tokenize(arg)                    # C# 用 tk[1] (仅第一个 token), 不是整行 rest
+        img = (_toks[0] if _toks else '').replace('"', '').replace('&', '').replace('|', '').replace('<', '').replace('>', '').replace('^', '')
         if not re.match(r'^[\w. -]+$', img):
             raise RuntimeError('bad image name: %s' % arg)
         # 按名杀全部实例并计数 (对齐 C# Process.GetProcessesByName)
@@ -466,36 +476,38 @@ def _reg_split(full):
 
 def _reg_set(arg):
     parts = tokenize(arg)
-    if len(parts) >= 4:
-        hive, sub = _reg_split(os.path.expandvars(parts[0]))
-        name = None if parts[1] == '-' else parts[1]
-        typ = parts[2].lower()
-        data = ' '.join(parts[3:])
-        with winreg.CreateKey(hive, sub) as key:
-            if typ == 'dword':
-                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
-            elif typ == 'qword':
-                winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
-            elif typ == 'expand':
-                winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
-            elif typ == 'multi':
-                winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
-            elif typ == 'binary':                          # 对齐 C# binary(hex)
-                hx = data.replace(' ', '').replace('-', '')
-                winreg.SetValueEx(key, name, 0, winreg.REG_BINARY, bytes.fromhex(hx))
-            else:
-                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
+    if len(parts) < 4:                               # C# tk[1..3] 越界 -> 记一步失败 (不能静默成功)
+        raise RuntimeError('reg-set 参数不足, 需要: 键路径 值名 类型 数据')
+    hive, sub = _reg_split(os.path.expandvars(parts[0]))
+    name = None if parts[1] == '-' else parts[1]
+    typ = parts[2].lower()
+    data = ' '.join(parts[3:])
+    with winreg.CreateKey(hive, sub) as key:
+        if typ == 'dword':
+            winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(data, 0))
+        elif typ == 'qword':
+            winreg.SetValueEx(key, name, 0, winreg.REG_QWORD, int(data, 0))
+        elif typ == 'expand':
+            winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, data)
+        elif typ == 'multi':
+            winreg.SetValueEx(key, name, 0, winreg.REG_MULTI_SZ, data.split('|'))
+        elif typ == 'binary':                          # 对齐 C# binary(hex)
+            hx = data.replace(' ', '').replace('-', '')
+            winreg.SetValueEx(key, name, 0, winreg.REG_BINARY, bytes.fromhex(hx))
+        else:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
 
 
 def _reg_del(arg):
     parts = tokenize(arg)
-    if parts:
-        hive, sub = _reg_split(os.path.expandvars(parts[0]))
-        if len(parts) > 1:
-            with winreg.OpenKey(hive, sub, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
-        else:
-            _delete_subkey_tree(hive, sub)
+    if not parts:                                    # C# tk[1] 越界 -> 记一步失败
+        raise RuntimeError('reg-del 参数不足, 需要: 键路径 [值名]')
+    hive, sub = _reg_split(os.path.expandvars(parts[0]))
+    if len(parts) > 1:
+        with winreg.OpenKey(hive, sub, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, None if parts[1] == '-' else parts[1])
+    else:
+        _delete_subkey_tree(hive, sub)
 
 
 def _delete_subkey_tree(hive, sub):

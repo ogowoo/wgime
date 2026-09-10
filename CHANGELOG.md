@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-09-10 (第十一轮审计: 插件/工具箱步骤 DSL 动词语义 — 修 `confirm` 三处 + 4 处对齐)
+
+换维度: 把 C# `ExecToolStep`(wgime.bat 2258-2363) 的 16 个动词与 python `plugins._run_verb`/`run_steps`
+逐一对语义(参数取自哪、缺参怎么办、标签怎么写), 再用**真跑**的 smoke 覆盖每条路径。
+
+**真 bug(已修)**:
+- **`confirm … | buttons=ok` 一直是崩的**: `_confirm_args(arg, confirm)` 里引用 `msgbox`, 而这个名字
+  **从来没传进函数** → `NameError: name 'msgbox' is not defined` → 该步记失败。即"纯提示型确认框"
+  (文档化 DSL 特性) 完全不可用。改成 `_confirm_args(arg, confirm, msgbox)` 并在 `_run_verb` 传入
+- **`confirm` 的 `title=` / `buttons=` / `default=` 解析后被丢弃**: `title`/`default_no` 赋值了却没人用,
+  `buttons=okcancel` 与 `yesno` 走同一条路。现按 C# 语义全部生效: `title` 进弹窗标题、
+  `okcancel` 走 OK/Cancel、`default=2`(缺省) 时**缺省按钮是"否"**(对齐 C# `MessageBoxDefaultButton.Button2`,
+  防在破坏性步骤上顺手回车)、`default=1` 才是"是"; 回调签名升级为
+  `confirm(text, title, buttons, default_no)`, 并保留"只吃一个文本参数"的旧回调兼容(TypeError 回退)
+- **`kill` 取整行 rest 而不是第一个 token**: C# 用 `tk[1]`, python 用整行 → `kill foo bar` 在 python
+  按"foo bar"这个名字找进程(找不到, 一个都不杀), C# 杀 foo。改为 `tokenize(arg)[0]`
+- **缺参动词静默成功**: `run`(无程序名)/`reg-set`(<4 个 token)/`reg-del`(无键路径) 在 python 直接
+  `return 0` 当成功; C# 是 `tk[1]…tk[3]` 越界抛异常 → 记一步失败。三处都改成报错计失败
+- **多行块控制台标签对不上**: 块在控制台里的显示名 C# 是 `shellblock→[shell]`、`shellblockx→[shellx]`、
+  `psblockx→[psx]`、`psblock→[powershell]`; python 原按开标签显示(`[cmd]`/`[shellx]`/`[powershellx]` 都错)。
+  现按 C# 映射: `cmd→[shell]`, `shellx|cmdx→[shellx]`, `powershellx→[psx]`
+
+**验证**: 用分发件里的 plugins 模块(dist `MODULES['plugins']` 与磁盘 `plugins.py` **逐字节相同**)
+跑 24 项真跑 smoke, **0 差异**: run 参数引号 / shell 保留原始 rest / shellx 可见控制台 / open / wait /
+kill / msg(原样不展开) / mkdir(带空格路径) / file-del(单文件·通配·整目录树·盘根拒删) /
+reg-set(dword·含空格字符串·binary) / reg-del(单值·整棵子树, 写后读回并清理 HKCU\Software\WgimeProbeTest) /
+`[shell]` `[ps]` 真跑块 / 未闭合块跳过 / 未知动词记失败。
+另自写 AST+dis 静态检查器扫 10 个模块的"未定义全局名", 只有 main.py `_EMBEDDED_PLUGINS` 一例**误报**
+(有 `if '_EMBEDDED_PLUGINS' in globals()` 守卫); 拿修复前的 HEAD 版跑同一检查器能抓出
+`msgbox` 这个真阳性, 证明检查器有效。
+
+**有意保留(不动)**: python 对 `file-del`/`reg-set`/`reg-del`/`kill` 的**执行前强确认**(AGENTS §16 的安全性增强,
+C# 没有); 块开标签大小写不敏感(`[Shell]` 可跑, C# 只认小写 —— 更宽松, 不收紧);
+`file-del C:\*` python **拒删**而 C# 会真删(C# 只判 `TrimEnd('\\').Length <= 3`, `C:\*` 长度 4 混过判断,
+dir=`C:\` pat=`*` 会把 C 盘根下文件与目录全删) —— 安全方向保留。
+
+---
+
 ## 2026-09-10 (第十轮审计: config 键取值语义 — 修真差异 `followcaret` 白/黑名单)
 
 换维度: 把 **C# `LoadConfig`(wgime.bat 1663-1747) 的 25 个 config 键**与 python `engine.load_config`
