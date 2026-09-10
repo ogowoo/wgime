@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-09-10 (第十四轮: 状态机 headless 回归固化成 `tests\pure-state-harness.py`)
+
+第十三轮那个 harness 原来只在 `%TEMP%` 里, 这轮固化进仓库, 以后改状态机/上屏路径可以直接跑:
+
+- 用法: `python tests\pure-state-harness.py`(跑工作区源码, 16 项) /
+  `python tests\pure-state-harness.py --ref HEAD~1`(跑某个 git 版本的 `main.py`, 做 before/after 对照)。
+  退出码 `0`=全通过, `1`=有用例失败, `2`=环境不可用(缺词库 / 无桌面 / Tk 起不来)
+- 做法: 真跑 `wgime-py-pure\main.py` 的**前缀**(截止到 `# ---------- 主循环: 轮询钩子事件 ----------`,
+  真 engine + 真状态机), 只把副作用出口打桩 —— 注入类(`win.send_unicode/send_unicode_qtfix/
+  paste_text/send_key_backspace`)、`bar.show/hide`、`engine.learn/learn_assoc/touch_recent/
+  add_user_word/save_freq`、`run_launcher/find_launcher/_notify/_dfn`。不装键盘钩子、不建托盘、不注入按键
+- **数据隔离**: 进程内把 `LOCALAPPDATA` 指到临时目录(退出时删除), `WGIME_DICT_DIR` 默认
+  `wgime-py-pure\package\dicts`(无则仓库根); 载入后**断言** `DATA_DIR` 落在临时目录内, 否则直接退出码 2 ——
+  用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不会被读写。首跑会打印一条 `[wgime] dict-cache load failed`
+  (隔离目录里没有缓存)属正常, 已写进脚本 docstring
+- 覆盖: 空格/默认候选进自动造词链且不强化词频、连续两字自动造词、数字选候选(学词频 + 记链)、
+  标点自动上屏(记链、不学频、标点本身也上屏)、动态候选/启动器/vf 面板"不学不记"、退格只删组字缓冲
+- 验证: 工作区源码 **16/16 通过(exit 0)**; `--ref HEAD~1`(修复前) **3 项失败(exit 1)** —— 正是第十三轮
+  修掉的那三处(空格不进 recent 链 / 连续空格不造词 / 标点自动上屏不记链); 两次运行结束后临时目录均已清理
+- `AGENTS.md` §4 测试清单同步(命令 + 隔离说明)
+
+---
+
 ## 2026-09-10 (第十三轮审计: 上屏路径 — 空格/标点自动上屏漏记「自动造词链」)
 
 换维度: 把 C# 的**每一条上屏路径**与 python 对齐。C# 在三个地方调 `Learn` + `RecordCommit`:
