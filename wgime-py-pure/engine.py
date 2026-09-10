@@ -187,7 +187,7 @@ def dynamic_candidates(code):
 
 
 def is_all_cjk(s):
-    return all('\u4e00' <= c <= '\u9fff' for c in s)
+    return bool(s) and all('\u4e00' <= c <= '\u9fff' for c in s)
 
 
 # ---------- config.txt (与 C# LoadConfig 同格式) ----------
@@ -632,9 +632,11 @@ class Engine:
         self.ce = build_reverse(self.ec)
 
     def _build_wb_len(self):
-        """五笔码按长度分桶(用于 z 通配等长查询, 替代全表线性扫描)."""
+        """五笔码按长度分桶(用于 z 通配等长查询, 替代全表线性扫描).
+        桶内必须按码 ordinal 升序 —— C# AddWubiWildcard 是 foreach(OrderBy(key)), 用字典插入序会让
+        z 通配候选顺序和 C# 不一致 (见 AGENTS §11)."""
         self.wb_by_len = {}
-        for k in self.wb:
+        for k in sorted(self.wb.keys()):
             self.wb_by_len.setdefault(len(k), []).append(k)
 
     def __init__(self, dict_dir, data_dir):
