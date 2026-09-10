@@ -453,12 +453,13 @@ def show_page():
 
 
 def _with_code(w):
-    """候选 + 反查编码 (五笔模式用五笔码, 否则拼音)."""
+    """候选 + 反查编码: 五笔模式显**拼音**码, 其余模式显**五笔**码 (对齐 C# CodeHint/RevWb).
+    注意别搞反 —— 反查的意义是显示"另一种码", 把刚打的码再显示一遍没有意义."""
     try:
         if ime.mode == 2:
-            c = engine.wubi_code_for(w)
-        else:
             c = engine.code_for(w)
+        else:
+            c = engine.rev_wb_code(w)
         return '%s (%s)' % (w, c) if c else w
     except Exception:
         return w
@@ -470,6 +471,11 @@ def refresh():
     if not ime.buf:
         bar.hide()
         return
+    # 安全复位 (对齐 C# ShowCharatar 顶部): 离开 vf 或开了双拼 -> 退出符号面板状态
+    if ime.sym_cat and ime.buf != 'vf':
+        ime.sym_cat = 0
+    if CFG['shuangpin'] > 0 and ime.sym_cat:
+        ime.sym_cat = 0
     if CFG['shuangpin'] == 0 and ime.buf == 'vf':
         ime.cands = list(SYM_CAT_NAMES) if ime.sym_cat == 0 else SYM_CATS[ime.sym_cat - 1].split(' ')
         show_page()
@@ -481,7 +487,9 @@ def refresh():
         if sent and len(sent) > 1 and sent not in cands:
             cands.insert(0, sent)
     ime.dyn_set = set()
-    if ime.mode < 3:
+    ime.app_cand = None
+    # 双拼下不挂 rq/sj/xq 动态候选 / v 金额 / 启动器候选 (对齐 C# `if (Shuangpin == 0)`: 两键即音节, 会撞码)
+    if ime.mode < 3 and CFG['shuangpin'] == 0:
         for s in reversed(dynamic_candidates(ime.buf)):
             if s not in cands:
                 cands.insert(0, s)
@@ -490,14 +498,13 @@ def refresh():
             if s not in cands:
                 cands.insert(0, s)
                 ime.dyn_set.add(s)
-    ime.app_cand = None
-    lch = find_launcher(ime.buf)
-    if lch:
-        cand = '▶' + lch[0]
-        if cand in cands:
-            cands.remove(cand)
-        cands.insert(0, cand)
-        ime.app_cand = cand
+        lch = find_launcher(ime.buf)
+        if lch:
+            cand = '▶' + lch[0]
+            if cand in cands:
+                cands.remove(cand)
+            cands.insert(0, cand)
+            ime.app_cand = cand
     # 自定义短语 (config phrase=): 精确匹配置顶
     ph = CFG.get('phrases', {}).get(ime.buf)
     if ph:
@@ -507,7 +514,9 @@ def refresh():
     ime.cands = cands
     hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
     _dfn('refresh buf=%s cands=%s' % (ime.buf, [repr(c) for c in cands[:4]]))
-    if ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands:
+    # 五笔唯一四码自动上屏; 但首位是启动器候选时不自动上屏 (对齐 C# !appSet.Contains(cands[0]): 否则会变成自动启动程序)
+    if (ime.mode == 2 and exact_wubi and not extendable and len(ime.buf) >= 4 and cands
+            and cands[0] != ime.app_cand):
         commit(0)
         return
     show_page()
@@ -907,7 +916,9 @@ def commit(i):
 
 
 def digit_as_code():
-    return ime.mode < 2 and ime.buf.startswith('v') and (ime.buf[1:].isdigit() if len(ime.buf) > 1 else len(ime.cands) == 0)
+    """v 模式数字当编码 (对齐 C# DigitAsCode): 双拼下关闭; v 后全是数字时延长; 裸 v 只在无候选时延长"""
+    return (CFG['shuangpin'] == 0 and ime.mode < 2 and ime.buf.startswith('v')
+            and (ime.buf[1:].isdigit() if len(ime.buf) > 1 else len(ime.cands) == 0))
 
 
 def commit_char(idx):

@@ -385,6 +385,16 @@ def build_reverse(ec):
     return {k: ' '.join(v) for k, v in rev.items()}
 
 
+def build_rev_wb(wb):
+    """word -> 五笔码 (反查用, 对齐 C# BuildRevWb): 按码 ordinal 升序扫, 每词取**首个**命中的码 (即最小码)."""
+    rev = {}
+    for code in sorted(wb.keys()):
+        for w in wb[code].split(' '):
+            if w and w not in rev:
+                rev[w] = code
+    return rev
+
+
 # ---------- 码表导入 (转换常见码表 -> import_py/wb/ec.txt, 对齐 C# ImportCodeTable) ----------
 def is_pure_ascii(s):
     return bool(s) and all(ord(c) <= 0x7F for c in s)
@@ -610,6 +620,7 @@ class Engine:
         self.py = parse_dict(os.path.join(self.dict_dir, 'py.txt'))
         self.wb = parse_dict(os.path.join(self.dict_dir, 'wb.txt'))
         self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
+        self._rev_wb = None                      # 反查表(词->五笔码)惰性构建, 码表变动即失效
         overlay_import(self.py, parse_dict(os.path.join(self.dict_dir, 'import_py.txt')))
         overlay_import(self.wb, parse_dict(os.path.join(self.dict_dir, 'import_wb.txt')))
         overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
@@ -630,6 +641,7 @@ class Engine:
         t0 = time.time()
         self.data_dir = data_dir
         self.dict_dir = dict_dir
+        self._rev_wb = None                      # 反查表惰性构建 (首次 showcode 才建, 对齐 C# EnsureRevWb)
         self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
         self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
         self.assoc_enabled = True        # config assoc (main.apply_config 同步): 关掉则不学也不显示联想
@@ -1023,26 +1035,24 @@ class Engine:
 
         if not keys:
             return cands, False, False
+        # 注意: 英汉表(ec)只在「词典」模式参与 (对齐 C# AddTranslate); 拼音/混合模式查 ec 会让
+        # 打 no/shi/it 之类时串进"不/没有/信息论"等词典释义, 把真正的拼音候选顶掉.
         if mode == 0:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
             add_from_dict(self.py, self.pk, self.pv, False, py_code)
-            add_from_dict(self.ec, self.ek, self.ev, False, keys)   # 英汉 (vest->背心)
         elif mode == 1:
             add_from_dict(self.py, self.pk, self.pv, False, py_code)
-            add_from_dict(self.ec, self.ek, self.ev, False, keys)   # 英汉
         elif mode == 2:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
         else:
-            # 词典: EN->CN exact + 前缀, CN->EN 经全拼/简拼反查
+            # 词典: EN->CN 精确 + 前缀(每个命中词的全部释义, 对齐 C# AddCands), CN->EN 经全拼/简拼反查
             exact = self.ec.get(keys)
             if exact is not None:
                 add(exact)
             i = bisect.bisect_left(self.ek, keys)
             while i < len(self.ek) and self.ek[i].startswith(keys) and len(cands) < CAND_CAP:
                 if self.ek[i] != keys:
-                    first = self.ev[i].split(' ')[0]
-                    if first and first not in cands:
-                        cands.append(first)
+                    add(self.ev[i])
                 i += 1
             cn_words = []
             exact = self.py.get(keys)
@@ -1180,6 +1190,7 @@ class Engine:
             self.pk, self.pv = build_sorted(self.py)
             if wb_changed:
                 self.wk, self.wv = build_sorted(self.wb)
+                self._rev_wb = None                  # 五笔表变了, 反查表失效
             for k, ws in new_ini.items():
                 lst = self.acro.setdefault(k, [])
                 for w in ws:
@@ -1208,6 +1219,15 @@ class Engine:
                 return None
             out.append(ps[0])
         return ''.join(out)
+
+    def rev_wb_code(self, w):
+        """反查: 词 -> 五笔码 (惰性建表一次; 码表变动时 _rev_wb 已被置 None). 无则 None."""
+        if self._rev_wb is None:
+            try:
+                self._rev_wb = build_rev_wb(self.wb)
+            except Exception:
+                self._rev_wb = {}
+        return self._rev_wb.get(w)
 
     def wubi_code_for(self, w):
         """五笔 86 构词码 (WubiCodeFor)"""
@@ -1242,6 +1262,7 @@ class Engine:
             if not (curw and (' ' + curw + ' ').find(' ' + word + ' ') >= 0):
                 self.wb[wbc] = (curw + ' ' + word) if curw else word
                 self.wk, self.wv = build_sorted(self.wb)
+                self._rev_wb = None                  # 五笔表变了, 反查表失效
         ini = []
         ok = True
         for ch in word:
