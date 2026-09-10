@@ -258,7 +258,7 @@ def load_config(path):
                 except ValueError:
                     pass
             elif k == 'followcaret':
-                cfg['followcaret'] = v not in ('0', 'off', 'false')
+                cfg['followcaret'] = v in ('1', 'on', 'true')      # 白名单, 对齐 C# LoadConfig(FollowCaret = 1/on/true)
             elif k == 'cnpunct':
                 cfg['cnpunct'] = v not in ('0', 'off', 'false')
             elif k == 'theme':

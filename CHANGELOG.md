@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-09-10 (第十轮审计: config 键取值语义 — 修真差异 `followcaret` 白/黑名单)
+
+换维度: 把 **C# `LoadConfig`(wgime.bat 1663-1747) 的 25 个 config 键**与 python `engine.load_config`
+逐键对语义(不是只看键名在不在)。方法: 用 C# 源码表达式当"期望值函数", 造 25 个取值
+(`1/on/true/0/off/false/空/yes/2/ON/True/OFF/False/ xiaohe /ziranma/ms/微软/none/key/always/unicode/tray/TRAY/IME/tray `)
+× 11 个布尔/枚举键 = **275 组用例**跑 headless 探针比对。
+
+- **真差异(已修)**: `followcaret` C# 是**白名单**(`v == "1" || v == "on" || v == "true"`, wgime.bat:1704),
+  python 却写成黑名单(`v not in ('0','off','false')`)——于是 `followcaret = yes`/空值/`2` 这类
+  非法值 C# 判 **关**(候选窗固定不跟随), python 判 **开**, 两版行为相反。已改为白名单
+  (`engine.py`), 与 C# 完全一致; 修完 275 组 **0 差异**
+- 同批核对**无误**的键: `showcode`/`keyfix`/`hideidle`/`trad`/`starton`(白名单),
+  `sentence`/`assoc`(黑名单), `paste`(on/always→1, off→2, key/unicode→3, 其余→0),
+  `shuangpin`(xiaohe/小鹤/flypy→1, ziranma/自然码/zrm→2, ms/微软/mspy→3), `mode`(仅 tray 生效),
+  `fuzzy`(none/off/空→清空, 解析不出对即保持缺省), `phrase`(tab/空格切分), `app`(tab 三段 / 正则两段)
+- **顺带核对通过的另两项数据**: `pastemode.txt` 的模式映射(clipboard/on→1, off/sendkeys→2,
+  keyfix→4, keyplain→5, 其余→3) 与 C# 逐值一致; `vf` 符号面板 5 类(15/21/37/35/33 个符号,
+  含 emoji)与 C# `SymCats` **逐 token 相同**; 缺省模糊音对(zh-z/ch-c/sh-s/ang-an/eng-en/ing-in/n-l)
+  与 C# `DefaultFuzzyPairs` 相同
+- **有意保留的差异(不动)**: 非法 `hotkey_*`/`key_*` 值 C# "保持当前字段"、python 回缺省(AGENTS §18 已记);
+  python 多认单引号 `app =` 命令(`'(...)'`, C# 只认双引号); python 独有 `learnk/recentk/cnpunct/theme`
+- 验证: `py_compile` 12 模块通过 → `build-wgime-pure.py` + `build-package.ps1` 重建 →
+  `dist\wgime-py.py` 与 `package\wgime-py.py` **SHA256 相同**(967D99CA…), 且从 dist 里把内嵌
+  `MODULES['engine']` 抠出来与磁盘 `engine.py` **逐字节相同**, 用**分发件里的 engine** 重跑
+  followcaret 用例 10/10 通过
+
+---
+
 ## 2026-09-10 (第九轮审计: 文档与代码一致性 — 清掉 5 处陈旧断言)
 
 本轮不查功能差异, 改查**文档是否还说得对**(文档腐化 = 后续会话按错文档改代码)。逐条与代码/`git ls-files` 对照:
