@@ -1344,14 +1344,24 @@ def _list_plugin_files():
                 info = _py_plugin_meta_static(path)
                 if not info:
                     continue
+                # 状态列 (对齐 C# RefreshList 的"正常/编译失败"): 已成功装载的 .py 才算正常
+                loaded = any(os.path.normpath(getattr(m, '__file__', '') or '') == os.path.normpath(path)
+                             for m in PLUGINS)
+                info['status'] = '正常' if loaded else '未加载'
                 out.append(info)
             else:
                 p = plugmod.parse_plugin(path)
                 if p.error:
                     continue
+                if p.kind == 'steps':
+                    n_steps = plugmod.count_steps(p.body)
+                    status = ('正常 (%d 步)' % n_steps) if n_steps else '解析失败'   # 对齐 C# "正常 (N 步)"/"解析失败"
+                else:
+                    status = '—'          # [csharp]/[python] 块: python 不预编译, 成败要到运行时才知道
                 out.append({'file': path, 'name': p.name, 'code': p.code, 'kind': p.kind,
                             'enabled': getattr(p, 'enabled', True), 'version': getattr(p, 'version', ''),
-                            'perm': getattr(p, 'perm', 'low'), 'desc': getattr(p, 'desc', '')})
+                            'perm': getattr(p, 'perm', 'low'), 'desc': getattr(p, 'desc', ''),
+                            'status': status})
     except OSError:
         pass
     return out

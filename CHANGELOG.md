@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-09-10 (第十八轮审计: 插件管理器 — 补状态列/禁用灰显, 删除确认改「否」缺省)
+
+换维度: C# `PluginMgrForm`(4283-4445) vs python `tools.show_plugin_mgr` + `main._list_plugin_files`。
+
+- **补齐(真差异)**:
+  1. **状态列缺失**: C# 列表有「状态」列 —— 步骤插件显示 `正常 (N 步)` / `解析失败`, C# 插件显示 `编译失败`;
+     python 完全没有状态信息 → 坏掉的插件和正常插件长得一样(点「运行」才发现没反应)。已加
+     `plugins.count_steps(body)`(与 `run_steps` 同规则: 多行块算 1 步、闭标签缺失整块丢弃、空行/注释不计),
+     `_list_plugin_files` 给每条带 `status`(`正常 (N 步)` / `解析失败` / `未加载` / `—`), 管理器行显示出来
+  2. **禁用行灰显**: C# `it.ForeColor = Gray`; python 原来没做 → 现在 `lst.itemconfig(..., foreground=ui.SUB)`
+  3. **删除确认的缺省按钮**: python `askyesno` 缺省是**"是"** → 手滑回车就把插件文件删了; C# 是
+     `MessageBoxDefaultButton.Button2`(否)。已改 `default=messagebox.NO`, 标题对齐 C# 的 `WgIme`
+     (与第十一轮 DSL `confirm` 的缺省按钮是同一类修复)
+- **核对一致(未改)**: 重载 / 启用禁用(按**文件名**写 `plugins-disabled.txt`, 对齐 C# `DisabledPlugins`)/
+  打开目录 / 编辑 / 新建模板 各操作与 C# 对应; 缺 code/name 的文件两边都跳过; 新建模板命名都是
+  `new-HHMMSS.*`(C# 写 `.txt` 模板、python 写 `.py` 模板, 各自格式)
+- **有意差异(记录)**: python 支持并列出 **.py 插件**(C# 只有 txt, 属超集); **双击**行为 python = 运行
+  (AGENTS §8 已记)、C# = 编辑; `[csharp]`/`[python]` 块的状态显示 `—`(python 不预编译, 成败要到运行时才知)
+- **验证**: ① `count_steps` 10 例表 + 与 `run_steps` **实际执行步数**逐例一致(块算 1 步、未闭合块两边都不计)
+  → 0 差异; ② 真 main 前缀 + 临时插件目录跑管理器 UI: 4 行文本(含 `正常 (2 步)`、两条 `解析失败`、`未加载`)、
+  `badhead.txt` 被跳过、7 个按钮齐全、禁用后写 `plugins-disabled.txt` 且该行**灰显**、删除确认
+  `title=WgIme` 且 `default='no'`、选否不删 / 选是删除并刷新 → 0 差异; ③ 真插件目录里 5 个已装载 .py
+  状态都是 `正常`; ④ `tests\pure-state-harness.py` 16/16 通过(无回归); ⑤ dist 里 9 个模块与磁盘源码
+  **逐字节相同**、内嵌 main == 磁盘 `main.py`、`dist==package` SHA256 相同(`A207682A…`)
+
+---
+
 ## 2026-09-10 (第十七轮审计: 词典模式(mode 3) 候选 — 与 C# AddTranslate 逐条一致)
 
 换维度: C# `AddTranslate`(5157-5174) + `AddEcPrefix` + `BuildReverse`(5176-5188) vs python

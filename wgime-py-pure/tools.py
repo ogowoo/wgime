@@ -1710,7 +1710,12 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
                 typ = {'py': 'py', 'csharp': 'C#', 'python': 'py块', 'steps': 'DSL'}.get(info.get('kind'), info.get('kind'))
                 state = '已禁用' if disd else '启用'
                 ver = (' v%s' % info['version']) if info.get('version') else ''
-                lst.insert('end', '%s  (%s)  [%s]  %s%s  — %s' % (info.get('name'), info.get('code'), typ, state, ver, os.path.basename(info['file'])))
+                st = info.get('status') or ''
+                row = '%s  (%s)  [%s]  %s%s  %s  — %s' % (info.get('name'), info.get('code'), typ, state, ver, st,
+                                                          os.path.basename(info['file']))
+                lst.insert('end', row)
+                if disd:
+                    lst.itemconfig('end', foreground=ui.SUB)     # 禁用的行灰显 (对齐 C# it.ForeColor = Gray)
                 _rows.append(info)
         else:
             # 兜底: 只列已加载 .py 模块 (plugins 参数)
@@ -1761,7 +1766,8 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
         r = sel()
         if not r or not r.get('file'):
             return
-        if not messagebox.askyesno('删除插件', '删除插件文件 %s ?' % os.path.basename(r['file']), parent=win):
+        if not messagebox.askyesno('WgIme', '删除插件文件 %s ?' % os.path.basename(r['file']),
+                                   parent=win, default=messagebox.NO):   # 缺省按钮=否 (对齐 C# MessageBoxDefaultButton.Button2)
             return
         try:
             os.remove(r['file'])

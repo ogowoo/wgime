@@ -185,6 +185,37 @@ def load_tools(path):
 
 
 # ---------- 步骤 DSL 执行器 ----------
+# 多行脚本块的开/闭标签 (8 组别名, 与 C# ParseToolSteps 的 t == "[shell]" … 一一对应)
+_BLOCK_OPEN_RE = re.compile(r'^\[(shell|cmd|powershell|ps|shellx|cmdx|powershellx|psx)\]\s*$', re.I)
+_BLOCK_END = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/ps]',
+              'shellx': '[/shellx]', 'cmdx': '[/cmdx]', 'powershellx': '[/powershellx]', 'psx': '[/psx]'}
+
+
+def count_steps(body):
+    """步骤数 (对齐 C# `ParseToolSteps` 得到的 `a.Steps.Count`, 插件管理器用来显示"正常 (N 步)"):
+    多行块算 1 步(闭标签缺失则**整块丢弃**, 与 run_steps 的语义一致), 普通非注释行各算 1 步。"""
+    lines = body.split('\n')
+    i = 0
+    n = 0
+    while i < len(lines):
+        t = lines[i].strip()
+        i += 1
+        if not t or t[0] in ';#':
+            continue
+        bm = _BLOCK_OPEN_RE.match(t)
+        if bm:
+            end_tag = _BLOCK_END[bm.group(1).lower()]
+            while i < len(lines) and lines[i].strip() != end_tag:
+                i += 1
+            if i >= len(lines):
+                continue                     # 未闭合: 整块丢弃, 不计步
+            i += 1                           # 跳过闭标签
+            n += 1
+            continue
+        n += 1
+    return n
+
+
 def tokenize(s):
     """空白切分 + 双引号分组, 不做 %env% 展开 (对齐 C# ToolToks; 展开只在各动词里按 C# 规则做).
     注意: C# 用 char.IsWhiteSpace, 所以 tab 也算分隔符; 未闭合的引号吃到行尾."""
@@ -246,7 +277,7 @@ def run_steps(body, log, msgbox, confirm, on_step=None):
                     pass
 
         # 多行脚本块 (别名: shell/cmd, powershell/ps, shellx/cmdx, powershellx/psx; 闭标签与开标签同名)
-        bm = re.match(r'^\[(shell|cmd|powershell|ps|shellx|cmdx|powershellx|psx)\]\s*$', t, re.I)
+        bm = _BLOCK_OPEN_RE.match(t)
         if bm:
             tag = bm.group(1).lower()
             # 控制台行标签对齐 C# ShowTools/RunAction: shell|cmd->[shell], shellx|cmdx->[shellx],
@@ -255,8 +286,7 @@ def run_steps(body, log, msgbox, confirm, on_step=None):
                                         'shellx' if tag in ('shellx', 'cmdx') else
                                         'powershell' if tag in ('powershell', 'ps') else 'psx')
             block = []
-            end_tag = {'shell': '[/shell]', 'cmd': '[/cmd]', 'powershell': '[/powershell]', 'ps': '[/ps]',
-                       'shellx': '[/shellx]', 'cmdx': '[/cmdx]', 'powershellx': '[/powershellx]', 'psx': '[/psx]'}[tag]
+            end_tag = _BLOCK_END[tag]
             while i < len(lines) and lines[i].strip() != end_tag:
                 block.append(lines[i])
                 i += 1
