@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-09-11 (第二十九轮审计: WebSocket 客户端 wspy.py — 握手残留字节/分片重组/保活)
+
+换维度: 纯 Python 版自带的 WebSocket 客户端 `wspy.py`(chat 插件的传输层, 之前没审过)。
+用**假 socket 按 RFC 6455 脚本化喂字节**的探针(不需要网络)跑了 20 项, 改前 **8 项不符**。
+
+- **修复 ①: 握手响应后面紧跟的第一帧字节被丢掉 (整条流错位)**。
+  `_read_headers` 一读到 `\r\n\r\n` 就 return, 而 `recv(4096)` 多读进来的字节被直接丢弃 ——
+  服务端却常常把 `101 Switching Protocols` 和**第一条消息帧**写在同一个 TCP 段里。
+  现象: 连接看似成功, 首帧消失, 之后整条流从帧中间开始解析(错位/卡死)。
+  现在用 `WS._buf` 读缓冲保留余量, `_readexact` 先吃缓冲再收 socket。
+
+- **修复 ②: 不看 FIN 位, 分片消息被拆成多条"消息"**。
+  `_read_message` 原来完全忽略 FIN: `TEXT(FIN=0) + CONT(FIN=1)` 会把第一片当完整消息返回,
+  剩下的片变成下一条消息 —— relay 通道就是半截 JSON(`{"a":` 之后才 `1}`)整条作废。
+  现在按 RFC 6455 重组: 数据帧 FIN=0 时继续收 `OP_CONT` 直到 FIN=1;
+  PING/PONG 允许插在分片中间(就地处理、不结束消息、自动回 PONG)。
+
+- **修复 ③: 首帧是 PING 时, ping 载荷被当成消息交给上层**。
+  原来 `_read_message` 以 PING 开头时直接 `return (PING, payload)` —— chat 侧 relay 会把
+  ping 载荷丢给 `json.loads`。现在 `_recv_data` 专门跳过并处理控制帧, 只把数据帧交给上层。
+
+- **修复 ④: 握手 Host 头缺端口** (RFC 6455 §4.1)。`ws://host:8083/mqtt` 原来只发
+  `Host: host` —— 反代/虚拟主机按 Host 路由时会出错。现在非默认端口带端口。
+
+- **修复 ⑤: 读超时语义**。`settimeout(30)` 下, 帧头**之前**的超时是"暂时没数据"
+  (可安全重试, 已读字节留在缓冲里), 帧**中间**的中断则意味着流已错位 —— 现在后者抛
+  `RuntimeError` 当断线, 不再被上层当成"没数据"继续解析半截帧。
+
+- **修复 ⑥: chat 空闲 30 秒必掉线 (没有保活、也没有 MQTT PINGREQ)**。
+  `_mq_connect` 的 MQTT keepalive=30s(broker 约 45s 收不到包就踢), wspy 的读超时同样是 30s,
+  而 `_recv_loop` 对任何异常都直接 `break` —— 聊天窗放着不动, 30 秒后必显示"已断开"。
+  现在 `chat.py` 增加 `_keepalive_loop`(每 15s: MQTT 通道发 `PINGREQ 0xC0 0x00`, relay 通道发
+  WS PING), 并让 `_recv_loop` 只对**帧间**的 `socket.timeout` 宽容(连续两轮≈60s 无任何数据才判死;
+  EOF/流错位仍立即断开)。
+
+- **验证**: ① wspy 假 socket 探针 **20 项全对**(改前 8 项不符): 握手残留首帧、分片重组、
+  分片+中间 PING、首帧 PING、长度编码 125/126/65535/65536(收/发)、请求帧掩码、逐字节到达、
+  CLOSE、帧中间超时当断线、帧间超时后重试; ② chat 探针 **11 项全对**(改前 6 项不符):
+  PINGREQ 间隔与内容、relay WS PING、换连接/退出后保活线程自行结束、单次超时不断线、
+  连续两次超时才判死、EOF 立即断开; ③ `py_compile` 全模块; ④ 重建后 dist==package(SHA256)
+  且 dist 内嵌 9 个模块源码与磁盘逐字节相同; ⑤ `tests\pure-state-harness.py` 16/16。
+
+- **未改但记录**: `wspy.connect()` 不校验 `Sec-WebSocket-Accept`(RFC 要求客户端校验),
+  对可信端点无实际影响, 保持现状; python chat 仍**没有自动重连**(C# 版是 6s×3),
+  本轮只修"空闲必掉线", 重连策略要做需单独一轮。
+
+---
+
 ## 2026-09-11 (第二十八轮审计: 计算器插件 — 求值语义/结果格式/启动编码全错)
 
 换维度: C# 插件 `plugins/calc.txt`(219 行) vs python `wgime-py-pure/plugins/calc.py`。

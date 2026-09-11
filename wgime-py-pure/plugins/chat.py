@@ -232,6 +232,7 @@ class ChatUI:
                 ws.connect(url.rstrip('/') + '/mqtt', subprotocol='mqtt')
                 ws.send_bin(_mq_connect(self.docid))
             self.state['ws'] = ws
+            threading.Thread(target=self._keepalive_loop, args=(ws, relay), daemon=True).start()
             if relay:
                 self._send_json(ws, {'type': 'join', 'nick': nick, 'ts': int(time.time() * 1000), 'id': self.docid})
                 self.ui(lambda: self.set_status('已连接 (中继)'))
@@ -257,10 +258,36 @@ class ChatUI:
                 return
         raise RuntimeError('CONNACK timeout')
 
+    def _keepalive_loop(self, ws, relay):
+        """保活: MQTT 的 keepalive 是 30s (见 _mq_connect), broker 45s 收不到包就踢;
+        而 wspy 的 socket 读超时同样是 30s —— 空闲的聊天窗原本每次都会在 30 秒后"已断开"。
+        MQTT 通道发 PINGREQ(0xC0 0x00), relay 通道发 WS PING (对端 PONG 由 wspy 自动吃掉)。
+        15s = keepalive 的一半, 留足抖动余量; 连接一换/退出就自行结束。"""
+        while self.state.get('running') and self.state.get('ws') is ws:
+            time.sleep(15)
+            if not self.state.get('running') or self.state.get('ws') is not ws:
+                return
+            try:
+                if relay:
+                    ws.ping()
+                else:
+                    ws.send_bin(b'\xc0\x00')          # MQTT PINGREQ
+            except Exception:
+                return
+
     def _recv_loop(self, ws, relay, room, nick, crypto):
+        idle = 0
         while self.state['running']:
             try:
                 op, payload = ws.recv_message()
+                idle = 0
+            except socket.timeout:
+                # 只是"这段时间没有数据", 不等于断线 (保活线程在维持连接):
+                # 连续两轮(≈60s)一个字节都收不到才判死, 免得把空闲房间/慢网络误判成断开。
+                idle += 1
+                if idle >= 2:
+                    break
+                continue
             except Exception:
                 break
             if relay:
