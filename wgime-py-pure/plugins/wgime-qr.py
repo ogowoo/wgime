@@ -64,7 +64,7 @@ def qr_encode(text):
         cc = 8 if v <= 9 else 16
         if 12 + 4 + cc + len(data) * 8 <= cap * 8:
             return _Qr(v, data, cc, cap)
-    raise ValueError('内容过长，本地紧凑编码器最多支持约 213 个 UTF-8 字节')
+    raise ValueError('内容过长，本地紧凑编码器最多支持 212 个 UTF-8 字节')
 
 
 class _Qr(object):
