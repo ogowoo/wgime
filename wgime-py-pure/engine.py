@@ -690,9 +690,11 @@ def _atomic_write(path, text):
             pass
 
 
-CACHE_VER = 4                    # v4: 缓存两段 (核心表 + 词典模式表 ec/ek/ev/ce 惰性后台加载)
+CACHE_VER = 5                    # v5: 第一段再加 char_wb/wb_by_len/word_freq (由码表派生的三张启动表,
+                                 #     见 _build_core_extra); v4: 两段缓存 + 词典表 ec/ek/ev/ce 后台加载
 CACHE_FILES = ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt',
-               'import_py.txt', 'import_wb.txt', 'import_ec.txt')
+               'import_py.txt', 'import_wb.txt', 'import_ec.txt',
+               'pywfreq.txt')    # v5: word_freq 进缓存了, 签名必须覆盖 pywfreq.txt (否则改了语料不重建)
 
 
 def dict_paths(dict_dir):
@@ -751,6 +753,7 @@ class Engine:
         self.wk, self.wv = build_sorted(self.wb)
         self.char_py = build_char_py(self.py)
         self.acro = build_acro(self.py, self.char_py)
+        self._build_core_extra()                 # 单字五笔码/码长分桶/语料词频: 冷建时算好, 好一起写进缓存
         self._build_ec()                         # 词典模式的表一起建好 (冷启动本来就是一次建全)
 
     def _build_ec(self):
@@ -769,6 +772,44 @@ class Engine:
         for k in sorted(self.wb.keys()):
             self.wb_by_len.setdefault(len(k), []).append(k)
 
+    def _build_core_extra(self):
+        """三张**只由码表派生**、启动必用、原来却每次重算的表 (第三十五轮):
+        `char_wb`(单字→最长五笔码) / `wb_by_len`(按码长分桶) / `word_freq`(语料词频 pywfreq.txt)。
+
+        它们原来写在 `_init_state()` 里, **每次启动**都要重算: 实测热启动 char_wb 707ms +
+        wb_by_len 61ms + pywfreq.txt 155ms ≈ 0.92s —— 正是"启动头几秒"(钩子还没装)那一段。
+        三张表启动后只读(运行时不改), 依赖的输入只有 wb.txt/import_wb.txt/pywfreq.txt
+        (都进了 CACHE_FILES 签名), 所以跟核心表一起进缓存第一段: 多 2.2MB + 反序列化 ~38ms,
+        换掉每次启动近 1 秒。**桶内順序必须原样保留**(ordinal 升序, 同 C# OrderBy, 见 AGENTS §11)。
+        """
+        self.char_wb = {}
+        for code in sorted(self.wb.keys()):
+            if len(code) < 2:
+                continue
+            for w in self.wb[code].split(' '):
+                if len(w) == 1 and (w not in self.char_wb or len(code) > len(self.char_wb[w])):
+                    self.char_wb[w] = code
+        self._build_wb_len()
+        # 造句词频 (pywfreq.txt: word:freq)
+        self.word_freq = {}
+        self.word_freq_total = 0
+        try:
+            with open(os.path.join(self.dict_dir, 'pywfreq.txt'), encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    c = line.rfind(':')
+                    if c < 1:
+                        continue
+                    try:
+                        n = int(line[c + 1:])
+                    except ValueError:
+                        continue
+                    self.word_freq[line[:c]] = n
+                    self.word_freq_total += n
+        except OSError:
+            pass
+        self._core_extra_ready = True
+
     def __init__(self, dict_dir, data_dir):
         t0 = time.time()
         self.data_dir = data_dir
@@ -781,6 +822,7 @@ class Engine:
         self._ec_gen = 0
         self._ec_thread = None
         self._ec_fail = False                    # 词典表两条路都失败: 打住, 别每次按键都重试
+        self._core_extra_ready = False           # char_wb/wb_by_len/word_freq 是否已就绪(缓存第一段/冷建)
         self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
         self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
         self.assoc_enabled = True        # config assoc (main.apply_config 同步): 关掉则不学也不显示联想
@@ -806,8 +848,7 @@ class Engine:
 
     def reload(self):
         """导入码表后热重载: 重建索引 + 刷新缓存 + 重放用户词(否则已造用户词丢失)."""
-        self._build()
-        self._build_wb_len()
+        self._build()          # 含 _build_core_extra: char_wb/wb_by_len/word_freq 一并重建
         self._merge_user_words()
         self._save_cache(self._paths())
 
@@ -845,7 +886,9 @@ class Engine:
                 self._drop_sig()
                 return False
             (self.py, self.pk, self.pv, self.wb, self.wk, self.wv,
-             self.char_py, self.acro) = obj['data']
+             self.char_py, self.acro,
+             self.char_wb, self.wb_by_len, self.word_freq, self.word_freq_total) = obj['data']
+            self._core_extra_ready = True        # char_wb/wb_by_len/word_freq 已随第一段拿到
             if not self.py and not self.wb:
                 # 空索引缓存 (码表目录里没有码表时写下的): 当命中就等于"永远没有词库", 必须重建并提示
                 print('[wgime] 缓存里是空索引 (码表目录 %s 里没有 py/wb.txt), 忽略它并重建'
@@ -929,9 +972,12 @@ class Engine:
                 return
             if not self._ec_ready:
                 self._load_ec_sync()                      # 缓存必须两段齐全, 否则下次词典模式没表
+            if not self._core_extra_ready:
+                self._build_core_extra()                  # 第一段也必须带齐三张派生表
             obj = {'ver': self.CACHE_VER, 'sig': self._cache_sig(paths),
                    'data': (self.py, self.pk, self.pv, self.wb, self.wk, self.wv,
-                            self.char_py, self.acro)}
+                            self.char_py, self.acro,
+                            self.char_wb, self.wb_by_len, self.word_freq, self.word_freq_total)}
             tmp = self._cache_path() + '.tmp'
             with open(tmp, 'wb') as f:
                 pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -968,34 +1014,11 @@ class Engine:
         # 用户词 (五笔反查字表: 最长码)
         self.user_words = self.load_user_words()
         self._merge_user_words()
-        self.char_wb = {}
-        for code in sorted(self.wb.keys()):
-            if len(code) < 2:
-                continue
-            for w in self.wb[code].split(' '):
-                if len(w) == 1 and (w not in self.char_wb or len(code) > len(self.char_wb[w])):
-                    self.char_wb[w] = code
-        self._build_wb_len()   # 五笔 z 通配: 按码长分桶索引(替代全表线性扫描)
-        # 简拼候选顺序由 candidates() 的统一词频排序决定, 不再预排(避免与排序键不一致)
-        # 造句词频 (pywfreq.txt: word:freq)
-        self.word_freq = {}
-        wtot = 0
-        try:
-            with open(os.path.join(self.dict_dir, 'pywfreq.txt'), encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    c = line.rfind(':')
-                    if c < 1:
-                        continue
-                    try:
-                        n = int(line[c + 1:])
-                    except ValueError:
-                        continue
-                    self.word_freq[line[:c]] = n
-                    wtot += n
-        except OSError:
-            pass
-        self.log_total_w = math.log(max(wtot, 1000))
+        # 单字五笔码 / 按码长分桶 / 语料词频(word_freq): 只依赖码表, 已随缓存第一段拿到;
+        # 只有冷建/旧缓存/换词库时才在这里现算 (省热启动 ~0.92s, 见 _build_core_extra)
+        if not self._core_extra_ready:
+            self._build_core_extra()
+        self.log_total_w = math.log(max(self.word_freq_total, 1000))
         # 联想 (commit 二元组)
         self.assoc = {}
         self._load_assoc()
