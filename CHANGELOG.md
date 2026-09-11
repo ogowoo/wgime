@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-09-10 (第二十轮审计: tools.txt 解析 — 标签页按需创建 / code 行按 C# 规则 / 空标签页保留)
+
+换维度: C# `LoadTools`(2111-2172) vs python `plugins.load_tools`(工具箱 `tools.txt` 的结构解析)。
+
+- **修正(真差异)**:
+  1. **标签页创建时机**: C# 的默认标签 `工具` 是**按需创建**的(第一个 `[cols N]` 或按钮出现时才建) ——
+     python 原来一进函数就建; 于是「tools.txt 只有注释」时 C# 得到 0 个标签 → 工具箱提示
+     "tools.txt 为空或不存在", python 却会打开一个空标签页。已改成懒建
+  2. **空标签页要保留**: python 原来 `return [t for t in tabs if t['buttons']]` 会把没有任何按钮的
+     标签页(`[tab 空的]`)整页丢掉, C# 会显示成空页。已保留
+  3. **`[tab ]` 空名字** → C# 用 `"?"`, python 原来给空字符串(标签栏上一个空标签)。已跟
+  4. **`code` 行的判定规则**: C# 是 `act != null && t.StartsWith("code")`(**大小写敏感**)且
+     `ToolToks(t)[2]` 非空 —— 认 `code = x`、也认 `codes = x` / `code = x 多余`; 而 `CODE = x`(大写)
+     **不算** code 行, 会掉进步骤里。python 原来用正则 `^code\s*=\s*(\S+)$`(大小写不敏感) →
+     恰好两头都反: 认了 `CODE = x`, 却把 `codes = x` / `code = x 多余` 当**步骤**执行(运行时报未知动词)。
+     已按 C# 的 token 规则改
+  5. 步骤文本行尾不再带 `\r`(C# `File.ReadAllLines` 已剥掉, python 原来只 `rstrip('\n')`)
+- **核对一致(未改)**: `[cols N]` 夹到 1-6、非数字忽略; `[button 名]` 前缀; 按钮名空 → `?`;
+  任何按钮**之前**的步骤行 / `code` 行忽略; 多行块 8 组别名与"未闭合块整块丢弃"; 空 `[tab]`(无空格)
+  按按钮处理; `[cols N]` 先出现会自动建默认标签
+- **有意差异(记录)**: python 的块标签匹配**大小写与内部空格不敏感**(`[ shell ]` python 当块、
+  C# 当按钮 `shell`) —— 既有的宽松处理, 保留(§26 已记)
+- **验证**: 用**独立实现**的 C# `LoadTools` oracle 跑 11 组 fixtures(综合: 标签/列数/按钮/code/空名标签/
+  大写 `CODE`/列数夹取 · 全注释 · 空标签页 · 无标签直接按钮 · `cols` 先出现 · 块与步骤 · 四种块别名 ·
+  无空格 `[tab]` · 未闭合块 · 按钮前步骤 · 按钮前 code) → **规范化后 0 差异**(python 把多行块按原样行
+  存进 steps、执行期再配对, 比较前按 C# `ParseToolSteps` 同规则折叠成 1 步);
+  另 UI 级验证 `show_toolbox`: 收到**空标签页**不崩、标签栏渲染出两个标签名、空列表仍给
+  "tools.txt 为空或不存在"提示、单例复用同一窗口 → 0 差异; `tests\pure-state-harness.py` 16/16 通过;
+  dist 内嵌 `plugins.py` 与磁盘**逐字节相同**、`dist==package` SHA256 相同(`9833112F…`)
+
+---
+
 ## 2026-09-10 (第十九轮审计: 造词/批量造词/用户词表 — 补造词对话框的「2-8 汉字」校验)
 
 换维度: C# `MakeWordFromClipboard`/`CodeFor`/`CollectWordLines`/`BatchAddWords`/`AddUserWord`/

@@ -143,24 +143,23 @@ _TOOL_BLOCK_TAGS = frozenset(
 
 def load_tools(path):
     """[tab 名] / [cols N] / [按钮名] (或 [button 名]) / code = xx / 步骤行
-    对齐 C# LoadTools: 多行块开/闭标签不算按钮; code= 可写在按钮步骤之后; [button 名] 也识别."""
-    tabs = [{'name': '工具', 'cols': 2, 'buttons': []}]
+
+    对齐 C# LoadTools: 标签页**按需创建**(默认标签 "工具"), 空名字的标签页 = "?"; `[cols N]` 夹到 1-6;
+    多行块开/闭标签不算按钮; `code` 行(大小写敏感前缀)取**第 3 个 token** 当编码, 可写在步骤之后;
+    任何按钮之前的步骤行忽略; 空标签页也保留(C# 会显示成空页)。"""
+    tabs = []
     btn = None
+
+    def _cur():
+        if not tabs:
+            tabs.append({'name': '工具', 'cols': 2, 'buttons': []})
+        return tabs[-1]
+
     try:
         for raw in engmod.read_text(path).split('\n'):
-            t = raw.rstrip('\n')
+            t = raw.rstrip('\r\n')                     # 与 C# File.ReadAllLines 一致: 行尾 CR/LF 都不带进步骤文本
             s = t.strip()
             if not s or s[0] in ';#':
-                continue
-            if s.startswith('[tab ') and s.endswith(']'):
-                tabs.append({'name': s[5:-1].strip(), 'cols': 2, 'buttons': []})
-                btn = None
-                continue
-            if s.startswith('[cols ') and s.endswith(']'):
-                try:
-                    tabs[-1]['cols'] = max(1, min(6, int(s[6:-1].strip())))
-                except ValueError:
-                    pass
                 continue
             if s.startswith('[') and s.endswith(']'):
                 inner = s[1:-1].strip()
@@ -168,20 +167,36 @@ def load_tools(path):
                     if btn is not None:
                         btn['steps'].append(t)
                     continue
+                low = inner.lower()
+                if low.startswith('tab '):                 # [tab 名]: 新标签页 (空名字 -> "?")
+                    tabs.append({'name': inner[4:].strip() or '?', 'cols': 2, 'buttons': []})
+                    btn = None
+                    continue
+                if low.startswith('cols '):                # [cols N]: 当前标签页的磁贴列数 (1-6)
+                    try:
+                        n = int(inner[5:].strip())
+                    except ValueError:
+                        n = None
+                    if n is not None:
+                        _cur()['cols'] = max(1, min(6, n))
+                    continue
                 if inner.startswith('button '):            # C# 也认 [button 名] 前缀
                     inner = inner[7:].strip()
                 btn = {'name': inner or '?', 'code': None, 'steps': []}
-                tabs[-1]['buttons'].append(btn)
+                _cur()['buttons'].append(btn)
                 continue
-            m = re.match(r'^code\s*=\s*(\S+)$', s, re.I)
-            if m and btn is not None:                      # C#: code= 可写在步骤之后 (原来要求必须在步骤前)
-                btn['code'] = m.group(1).lower()
+            # C#: `act != null && t.StartsWith("code")` (大小写敏感) 且 `ToolToks(t)[2]` 非空 -> 第 3 个 token 当编码
+            # 例如 `code = xyz` / `codes = xyz` / `code = xyz 多余` 都算; `CODE = xyz`(大写) 不算, 会掉到步骤里
+            if s.startswith('code') and btn is not None:
+                ctoks = tokenize(s)
+                if len(ctoks) >= 3 and ctoks[2]:
+                    btn['code'] = ctoks[2].lower()
                 continue
             if btn is not None:
                 btn['steps'].append(t)
     except OSError:
         pass
-    return [t for t in tabs if t['buttons']]
+    return tabs
 
 
 # ---------- 步骤 DSL 执行器 ----------
