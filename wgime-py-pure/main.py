@@ -6,10 +6,12 @@ import os
 import sys
 import threading
 import time
-import tkinter as tk
 import importlib.util
 import ctypes
 import re
+# 注意: tkinter **不在这里** import (第四十轮). 首次 import tkinter ≈70ms, 而"单实例 -> 读 config ->
+# 装键盘钩子"这一段完全用不到它; 挪到钩子装好之后 (见下面的"钩子之后才 import"段)。
+# dist 里 bar/ui/tools/tray 也改成懒 exec, 所以这里的延迟 import 才是真的延迟。
 
 
 def _relaunch_if_console_python():
@@ -205,18 +207,57 @@ if _EARLY_CFG.get('mode', 'ime') != 'tray':
         _EARLY_HOOK_OK = False
         _dfn('early hook start err %r' % e)
     try:
-        win.ensure_caret_bg()          # 与建表并行: helper 也早点起, 别都堆在最后
+        # 跟随 helper 的 spawn 实测 ~90-100ms (Popen 一个 python 子进程). 它只是"起个后台进程",
+        # 不碰 Tk/不碰主线程状态, 所以丢到自己的线程里去起 (第四十轮) —— 否则这 90ms 会挡在
+        # 词库线程启动之前, 直接变成"上屏"又晚 90ms.
+        threading.Thread(target=win.ensure_caret_bg, name='wgime-caret-boot', daemon=True).start()
     except Exception:
         pass
 
-# 这几个模块只有 UI/工具箱/插件用到, 放在钩子之后再 import (tools 会连带 plugins/bar/ui ≈150ms),
-# 免得它们把"钩子可用"的时间往后推。
+# ---------- 词库加载与 UI 并行 (第四十轮) ----------
+# 读词库(热 ~1.0s / 冷 12-15s)原来**同步**排在 Tk/加载窗之后, 于是"能上屏"要等
+#   钩子(~0.5s) + Tk root + 加载窗(~0.5s) + 读词库(~1.0s)。
+# 现在把 Engine() 丢到后台线程(**钩子一装好就起**, 连 tkinter/tools 的 import 都与它并行), 主线程
+# 同时建 Tk + 加载窗 —— 两边并行, 主循环(真正能上屏的时刻)实测提前 ~0.6s。
+# Engine() 只读文件/建表, 不碰 Tk, 可以安全地在线程里跑; 结果在 join 之后交给主线程 (join 提供
+# 可见性), 异常(含 MemoryError)带回主线程重抛, 不静默变成"没词库"。
+_DICTS_MISSING = not os.path.exists(os.path.join(DICT_DIR, 'py.txt'))
+if _DICTS_MISSING:
+    print('[wgime] 没有找到码表 py.txt: 词库目录 = %s\n'
+          '        请把 py.txt/wb.txt/ec.txt (以及 import_*.txt) 放进该目录, 或用 WGIME_DICT_DIR 指定。\n'
+          '        现在会以"空词库"运行 —— 候选里不会有任何字词, 也不会写索引缓存。' % DICT_DIR,
+          file=sys.stderr)
+
+_engine_box = {}
+_engine_err = []
+
+
+def _load_engine_bg():
+    try:
+        _engine_box['engine'] = Engine(DICT_DIR, DATA_DIR)
+    except BaseException as e:
+        _engine_err.append(e)
+
+
+_engine_th = None
+try:
+    _engine_th = threading.Thread(target=_load_engine_bg, name='wgime-dict-load', daemon=True)
+    _engine_th.start()
+except Exception as e:
+    _dfn('engine thread start err %r' % e)
+    _engine_th = None
+
+# 下面这些只有 UI/工具箱/插件/候选条/托盘用到, 一律放在钩子之后、且**放在词库线程启动之后** import
+# (第四十轮): 首次 import tkinter ≈35ms; import tools 连带 plugins/bar/ui ≈150ms; dist 单文件里
+# bar/wspy/plugins/ui/tools/tray 还改成了"首次用到才 exec"(见 build-wgime-pure.py) —— 这些都被
+# 上面的读词库盖住了, 不再把"钩子可用/主循环启动"往后推。
+import tkinter as tk                               # noqa: E402
 import tools                                       # noqa: E402
 import plugins as plugmod                          # noqa: E402
 from bar import CandBar                            # noqa: E402
 
 
-# 建表在下面同步进行; 冷启动 10s+ 期间总得给点反馈 (对齐 C# 候选条的"(词库加载中...)"提示)
+# 建表在后台进行; 冷启动 10s+ 期间总得给点反馈 (对齐 C# 候选条的"(词库加载中...)"提示)
 root = tk.Tk()
 root.withdraw()
 _splash = None
@@ -246,18 +287,30 @@ try:
 except Exception:
     _splash = None
 
-_DICTS_MISSING = not os.path.exists(os.path.join(DICT_DIR, 'py.txt'))
-if _DICTS_MISSING:
-    print('[wgime] 没有找到码表 py.txt: 词库目录 = %s\n'
-          '        请把 py.txt/wb.txt/ec.txt (以及 import_*.txt) 放进该目录, 或用 WGIME_DICT_DIR 指定。\n'
-          '        现在会以"空词库"运行 —— 候选里不会有任何字词, 也不会写索引缓存。' % DICT_DIR,
-          file=sys.stderr)
-
-engine = Engine(DICT_DIR, DATA_DIR)
+if _engine_th is not None:
+    _engine_th.join()                      # 等后台线程读完词库 (与上面的 Tk/加载窗并行)
+if _engine_err:
+    raise _engine_err[0]                   # 线程里的异常在主线程重抛 (别静默退化成"没词库")
+engine = _engine_box.get('engine')
+if engine is None:                         # 线程没起起来 (极端环境): 老实同步读一次
+    engine = Engine(DICT_DIR, DATA_DIR)
 _dfn('startup: engine load=%.0fms (对齐 C# 的启动计时日志)' % engine.load_ms)
 if _splash is not None:
     try:
-        _splash.destroy()
+        # 第四十轮: 这里原来直接 destroy(), 实测要 ~90ms (销毁 Toplevel + 处理 Tk 事件), 而它正好
+        # 卡在"词库已读完 -> poll 起来"之间, 等于又给上屏加 90ms。改成先 withdraw (隐藏, 快得多),
+        # 真正的 destroy 丢给主循环的 after(120) —— 反正主循环马上就起来了。
+        _splash.withdraw()
+        root.after(120, _destroy_splash)
+    except Exception:
+        pass
+
+
+def _destroy_splash():
+    global _splash
+    try:
+        if _splash is not None:
+            _splash.destroy()
     except Exception:
         pass
     _splash = None
@@ -393,64 +446,75 @@ apply_config()
 bar = CandBar(root, DATA_DIR)             # data_dir 用于位置持久化 (C# 同款 DataDir\pos.txt)
 bar.set_theme(CFG.get('theme', 'dark'))
 
-try:
-    import tray as _tray_mod
-    TRAY = _tray_mod.Tray(root, {
-        'toggle': lambda: set_active(not ime.active),
-        'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
-        'trad': lambda: toggle_trad(),
-        'get_trad': lambda: bool(ime.trad),               # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
-        'quit': lambda: quit_app(),
-        'is_active': lambda: ime.active,
-        'get_mode': lambda: ime.mode,
-        'apppaste': lambda: toggle_app_paste(),
-        # 托盘「这个程序」两项的勾选态 (对齐 C# RefreshMenuChecks: AppModes[前台] == 1 / EffectiveKeyfix())
-        'get_apppaste': lambda: APPMODES.get(win.foreground_process_name(), 0) == 1,
-        'get_appkeyfix': lambda: bool(effective_keyfix()),
-        'appkeyfix': lambda: toggle_app_keyfix(),
-        'followcaret': lambda: toggle_followcaret(),
-        'get_followcaret': lambda: CFG.get('followcaret', True),
-        'toggleshowcode': lambda: toggle_showcode(),
-        'get_showcode': lambda: CFG.get('showcode', False),
-        'togglesentence': lambda: toggle_sentence(),
-        'get_sentence': lambda: CFG.get('sentence', True),
-        'toggleassoc': lambda: toggle_assoc(),
-        'get_assoc': lambda: CFG.get('assoc', True),
-        'togglecnpunct': lambda: toggle_cnpunct(),
-        'get_cnpunct': lambda: CFG.get('cnpunct', True),
-        'togglehideidle': lambda: toggle_hideidle(),
-        'get_hideidle': lambda: CFG.get('hideidle', True),
-        'set_theme': lambda name: set_theme(name),
-        'get_theme': lambda: CFG.get('theme', 'dark'),
-        'import_table': lambda: tools.show_import(engine, DICT_DIR),
-        'makeword': lambda: makeword_clipboard(),
-        'batchmakeword': lambda: tools.show_batch_makeword(engine, DATA_DIR),
-        'userwords': lambda: tools.show_user_words(engine),
-        'reload': lambda: reload_config(),
-        'open_config': lambda: open_config_file(),
-        'open_datadir': lambda: open_data_dir(),
-        # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
-        'get_runmode': lambda: CFG.get('mode', 'ime'),
-        'switch_runmode': lambda m: switch_mode(m),
-        # --- tray 模式工具入口 (等价 wgtray 托盘菜单; ime 模式亦可用) ---
-        'toolbox': lambda: tools.show_toolbox(TOOLS, APP_DIR),
-        'nettools': lambda: tools.show_nettools(),
-        'clipboard': lambda: tools.show_clipboard(),
-        'notes': lambda: tools.show_notes(DATA_DIR),
-        'color': lambda: tools.show_color(),
-        'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
-                                                   run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
-                                                   plugin_dir_fn=_plugin_dir),
-        'run_app': lambda code: _run_app_by_code(code),
-        'apps': lambda: list(sorted((CFG.get('apps') or {}).items())),
-        # --- 插件 (托盘菜单列出 + 运行; 插件管理器复用) ---
-        'list_plugins': lambda: _list_plugin_files(),
-        'run_plugin_file': lambda path: _run_plugin_file(path),
-        'plugin_dir': lambda: _plugin_dir(),
-    })
-except Exception as e:
-    _dfn('tray start err %r' % e)
-    TRAY = None
+TRAY = None
+
+
+def _create_tray():
+    """建托盘对象 (第四十轮: 从启动主路径挪进主循环).
+
+    `import tray`(=pystray + PIL) 实测要 ~300ms (它连带 zipimport 第三方库), 以前排在
+    `root.after(8, poll)` 之前 —— 而那会儿钩子早在收键排队了, 这 300ms 纯粹是"上屏"白等。
+    现在由 _deferred_tray() 在主循环里调 (托盘图标晚 0.15s 出现, 打字不受影响)。
+    """
+    global TRAY
+    try:
+        import tray as _tray_mod
+        TRAY = _tray_mod.Tray(root, {
+            'toggle': lambda: set_active(not ime.active),
+            'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
+            'trad': lambda: toggle_trad(),
+            'get_trad': lambda: bool(ime.trad),           # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
+            'quit': lambda: quit_app(),
+            'is_active': lambda: ime.active,
+            'get_mode': lambda: ime.mode,
+            'apppaste': lambda: toggle_app_paste(),
+            # 托盘「这个程序」两项的勾选态 (对齐 C# RefreshMenuChecks: AppModes[前台] == 1 / EffectiveKeyfix())
+            'get_apppaste': lambda: APPMODES.get(win.foreground_process_name(), 0) == 1,
+            'get_appkeyfix': lambda: bool(effective_keyfix()),
+            'appkeyfix': lambda: toggle_app_keyfix(),
+            'followcaret': lambda: toggle_followcaret(),
+            'get_followcaret': lambda: CFG.get('followcaret', True),
+            'toggleshowcode': lambda: toggle_showcode(),
+            'get_showcode': lambda: CFG.get('showcode', False),
+            'togglesentence': lambda: toggle_sentence(),
+            'get_sentence': lambda: CFG.get('sentence', True),
+            'toggleassoc': lambda: toggle_assoc(),
+            'get_assoc': lambda: CFG.get('assoc', True),
+            'togglecnpunct': lambda: toggle_cnpunct(),
+            'get_cnpunct': lambda: CFG.get('cnpunct', True),
+            'togglehideidle': lambda: toggle_hideidle(),
+            'get_hideidle': lambda: CFG.get('hideidle', True),
+            'set_theme': lambda name: set_theme(name),
+            'get_theme': lambda: CFG.get('theme', 'dark'),
+            'import_table': lambda: tools.show_import(engine, DICT_DIR),
+            'makeword': lambda: makeword_clipboard(),
+            'batchmakeword': lambda: tools.show_batch_makeword(engine, DATA_DIR),
+            'userwords': lambda: tools.show_user_words(engine),
+            'reload': lambda: reload_config(),
+            'open_config': lambda: open_config_file(),
+            'open_datadir': lambda: open_data_dir(),
+            # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
+            'get_runmode': lambda: CFG.get('mode', 'ime'),
+            'switch_runmode': lambda m: switch_mode(m),
+            # --- tray 模式工具入口 (等价 wgtray 托盘菜单; ime 模式亦可用) ---
+            'toolbox': lambda: tools.show_toolbox(TOOLS, APP_DIR),
+            'nettools': lambda: tools.show_nettools(),
+            'clipboard': lambda: tools.show_clipboard(),
+            'notes': lambda: tools.show_notes(DATA_DIR),
+            'color': lambda: tools.show_color(),
+            'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
+                                                       run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
+                                                       plugin_dir_fn=_plugin_dir),
+            'run_app': lambda code: _run_app_by_code(code),
+            'apps': lambda: list(sorted((CFG.get('apps') or {}).items())),
+            # --- 插件 (托盘菜单列出 + 运行; 插件管理器复用) ---
+            'list_plugins': lambda: _list_plugin_files(),
+            'run_plugin_file': lambda path: _run_plugin_file(path),
+            'plugin_dir': lambda: _plugin_dir(),
+        })
+    except Exception as e:
+        _dfn('tray create err %r' % e)
+        TRAY = None
 
 PLUGINS = []
 STEP_PLUGINS = []
@@ -1374,7 +1438,8 @@ def _notify(title, text):
     tools._msgbox(title, text)
 
 
-tools.set_notifier(_notify)                            # 工具步骤 msg / 工具结果走托盘气泡
+# 第四十轮: tools.set_notifier(_notify) 从模块级挪进 _deferred_tools() —— 它是 `import tools` 的
+# 第一个属性访问, 也就是说这行原来会触发 tools 模块的懒装载(实测 ~150ms)并排在主循环之前。
 
 
 def _run_app_by_code(code):
@@ -1733,24 +1798,48 @@ def handle(vk):
 
 
 # ---------- 主循环: 轮询钩子事件 ----------
-reload_plugins()
-load_py_plugins()
-load_appmodes()
-try:
-    if TRAY:
-        TRAY.start()
-except Exception as e:
-    _dfn('tray start err %r' % e)
-
-if _DICTS_MISSING:                              # 空词库必须让用户看见 (pythonw 下没 stderr)
+# 第四十轮: 下面三段"启动收尾"从主循环**之前**挪到主循环**之后**, 且按 30/150/600ms 分三档错开 ——
+#   ① 它们加起来实测 ~500ms (reload_plugins+load_py_plugins+load_appmodes ≈55ms、托盘 import ≈300ms、
+#      tools 懒装载 ≈150ms), 原来一律排在 `root.after(8, poll)` 前面, 而钩子早就在收键排队了:
+#      多等这 500ms 就是"启动后打字多 500ms 才上屏"(用户第三十八轮报的 1-3 秒延迟里就有这一段)。
+#   ② 现在 poll 先跑 (8ms 就把排队的键全部上屏), 收尾工作在主循环里做; 错开三档是为了让
+#      刚开始打字的那几秒尽量不被一次 500ms 的长回调堵住(每档自己都很短)。
+#   打字本身不依赖这三段(只有"启动器候选/工具箱/插件管理/托盘菜单"要, 那也得用户先敲出 code 来)。
+def _deferred_plugins():
+    """plugins/*.txt + tools.txt + plugins/*.py + pastemode.txt (~55ms)."""
     try:
-        if TRAY and getattr(TRAY, 'icon', None):
-            TRAY.icon.notify('没有找到码表 py.txt: 词库目录 = %s\n'
-                             '输入法现在以"空词库"运行, 候选里不会有任何字词。'
-                             '请把 py.txt/wb.txt/ec.txt 放进该目录, 或用 WGIME_DICT_DIR 指定。' % DICT_DIR,
-                             'WgIme')
-    except Exception:
-        pass
+        reload_plugins()
+        load_py_plugins()
+        load_appmodes()
+    except Exception as e:
+        _dfn('deferred plugins err %r' % e)
+
+
+def _deferred_tray():
+    """托盘对象 + 图标线程 (`import tray` = pystray+PIL ≈300ms)."""
+    _create_tray()
+    try:
+        if TRAY:
+            TRAY.start()
+    except Exception as e:
+        _dfn('tray start err %r' % e)
+    if _DICTS_MISSING:                          # 空词库必须让用户看见 (pythonw 下没 stderr)
+        try:
+            if TRAY and getattr(TRAY, 'icon', None):
+                TRAY.icon.notify('没有找到码表 py.txt: 词库目录 = %s\n'
+                                 '输入法现在以"空词库"运行, 候选里不会有任何字词。'
+                                 '请把 py.txt/wb.txt/ec.txt 放进该目录, 或用 WGIME_DICT_DIR 指定。' % DICT_DIR,
+                                 'WgIme')
+        except Exception:
+            pass
+
+
+def _deferred_tools():
+    """tools 模块懒装载 + 通知回调注册 (~150ms; 首次访问 tools 属性才触发 exec)."""
+    try:
+        tools.set_notifier(_notify)             # 工具步骤 msg / 工具结果走托盘气泡
+    except Exception as e:
+        _dfn('deferred tools err %r' % e)
 
 
 _admin_hint_shown = [False]
@@ -1802,6 +1891,9 @@ def poll():
 
 
 root.after(8, poll)
+root.after(30, _deferred_plugins)        # 30ms  : plugins/tools.txt/pastemode (~55ms)
+root.after(150, _deferred_tray)          # 150ms : 托盘对象 + 图标线程 (~300ms)
+root.after(600, _deferred_tools)         # 600ms : tools 懒装载 + 通知回调 (~150ms)
 if is_tray_mode():
     _dfn('runmode=tray (no keyboard hook)')
 else:
@@ -1819,4 +1911,5 @@ else:
         win.ensure_caret_bg()
     except Exception:
         pass
+_dfn('startup: mainloop start (poll every 8ms; 从这里开始排队按键上屏)')
 root.mainloop()

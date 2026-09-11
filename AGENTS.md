@@ -47,6 +47,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\chat-protocol-smok
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-interop.ps1  # chat 双向互通验证（需联网+node）
 python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（16 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
+python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -111,6 +112,16 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 
 34. **「自动造词链」`record_commit` 与「词频学习」`engine.learn` 是两件事，别再绑在同一个门控里**（第十三轮审计）：C# 在**每条上屏路径**都调 `RecordCommit`（`Hook_OnSpaced` 空格与数字共用段、`Hook_OnPunct` 标点自动上屏、五笔唯一四码自动上屏），而 python 的 `commit()` 原来把它跟 `engine.learn` 一起塞在 `if i > 0` 里 → "打全拼 + 空格逐字确认"这条最常见的路径永不进 `ime.recent`，**自动造词几乎不触发**。现在的规则：`record_commit(text, code)` 在 `commit()` 里**无条件**调用（含 `commit(0)`，于是五笔自动上屏也覆盖）、`handle_punct` 自动上屏首候选时也补记；**只有动态候选/`vf` 面板符号不参与**（提前 return）。`if i > 0` 只该管 `engine.learn` + `_last_learn`(LastPick/词频回滚)。改上屏路径后跑 CHANGELOG 第十三轮的 headless 状态机 harness（真 engine + 出口打桩 + 临时 `LOCALAPPDATA`，别碰用户数据）。
 
+35. **别把代码写进行尾注释 —— 用 `tests\undefined-globals.py` 兜底（第四十轮的真 bug）**：`win.py` 曾经是
+    `_helper_t0=[0.0]; _helper_fail=[0]   # …; _ipc_req_hwnd={}; _last_fg=[0]` —— 两个全局量被**行尾注释吞掉**，
+    从未定义，而 `request_caret_refresh()` 会 `_ipc_req_hwnd[rid]=hwnd`（NameError → 被它自己的 `except Exception`
+    吞掉 → **`p.kill()` 杀掉跟随 helper**）、`get_caret_pos()` 第一行读 `_last_fg[0]`（NameError 直接抛 → 候选条
+    定位失败）。表现完全不像"未定义变量"：跟随失效、每键杀一个 python 子进程、`_helper_fail` 三次后不再起 helper。
+    **C# 侧有编译器兜（用不存在的字段直接 CS0103），python 侧没有** —— 所以：① 改完 `.py` 跑
+    `python wgime-py-pure\tests\undefined-globals.py`（symtable 版 mini-pyflakes，扫"引用了不存在的全局量"，
+    应输出 0）；② 写注释时别在行尾追加"示例代码"；③ 参与"是否还活着"判断的全局量（`_helper_fail`/`_ipc_done`）
+    出现异常时先怀疑这类错误。
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 - **缓存命中跳过 trailer 解压**：`WgImeLauncher.ComputeTrailerHash`（压缩字节 md5，不解压）→ `BuildDicts` 用它查 `.mb` 缓存；miss 才 `ExtractDictsFull` 解压（经 `TrailerExtractor` 委托）。
@@ -118,53 +129,51 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 - **词频保存后台化**：`SaveFreq` 走线程池（`freqSaving` 防堆积），退出时 `SaveFreqSync` 同步落盘。内存上限：FreqM/LastPickM 各 3 万、Freq 9 万、Assoc key 2 万。
 - **启动计时日志**：`startup: LoadFreq+BuildDicts=XXXms ApplySwap=YYYms`。
 - **固化码表预生成缓存**：`BakeTables` 固化后（无论是否勾选"删除源文件"）`PrebuildCacheAfterBake` 用 bake 后的输入重算 md5 并复用内存字典直接写 `wgime.mb`，下次启动命中缓存，跳过 ~10-24s 冷重建。md5 的 overlay 文件字节用 `SafeRead` 读实际状态；它对新码表 `TrimEnd` 末尾换行，与 `Get-DictSeg` 读数据块时的 `TrimEnd` 字节级一致，否则 md5 对不上。保留源文件时下次启动的 overlay 是幂等的（`AddDictLine` 覆盖 + `MergeUserWords` 只追加），冷启动结果等于内存字典。
-- **启动顺序：键盘钩子必须最先装（第三十八/三十九轮，别改回去）**。原来钩子是**最后**才装的，
-  而读词库(热 1.0s / 冷 12-15s)+Tk/加载窗+重 import+配置/候选条/托盘/插件 全排在它前面 —— 这 1.5-15 秒里
-  **按键根本没进输入法**，用户感受就是"启动后按 Shift 打字，要 1-3 秒才上屏"。现在的顺序（第三十九轮定稿）：
-  `单实例检查` → **`load_config`(1ms) + `hook.configure` + `hook.start()` + `hook.set_active(starton)` +
-  `win.ensure_caret_bg()`** → `root = tk.Tk()` + 加载窗 → `import tools/plugins/bar` → `Engine()`(词库) →
-  配置/候选条/托盘/插件/工具 → `root.after(8, poll)` → `mainloop`。
-  两个"等不起"的点必须排在钩子后面：**Tk root + 加载窗（≈150ms）** 与 **`import tools`（连带 plugins/bar/ui，
-  实测边际 155ms）**；加载窗仍然盖住建表的 1 秒，只是晚 ~0.2s 出现。
-  语义不变：**未激活时按键照常透传**（与没装钩子完全一样）；已激活时按键进 `hook.EVENTS` 队列，
-  等 `poll()` 起来后按顺序处理（前几秒敲的字不丢、也不漏成半截拼音）。尾巴上的 `hook.start()` 现在是幂等的
-  （已装则立即返回），只有真失败才弹"钩子安装失败"气泡；`_dfn('early hook ok=…')` 会写进 `debug.log`。
-  **A/B 实测**（同一隔离数据目录、`git show HEAD:` 取上一版 dist、各两遍）：钩子装好
-  **+2650ms（第三十八轮之前）→ +1397/+1419ms（第三十八轮）→ +824/+985ms（第三十九轮）**；
-  探针 stubbed `hook.start` 时是 **+48ms**（Tk +157ms、import_tools +156ms、engine +662ms）。
-  探针 `%TEMP%\wg-hookorder-probe.py`（10 项）。
+- **启动顺序（第三十八～四十轮，别改回去）**：用户报的"启动后按 Shift 打字要 1-3 秒才上屏"其实是**两段时间**：
+  ① 按键**进不进输入法**（钩子什么时候装上）；② 键进了队列之后**什么时候真正上屏**（`root.mainloop()` 里
+  `poll()` 什么时候开始跑）。三轮分别压了这两段，现在的顺序：
+  `单实例检查` → **`load_config`(1ms) + `hook.configure` + `hook.start()` + `hook.set_active(starton)`**
+  → **`Engine()` 后台线程**（只读文件/建表，不碰 Tk）+ 跟随 helper spawn 线程 → `import tkinter/tools/plugins/bar`
+  （dist 里这几个模块是**懒装载**） → `root = tk.Tk()` + 加载窗 → `join` 词库线程 → 配置/候选条 →
+  `root.after(8, poll)` → **`root.after(30/150/600, 插件·托盘·tools 三段收尾)`** → `mainloop`。
+  要点：**Tk/加载窗与读词库并行**（加载窗仍然盖住建表的 1 秒）、**收尾三段必须在 poll 之后**（它们合计
+  ~500ms，排在 poll 前面就是白等）、**`_splash.destroy()` 改 `withdraw()` + 主循环里再 destroy**（destroy 要 90ms）。
+  语义不变：**未激活时按键照常透传**；已激活时按键进 `hook.EVENTS` 队列，等 `poll()` 起来后按顺序处理
+  （前几秒敲的字不丢、也不漏成半截拼音）。尾巴上的 `hook.start()` 是幂等的，只有真失败才弹气泡。
+  **A/B 实测**（同一隔离数据目录 + 同一份码表、`git show HEAD:` 取上一版 dist、各两遍，从进程启动算）：
+  钩子装好 **+2650ms（三十八轮前）→ +1397（三十八）→ +824/+985（三十九）→ +498/+416（四十）**；
+  主循环起来 **+2694/+2590ms（三十九）→ +1954/+1877ms（四十）**。探针：`%TEMP%\wg-hookorder-probe.py`（10 项）、
+  `%TEMP%\wg-r40-timeline.py`（逐里程碑插桩）、`%TEMP%\wg-r40-ab.py`（A/B 口径）、`%TEMP%\wg-r40-selftest.py`（35 项）。
+- **dist 单文件的内嵌模块是"懒装载"的（第四十轮，别改回全量 eager）**：`build-wgime-pure.py` 只 eager exec
+  **`win`/`hook`/`engine`**，`bar`/`wspy`/`plugins`/`ui`/`tools`/`tray` 用 PEP 562 模块级 `__getattr__`
+  在**首次属性访问**时才 exec（`_EAGER`/`_PENDING`/`_load_into`，`threading.RLock` 可重入）。原来 9 个模块
+  一律启动即 exec 共 **~490ms**，其中 **367ms 是钩子用不到的 UI/插件/托盘模块**（还连带 `import tkinter`/PIL/pystray）
+  —— 全部白排在"按键进输入法"前面。**注意 `import tools` 这种裸 import 不会触发装载**（只拿到 stub），
+  属性访问才会；`_deferred_tools()` 就是靠 `tools.set_notifier(_notify)` 这第一个属性访问触发 tools 装载的。
+  改动时保持"钩子之前只依赖 win/hook/engine"这条线。
 - **跑真实 dist 的探针要注意 `APP_DIR`**（第三十九轮踩到）：`APP_DIR` 是**由 `DICT_DIR` 推出来的**
   （`APP_DIR = dirname(DICT_DIR)` 当 `DICT_DIR` 以 `dicts` 结尾，否则 `DICT_DIR`），所以
   `WGIME_DICT_DIR=<...>\package\dicts` 时读的是 **`package\config.txt`**，放在临时目录里的
   `config.txt (mode=tray)` **完全不生效** —— 想"托盘模式以免抢键盘"就必须把码表复制到 `<stage>\dicts`
   并把 `WGIME_DICT_DIR` 指过去；否则探针会真的装键盘钩子（此时只有 `starton=0` 才无害，因为未激活会透传）。
-- **python 版启动实测（第三十九轮复测，真实单文件 dist，代码路径 `starton=0` → 按键透传）**：warm 全程
-  **+824~985ms** 钩子装好、helper +0.07~0.12s 起 / +0.3~0.4s ready（与读词库并行）、引擎读完 +2.4~2.8s
-  （load≈1.01~1.09s）、插件 +0.2s、`active=` +2.7~3.0s；冷启动（重建索引）**14.1-14.9s**（不变）。
-- **"启动头几秒打字卡/打不出字"的三个根因（第三十四/三十五轮，别再种回去）**：
-  ① **反查表(rev_wb)绝不能同步建**：`showcode = 1` 是 `config.txt` **出厂默认值**，原来 `rev_wb_code()` 首次调用时同步
-  `build_rev_wb`（30.2 万码 / 143.8 万词条纯 Python 循环）→ **每次启动的第一下按键卡 1326ms**。现在 `rev_wb_code()`
-  只返回 `_rev_wb.get(w)`，没建好就调 `warm_rev_wb()` 起后台线程并返回 `None`（候选暂时不显示反查码），
-  `build_rev_wb` 每 4000 码 `time.sleep` 让 GIL（`chunk=0` 关闭，oracle 用），码表变动 `_invalidate_rev_wb()` 用
-  `_rev_gen` 代数作废在飞结果。**不要把预热搬回 `apply_config()`**：那 1.2s 抢 GIL 会把 `hook.start()` 从 +2.29s
-  推到 +3.70s（键更晚可用）；预热只在钩子装好后（`main` 里 `engine.warm_ec()`）和打开「反查编码」开关时做。
-  ② **缓存分两段读**（`CACHE_VER = 5`）：第一段=核心表 `(py,pk,pv,wb,wk,wv,char_py,acro)` +
-  **三张派生表 `(char_wb, wb_by_len, word_freq, word_freq_total)`**（第三十五轮加，共 47.0MB），
-  第二段=**只有「词典」模式(3)用得到**的 `(ec,ek,ev,ce)`（46MB）。启动只**同步**读第一段（`f.tell()` 记下第二段偏移
-  `_ec_off`，`_ec_ready=False`、`ec/ek/ev/ce=None`），第二段由 `ensure_ec()` 在后台线程里用 `_YieldingReader`
-  （每次 `read` 之间 sleep 0.2ms，让 `_pickle` 周期性交还 GIL）加载 —— 实测加载期间每键 **1–40ms**。
-  **四个部件必须打成一个 pickle 段**（`pickle.dump((ec,ek,ev,ce), f)`）：拆成 4 个会丢字符串去重，缓存 90.6MB→121.9MB。
-  `candidates()` 的 mode 3 分支在 `_ec_ready` 为假时**必须返回 `cands, False, False`**（三元组！曾经写成 `return []`
-  让 `main.refresh` 抛 `ValueError: not enough values to unpack`），并调 `ensure_ec()` 顺手起加载。
-  第二段损坏/截断（`.sig` 仍匹配、缓存"看起来可用"）→ 后台线程里 `_build_ec()` 重建；两条路都失败才 `_ec_fail` 打住
-  （否则词典模式每按一键起一个读 24MB 码表的线程）。探针：`%TEMP%\wgime-warmec-probe.py`（40 项）。
-  ③ **三张"每次重算"的派生表必须留在缓存第一段**（第三十五轮）：`char_wb`（单字→最长五笔码，21,781 键）、
-  `wb_by_len`（五笔码按码长分桶，z 通配用）、`word_freq`（`pywfreq.txt` 71,580 词）—— 原来写在
-  `_init_state()` 里**每次启动重算**，实测 char_wb 707ms + wb_by_len 61ms + pywfreq 155ms ≈ **0.92s**。
-  现在统一在 `_build_core_extra()` 里算（`_build()` 调一次并随缓存写出；`_init_state()` 只在
-  `_core_extra_ready` 为假时兜底现算）。**`pywfreq.txt` 必须在 `CACHE_FILES` 里**，否则改了语料缓存不失效、
-  `word_freq` 一直是旧的。**`wb_by_len` 桶内顺序必须原样保留**（ordinal 升序 = C# `OrderBy`，见 §11）。
-  热启动 Engine() 构造 1401→**998ms**、端到端装钩子 2.29→**1.98s**（第三十四轮前是 3.70s）；缓存 93.1MB。
+- **python 版启动实测（第四十轮复测，真实单文件 dist，`starton=0` → 按键透传）**：warm 全程
+  **+498/+416ms** 钩子装好 → `poll` 起来 **+1954/+1877ms**（HEAD 是 2694/2590ms）；引擎读完 +1546ms
+  （load_ms ≈ 0.9-1.1s，与 Tk/加载窗并行）；冷启动（重建索引）**14s 级**（不变）。剩下的固定开销：
+  解释器启动 + 解析 727KB 单文件 **~300ms**、第三方 zip base64/md5 ~18ms、三个必装模块 ~93ms、主循环前收尾 0ms。
+- **"启动头几秒打字卡/打不出字"的三个根因（第三十四/三十五轮，别再种回去；细节见 CHANGELOG 那两轮）**：
+  ① **反查表(rev_wb)绝不同步建**：`showcode=1` 是出厂默认，原来首次调用同步 `build_rev_wb`（30.2 万码 / 143.8 万
+  词条）→ **首键卡 1326ms**。现在 `rev_wb_code()` 只查 `_rev_wb`，没建好就 `warm_rev_wb()` 起后台线程返回 None；
+  `_invalidate_rev_wb()`（`_rev_gen` 代数）在码表变动时作废在飞结果。**别把预热搬回 `apply_config()`**（那 1.2s
+  抢 GIL 会把 `hook.start()` 从 +2.29s 推到 +3.70s）——预热只在钩子装好后（`engine.warm_ec()`）与用户打开
+  「反查编码」时做。② **缓存分两段读**（`CACHE_VER=5`）：第一段=核心表 `(py,pk,pv,wb,wk,wv,char_py,acro)` +
+  派生表 `(char_wb,wb_by_len,word_freq,word_freq_total)`（47MB），第二段=只给词典模式(3)的 `(ec,ek,ev,ce)`（46MB，
+  `ensure_ec()` 用 `_YieldingReader` 后台读，加载期间每键 1–40ms）。**四个部件必须打成一个 pickle 段**（拆开丢
+  字符串去重，90.6→121.9MB）；`candidates()` 的 mode 3 在 `_ec_ready` 为假时**必须返回三元组 `cands,False,False`**
+  （曾写成 `return []` → `main.refresh` 抛 ValueError）并顺手 `ensure_ec()`；两段都失败才 `_ec_fail` 打住。
+  ③ **三张"每次重算"的派生表必须留在缓存第一段**：`char_wb`/`wb_by_len`/`word_freq`（原来在 `_init_state()` 里
+  每次重算 ≈0.92s；现在 `_build_core_extra()` 算一次随缓存写出，`_core_extra_ready` 只是兜底）。**`pywfreq.txt`
+  必须在 `CACHE_FILES` 里**（否则改语料缓存不失效）；**`wb_by_len` 桶内顺序必须原样保留**（= C# `OrderBy`，§11）。
+  合计热启动 Engine() 1401→**998ms**、装钩子 3.70→**1.98s**；缓存 93.1MB。探针 `%TEMP%\wgime-warmec-probe.py`（40 项）。
 - **加载提示窗每次启动都显示（第三十四轮）**：热启动也要读 93MB 缓存 + 装钩子（~2.0s），只在"缓存过期要重建"时
   才显示会让热启动那两三秒毫无反馈。现在 `_splash` 无条件建，第二行按 `_dict_cache_stale()` 区分
   "首次启动需建立索引, 请稍候 (之后走缓存, 秒开)" / "正在读取词库缓存, 几秒后即可输入"。
@@ -210,7 +219,7 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 ## 8. 当前状态速览
 
 - **已完成一次全面体检(review)并修复高危+中危问题**（2026-08-29，覆盖 main/engine/win/tools/hook/plugins/ui 七模块）：详见 CHANGELOG 对应条目。核心：词频保存线程竞争已用 RLock 状态锁修复；剪贴板改 ctypes 原生（零子进程）；`send_unicode` 按 UTF-16 码元注入（支持 emoji）；hook 修 Shift 轻拍/F8 修饰键/数字键/注入键/异常保护。
-- 最近工作：码表数据块化（`###WGIME_DATA###`，消除启动时 PS 解析大 here-string）、固化码表写数据块 + 预生成 `.mb` 缓存（下次启动跳过 ~10s 冷重建）、词库加载优化（缓存命中跳解压）、wgime.bat 恢复瘦 DLL、种子精简、**chat 插件重写（2026-08-25：relay 裸 JSON + 真 MQTT 双模式、auto 兜底、Active Rooms、6s×3 重连，修复与 PC/Android 双向不互通的致命缺陷；新增 `tests\chat-protocol-smoke.ps1` 联网协议验证）**、clock 多提醒、文档同步、**纯 Python 版托盘菜单分组 + 中英双语（按 `GetUserDefaultUILanguage` 判定，与 C# 版 `CultureInfo` 一致）**。
+- 最近工作：码表数据块化（`###WGIME_DATA###`）、固化码表 + 预生成 `.mb` 缓存、词库加载优化（缓存命中跳解压）、启动顺序优化（第三十八～四十轮，见 §6）、**chat 插件重写（2026-08-25：relay 裸 JSON + 真 MQTT 双模式、auto 兜底、Active Rooms、6s×3 重连，修复与 PC/Android 双向不互通的致命缺陷；新增 `tests\chat-protocol-smoke.ps1` 联网协议验证）**、clock 多提醒、文档同步、**纯 Python 版托盘菜单分组 + 中英双语（按 `GetUserDefaultUILanguage` 判定，与 C# 版 `CultureInfo` 一致）**。
 - 纯 Python 版托盘菜单：分组(ime 模式)=开关/模式/选项{繁体输出, 反查编码, 整句输入, 联想, 全角标点(Ctrl+.), 空闲隐藏, 跟随光标, 主题}/词库{造词, 批量造词…, 用户词表…, 导入码表…}/这个程序{剪贴板上屏, 标点吞字修复}; tray 模式才显示 工具箱/内置工具/插件管理/config 应用/**运行模式{输入法(IME), 托盘工具箱(Tray)}**/退出；标签经 `tray.L(zh,en)` 双语化，造词走 `api['makeword']` → `makeword_clipboard()`；**托盘勾选态要齐**（第十六轮审计）：C# `RefreshMenuChecks` 给 8 类项打勾 —— `开关`(`is_active`)、4 个模式(`get_mode`)、`反查编码`、`繁体输出`(`get_trad`)、`候选窗跟随光标`、`空闲隐藏`、`改用剪贴板上屏`(`get_apppaste` = `APPMODES.get(前台,0)==1`)、`标点吞字修复`(`get_appkeyfix` = `effective_keyfix()`)；这些 `get_*` 都由 `main.py` 的托盘 `api` 注册（pystray 在**菜单打开时**求值 `checked` 回调，所以是活状态）；改托盘菜单时别把这几项的 `checked=` 删掉，也别新增只用 `toggle_*` 而没有 `get_*` 的开关项。批量造词 `show_batch_makeword`（选词表文件→2-8 汉字去重→确认→`engine.add_user_words_batch`）/用户词表 `show_user_words`（多选删除→落盘 `userwords.txt`→后台 `engine.reload()` 重建，对齐 C# BuildDicts+ApplySwap）。**造词对话框必须带汉字校验**（第十九轮）：`show_makeword` 的 `do_make` 是 `not (2 <= len(w) <= 8) or not engmod.is_all_cjk(w)` → 提示「词语需 2-8 个汉字」（对齐 C# `MakeWordFromClipboard` 的 `IsAllCJK`）—— 否则"手填编码"这条 python 额外路径能把纯英文/混排词写进用户词库。批量造词的行规则（trim、空行不计、2-8 汉字否则计 skipped、重复计 skipped）与 C# `CollectWordLines` 逐条一致，别改。**内置工具 1:1 对齐 C#**：工具箱/网络工具/便签/剪贴板/取色器/插件管理/造词/批量造词/用户词表/导入码表均已复刻（`tools.py`，对照表见 `wgime-py-pure\README.md`）；**网络工具的纯计算部分已逐项核对一致**（第二十六轮）：`_ip_type`/`_ip_class`（20 个边界地址）、`subnet_calc`（含 /0 /31 /32 与点分掩码、非连续掩码报错）、`subnet_split`（count 取整、`/30 拆 2` 报"拆得太碎了"）、`range_to_cidr`（含反向、全范围）、`mask_table`（逐行含对齐）、`test_port` 的 `open  Xms` / `closed (timeout Xms)` 串格式 —— 都别改。唯一**有意差异**：连接被拒时 C# 是 `closed (SocketException)`、python 是 `closed (<Python 异常类名>)`（异常体系不同，别去映射成 .NET 类名）。**剪贴板历史的三条判定别回退**（第二十二轮）：① **只在窗口开着时收集**（C# 关窗即 `RemoveClipboardFormatListener`；`_clip_consider(t, _clip_win[0] is not None)`），别让轮询线程关窗后还每 0.3s 读剪贴板；② **纯空白不记**（C# `t.Trim().Length > 0`）；③ **selfSet**：`copy_sel`/`paste` 写回剪贴板前记 `_clip_self[0]`，轮询遇到就跳过并推进 `_clip_last[0]`，否则点一条旧记录会把它重新顶到历史最前。`_clip_push` 的语义（去重/移置顶/容量 200，只在插入路径裁剪）与 C# `ClipPush` 一致。C# 的「固化码表(BakeDialog)」在 python 无对应物（`py/wb/ec.txt` + `import_*.txt` 即源，导入即固化）。tools.txt 的 `code = xxx` 与 C# 一致注册为启动器候选（`main.find_launcher` → `tools.run_tool_code`，结果走托盘气泡；冲突优先级 插件 > tools code= > config app= > 内置别名）。**`config.txt app=` 的启动要走 ShellExecute**（第二十五轮）：C# `LaunchApp` 对"不含 `://`、含 `\`/`/`、非绝对路径"的目标先 `Path.Combine(BatDir, target)`（**相对路径按程序目录**解析，不是进程 CWD），再用 `UseShellExecute=true` + `Arguments` 启动；python 对应 `main.run_launcher` 的 `app` 分支里做同样的 join，并调 `win.shell_execute()`（ctypes `ShellExecuteW 'open'`）——**不要**改回 `subprocess.Popen(..., shell=True)`（会过 `cmd.exe`，参数里的 `&`/`^`/`%` 被解释）。**运行模式**：`config.txt mode=ime|tray`（ime=输入法默认；tray=纯托盘工具无键盘 hook/候选窗，对齐 C# 版合并 wgtray 方案），托盘「运行模式」切换 → 写 config + 自动重启进程；`main.is_tray_mode()`/`switch_mode()`/`tray._tool_icon_img()` 实现。全/半角标点：`hook.py` 吞 `, . ; ' / \ [ ] Shift+4` → `main.map_punct`（对齐 C# MapPunct 含引号开闭交替），组字中先上屏首候选再标点（C# Hook_OnPunct 对齐），`;` 在微软双拼组字中仍是韵母 ing 键、`[`/`]` 有候选时仍以词定字；`cnpunct=0` 时标点键透传半角，`config.txt cnpunct` 持久化。
 - 纯 Python 版(`wgime-py-pure/`)概览：功能与 C# 版对齐(四模式/词频/简拼/双拼/造词/码表导入固化/启动器/工具箱/插件/候选窗/托盘/反查/简繁/整句/联想/空闲隐藏)；单文件 `dist\wgime-py.py`(内嵌模块+pystray/uiautomation/comtypes zip，**不内嵌插件**)；数据目录 `%LOCALAPPDATA%\wgime-py`(Store Python 自动切 `USERPROFILE\wgime-py`)；词频机制已升级(语料+学习+近期热度、`learnk`/`recentk` 可配)；UI 用 `ui.py` 设计系统。详见 README「纯 Python 版」章节与 `docs\WGIME_*`.md 对应小节、`wgime-py-pure\README.md`。
 - 纯 Python 插件（`wgime-py-pure\plugins\*.py`）：契约=模块级 `CODE/NAME/DESC/VERSION/AUTHOR/PERM` + `run()`，窗口用 `ui.py` 设计系统（`make_window/flat_button/rounded_entry/console_text`），不建 `tk.Tk()`、不调 mainloop，定时用 `win.after`，后台线程经 queue+`root.after` 派发。已从 C# 1:1 移植：`calc.py`(计算器 jsq，calc 为别名)、`chat.py`(聊天 lt)、`clock.py`(悬浮时钟 sz)、`wgime-qr.py`(二维码 qrcode，见下面单独一条)；**`wgtranslate.py`(剪贴板翻译 fy) 不是 1:1 移植，是另一份重写（v2.2.0）** —— 差异见下面单独一条。插件**不内嵌**：`build-package.ps1` 把本目录 `plugins\*.py` 全量拷进 `package\plugins\`、把仓库根 `plugins\*.txt` 只挑**步骤 DSL 类**(clean-bin/qping/README)拷入——含完整 `[csharp]` 插件块的 txt(calc/chat/clock/wgtranslate 的 C# 源)被同 CODE 的 `.py` 取代，不再进 python 分发(避免生产 csc 编译路径)；生产环境从外部插件目录加载（`load_py_plugins` 扫 APP_DIR/plugins，`.py` 优先于同 CODE 的 `.txt` 步骤插件）。仓库根 `plugins\` 保留 C# 版插件源(txt)，Python 版源在本目录 `plugins\*.py`。python 版 `_run_csharp_plugin`/`run-csharp-plugin.ps1` 的 [csharp] 运行能力仍保留作兼容回退(如用户自放 C# txt)，但内置分发不再带 C# 插件。**托盘「插件」子菜单**（`tray._plugins_menu`）列出 plugins 目录全部插件(.py/.txt)点击即运行，尾部接「插件管理…」；**插件管理器复刻 C# 版**(`tools.show_plugin_mgr` 重写): 列表(名称/编码/类型/启停/**状态**/文件)+按钮(重载/启停/打开目录/编辑/删除/新建模板/运行)+双击运行。**第十八轮补齐的几点别回退**：① 状态列由 `plugins.count_steps(body)`（与 `run_steps` 同规则：块算 1 步、闭标签缺失整块丢弃）算出，`main._list_plugin_files` 负责带 `status`（`正常 (N 步)`/`解析失败`/`未加载`/`—`）；② 禁用的行要 `lst.itemconfig(..., foreground=ui.SUB)` 灰显（对齐 C# `ForeColor = Gray`）；③ **删除确认必须 `default=messagebox.NO`**（C# 是 `MessageBoxDefaultButton.Button2`，缺省"是"会一记回车删掉插件文件），标题 `WgIme`；④ 双击 = 运行是 python 的有意选择（C# 是编辑），已记在此处。
@@ -283,20 +292,12 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
   `detect_format`/`convert_file`/`suggest_target`/重导入幂等）已用 oracle 对 C# 逐函数核对 **58 项 0 差异**，
   别改语义；两个坑别回退：① `write_import_file` **必须 `newline='\n'`**（C# 写裸 LF，python 默认会翻 CRLF）；
   ② 读 `parse_dict`/`load_import_base`/`_py_plugin_meta_static` 都要宽松（见 §28，GBK 码表严格 utf-8 会把启动打崩）。
-- **启动头几秒打字卡 = 已修（第三十四/三十五轮，用户报告"每次启动头几秒打不出字"）**：三个根因都在 §6 ——
-  ① 首键同步建反查表（`showcode=1` 是出厂默认，1326ms）→ 改后台建；② 启动同步 `pickle.load` 整份 90.6MB 缓存
-  （2050–2611ms）→ 拆两段，词典那半张表惰性后台加载；③ `_init_state` 每次重算 `char_wb`/`wb_by_len`/`word_freq`
-  （~0.92s）→ 进缓存第一段（`CACHE_VER = 5`）。合计热启动**装钩子 3.70s → 1.98s**、**首键 1326ms → 60ms**，
-  缓存 93.1MB（冷启动 ~12.1–12.9s 不变）。另外热启动也固定显示"正在加载词库"小窗。
-  **别把这三处改回同步/每次重算**（§6 有完整"别再种回去"清单）。验证：`%TEMP%\wgime-warmec-probe.py` **40 项**、
-  缓存生命周期 **14 项**、`tests\pure-state-harness.py` **16/16** 全绿。
-- **启动后"按 Shift 激活再打字，要 1-3 秒才上屏" = 已修（第三十八/三十九轮）**：真因是**钩子装得太晚** ——
-  它原来排在引擎/插件/托盘之后（真实 dist warm **+2650ms**，冷启动 +14s），用户"启动后按 Shift 打字"正好落在
-  这段窗口里，那几秒按键根本没进输入法。第三十八轮把钩子提到**读词库之前**（+1.45s）+ 把 caret helper 一起提前，
-  并修掉 helper 在 `runtime\` 残留 python38 环境下**起来就秒退**的问题（改落 `runtime\caret-helper\` 子目录 +
-  连续秒退 3 次不再重试）；第三十九轮再把它提到 **Tk/加载窗与 `import tools/plugins/bar` 之前**，
-  A/B 实测钩子装好 **+2650ms → +1397ms → +824/+985ms**（stubbed 探针 +48ms）。
-  细节与"别再改回去"的说明在 §6 与 §17。验证：`%TEMP%\wg-hookorder-probe.py` **10 项 0 失败**
-  （钩子早于 Tk / 早于重 import / 重 import 仍早于建表 / 钩子 <900ms + 残留 A/B + 新路径解析）。
+- **"启动头几秒打不出字"（第三十四/三十五轮）与"按 Shift 打字 1-3 秒才上屏"（第三十八～四十轮）都已修**：
+  前者三个根因（首键同步建反查表 1326ms、整份 90.6MB 缓存同步 pickle.load、`_init_state` 每次重算派生表
+  ≈0.92s）见 §6 的"三个根因"那条；后者是**钩子装得太晚 + 收尾挡在 poll 前面**，三轮分别把钩子提到
+  **Tk/加载窗/重 import/读词库之前**（钩子可用 +2650ms → +498/+416ms）、把读词库放后台线程与 UI 并行、
+  把插件/托盘/tools 收尾挪进主循环（`poll` 起来 +2694ms → **+1954/+1877ms**）。**别把这几处改回同步/串行**，
+  细节与"别再改回去"清单都在 §6。验证：`%TEMP%\wgime-warmec-probe.py`（40 项）、缓存生命周期（14 项）、
+  `%TEMP%\wg-hookorder-probe.py`（10 项）、`%TEMP%\wg-r40-selftest.py`（35 项）、harness 16/16。
 - chat 插件要点：relay=`chat.seee.uno` 走裸 JSON 文本帧，其余 broker 走 MQTT over WS（`/mqtt` 路径 + **必须 `mqtt` 子协议**，否则 EMQX 400/Mosquitto 断连）；TLS 需 1.2+。详见 `docs\WGIME_CHAT_技术文档.md` §8。
 - 待用户验证：chat 插件与 PC/Android 真机互通（协议层已实机验证）、词库加载速度（缓存命中路径）、固化码表后启动速度（应已降到缓存命中级别）。

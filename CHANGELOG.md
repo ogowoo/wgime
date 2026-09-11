@@ -4,7 +4,82 @@
 
 ---
 
-## 2026-09-11 (第三十九轮: 键盘钩子再提前 ~0.5s —— 提到 Tk 与重 import 之前)
+## 2026-09-11 (第四十轮: 启动再快 0.7s —— 懒装载 + 词库线程 + 收尾挪进主循环；顺带挖出跟随 helper 的死穴)
+
+接第三十八/三十九轮继续压"启动后按 Shift 打字要等 1-3 秒才上屏"。第三十九轮把**键盘钩子**提到最前，
+但"上屏"要到 `root.mainloop()` 里 `poll()` 跑起来才发生 —— 这一轮压的就是**到主循环的距离**：
+实测 HEAD 到主循环 **2694ms**，本轮 **1954ms**（−713ms）。
+
+### 一、两个真 bug：`win.py` 的全局量被写进行尾注释（跟随 helper 一直没工作）
+
+```python
+_helper_t0=[0.0]; _helper_fail=[0]   # helper 启动时刻 / 连续秒退计数 (见 _start_helper/_ipc_reader); _ipc_req_hwnd={}; _last_fg=[0]
+```
+
+`_ipc_req_hwnd` 与 `_last_fg` **从未真正定义**（`7c02673` 移植 testing v3 caret-helper IPC 时写进注释的），
+后果（都在运行期被吞成一行 debug.log，所以一直没被发现）：
+
+* `request_caret_refresh()` 里 `_ipc_req_hwnd[rid]=hwnd` → `NameError` → 被自己的 `except Exception` 吞掉 →
+  **`p.kill()` 把跟随 helper 杀掉**。也就是**每打一个字都在杀/重启一个 python 子进程**（还受 1s 限流保护才
+  没把机器打满），UIA 精确跟随完全失效，`_helper_fail` 三次后干脆不再起 helper（第三十八轮看到的"helper 秒退"
+  有一部分其实是这个，而不只是 `runtime\` 里的 python38 残留）。
+* `get_caret_pos()` 第一行 `if _last_fg[0]!=fg_now:` → `NameError` 直接抛出去 → 首次候选窗定位失败。
+
+新增探针 `%TEMP%\wg-caret-global-probe.py`（独立装载真 `win.py`，`LOCALAPPDATA` 指向隔离目录，起真 helper）：
+**修复前 4/12 通过**（`_ipc_req_hwnd`/`_last_fg` 不存在、`request_caret_refresh` 返回 0、30 次刷新后 helper 已死
+pid 9756→None、`_helper_fail=[1]`、`get_caret_pos` 抛 NameError）→ **修复后 12/12**（rid>0、pid 不变、
+`_helper_fail` 保持 0、`get_caret_pos` 不抛）。修复即把两个量真正定义出来（注释里那半行删掉）。
+
+**并加了防呆**：`wgime-py-pure\tests\undefined-globals.py`（symtable 写的 mini-pyflakes，扫"引用了不存在的
+全局量"）。在**修复前的 `win.py`** 上跑会报 3 处（`_ipc_req_hwnd`×2、`_last_fg`×1），修复后 0；全项目 17 个 .py
+文件现在 0。这类"名字被写进注释"的错误 C# 侧有编译器兜（用不存在的字段直接 CS0103），python 侧原来完全靠运气。
+
+### 二、启动路径：能省的时间都在"到主循环"这一段
+
+1. **dist 单文件模块懒装载**（`build-wgime-pure.py`）：原来 9 个内嵌模块一律启动即 `exec`，实测
+   合计 **~490ms**（tray 121 / tools 107 / win 51 / plugins 48 / bar 46 / wspy 40 / engine 34 / hook 12 / ui 6），
+   其中 **367ms 花在钩子根本用不到的 UI/插件/托盘模块上**（它们还连带 `import tkinter` / PIL / pystray）。
+   现在只有 **`win`/`hook`/`engine`** 预装，其余用 PEP 562 模块级 `__getattr__` 做成"首次属性访问才 `exec`"
+   （RLock 保护，可重入 —— 模块 exec 期间可能再触发别的懒模块）。钩子因此提前 **~294ms** 可用。
+2. **`Engine()` 挪进后台线程**（`main.py`）：读词库（热 ~1.0s，冷 12-15s）原来同步排在 Tk/加载窗之后，
+   现在**钩子一装好就起线程**，主线程同时 `import tkinter` + 建 Tk + 加载窗，两边并行；`join` 之后才用结果
+   （异常含 `MemoryError` 带回主线程重抛；线程起不来则老实同步读一次）。加载窗仍然盖住建表的 1s，只是
+   它和读词库同时在跑。
+3. **跟随 helper 的 spawn 也进线程**（原来 `Popen` 一个 python 要 ~90-100ms，正卡在词库线程启动之前）。
+4. **启动收尾从主循环之前挪进主循环**：`reload_plugins` + `load_py_plugins` + `load_appmodes` + 托盘对象/图标
+   (`import tray` = pystray+PIL) + `tools` 懒装载（`tools.set_notifier` 是第一次访问 tools 属性）实测合计
+   **~500ms**，原来全排在 `root.after(8, poll)` 前面 —— 钩子早在收键排队了，这 500ms 纯粹是"上屏"白等。
+   现在 `poll` 先跑（8ms 就把排队的键全部上屏），三段收尾按 **30 / 150 / 600ms** 错开在主循环里做
+   （`_deferred_plugins` / `_deferred_tray` / `_deferred_tools`），每档自己都很短，不把刚开始打字那几秒堵住。
+   打字本身不依赖它们（只有"启动器候选/工具箱/插件管理/托盘菜单"要，那也得用户先敲出 code 来）。
+5. **加载窗销毁**从 `destroy()`（实测 ~90ms，正卡在"读完词库 → poll 起来"之间）改成 `withdraw()` + 主循环里
+   `after(120)` 再 `destroy`。
+6. 新增一行启动日志 `startup: mainloop start ...`（`WGIME_DEBUG=1` 时写 `debug.log`），A/B 与用户排障都用得上。
+
+### 三、A/B 实测（真实单文件 dist，同一隔离数据目录 + 同一份码表，`git show HEAD:` 取上一版，各跑 2 遍）
+
+| 构建 | 钩子装好 | 主循环起来（=排队按键真正上屏） |
+|---|---|---|
+| HEAD（第三十九轮） | 860 / 710 ms | 2694 / 2590 ms |
+| **本轮** | **498 / 416 ms** | **1954 / 1877 ms** |
+| Δ | **−294 ms** | **−713 ms** |
+
+内部里程碑探针（`%TEMP%\wg-r40-timeline.py`，把每个里程碑插桩后跑真实 dist）：钩子 **+181ms**、
+词库线程起 +276ms、Tk root +741ms、词库读完 +1546ms、`poll` +1611ms（HEAD 同一探针口径下 `poll` 是 +2303ms）。
+剩下的固定开销：解释器启动+解析 727KB 单文件 **~300ms**、第三方 zip 的 base64/md5 18ms、三个必装模块 93ms。
+
+### 四、验证
+
+* **dist 自检**（`%TEMP%\wg-r40-selftest.py`，把内嵌 main.py 的 `root.mainloop()` 换成自检块，用真实 dist 跑）：
+  **35/35 通过**，且**懒装载版与"全量 eager"版逐项 DIFFS=0** —— 懒装载没有改变任何行为。自检覆盖：
+  9 个模块首次属性访问都真的装载、**排队的键在收尾三段之前就能上屏**（打 `ni` 出候选、空格上屏汉字）、
+  三段收尾确实建起 PLUGINS/TOOLS/托盘图标、engine 词典非空、钩子装上、加载窗已隐藏。
+* `tests\pure-state-harness.py` **16/16**；回归探针 split-cache/派生表 **40 项**、缓存生命周期 **14 项**、
+  QR **78 项**、wgtranslate **62 项**、钩子顺序 **10 项** 全部 DIFFS=0；dist 内嵌 9 模块与磁盘逐字节相同
+  （`%TEMP%\wgime-dist-sync-check.py` → OK）；`tests\undefined-globals.py` 0 处。
+* 冷启动不受影响（仍 14s 级，要重建索引）。
+
+---
 
 接第三十八轮继续压"启动后前几秒打字没反应"：上轮把钩子放到**读词库之前**，但它前面还排着
 `tk.Tk()`/加载窗 与 `import tools`（连带 `plugins`/`bar`/`ui`）。
