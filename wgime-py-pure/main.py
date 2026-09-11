@@ -342,10 +342,14 @@ try:
         'toggle': lambda: set_active(not ime.active),
         'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
         'trad': lambda: toggle_trad(),
+        'get_trad': lambda: bool(ime.trad),               # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
         'quit': lambda: quit_app(),
         'is_active': lambda: ime.active,
         'get_mode': lambda: ime.mode,
         'apppaste': lambda: toggle_app_paste(),
+        # 托盘「这个程序」两项的勾选态 (对齐 C# RefreshMenuChecks: AppModes[前台] == 1 / EffectiveKeyfix())
+        'get_apppaste': lambda: APPMODES.get(win.foreground_process_name(), 0) == 1,
+        'get_appkeyfix': lambda: bool(effective_keyfix()),
         'appkeyfix': lambda: toggle_app_keyfix(),
         'followcaret': lambda: toggle_followcaret(),
         'get_followcaret': lambda: CFG.get('followcaret', True),

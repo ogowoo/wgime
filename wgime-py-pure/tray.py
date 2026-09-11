@@ -184,8 +184,9 @@ class Tray:
     # ---------- 菜单组 ----------
     def _ime_items(self):
         return (
-            # 开关
-            pystray.MenuItem(L('开关  (Shift 轻点)', 'On/Off  (Shift tap)'), self._on(self.api['toggle'])),
+            # 开关 (勾选态 = 输入法当前是否开启, 对齐 C# miOnOff.Checked = Hook.IsLocked)
+            pystray.MenuItem(L('开关  (Shift 轻点)', 'On/Off  (Shift tap)'), self._on(self.api['toggle']),
+                             checked=lambda _it: self.api['is_active']()),
             pystray.Menu.SEPARATOR,
             # 模式
             pystray.MenuItem(L('模式  (Ctrl+` 循环)', 'Mode  (Ctrl+` cycles)'),
@@ -198,7 +199,8 @@ class Tray:
             pystray.MenuItem(L('选项', 'Options'),
                              pystray.Menu(
                                  pystray.MenuItem(L('繁体输出  (Ctrl+Shift+F)', 'Trad output  (Ctrl+Shift+F)'),
-                                                  self._on(self.api['trad'])),
+                                                  self._on(self.api['trad']),
+                                                  checked=lambda _it: self.api['get_trad']()),
                                  pystray.MenuItem(L('反查编码', 'Reverse code'),
                                                   self._on(self.api['toggleshowcode']),
                                                   checked=lambda _it: self.api['get_showcode']()),
@@ -242,9 +244,11 @@ class Tray:
             pystray.MenuItem(L('这个程序', 'This app'),
                              pystray.Menu(
                                  pystray.MenuItem(L('改用剪贴板上屏', 'Paste via clipboard'),
-                                                  self._on(self.api['apppaste'])),
+                                                  self._on(self.api['apppaste']),
+                                                  checked=lambda _it: self.api['get_apppaste']()),
                                  pystray.MenuItem(L('标点吞字修复', 'Punct stale-char fix'),
-                                                  self._on(self.api['appkeyfix'])),
+                                                  self._on(self.api['appkeyfix']),
+                                                  checked=lambda _it: self.api['get_appkeyfix']()),
                                  pystray.MenuItem(L('编辑配置 (config.txt)…', 'Edit config (config.txt)…'),
                                                   self._on(self.api['open_config'])),
                                  pystray.MenuItem(L('重载配置 (config/tools/插件)', 'Reload config (config/tools/plugins)'),
