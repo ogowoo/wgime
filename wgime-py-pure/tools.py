@@ -445,7 +445,7 @@ def show_notes(data_dir):
     saved_color = 'yellow'
     try:
         if os.path.exists(color_path):
-            saved_color = open(color_path, encoding='utf-8').read().strip() or 'yellow'
+            saved_color = engmod.read_text(color_path).strip() or 'yellow'   # 宽松解码 (用户可能用记事本另存 ANSI)
     except OSError:
         pass
     if saved_color in _NOTE_CN:
@@ -518,8 +518,7 @@ def show_notes(data_dir):
             # 旧单文件迁移
             if os.path.exists(legacy) and not any(f.endswith('.txt') for f in os.listdir(notes_dir)):
                 try:
-                    with open(legacy, encoding='utf-8') as f:
-                        open(os.path.join(notes_dir, '1.txt'), 'w', encoding='utf-8').write(f.read())
+                    open(os.path.join(notes_dir, '1.txt'), 'w', encoding='utf-8').write(engmod.read_text(legacy))
                     os.remove(legacy)
                 except OSError:
                     pass
@@ -537,7 +536,7 @@ def show_notes(data_dir):
                 state['files'] = [p]
             state['cur'] = 0
             try:
-                a = int(open(meta_path, encoding='utf-8').read().strip())
+                a = int(engmod.read_text(meta_path).strip())
                 if 1 <= a <= len(state['files']):
                     state['cur'] = a - 1
             except (OSError, ValueError):
@@ -556,7 +555,7 @@ def show_notes(data_dir):
     def load_cur():
         try:
             p = state['files'][state['cur']] if 0 <= state['cur'] < len(state['files']) else None
-            txt = open(p, encoding='utf-8').read() if p and os.path.exists(p) else ''
+            txt = engmod.read_text(p) if p and os.path.exists(p) else ''    # 宽松解码: 便签是用户会手改的文件
         except OSError:
             txt = ''
         box.delete('1.0', 'end')
@@ -566,11 +565,10 @@ def show_notes(data_dir):
     def title_of(path, idx):
         try:
             if path and os.path.exists(path):
-                with open(path, encoding='utf-8') as f:
-                    for ln in f:
-                        ln = ln.strip()
-                        if ln:
-                            return ln
+                for ln in engmod.read_text(path).split('\n'):              # 同上: 宽松解码
+                    ln = ln.strip()
+                    if ln:
+                        return ln
         except OSError:
             pass
         return '便签 %d' % (idx + 1)

@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-09-10 (第二十三轮审计: 便签 — 用户手改的便签文件必须宽松解码)
+
+换维度: C# `NoteForm`(3614-3986) vs python `tools.show_notes`。
+
+- **补齐(真差异)**: C# 读便签正文 / 迁移源 / 元数据一律 `File.ReadAllText(..., Encoding.UTF8)`
+  (**替换式解码, 永不抛**); python 的便签窗口里有 **5 处严格 `open(..., encoding='utf-8')` 读取** ——
+  `notes\*.txt`(便签正文)、`notes.txt`(旧版迁移源)、`notes-meta.txt`、`note-color.txt` 与取标题行。
+  而便签正是**最容易被用户用记事本"另存为 ANSI"的文件**: 一旦这样保存, `UnicodeDecodeError`
+  不是 `OSError`(那里的 `except OSError` 抓不到) → **便签窗口打不开/半死**(`_note_win[0]` 已经被置上,
+  后续点击只是 deiconify 那个坏窗口), 要重启进程才恢复。已全部改用 `engine.read_text()`
+  (`utf-8-sig` → `gbk` → `utf-8+replace`, AGENTS §28 的既有约定)
+- **核对一致(未改)**: 多便签存储 `notes\N.txt` + `notes-meta.txt`(存第 N 个, 1 基) + 全局
+  `note-color.txt`(缺省 `yellow`, 6 色 pastel); **旧版单文件迁移**(`notes.txt` → `notes\1.txt` 并删除);
+  去抖保存 **800ms**(同 C# `saver.Interval = 800`)+ 关窗保存; 一个便签都没有时创建空 `1.txt`;
+  主题色/标签取首行; 单例窗口
+- **验证**: 便签 8 项断言 **0 差异** —— 先演示"严格 utf-8 读 GBK 便签会抛 `UnicodeDecodeError`",
+  再验证 GBK 便签正文能正确打开、GBK `notes-meta.txt` 指向第 2 个便签、GBK 的旧 `notes.txt` 迁移成功
+  且落盘为 UTF-8、`note-color.txt` 读取不崩; `tests\pure-state-harness.py` 16/16 通过;
+  dist 内嵌 `tools.py` 与磁盘**逐字节相同**、`dist==package` SHA256 相同(`2AC63268…`)
+
+---
+
 ## 2026-09-10 (第二十二轮审计: 剪贴板历史 — 只在窗口开着时收集 + selfSet 防回录)
 
 换维度: C# `ClipForm`(3539-3607) + `ClipPush`(3529-3537) vs python `tools.show_clipboard`/`_clip_poll`
