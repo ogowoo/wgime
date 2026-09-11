@@ -160,7 +160,7 @@ public class WgTranslatePlugin
     }
     static string GoogleCloud(string q,string src,string dst) {
         string key=Environment.GetEnvironmentVariable("WGTRANSLATE_GOOGLE_KEY"); if(String.IsNullOrEmpty(key)) throw new Exception("未设置 WGTRANSLATE_GOOGLE_KEY");
-        string body="{\\\"q\\\":\\\""+JEsc(q)+"\\\",\\\"source\\\":\\\""+GoogleCode(src)+"\\\",\\\"target\\\":\\\""+GoogleCode(dst)+"\\\",\\\"format\\\":\\\"text\\\"}";
+        string body="{\"q\":\""+JEsc(q)+"\",\"source\":\""+GoogleCode(src)+"\",\"target\":\""+GoogleCode(dst)+"\",\"format\":\"text\"}";
         return WebUtility.HtmlDecode(JVal(Http("https://translation.googleapis.com/language/translate/v2?key="+Uri.EscapeDataString(key),"POST",body),"translatedText"));
     }
     static string MyMemory(string q,string src,string dst) { string u="https://api.mymemory.translated.net/get?q="+Uri.EscapeDataString(q)+"&langpair="+Uri.EscapeDataString(src+"|"+dst)+"&mt=1"; return WebUtility.HtmlDecode(JVal(Http(u,"GET",null),"translatedText")); }

@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-09-11 (第三十六轮审计: wgtranslate 插件 — C# 请求体转义 bug + python 语言表缺项 + 文档纠偏)
+
+维度: C# `plugins\wgtranslate.txt`（`code = fy`，`[csharp]` 编译型插件）vs python
+`wgime-py-pure\plugins\wgtranslate.py`（v2.2.0 重写版）。
+
+- **修 C# 侧真 bug（本轮新发现，带编译级证据）**: `GoogleCloud` 构造请求体那一行**多了一层转义** ——
+  源码写的是 `"{\\\"q\\\":\\\""`，C# 编译后的运行期字符串是 `{\"q\":\"…`（每组引号前多一个反斜杠），
+  **不是合法 JSON**，所以「Google Cloud（API Key）」通道**从来不可能成功**（服务端一律 400）。
+  同一个文件里紧挨着的 `Libre` 那行写法是对的（`"{\"q\":\""`），只有 Cloud 这行多了一级。
+  **证据**：用 `csc` 把该行**原样**编译成 exe 再运行、打印运行期 body ——
+  修前 `{\"q\":\"hello world\",…}` → `json.loads` 失败；修后 `{"q":"hello world","source":"zh-CN",…}` → 通过
+  （`Libre` 修前修后都合法）。改动：该行 16 处 `\\\"` → `\"`，`plugins\wgtranslate.txt` 与
+  `release\plugins\wgtranslate.txt` **各 1 行** diff，已跑 `sync-dist.ps1` 同步 release。
+- **修 python 侧缺项**: C# `LANG_NAMES`/`LANG_CODES` 有 **33 项**（含 `保加利亚语`/`bg`），python 的
+  `LANGUAGES` 漏了它 —— 保加利亚语在 python 版**根本选不到**。已按 C# 表的位置补上。
+- **文档纠偏**: AGENTS §8 原写「已从 C# 1:1 移植 … `wgtranslate.py`」，实际 python 侧是**另一份重写**
+  （v2.2.0），不是逐行移植。差异已逐条写进 AGENTS §8，要点：python 通道是**超集**
+  （多 SimplyTranslate / Argos 离线）、多「保留格式」开关、按**句子边界**分段（430B；C# 是纯字节切 450B）、
+  统一 `html.unescape`、MyMemory 校验 `responseStatus`（C# 会把"今日免费额度用尽"那句警告**当译文显示**）、
+  Libre 的 zh-TW 用 `zt`（C# 一律 `zh`）、auto 方向按**主导文字**判定（C# 只要有一个汉字就当中文）、
+  `PERM = network,run`（运行前弹确认）；标签 `自动判断` vs C# `自动检测`、python 没有 `自动中英互译`
+  菜单项（默认 源=自动判断/目标=简体中文 时自动翻转方向，效果等价）。
+- **顺带记两条仓库卫生规律**（已写进 AGENTS §5/§30）:
+  ① 根 `plugins\*.txt` 这类 txt 的 **blob 是 LF、工作区却是 CRLF**（`core.autocrlf=false` 且无属性），
+  用字节改写会整文件报改动 → 改完要按**各自 blob 的行尾**写（根 txt 写 LF；`release\plugins\wgtranslate.txt`
+  的 blob 是 CRLF，就写 CRLF），再用 `git diff --numstat` 校验只剩目标行；
+  ② `build-package.ps1` 内嵌的第三方 zip 用当前时间戳，**源码没改也会让 `dist\wgime-py.py` 变脏**；
+  dist 只内嵌 9 个项目模块 + `main.py`（**不含插件**），所以只改插件时应 `git checkout -- dist\wgime-py.py`。
+- **验证**: 新探针 `%TEMP%\wg-wgtranslate-probe.py` **62 项 DIFFS=0**（C# 33 项语言表逐项对齐、
+  各通道语言码映射与 C# oracle 逐值比对、`chunks()` 7 组样例无损且不超 430B、`layout_units()` 重建等于原文
+  且保留缩进/项目符号/尾空格/空行、`detect_source()` 13 例、自动容错回退顺序与失败文案、显式通道失败不回落）
+  + `csc` 编译运行证据（BEFORE 失败 / AFTER 通过，release 侧同样通过，见 `%TEMP%\wg-csbody-evidence.py`）
+  + `tests\pure-state-harness.py` **16/16**；dist 未变且仍与磁盘 9 模块逐字节一致。
+
+---
+
 ## 2026-09-11 (第三十五轮: 启动再快 0.4s — 三张"每次重算"的派生表进缓存)
 
 接着第三十四轮继续压"启动头几秒"（钩子装好前打字没反应的那段窗口）。
