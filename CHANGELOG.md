@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-09-10 (第十七轮审计: 词典模式(mode 3) 候选 — 与 C# AddTranslate 逐条一致)
+
+换维度: C# `AddTranslate`(5157-5174) + `AddEcPrefix` + `BuildReverse`(5176-5188) vs python
+`engine.candidates(mode=3)`。方法: 在探针里**独立**解析原始 `ec.txt`(657883 条)并按 C# 源码重写
+`BuildReverse`/EN 精确/EN 前缀/`AddCands`, 当成 oracle 与真 engine 比对(不复用 engine 的解析与构建)。
+
+- **`ce`(CN→EN 反查表) 全等**: 独立 BuildReverse 与 `engine.ce` **701531 个键的键集合与值全部相同**
+  (按 EN ordinal 升序扫、每中文词上限 8、去重、空释义跳过 —— 与 C# `BuildReverse` 逐行一致)
+- **候选集合全等**: 73 个 code 用例(EN 精确命中 40 个抽样 + EN 前缀 15 个 + `book/bo/computer/com/
+  china/chi/a/ab/continent` + 全拼/简拼 `ni/hao/shu/zhongguo/sm/zg/wo/women/xuexi/zzzz`)——
+  候选**集合与数量**与 oracle 完全一致; 空输入与不存在的长码都返回空
+- **唯一差异 = 排序, 且是有意的**: python 在 `candidates()` 末尾对所有模式(含 mode 3)套用 §14 的频率排序
+  (`语料先验 word_freq + 学习词频×learn_k + 近期热度×recent_k`, 稳定排序); 探针用同一公式把 oracle 的顺序
+  复算了一遍, 与 engine 输出**逐项相同** → 证明差异只来自这条既定升级, 不是算法缺失。
+  另核对: mode 3 用**合并**频率视图(`self.freq`, 同 C# `fb = ... : Freq`)、**不做** LastPick 置顶
+  (C# `lpb = (mode < 3) ? LastPickM[mode] : null` 同样为 null) —— 两处都对得上
+- **结论**: 词典模式无需改动(纯核对轮)。验证脚本要点已写进本条, 便于后续回归
+
+---
+
 ## 2026-09-10 (第十六轮审计: 托盘菜单逐项对照 — 补 4 处勾选态; 另发现 C# 侧 1 个错字)
 
 换维度: C# 托盘菜单(626-706) + `RefreshMenuChecks`(795-806) vs python `tray.py`。方法: 真 pystray 建出
