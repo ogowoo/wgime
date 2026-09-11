@@ -64,6 +64,26 @@ def unescape_cfg(s):
         return s or ''
 
 
+def _read_text(path):
+    """宽松读文本 (用户手改后另存 ANSI/GBK 也必须读进来).
+
+    对齐 C# 的 `File.ReadAllLines(path, Encoding.UTF8)` —— 那是**替换式**解码, 永不抛。
+    python 若用严格 `open(..., encoding='utf-8-sig')`, GBK 字节会抛 UnicodeDecodeError;
+    `load_cfg` 又是在 `ALARMS.clear()` 之后才读文件, 于是整份闹钟被静默丢弃,
+    随后任何一次保存动作 (新增/删除/仅一次闹钟触发) 就把 clock.cfg 覆盖成新内容。
+    优先复用宿主 `engine.read_text` (utf-8-sig -> gbk -> utf-8+replace), 不可用则退回旧行为。
+    """
+    try:
+        import engine as engmod            # 宿主模块; 单文件分发里也已进 sys.modules
+        fn = getattr(engmod, 'read_text', None)
+    except Exception:
+        fn = None
+    if fn is not None:
+        return fn(path)
+    with open(path, encoding='utf-8-sig') as f:
+        return f.read()
+
+
 def load_cfg():
     try:
         with _CFG_LOCK:
@@ -72,32 +92,31 @@ def load_cfg():
                 return
             alarm_time = ''
             alarm_on = False
-            with open(CFG_PATH, encoding='utf-8-sig') as f:
-                for raw in f:
-                    t = raw.strip()
-                    eq = t.find('=')
-                    if eq < 1:
-                        continue
-                    k = t[:eq].strip().lower()
-                    v = t[eq + 1:].strip()
-                    if k == 'hourly':
-                        CFG['hourly'] = v != '0'
-                    elif k == 'reminder':
-                        CFG['reminder'] = v
-                    elif k == 'alarm':
-                        alarm_time = v
-                    elif k == 'alarmon':
-                        alarm_on = v == '1'
-                    elif k.startswith('alarm.'):
-                        a = v.split('|', 4)
-                        if len(a) >= 2 and valid_alarm_time(a[0]):
-                            nm = unescape_cfg(a[2]) if len(a) >= 3 else '闹钟'
-                            rp = unescape_cfg(a[3]) if len(a) >= 4 else '每天'
-                            md = unescape_cfg(a[4]) if len(a) >= 5 else 'popup'
-                            if md not in ('popup', 'full', 'tray'):
-                                md = 'popup'
-                            ALARMS.append({'time': a[0], 'name': nm, 'enabled': a[1] == '1',
-                                           'repeat': rp, 'mode': md})
+            for raw in _read_text(CFG_PATH).splitlines():   # 行切分同 C# ReadAllLines (末尾空行丢弃)
+                t = raw.strip()
+                eq = t.find('=')
+                if eq < 1:
+                    continue
+                k = t[:eq].strip().lower()
+                v = t[eq + 1:].strip()
+                if k == 'hourly':
+                    CFG['hourly'] = v != '0'
+                elif k == 'reminder':
+                    CFG['reminder'] = v
+                elif k == 'alarm':
+                    alarm_time = v
+                elif k == 'alarmon':
+                    alarm_on = v == '1'
+                elif k.startswith('alarm.'):
+                    a = v.split('|', 4)
+                    if len(a) >= 2 and valid_alarm_time(a[0]):
+                        nm = unescape_cfg(a[2]) if len(a) >= 3 else '闹钟'
+                        rp = unescape_cfg(a[3]) if len(a) >= 4 else '每天'
+                        md = unescape_cfg(a[4]) if len(a) >= 5 else 'popup'
+                        if md not in ('popup', 'full', 'tray'):
+                            md = 'popup'
+                        ALARMS.append({'time': a[0], 'name': nm, 'enabled': a[1] == '1',
+                                       'repeat': rp, 'mode': md})
             # 旧版配置兼容: 首次发现 alarm/alarmon 时自动迁移
             if not ALARMS and valid_alarm_time(alarm_time):
                 ALARMS.append({'time': alarm_time, 'name': '旧版闹钟', 'enabled': alarm_on,
@@ -182,6 +201,7 @@ def _ensure_dispatcher():
 
 # ---------- 常驻报时/闹钟守护 (对齐 C# StartChimeWatcher; 主窗关闭后仍工作) ----------
 _watch_started = [False]
+_watch_mx = []                    # 守护互斥体句柄 (须保活到进程结束)
 _snooze_timers = []
 _fullscreen_alarms = []
 
@@ -190,6 +210,19 @@ def _start_watcher():
     if _watch_started[0]:
         return
     _watch_started[0] = True
+    # 跨进程/跨模块单例 —— 与 C# `StartChimeWatcher` 用**同名**互斥体 `WgImeClockChime`。
+    # 覆盖两种重复守护: ① C# 形态与 python 形态同时运行(两者共用同一份 clock.cfg,
+    # 否则同一闹钟会弹两次窗、整点响两声); ② 插件重载(托盘"重载插件/config")后旧守护
+    # 线程仍在跑, 再开一次时钟窗会再起一个线程 —— 与 C# 一样靠命名互斥体挡住
+    # (C# 在同进程内第二次 new Mutex(true, name, out createdNew) 同样得到 createdNew=false)。
+    try:
+        import win as winmod
+        h = winmod.single_instance('WgImeClockChime')
+        if h is None:
+            return                # 已有守护在跑 -> 本实例不起 (对齐 C# `if (!createdNew) return;`)
+        _watch_mx.append(h)
+    except Exception:
+        pass                      # 探针不可用则照旧启动 (不因互斥体问题失去闹钟)
     threading.Thread(target=_watch_loop, name='ClockChime', daemon=True).start()
 
 
@@ -300,6 +333,10 @@ def show_alarm_popup(time_s, name, repeat):
         def later():
             _post_ui(lambda: show_alarm_popup(datetime.datetime.now().strftime('%H:%M'),
                                               name + '（稍后提醒）', '单次延后'))
+            try:
+                _snooze_timers.remove(t)      # 对齐 C# `later.Dispose(); snoozeTimers.Remove(later)`
+            except (ValueError, NameError):
+                pass
         t = threading.Timer(300.0, later)
         t.daemon = True
         _snooze_timers.append(t)
@@ -483,7 +520,9 @@ def show_alarm_manager(changed=None):
     def normalize():
         t = ed_time.get().strip().replace('：', ':')
         d = t.replace(':', '')
-        if len(d) in (3, 4) and d.isdigit():
+        # isdecimal (不是 isdigit): isdigit 对 '²' 之类也返回 True, 而 int('²') 会抛
+        # ValueError 直接把按钮回调打崩 (C# `int.TryParse` 只解析 ASCII 数字, 从不抛)
+        if len(d) in (3, 4) and d.isdecimal():
             hh, mm = int(d[:-2]), int(d[-2:])
             if 0 <= hh <= 23 and 0 <= mm <= 59:
                 t = '%02d:%02d' % (hh, mm)
@@ -882,8 +921,7 @@ def run():
                 lbl_total.configure(text='总计 0 次 / 0分钟')
                 draw_chart()
                 return
-            with open(POMO_PATH, encoding='utf-8-sig') as f:
-                lines = f.read().splitlines()
+            lines = _read_text(POMO_PATH).splitlines()   # 宽松读: 用户手改成 ANSI 也不能让统计整块空掉
             today_s = datetime.datetime.now().strftime('%Y-%m-%d')
             n_today = n_all = 0
             m_today = m_all = 0.0

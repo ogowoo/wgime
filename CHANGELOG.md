@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-09-11 (第二十七轮审计: 悬浮时钟插件 — 守护缺跨进程单例 + 配置宽松读 + 输入框崩溃)
+
+换维度: C# 插件 `plugins/clock.txt`(818 行) vs python `wgime-py-pure/plugins/clock.py`。
+
+- **修复 ①: 报时/闹钟守护缺跨进程单例 (对齐 C# `StartChimeWatcher` 的命名互斥体)**。
+  C# 用 `new Mutex(true, "WgImeClockChime", out createdNew)` 保证全机只有一个报时/闹钟守护;
+  python 只有模块级 `_watch_started[0]` 布尔, 于是有两种真实重复:
+  - C# 形态与 python 形态**同时运行** (两者共用同一份 `%LOCALAPPDATA%\wgime\clock.cfg`) →
+    同一闹钟弹两次窗、整点响两声;
+  - 托盘"重载插件/config" 会 `load_py_plugins()` 重新 exec 出**新的模块对象**(`_watch_started=[False]`),
+    而旧守护线程仍在跑, 再打开一次时钟窗就起第二个线程 —— 探针实测 `ClockChime` 线程由 1 变 2。
+  现在 `_start_watcher` 先取 `win.single_instance('WgImeClockChime')` (与 C# **同名**), 已有守护在跑就不起
+  (对齐 `if (!createdNew) return;`), 句柄存 `_watch_mx` 保活到进程结束。探针: 重载后线程数 1 (修前 2);
+  子进程按同名互斥体探测得到"已存在" (修前"新创建")。
+
+- **修复 ②: `clock.cfg` / `pomodoro.txt` 必须宽松读 (AGENTS §28)**。
+  python 原来用严格 `open(..., encoding='utf-8-sig')`, 而 C# 是 `File.ReadAllLines(path, Encoding.UTF8)`
+  (**替换式**解码, 永不抛)。用户把配置"另存为 ANSI(GBK)"后: `load_cfg` 是在 `ALARMS.clear()` **之后**才读
+  文件, `UnicodeDecodeError` 被 `except Exception` 静默吞掉 → **整份闹钟凭空消失**, 随后任意一次保存
+  (新增/删除/仅一次闹钟触发) 就把 clock.cfg 覆盖成只剩那一条, 属真数据丢失; 番茄统计同理整块空掉。
+  改用 `_read_text()` (优先宿主 `engine.read_text`: utf-8-sig→gbk→utf-8+replace, 不可用才退回旧行为)。
+  探针: GBK 配置修前 `alarms=0`, 修后 3 条全在且中文名/提醒语正确。
+
+- **修复 ③: 时间输入框输 `²34` 会把按钮回调打崩**。
+  `normalize()` 原来用 `d.isdigit()` 判 3-4 位数字, 但 `'²'.isdigit()` 为 True 而 `int('²')` 抛
+  `ValueError` —— 该异常从 `ui.flat_button` 的回调里抛出(那里没有 try/except), 于是点"新增"直接报错、
+  提示文字不更新。C# `int.TryParse` 只认 ASCII 数字, 从不抛。改用 `d.isdecimal()`。
+  探针: 修前捕获到 `ValueError`(note 不更新), 修后正常提示 "时间格式错误，请输入 00:00–23:59"。
+
+- **对齐 ④(小)**: "5分钟后提醒" 的 `threading.Timer` 触发后从 `_snooze_timers` 移除
+  (对齐 C# `later.Dispose(); snoozeTimers.Remove(later)`), 不再随每次稍后提醒持续累积。
+
+- **本轮核对一致(未改代码)**: 按 C# 源码独立重写 oracle, **187 例 0 差异** ——
+  `RepeatMatches` 98 例(8 种重复 × 7 个星期 + 边界值)、`FmtCd`/`FmtSw`/`FmtMinutes` 59 例(含 1 小时/
+  1 分钟进位点、毫秒截断、`TotalHours>=1` 分支)、`ValidAlarmTime` 16 例(`7:30`/`24:00`/全角/阿拉伯数字)、
+  `EscapeCfg`/`UnescapeCfg` 14 例(按 `Uri.EscapeDataString` 的 unreserved 集逐字节复算); 另有
+  Save→Load 往返(含 `|`/换行/emoji 的闹钟名)与 UI 文案+坐标逐项核对: 主窗 4 个 page、闹钟弹窗、闹钟管理窗
+  的全部控件坐标与 C# **逐个一致**(含 38px 自绘标题栏偏移), C# 75 个含中文字面量里 python 只差
+  `WgIme 休息提醒`(全屏窗在 python 用 `overrideredirect` Toplevel, 无窗口标题) —— **有意差异**。
+
+- **验证**: `py_compile` 全模块 + 插件通过; `build-package.ps1` 重建 → `dist\wgime-py.py` 与
+  `package\wgime-py.py` SHA256 相同; dist 内嵌的 9 个项目模块源码与磁盘**逐字节相同**(含 `main.py`),
+  内嵌插件数 0 (插件不进 dist, 只有 `package\plugins\clock.py` 跟着更新);
+  `tests\pure-state-harness.py` 16/16 通过。(dist 文件本轮仍随构建刷新: 内嵌第三方 zip 的时间戳每次
+  构建都不同, 这是既有现象, 与插件无关。)
+
+---
+
 ## 2026-09-10 (第二十六轮审计: 网络工具的纯计算部分 — 逐项核对一致, 未改代码)
 
 换维度: C# `IpType`/`IpClass`/`SubnetCalc`/`SubnetSplit`/`RangeToCidr`/`MaskTable`/`TestPort`(2768-2909)
