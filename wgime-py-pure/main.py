@@ -184,8 +184,10 @@ root = tk.Tk()
 root.withdraw()
 _splash = None
 try:
-    # 每次启动都给反馈, 不只在"要重建索引"时: 热启动也要读 95MB 缓存 (~2.6s), 这期间钩子还没装,
-    # 用户看不到任何痕迹就会以为没启动/打字没反应 (实测冷 12.4s / 热 2.6s)。
+    # 每次启动都给反馈, 不只在"要重建索引"时: 热启动也要同步读 44.6MB 核心缓存 + 装配置/托盘,
+    # 到钩子装好约 2.3s (冷启动 12.4s); 这期间钩子还没装, 用户看不到任何痕迹就会以为
+    # 没启动/打字没反应。(用户第三十四轮报的"每次启动头几秒打不出字"另一个根因是首键同步建
+    # 反查表 ~1.3s, 已改后台建 —— 见 engine.rev_wb_code/warm_rev_wb。)
     _stale = _dict_cache_stale()
     _splash = tk.Toplevel(root)
     _splash.overrideredirect(True)
