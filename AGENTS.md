@@ -210,11 +210,13 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
      并检查 release body 无 `?`、tag 指向本地 HEAD（v1.2.7 曾把上一个构建发出去，靠这步才发现）。
 - **发 release 的中文坑**：release body 必须用 `HttpWebRequest` + `[Text.Encoding]::UTF8.GetBytes(json)` 显式 UTF-8 字节发送（`publish-release.ps1` 已内置）。**不要用 `Invoke-RestMethod` + `ConvertTo-Json`**——PowerShell 5.1 会把中文 body 编码成 `?`（曾导致 v1.2.0~v1.2.4 的 release 描述全变问号）。
 - **Token**：`publish-release.ps1` 依次取 `-Token` → `$env:GITHUB_TOKEN` → `$env:GH_TOKEN` → Windows 凭据管理器（`git:https://github.com`，`CredRead` 直读）→ `git credential fill`。**把 `git credential fill` 放最后**：GCM 有时会弹 UI 卡死整条发布流程（2026-09-10 实际踩到，表现为脚本长时间无输出且没建 release）。另：本机 WinINET 代理 `127.0.0.1:10808` 常年失效，脚本已 `[Net.WebRequest]::DefaultWebProxy = $null` 直连。
-- 版本 tag：`v1.0.0` ~ `v1.2.10`（后续版本递增）。插件更新不单独发 release。
-  **v1.2.10（2026-09-11）发布回验记录**（`tests\publish-release.ps1` 之后必做）：release body 与本地
-  body 文件逐字符一致（1789 字、**0 个 `?`**）、线上 `wgime-v1.2.10-python.zip` 的 SHA256 与本地
-  `.release-stage-v1210\` 里的 zip **完全相同**、zip 内层 `wgime-py.py` 与本地 `dist\wgime-py.py` 一致、
-  tag/release target 指向本地 HEAD。
+- 版本 tag：`v1.0.0` ~ `v1.2.11`（后续版本递增）。插件更新不单独发 release。
+  **发布回验记录**（`tests\publish-release.ps1` 之后必做：下线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD）：
+  v1.2.10 = body 1789 字 0 个 `?` + python zip SHA256 与 stage 相同 + 内层 `wgime-py.py` 与 dist 一致；
+  v1.2.11（第四十轮，release id 386885107，含 bat/ps1/python 三个资产）= body 与本地逐字符一致（1478 字、
+  0 个 `?`）、三个 zip 的 SHA256 全部与 `.release-stage-v1211\` 相同、`wgime-v1.2.11-python.zip` 内层
+  `wgime-py.py` 744413 B / `6D6A6505…` 与本地 dist 一致、target = 本地 HEAD。
+  （线上资产下载偶尔 `Unable to connect`，重试即可，别当成发布失败。）
 
 ## 8. 当前状态速览
 
