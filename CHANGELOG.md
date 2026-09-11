@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-09-10 (第二十二轮审计: 剪贴板历史 — 只在窗口开着时收集 + selfSet 防回录)
+
+换维度: C# `ClipForm`(3539-3607) + `ClipPush`(3529-3537) vs python `tools.show_clipboard`/`_clip_poll`
+/`_clip_push`。
+
+- **补齐(真差异)**:
+  1. **收集范围**: C# 在窗口打开时 `AddClipboardFormatListener`、关闭时 `RemoveClipboardFormatListener`
+     —— 也就是**关窗就不再监听**; python 的轮询线程从第一次打开起**永远每 0.3s 读一次剪贴板**
+     (关窗后照收, 还会与别的程序抢剪贴板)。现在按窗口是否开着判定(`_clip_consider(t, _clip_win[0] is not None)`),
+     与 C# 和窗口上那行提示("本窗开着也持续收集")都一致
+  2. **纯空白不记录**: C# 是 `t.Trim().Length > 0` 才入历史; python 原来只判空字符串, 于是"只有空格/换行"
+     的剪贴板内容也会占一条。已跟
+  3. **selfSet 防回录**: C# 用 `selfSet` 标志包住自己的 `Clipboard.SetText`, 防止"点条目复制回去"又被
+     记一遍(那会把该条重新顶到最前); python 原来没有这个保护 —— 点某条旧记录后, 轮询会把它识别成
+     "新内容"并移到顶部, 历史顺序被自己改掉。现在写回前记 `_clip_self[0]`, 轮询遇到就跳过并推进
+     "已见"标记(C# 的 `selfSet` 语义)
+- **核对一致(未改)**: `_clip_push` 与 C# `ClipPush` 同语义(空/与置顶项相同 -> 不动; 已在历史 -> 移到顶部;
+  新内容 -> 插到顶部; 容量 **200** 且只在插入路径裁剪); 列表显示超 80 字截断加 `…`(同 C# `RefreshList`);
+  历史跨开关窗存活(C# 是 `static History`); 单击/双击条目 = 复制回剪贴板(对应 C# `Click/DoubleClick -> CopySel`);
+  清空历史按钮
+- **有意差异(保留)**: python 用 **0.3s 轮询**(tk 没有 `WM_CLIPBOARDUPDATE` 钩子, 代码已注明折中);
+  python 关窗期间复制的内容会在**下次开窗后**被补记一笔(C# 关窗期间的更新永久丢失) —— python 更贴近直觉;
+  python 多"粘贴上屏"按钮
+- **验证**: `_clip_consider`/`_clip_push` 语义 **19 项断言 0 差异**(窗口开/关、空串、纯空白、重复、
+  新内容置顶、旧内容移顶、selfSet 跳过且标记消费、后续外部复制仍正常、容量 200 与裁剪边界、清空、
+  以及 `_clip_poll`/`copy_sel`/`paste` 的源码形状检查); `tests\pure-state-harness.py` 16/16 通过;
+  dist 内嵌 `tools.py` 与磁盘**逐字节相同**、`dist==package` SHA256 相同(`6BCE5FCA…`)
+
+---
+
 ## 2026-09-10 (第二十一轮审计: 插件 txt 头部解析 — 只有头部的文件不算插件)
 
 换维度: C# `LoadPlugins`(4104-4146) 的**登记条件** vs python `plugins.parse_plugin`/`load_plugins`。

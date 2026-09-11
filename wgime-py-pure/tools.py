@@ -261,6 +261,8 @@ def run_tool_code(code, notify=None):
 _CLIPT = []
 _clip_started = [False]
 _CLIP_CAP = 200
+_clip_last = [None]      # 最近一次"已记录"的剪贴板文本 (线程共享; 对齐 C# ClipForm 的 WM 去重语义)
+_clip_self = [None]      # 我们自己写进剪贴板的内容 (对齐 C# selfSet: 不再回录历史)
 
 
 def _clip_push(t):
@@ -278,19 +280,33 @@ def _clip_push(t):
     return True
 
 
+def _clip_consider(t, window_open):
+    """是否把 t 记入历史 (对齐 C# ClipForm.WndProc 的判定):
+    ① C# 只在窗口开着时注册剪贴板监听(关闭即 RemoveClipboardFormatListener) -> window_open 为假不记;
+    ② C# 要求 `t.Trim().Length > 0` -> 纯空白不记;
+    ③ C# 的 selfSet(自己写回去的内容)不重录, 但要推进"已见"标记, 否则下一次外部复制会被误判成重复."""
+    if not window_open or not t or not t.strip():
+        return False
+    if _clip_last[0] == t:
+        return False
+    if t == _clip_self[0]:
+        _clip_last[0] = t
+        _clip_self[0] = None
+        return False
+    _clip_last[0] = t
+    return _clip_push(t)
+
+
 def _clip_poll():
-    last = None
     while True:                                        # daemon 线程, 进程退出自动停
         time.sleep(0.3)                                # 0.3s 轮询 (tk 无 WM_CLIPBOARDUPDATE 事件钩子; 折中降延迟)
         try:
             t = w32.clipboard_text()
-            if t and t != last:
-                last = t
-                if _clip_push(t) and _clip_win[0] is not None:
-                    try:
-                        _clip_win[0].after(0, _clip_refresh)
-                    except Exception:
-                        pass
+            if _clip_consider(t, _clip_win[0] is not None):
+                try:
+                    _clip_win[0].after(0, _clip_refresh)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -320,6 +336,7 @@ def show_clipboard():
     def copy_sel():
         i = lst.curselection()
         if i and 0 <= i[0] < len(_CLIPT):
+            _clip_self[0] = _CLIPT[i[0]]                # 自己写回剪贴板: 不回录历史 (对齐 C# selfSet)
             win.clipboard_clear()
             win.clipboard_append(_CLIPT[i[0]])
 
@@ -330,6 +347,7 @@ def show_clipboard():
     def paste():
         i = lst.curselection()
         if i and 0 <= i[0] < len(_CLIPT):
+            _clip_self[0] = _CLIPT[i[0]]                # 同上: 粘贴上屏后不要把它再顶到历史最前
             win.clipboard_clear()
             win.clipboard_append(_CLIPT[i[0]])
             _bg(lambda: (time.sleep(0.12), w32.paste_text(_CLIPT[i[0]])))
