@@ -9,6 +9,7 @@ from tkinter import messagebox
 import plugins as plugmod
 import win as w32
 import ui
+import engine as engmod        # 造词/批量造词的 2-8 汉字校验 (is_all_cjk) 与 read_import_text 复用
 
 
 _TOOLS_CACHE = []                                    # 工具数据缓存 (code= 启动编码消费方)
@@ -1524,8 +1525,9 @@ def show_makeword(data_dir, engine, prefill=''):
     def do_make():
         w = wentry.get().strip()
         c = centry.get().strip()
-        if not (2 <= len(w) <= 8):
-            status.config(text='词语需 2-8 字', fg=ui.RED)
+        # 对齐 C# MakeWordFromClipboard: 必须 2-8 个汉字 (非汉字/混排即使手填编码也不收)
+        if not (2 <= len(w) <= 8) or not engmod.is_all_cjk(w):
+            status.config(text='词语需 2-8 个汉字', fg=ui.RED)
             return
         if not c:
             c = engine.code_for(w)

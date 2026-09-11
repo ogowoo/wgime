@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-09-10 (第十九轮审计: 造词/批量造词/用户词表 — 补造词对话框的「2-8 汉字」校验)
+
+换维度: C# `MakeWordFromClipboard`/`CodeFor`/`CollectWordLines`/`BatchAddWords`/`AddUserWord`/
+`ManageUserWords` vs python `main.makeword_clipboard` + `tools.show_makeword`/`show_batch_makeword`/
+`show_user_words` + `engine.code_for`/`add_user_word`/`add_user_words_batch`。
+
+- **补齐(真差异)**: 造词对话框原来只校验长度 `2 <= len(w) <= 8`, **漏了 C# 的 `IsAllCJK`**;
+  而对话框是 python 的额外功能(可以**手填编码**), 于是非汉字词(如 `abc` + 手填 `abc`)会被真的写进
+  用户词库。C# `MakeWordFromClipboard` 是 `t.Length < 2 || t.Length > 8 || !IsAllCJK(t)` 直接拒。
+  已改成 `not (2 <= len(w) <= 8) or not engmod.is_all_cjk(w)` + 提示「词语需 2-8 个汉字」
+  (`tools.py` 顶端引入 `import engine as engmod`)
+- **核对一致(未改)**: `engine.code_for` = C# `CodeFor`(每字取第一个拼音, 任一字缺拼音回 `None`);
+  `add_user_word` = C# `AddUserWord`(去重 / 拼音表追加 / 五笔**双注册** / 简拼索引 / 落盘, python 额外把
+  反查表置失效); `add_user_words_batch` = C# `BatchAddWords`(一次性注入 + 一次排序 + 一次落盘);
+  **批量造词行规则** = C# `CollectWordLines`(trim、空行不计、2-8 汉字否则计 skipped、重复计 skipped);
+  用户词表: 按 ordinal 排序、删除后落盘 + 后台重建(同 C# `SaveUserWords` + `BuildDicts`/`ApplySwap`)
+- **有意差异(记录)**: python 造词用**对话框**(可手填编码、会报错原因), C# 是剪贴板直造(§27 已记);
+  python 对"还没有用户词"给提示框, C# 静默返回; python 批量造词结束会报 added/skipped 气泡(C# 无);
+  `main.makeword_clipboard` 的预填仍只对 2-8 汉字生效(同 C# 的剪贴板判定)
+- **验证**: ① 造词对话框 8 组用例(纯英文 / 中英混排 / 1 字 / 9 字 / 2 字 / 4 字 / **非汉字+手填编码** /
+  手填编码保留)+ 自动填码 → 0 差异(非汉字一律拒, 正常词与手填码照常入库);
+  ② 批量造词与**独立 oracle** 比对 10 行样例(含前后空格 / 1 字 / 9 字 / 非汉字 / 重复 / 空行 / 日文):
+  收集结果与跳过行数完全一致; 取消文件选择不造词; 全非法时不造词并提示「没有发现 2-8 个汉字的词」→ 0 差异;
+  ③ `tests\pure-state-harness.py` 16/16 通过; ④ dist 内嵌 `tools.py` 与磁盘**逐字节相同**、
+  `dist==package` SHA256 相同(`274D2B08…`)
+
+---
+
 ## 2026-09-10 (第十八轮审计: 插件管理器 — 补状态列/禁用灰显, 删除确认改「否」缺省)
 
 换维度: C# `PluginMgrForm`(4283-4445) vs python `tools.show_plugin_mgr` + `main._list_plugin_files`。
