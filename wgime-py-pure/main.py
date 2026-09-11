@@ -456,8 +456,20 @@ def load_py_plugins():
                 _dfn('plugin load err %s %r'%(path,e))
 
 
+# 插件编码别名 (对齐 C# `LoadPlugins` 之后那行: Apps["calc"] = Apps["jsq"])
+PLUGIN_CODE_ALIASES = {'calc': 'jsq'}
+
+
 def find_launcher(code):
     """启动编码 -> 启动器. 冲突优先级对齐 C# (后注册者胜): 插件 > tools.txt code= > config app= > 内置别名."""
+    # 插件别名: C# LoadPlugins 之后 `if (Apps.TryGetValue("jsq", out cp)) Apps["calc"] = cp;`
+    # (计算器已从内置迁出为 plugins\calc.txt 插件, 但 jsq/calc 两个编码都能唤出; 别名是**盲复制**,
+    #  jsq 解析出什么, calc 就是什么 —— 所以这里直接转发, 不加额外条件)
+    _tgt = PLUGIN_CODE_ALIASES.get(code)
+    if _tgt:
+        _r = find_launcher(_tgt)
+        if _r is not None:
+            return _r
     for m in PLUGINS:
         if getattr(m, 'CODE', None) == code:
             return (getattr(m, 'NAME', code), 'plugin', m)

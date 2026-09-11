@@ -15,7 +15,7 @@ wgime-py-pure/
 ├── tray.py / tools.py / wspy.py
 │                           # 托盘 / 工具箱 / 候选窗协助
 ├── plugins/
-│   ├── calc.py             # 计算器      (js)
+│   ├── calc.py             # 计算器      (jsq, calc 是别名)
 │   ├── chat.py             # 聊天中继    (lt)
 │   ├── clock.py            # 悬浮时钟    (sz)
 │   ├── wgime-qr.py         # 二维码      (qrcode)
