@@ -817,6 +817,12 @@ def show_color():
 
     win.protocol('WM_DELETE_WINDOW', on_close)
     win.bind('<Escape>', lambda e: on_close())
+    # ui.make_window 的 ✕ 直接 destroy(不经过 WM_DELETE_WINDOW): 取色中关窗必须**先收钩**,
+    # 否则全局 WH_MOUSE_LL 一直挂着、之后的鼠标左键会被吞掉 (对齐 C# ColorForm 的 FormClosed -> StopPick)
+    for _bar in win.winfo_children():
+        for _ch in _bar.winfo_children():
+            if isinstance(_ch, tk.Label) and str(_ch.cget('text')) == '✕':
+                _ch.bind('<Button-1>', lambda e: on_close())
 
 import ipaddress
 import socket

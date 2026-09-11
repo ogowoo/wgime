@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-09-10 (第二十四轮审计: 取色器 — 取色中关窗必须收掉全局鼠标钩子)
+
+换维度: C# `ColorForm`(3986-4065) vs python `tools.show_color`。
+
+- **补齐(真差异)**: C# 在 `FormClosed += delegate { StopPick(); }` 里**无论怎么关窗都收钩**;
+  python 只在 `WM_DELETE_WINDOW`(协议)与 `Esc` 上收钩, 而 `ui.make_window` 的 **✕ 按钮直接
+  `destroy()`**(不经过协议回调) → **取色过程中点 ✕**: 全局 `WH_MOUSE_LL` 钩子一直挂着, 之后系统里
+  任何鼠标左键都会被"吞掉"(还会往已销毁的窗口 `after` 回调), 只能重启 wgime 才恢复。
+  已把标题栏 ✕ 重绑到 `on_close`(先 `stop_pick()` 再 `destroy()`)
+- **核对一致(未改)**: `WH_MOUSE_LL` 左键取色并**吞掉该次点击**、右键取消(两者都 `return 1`);
+  「拾取 (点屏幕)」按钮与提示文案; 色块 + `#RRGGBB   rgb(r,g,b)` + HSV 两行显示; `ColorHex` 用大写
+  `X2`; `ColorHsv` 的 H/S/V 取整与格式(`H 210  S 78%  V 100%`); 「复制 HEX」只复制 hex;
+  钩子装不上时不报错(下次点击可重试)
+- **验证**: 用桩替换 Win32 钩子函数跑**真窗口** —— 点「拾取」→ 钩子装上; 点 ✕ → **`UnhookWindowsHookEx`
+  被调用** 且窗口销毁; `Esc` 绑定与协议回调指向同一个 `on_close`; HSV/HEX 格式三例(纯红 `H 0 S 100% V 100%`、
+  `#2196F3` → `S 86% V 95%`、HEX 大写)→ **0 差异**; `tests\pure-state-harness.py` 16/16 通过;
+  dist 内嵌 `tools.py` 与磁盘逐字节相同、`dist==package` SHA256 相同(`2CD9C0FA…`)
+
+---
+
 ## 2026-09-10 (第二十三轮审计: 便签 — 用户手改的便签文件必须宽松解码)
 
 换维度: C# `NoteForm`(3614-3986) vs python `tools.show_notes`。
