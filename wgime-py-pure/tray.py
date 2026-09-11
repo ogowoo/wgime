@@ -1,12 +1,63 @@
 # -*- coding: utf-8 -*-
 """tray.py — pystray 托盘: 启用/禁用, 模式, 繁简, 退出. 回调 marshal 回 tkinter 主线程."""
+import logging as _logging
+import traceback as _traceback
+
+# 第四十一轮: 把 pystray 自己的日志抓下来. pystray 的 _show() **不检查** Shell_NotifyIcon 的返回值,
+# 出错只走 logging; 而双击 .py 启动时解释器是 pythonw.exe, `sys.stderr is None` -> 这个报错**连显示
+# 的地方都没有**(控制台跑能看到). 现在接一个 handler 存进 LOGS, 失败时随弹框一起报给用户/写进 debug.log.
+LOGS = []
+
+
+class _CaptureLog(_logging.Handler):
+    def emit(self, record):
+        try:
+            msg = record.getMessage()
+            if record.exc_info:
+                msg += ' | ' + ''.join(_traceback.format_exception(*record.exc_info))
+            LOGS.append('%s: %s' % (record.levelname, msg))
+            del LOGS[:-40]
+            try:
+                import win as _w
+                _w._dlog('pystray %s: %s' % (record.levelname, msg[:400]))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
 try:
     import pystray
     from PIL import Image, ImageDraw, ImageFont
     HAS_TRAY = True
+    IMPORT_ERR = ''
+    _plog = _logging.getLogger('pystray')
+    _plog.addHandler(_CaptureLog())
+    _plog.setLevel(_logging.DEBUG)
 except Exception:
     pystray = None
     HAS_TRAY = False
+    IMPORT_ERR = _traceback.format_exc()
+
+# 第四十一轮: 记下 pystray 真正发给 shell 的 NIM_ADD 返回值 —— **这是"图标登记上了没有"的唯一可靠信号**:
+# NIM_ADD 返回 True 就说明 shell 收下了 (NIM_ADD=False 才是真失败)。反过来 Shell_NotifyIconGetRect 并不可靠
+# (实测: NIM_ADD=True, GetRect 仍回 E_FAIL —— 它只能反映"在不在可见区", 不能判断有没有登记)。
+NIM = {'add_ok': None, 'add_count': 0}
+try:
+    import pystray._win32 as _pw
+    _orig_notify = _pw.win32.Shell_NotifyIcon
+    _NIM_ADD = 0
+
+    def _spy_notify(code, nid):
+        r = _orig_notify(code, nid)
+        if int(code) == _NIM_ADD:
+            NIM['add_ok'] = bool(r)
+            NIM['add_count'] += 1
+        return r
+
+    _pw.win32.Shell_NotifyIcon = _spy_notify
+except Exception:
+    pass
 
 import queue
 import ctypes as _ct
@@ -95,6 +146,7 @@ class Tray:
         self.root = root
         self.api = api
         self.icon = None
+        self.last_error = ''      # start() 失败原因 (第四十一轮) —— 由 main 弹框/写日志
 
     def _refresh(self):
         try:
@@ -302,16 +354,45 @@ class Tray:
             pass
 
     def start(self):
+        """建图标 + 起 pystray 线程. 返回 True/False (False 时 self.last_error 有原因).
+        第四十一轮: 每个可能失败的步骤都留痕 (以前 `not HAS_TRAY` 直接返回 False, 外面什么都不知道)."""
+        self.last_error = ''
         if not HAS_TRAY:
+            self.last_error = 'pystray/PIL 导入失败:\n' + (IMPORT_ERR or '(未知)')
             return False
-        if self._runmode() == 'tray':
-            items = self._tray_items()
-            icon = _tool_icon_img()
-        else:
-            items = self._ime_items()
-            icon = _icon_img(self.api['get_mode'](), True)
-        menu = pystray.Menu(*items)
-        self.icon = pystray.Icon('WgIme-Pure', icon, 'WgIme-Pure', menu)
-        self.icon.run_detached()
-        self._refresh()
-        return True
+        try:
+            if self._runmode() == 'tray':
+                items = self._tray_items()
+                icon = _tool_icon_img()
+            else:
+                items = self._ime_items()
+                icon = _icon_img(self.api['get_mode'](), True)
+            menu = pystray.Menu(*items)
+            self.icon = pystray.Icon('WgIme-Pure', icon, 'WgIme-Pure', menu)
+            self.icon.run_detached()
+            self._refresh()
+            return True
+        except Exception:
+            self.last_error = _traceback.format_exc()
+            return False
+
+    def selfcheck(self):
+        """问 shell: 图标登记上没有、可见还是在隐藏溢出区.
+        返回 (state, rect); state 见 win.notify_icon_rect ('visible'/'overflow'/'missing'/'unknown').
+        **uID 必须是 pystray 用的那个**: pystray `_win32._message()` 里 `hID=id(self.icon)`,
+        不是常量 1 —— 传错 id 时 shell 会回 E_FAIL, 看起来像"图标没登记"(假阴性)。"""
+        try:
+            import win as _w
+        except Exception:
+            return 'unknown', None
+        if self.icon is None:
+            return 'missing', None
+        hwnd = getattr(self.icon, '_hwnd', 0)
+        if not hwnd:
+            return 'missing', None
+        state, rect = _w.notify_icon_rect(hwnd, id(self.icon))
+        if state == 'missing':                     # 兜底: 万一哪天 pystray 改成固定 id
+            state2, rect2 = _w.notify_icon_rect(hwnd, 1)
+            if state2 != 'missing':
+                return state2, rect2
+        return state, rect

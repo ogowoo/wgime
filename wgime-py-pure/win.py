@@ -267,6 +267,87 @@ class GUITHREADINFO(ctypes.Structure):
                 ('hwndCaret', w.HWND), ('rcCaret', RECT)]
 
 
+# ---------- 托盘图标自检 (第四十一轮) ----------
+# 起因: 个别机器"双击 .py 启动后哪里都看不到托盘图标"(控制台跑却正常). pystray 完全不检查
+# Shell_NotifyIcon 的返回值, 它的错误只写 logging(→ sys.stderr, 而双击时 pythonw 的 stderr 是
+# None, 于是**连报错都看不见**). 这里用 Shell_NotifyIconGetRect 反过来问 shell: 这个图标到底
+# 登记上没有、是在可见区还是被收进了隐藏溢出区 —— 结果写 debug.log, 失败时直接弹框告诉用户。
+class _NIDGUID(ctypes.Structure):
+    _fields_ = [('Data1', w.DWORD), ('Data2', w.WORD), ('Data3', w.WORD), ('Data4', ctypes.c_byte * 8)]
+
+
+class NOTIFYICONIDENTIFIER(ctypes.Structure):
+    _fields_ = [('cbSize', w.DWORD), ('hWnd', ctypes.c_void_p), ('uID', w.UINT), ('guidItem', _NIDGUID)]
+
+
+def tray_promoted(exe_path=None):
+    """Windows 11/Server 2025 的"按 exe 记托盘图标显不显示"设置:
+    HKCU\\Control Panel\\NotifyIconSettings\\<hash>\\{ExecutablePath, IsPromoted}.
+    IsPromoted=1 -> 显示在托盘区; 缺省/0 -> 被收进 ^ 隐藏溢出区 (新机器/新 exe 的默认状态).
+    返回 True(显示) / False(隐藏) / None(查不到, 例如 Win10 或还没有这个条目)。"""
+    try:
+        import winreg
+        want = os.path.normcase(exe_path or _sys.executable or '')
+        want_base = os.path.basename(want)
+        want_stem = os.path.splitext(want_base)[0]
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Control Panel\NotifyIconSettings')
+    except Exception:
+        return None
+    try:
+        i = 0
+        seen = None
+        while True:
+            try:
+                sub = winreg.EnumKey(key, i)
+            except OSError:
+                break
+            i += 1
+            try:
+                k = winreg.OpenKey(key, sub)
+                p, _t = winreg.QueryValueEx(k, 'ExecutablePath')
+                pb = os.path.normcase(os.path.basename(str(p)))
+                ps = os.path.splitext(pb)[0]
+                # 精确路径 > 同名 exe > 同"主干"(pythonw.exe vs pythonw3.12.exe —— 微软商店版就是后者)
+                if not (os.path.normcase(str(p)) == want or pb == want_base
+                        or (want_stem and (ps.startswith(want_stem) or want_stem.startswith(ps)))):
+                    continue
+                try:
+                    v, _t = winreg.QueryValueEx(k, 'IsPromoted')
+                except OSError:
+                    v = 0
+                seen = bool(v)
+            except OSError:
+                continue
+        return seen
+    except Exception:
+        return None
+
+
+def notify_icon_rect(hwnd, uid=1):
+    """问 shell 托盘图标状态. 返回 (state, rect):
+    'visible'  已登记且在工作区可见 (S_OK, rect 有效)
+    'overflow' 已登记但被收进隐藏溢出区 (S_FALSE) —— 用户得点 ^ 或去设置里打开
+    'missing'  shell 里没有这个图标 (E_FAIL 等) —— 图标压根没加上去
+    'unknown'  取不到状态 (老系统没有这个 API / 异常)
+    """
+    try:
+        nid = NOTIFYICONIDENTIFIER(ctypes.sizeof(NOTIFYICONIDENTIFIER),
+                                   ctypes.c_void_p(int(hwnd)), int(uid), _NIDGUID())
+        rc = RECT()
+        f = ctypes.windll.shell32.Shell_NotifyIconGetRect
+        f.argtypes = [ctypes.POINTER(NOTIFYICONIDENTIFIER), ctypes.POINTER(RECT)]
+        f.restype = ctypes.c_long
+        hr = f(ctypes.byref(nid), ctypes.byref(rc))
+        if hr == 0:
+            return 'visible', (rc.left, rc.top, rc.right, rc.bottom)
+        if hr == 1:                       # S_FALSE: 在隐藏溢出区
+            return 'overflow', None
+        return 'missing', None
+    except Exception as e:
+        _dlog('notify_icon_rect err %r' % (e,))
+        return 'unknown', None
+
+
 _last_caret = [None]
 _last_caret_source = ['none']   # 'caret' | 'mouse' | 'last' | 'fallback' | 'focus' | 'uia'
 # caret 抖动检测: 记录最近几次 GUITI caret, 若方向反复横跳/大幅摆动则判不可信(浏览器等自绘应用),

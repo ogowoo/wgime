@@ -122,6 +122,18 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     应输出 0）；② 写注释时别在行尾追加"示例代码"；③ 参与"是否还活着"判断的全局量（`_helper_fail`/`_ipc_done`）
     出现异常时先怀疑这类错误。
 
+36. **托盘图标"个别机器看不见"= 以前完全静默，现在有自检（第四十一轮，别把诊断删掉）**：pystray **不检查**
+    `Shell_NotifyIcon` 的返回值，它的报错只走 `logging`→`sys.stderr`，而双击 .py 时解释器是 pythonw（`sys.stderr is None`）
+    —— 于是"没有托盘图标"这件事**一点线索都不留**。现在：`tray.py` 收 pystray 日志（`tray.LOGS`）、
+    包一层记录 `NIM_ADD` 返回值（`tray.NIM`）、`IMPORT_ERR`/`last_error` 都留着；`main._tray_selfcheck()` 写
+    **always-on** 两行日志（`_dfn_always`，不需要 `WGIME_DEBUG`）并在真失败时**从后台线程**弹框（主线程弹会卡住 poll=打字停摆）。
+    两条别踩的坑：① **`Shell_NotifyIconGetRect` 不能当"登记上没有"的判据** —— 实测 `NIM_ADD=True` 时它仍可能回
+    E_FAIL（它只反映在不在**可见区**），第一版自检因此把好机器误报成 missing；② GetRect 的 uID 必须是
+    `id(icon)`（pystray `_win32._message()` 用 `hID=id(self)`，不是 1）。判断"用户能不能看见"用
+    `win.tray_promoted()`（`HKCU\Control Panel\NotifyIconSettings\<hash>\IsPromoted`，**新机器/新 exe 默认是隐藏进 `^`**，
+    所以才有"只有个别机器看不到"）。探针：`%TEMP%\wg-tray-selfcheck-probe.py`（正常/强制失败两条路径）、
+    `%TEMP%\wg-shellnotify-probe.py`（console 与无控制台都 NIM_ADD=True）。
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 - **缓存命中跳过 trailer 解压**：`WgImeLauncher.ComputeTrailerHash`（压缩字节 md5，不解压）→ `BuildDicts` 用它查 `.mb` 缓存；miss 才 `ExtractDictsFull` 解压（经 `TrailerExtractor` 委托）。
@@ -174,11 +186,9 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
   每次重算 ≈0.92s；现在 `_build_core_extra()` 算一次随缓存写出，`_core_extra_ready` 只是兜底）。**`pywfreq.txt`
   必须在 `CACHE_FILES` 里**（否则改语料缓存不失效）；**`wb_by_len` 桶内顺序必须原样保留**（= C# `OrderBy`，§11）。
   合计热启动 Engine() 1401→**998ms**、装钩子 3.70→**1.98s**；缓存 93.1MB。探针 `%TEMP%\wgime-warmec-probe.py`（40 项）。
-- **加载提示窗每次启动都显示（第三十四轮）**：热启动也要读 93MB 缓存 + 装钩子（~2.0s），只在"缓存过期要重建"时
-  才显示会让热启动那两三秒毫无反馈。现在 `_splash` 无条件建，第二行按 `_dict_cache_stale()` 区分
-  "首次启动需建立索引, 请稍候 (之后走缓存, 秒开)" / "正在读取词库缓存, 几秒后即可输入"。
-- **缓存内容别"精简"**：`pk/pv/wk/wv/ek/ev` 六个派生数组看着冗余（占缓存 90MB 里的 ~57MB），但实测把它们从缓存里去掉改成启动时 `build_sorted` 重建是**净亏 308ms**（缓存只省 13.5MB，重建要 487ms）——已量化验证，保持现状。`ce`（`build_reverse` 3.3s）与 `acro`（2.0s）必须留在缓存。zlib 压缩缓存也不划算（145MB→42MB 但解压 +652ms）。
-- **冷启动反馈窗（python 版）**：`_dict_cache_stale()`（缓存缺失或比任一码表旧）为真时，在 `Engine()` 之前显示一个 320x72 的"WgIme 正在加载词库…"无边框置顶小窗，建表完成后销毁（对齐 C# 候选条的"(词库加载中...)"）。为此 `root = tk.Tk()` 已提到建表之前，**全文件只创建一次 Tk root**（`bar = CandBar(root)` 复用同一个），别再在启动后段新建 root。
+- **加载提示窗每次都显示**：`_splash` 无条件建，第二行按 `_dict_cache_stale()` 区分"要建索引 / 正在读缓存"（热启动也有反馈）。
+- **缓存内容别"精简"**：`pk/pv/wk/wv`、`ce`（build_reverse 3.3s）、`acro`（2.0s）都留在缓存里（实测去掉改成启动重建净亏 308ms；zlib 压缩净亏 +652ms）。
+- **冷启动反馈窗**：320x72 无边框置顶小窗（对齐 C# 候选条的"(词库加载中...)"）在 `Engine()` 之前建，故 `root = tk.Tk()` 已提到建表前；**全文件只创建一次 Tk root**（`bar = CandBar(root)` 复用），别再在启动后段新建。
 - **索引缓存（`dict-cache.pkl`）的判定与写入规则（第三十一轮，别回退）**：判定统一走 `engine.cache_is_reusable(dict_dir, data_dir)`
   = 缓存文件存在 **且** 侧车 `dict-cache.pkl.sig`（小 JSON：`ver + 绝对词库目录 + 每个码表 (size,mtime)`）
   == 当前 `engine.cache_sig(dict_dir)`。所以 **只有码表真的变了（或换了词库目录/缓存版本）才重建**，

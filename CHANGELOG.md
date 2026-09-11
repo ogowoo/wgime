@@ -4,7 +4,56 @@
 
 ---
 
-## 2026-09-11 (第四十轮: 启动再快 0.7s —— 懒装载 + 词库线程 + 收尾挪进主循环；顺带挖出跟随 helper 的死穴)
+## 2026-09-11 (第四十一轮: 托盘图标"个别机器看不见" —— 加自检 + 让它自己说出来)
+
+用户反馈：**个别机器**双击 `wgime-py.py` 后**哪里都看不到托盘图标**，而在同目录用 `python wgime-py.py`
+跑就正常；两边的进程都是 pythonw.exe。这类问题以前**完全静默**：pystray 不检查 `Shell_NotifyIcon`
+的返回值，它的报错只走 `logging` → `sys.stderr`，而 pythonw 下 `sys.stderr is None`，连报错都没地方显示。
+
+### 先排除掉的（避免以后再走一遍弯路）
+
+| 假设 | 结论 | 证据 |
+|---|---|---|
+| pythonw 下 `print(..., file=sys.stderr)` 抛 AttributeError 把进程打死 | **否** | 用 bootstrap 把 `sys.stdout/stderr` 置成 None 再跑 dist：冷缓存路径（会走 `engine._load_cache` 的 print）照样活到建表 —— CPython 的 `print` 遇 None 是静默返回 |
+| 无控制台时 shell 不接受托盘图标 | **否** | `%TEMP%\wg-shellnotify-probe.py`：自建窗口 + `Shell_NotifyIcon(NIM_ADD)`，console 与 pythonw+DETACHED **都返回 True**，`Shell_NotifyIconGetRect` 都回 S_OK 并给出通知区坐标 |
+| 双击与控制台跑的是不同解释器（python.exe vs pythonw.exe） | 用户已确认**都是 pythonw.exe** | —— |
+
+### 查明的两件事
+
+1. **`Shell_NotifyIconGetRect` 不能用来判断"登记上没有"**：实测我们自己的进程里 pystray 的
+   `NIM_ADD` 返回 **True**（shell 收下了），同一 (hwnd, uID) 的 `GetRect` 却回 **E_FAIL** —— 它只反映
+   "在不在**可见区**"。第一版自检拿它当"没登记"判据，于是好机器也被误报成 missing（本轮自己踩到并修掉）。
+   正确信号有两个：① 直接抓 pystray 的 `NIM_ADD` 返回值；② Windows 11/Server 2025 按 exe 记的
+   `HKCU\Control Panel\NotifyIconSettings\<hash>\IsPromoted`（1=显示在托盘区，缺省/0=被收进 `^` 隐藏溢出区
+   —— **新机器/新 exe 的默认就是隐藏**，机器之间不一样，正对"只有个别机器看不到"）。
+2. **`GetRect` 的 uID 必须是 pystray 用的那个**：pystray `_win32._message()` 里是 `hID=id(self.icon)`，
+   不是常量 1（传错就一路 E_FAIL，看起来像"图标没登记"）。
+
+### 改动
+
+- **`tray.py`**：① 给 `logging.getLogger('pystray')` 接一个 handler，把 pystray 自己的报错收进 `tray.LOGS`
+  并写进 `debug.log`（pythonw 下本来全丢）；② 包一层 `Shell_NotifyIcon` 记录 `NIM_ADD` 的返回值
+  （`tray.NIM`）；③ `import` 失败时保留 traceback（`IMPORT_ERR`）；④ `start()` 失败会带回 `last_error`
+  （以前 `not HAS_TRAY` 直接 `return False`，外面什么都不知道）；⑤ `selfcheck()` 用正确的 uID 反查。
+- **`win.py`**：新增 `notify_icon_rect()`（GetRect，含 uID 兜底）与 `tray_promoted()`（读按 exe 的显示/隐藏设置，
+  `pythonw.exe` 与商店版 `pythonw3.12.exe` 这类主干名也匹配）。
+- **`main.py`**：`_tray_selfcheck()`（带重试，等 pystray 线程发出 NIM_ADD）把结论写成 **2 行 always-on 日志**
+  （不需要 `WGIME_DEBUG`，用户默认也有得查）；真失败就**从后台线程**弹消息框说明（含 NIM_ADD/解释器/控制台/
+  原因/日志路径；从后台线程弹是为了不卡住主线程的 poll 也就是不卡打字）；若图标只是被 Windows 收进 `^`，
+  发气泡告诉用户怎么让它常驻。`_dfn_always()` 只用于这几条托盘诊断（不是每键路径）。
+
+### 验证
+
+- `%TEMP%\wg-tray-selfcheck-probe.py`（用真实 **pythonw.exe + DETACHED_PROCESS**、无控制台跑 dist）：
+  正常构建 → `tray start ok=True`、`tray selfcheck: nim_add=True(count=1) promoted=True getrect=missing`
+  且**不误报不弹框**；把 `start()` 改成强制失败 → `ok=False` + `nim_add=None(count=0)` + 弹框文本 322 字
+  （内容含 NIM_ADD/python/控制台/原因/日志路径）。
+- `%TEMP%\wg-shellnotify-probe.py`：console 与无控制台两种进程里 `NIM_ADD=True`、`GetRect=S_OK`（如上表）。
+- 回归全绿：`tests\pure-state-harness.py` 16/16、split-cache/派生表 40 项、缓存生命周期 14 项、QR 78 项、
+  wgtranslate 62 项、钩子顺序 10 项 全部 DIFFS=0、`wg-r40-selftest.py` 35/35（懒装载 vs eager DIFFS=0）、
+  dist 内嵌 9 模块逐字节一致、`tests\undefined-globals.py` 0 处。
+
+---
 
 接第三十八/三十九轮继续压"启动后按 Shift 打字要等 1-3 秒才上屏"。第三十九轮把**键盘钩子**提到最前，
 但"上屏"要到 `root.mainloop()` 里 `poll()` 跑起来才发生 —— 这一轮压的就是**到主循环的距离**：

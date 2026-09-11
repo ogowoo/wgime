@@ -151,6 +151,17 @@ def _dfn(text):
         pass
 
 
+def _dfn_always(text):
+    """少数"排障必须"的诊断: 不看 WGIME_DEBUG 也写 debug.log.
+    只用在启动时那几条托盘诊断上 (每条几十字节, 不涉及每键路径) —— 用户默认不开 debug,
+    托盘图标出问题时没有它就只能靠猜 (第四十一轮: "个别机器看不到托盘图标")。"""
+    try:
+        with open(os.path.join(DATA_DIR, 'debug.log'), 'a', encoding='utf-8') as f:
+            f.write('%.3f %s\n' % (time.time(), text))
+    except Exception:
+        pass
+
+
 sys.path.insert(0, BASE)
 import win
 import hook
@@ -1815,14 +1826,91 @@ def _deferred_plugins():
         _dfn('deferred plugins err %r' % e)
 
 
+def _tray_selfcheck(tries=0):
+    """托盘图标自检 (第四十一轮): 个别机器"双击启动后哪里都看不到托盘图标"(控制台跑却正常) —— pystray
+    不检查 Shell_NotifyIcon 的返回值, 而 pythonw 下 `sys.stderr is None`, 它的报错连显示的地方都没有。
+
+    判定用**可靠信号**: ① pystray 实际发 NIM_ADD 的返回值 (tray.NIM['add_ok'], True=shell 收下了);
+    ② Windows 11 按 exe 记的显示/隐藏设置 (`win.tray_promoted`)。Shell_NotifyIconGetRect 只当参考 ——
+    实测 NIM_ADD=True 时它也可能回 E_FAIL, 拿它单独判"没登记"会误报。
+
+    结论写 debug.log; 真出问题就**从别的线程**弹消息框/气泡 (主线程弹会卡住 poll=打字停摆)。
+    """
+    try:
+        import tray as _t
+    except Exception as e:
+        _dfn('tray selfcheck: import tray err %r' % e)
+        return
+    add_ok = _t.NIM.get('add_ok')
+    if add_ok is None and tries < 3:
+        root.after(1500, lambda: _tray_selfcheck(tries + 1))     # pystray 线程还没走到 NIM_ADD
+        return
+    icon = getattr(TRAY, 'icon', None) if TRAY is not None else None
+    hwnd = getattr(icon, '_hwnd', 0) if icon is not None else 0
+    state, rect = ('visible', None)
+    if icon is None:
+        state = 'missing'
+    elif hwnd:
+        try:
+            state, rect = TRAY.selfcheck()
+        except Exception:
+            state = 'unknown'
+    promoted = win.tray_promoted()
+    exe = sys.executable or ''
+    console = 'yes' if sys.stdout is not None else 'no(pythonw)'
+    plog = ' || '.join(_t.LOGS[-3:])[:300] or '-'
+    _dfn_always('tray selfcheck: nim_add=%s(count=%s) promoted=%s getrect=%s hwnd=%s exe=%s console=%s pystray=%s'
+         % (add_ok, _t.NIM.get('add_count'), promoted, state, hwnd, exe, console, plog))
+    if _tray_hint_shown[0]:
+        return
+    # ① shell 明确拒收 -> 真没图标
+    if add_ok is False or (icon is None and TRAY is not None):
+        _tray_hint_shown[0] = True
+        detail = ((getattr(TRAY, 'last_error', '') if TRAY is not None else '')
+                  or (getattr(_t, 'IMPORT_ERR', '') or '') or '(pystray 没报错)')
+        msg = ('托盘图标没能创建。\n\n'
+               '输入法本身仍在运行, 只是没有托盘菜单。\n\n'
+               'NIM_ADD: %s\n'
+               'python: %s\n控制台: %s\n'
+               '原因: %s\npystray: %s\n'
+               '日志: %s\\debug.log\n\n请把这段信息发给作者。'
+               % (add_ok, exe, console, detail.strip()[-400:], plog, DATA_DIR))
+        _dfn_always('tray selfcheck FAILED add_ok=%s err=%s' % (add_ok, detail[-300:]))
+        try:
+            threading.Thread(target=win.message_box, args=(msg, 'WgIme 托盘图标', 0x30), daemon=True).start()
+        except Exception:
+            pass
+        return
+    # ② 登记上了, 但被 Windows 收进 ^ 隐藏区 (新机器/新 exe 默认就是这样) -> 提示怎么弄出来
+    if promoted is False and state != 'visible':
+        _tray_hint_shown[0] = True
+        _notify('托盘图标被 Windows 收进了隐藏区',
+                '任务栏右下角点 ^ 就能看到它。想让它常驻:\n设置 → 个性化 → 任务栏 → 其他系统托盘图标 → 打开 %s'
+                % (os.path.basename(exe) or 'python'))
+
+
+_tray_hint_shown = [False]
+
+
 def _deferred_tray():
     """托盘对象 + 图标线程 (`import tray` = pystray+PIL ≈300ms)."""
     _create_tray()
+    ok = False
     try:
         if TRAY:
-            TRAY.start()
+            ok = bool(TRAY.start())
     except Exception as e:
         _dfn('tray start err %r' % e)
+    _dfn_always('tray start ok=%s has_tray=%s exe=%s err=%s'
+         % (ok, _tray_has(), sys.executable, (getattr(TRAY, 'last_error', '') or '')[-300:]))
+    if not ok:
+        # 起不来就别等 1.2s 的自检了, 直接报 (自检也查不出东西)
+        try:
+            root.after(50, _tray_selfcheck)
+        except Exception:
+            _tray_selfcheck()
+    else:
+        root.after(1200, _tray_selfcheck)       # 起得来也复核一次: 在不在可见区
     if _DICTS_MISSING:                          # 空词库必须让用户看见 (pythonw 下没 stderr)
         try:
             if TRAY and getattr(TRAY, 'icon', None):
@@ -1832,6 +1920,14 @@ def _deferred_tray():
                                  'WgIme')
         except Exception:
             pass
+
+
+def _tray_has():
+    try:
+        import tray as _t
+        return _t.HAS_TRAY
+    except Exception:
+        return None
 
 
 def _deferred_tools():
