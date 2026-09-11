@@ -77,7 +77,7 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 18. **可配置快捷键 / 候选操作键（两版共用 config 键）**：`hotkey_toggle/mode/makeword/trad` + `key_first/pageup/pagedown/back/cancel/raw/pickfirst/picklast`。C# 侧在 `KeyBordHook`（`VkFromName`/`ParseHotkey`/`SetKeyConfig`/`MatchMods`，缺省见类字段）；**python 侧在 `hook.py`**（`vk_from_name`/`parse_hotkey`/`configure`/`_rebuild_swallow` + `HOTKEYS`/`KEYS` 状态），由 `main.apply_config()` 用 `CFG['hotkeys']`/`CFG['ckeys']` 安装（`engine.load_config` 只原样收下，缺省在 hook 里），`main.handle()` 的按键分派全部改读 `hook.KEYS`。语义要点：`none`=禁用(0)、无效值忽略保持缺省、`hotkey_toggle` 非 `shift_tap` 时 Shift 轻拍停用、热键在"输入法未激活"时也生效（C# 热键判定在 IsLocked 之前）、组字中吞的候选键 = 配置键 + PgUp/PgDn 常驻。改这块时别再把键位写死回 `VK['SPACE']` 之类。
 19. **单实例（wgime-py-pure）**：`win.single_instance('WgImePySingleInstance')`（ctypes 命名互斥体，句柄存 `main._SINGLETON` 保活）+ `win.message_box`（纯 Win32 弹窗，启动早期不建 tk）；已有实例则提示并 `sys.exit(0)`。名字带 `Py` 后缀，与 C# 的 `WgImeSingleInstance` 互不干扰；测试用 `WGIME_NO_SINGLETON=1` 跳过。
 20. **联想开关要真的生效**：`engine.assoc_enabled`（由 `main.apply_config` 从 `CFG['assoc']` 同步）同时管**学习**（`learn_assoc` 提前返回）与**显示**（`get_assoc` 返回空 + `main.show_assoc` 提前返回），对齐 C# `AssocEnabled`。以前只翻了托盘勾选、实际照学照显示，是 bug。
-21. **反查编码 (showcode) 的方向别搞反**：C# `CodeHint` = 五笔模式显**拼音**码、其余模式显**五笔**码（即"显示另一种码"）。python 侧用 `engine.build_rev_wb`（词→五笔码，按码 ordinal 升序扫、每词取最小码，同 C# `BuildRevWb`）+ `Engine.rev_wb_code()` **惰性**建表（首次用才建，`_build()`/造词改 wb 时置 None 失效）。`main._with_code` 是唯一入口。
+21. **反查编码 (showcode) 的方向别搞反**：C# `CodeHint` = 五笔模式显**拼音**码、其余模式显**五笔**码（即"显示另一种码"）。python 侧用 `engine.build_rev_wb`（词→五笔码，按码 ordinal 升序扫、每词取最小码，同 C# `BuildRevWb`）+ `Engine.rev_wb_code()` **后台**建表（第三十四轮改：**首次用绝不同步建** —— `showcode=1` 是出厂默认值，同步建会让**每次启动的首键卡 1326ms**；没建好直接返回 `None`，`warm_rev_wb()` 起后台线程，`_invalidate_rev_wb()` 在 `_build()`/造词改 wb 时失效；详见 §6）。`main._with_code` 是唯一入口。
 22. **英汉表 (ec) 只在「词典」模式 (mode 3) 参与候选**（C# `AddTranslate`）：`engine.candidates` 的 mode 0/1 绝不能查 ec——实测拼音模式打 `no` 会串出"不/没有/无"并把"弄/浓/农"顶掉。词典模式的 EN 前缀匹配要给**每个命中词的全部释义**（C# `AddCands`），不是只取首个。**第十七轮核对结论（别再"修"）**：mode 3 的候选**集合**与 C# `AddTranslate` 逐条一致 —— EN 精确 + EN 前缀 + CN→EN 反查（`PyDict` 全拼 + `Acro` 简拼 → 每个中文词查 `ce`）；`ce`（CN→EN）由 `build_reverse` 建，与 C# `BuildReverse` 逐行一致（EN ordinal 升序、每词上限 8、去重），实测 **701531 键全等**；mode 3 用**合并**频率视图（`self.freq`，同 C# `fb = ... : Freq`）且**不做** LastPick 置顶（同 C# `lpb = null`）。**唯一差异是 python §14 的频率排序**（稳定排序，探针复算后与 engine 输出逐项相同），不是 bug。
 23. **双拼 (shuangpin>0) 下的门控**（C# `if (Shuangpin == 0)`）：rq/sj/xq 动态候选、v 金额候选、**启动器候选**都不挂（两键即音节会撞码）；`digit_as_code()` 也要带 `CFG['shuangpin'] == 0`。另 `refresh()` 开头要有 C# 的两处面板复位：`sym_cat>0 && buf != 'vf'` 与 `shuangpin>0` 时清 `sym_cat`。
 24. **五笔唯一四码自动上屏**要排除启动器候选：`refresh()` 里条件含 `cands[0] != ime.app_cand`（对齐 C# `!appSet.Contains(cands[0])`），否则会"自动启动程序"。
@@ -104,14 +104,33 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 - **词频保存后台化**：`SaveFreq` 走线程池（`freqSaving` 防堆积），退出时 `SaveFreqSync` 同步落盘。内存上限：FreqM/LastPickM 各 3 万、Freq 9 万、Assoc key 2 万。
 - **启动计时日志**：`startup: LoadFreq+BuildDicts=XXXms ApplySwap=YYYms`。
 - **固化码表预生成缓存**：`BakeTables` 固化后（无论是否勾选"删除源文件"）`PrebuildCacheAfterBake` 用 bake 后的输入重算 md5 并复用内存字典直接写 `wgime.mb`，下次启动命中缓存，跳过 ~10-24s 冷重建。md5 的 overlay 文件字节用 `SafeRead` 读实际状态；它对新码表 `TrimEnd` 末尾换行，与 `Get-DictSeg` 读数据块时的 `TrimEnd` 字节级一致，否则 md5 对不上。保留源文件时下次启动的 overlay 是幂等的（`AddDictLine` 覆盖 + `MergeUserWords` 只追加），冷启动结果等于内存字典。
-- **python 版启动实测（2026-09-10 量过，改动前先看这组数）**：冷启动 ≈ **12s**（`ec` 解析 1.1s + `build_reverse` 3.3s + `build_acro` 2.0s + `build_char_py` 0.45s + 三组 `build_sorted` 0.5s + **写 90MB 缓存 2.4s**）；热启动 ≈ **2.9s**（其中 `pickle.load` 90MB ≈ 2.1-2.4s）。每键热路径都很便宜（`candidates("ni")` 0.05ms / `candidates("zhongguo")` 0.25ms / `best_sentence` 0.07ms），**别去动热路径**。
+- **python 版启动实测（第三十四轮复测，改动前先看这组数）**：冷启动 ≈ **12.4s**（`ec` 解析 1.1s + `build_reverse` 3.3s + `build_acro` 2.0s + `build_char_py` 0.45s + 三组 `build_sorted` 0.5s + **写 90MB 缓存 2.4s**）；热启动**引擎加载 ≈ 0.87s**、`main` 前缀（到装钩子）**≈ 2.3s**（原来 `pickle.load` 整份 90MB 要 2.0–2.6s，见下面"两段缓存"）。每键热路径都很便宜（`candidates("ni")` 0.05ms / `candidates("zhongguo")` 0.25ms / `best_sentence` 0.07ms），**别去动热路径**。
+- **"启动头几秒打字卡/打不出字"的两个根因（第三十四轮，别再种回去）**：
+  ① **反查表(rev_wb)绝不能同步建**：`showcode = 1` 是 `config.txt` **出厂默认值**，原来 `rev_wb_code()` 首次调用时同步
+  `build_rev_wb`（30.2 万码 / 143.8 万词条纯 Python 循环）→ **每次启动的第一下按键卡 1326ms**。现在 `rev_wb_code()`
+  只返回 `_rev_wb.get(w)`，没建好就调 `warm_rev_wb()` 起后台线程并返回 `None`（候选暂时不显示反查码），
+  `build_rev_wb` 每 4000 码 `time.sleep` 让 GIL（`chunk=0` 关闭，oracle 用），码表变动 `_invalidate_rev_wb()` 用
+  `_rev_gen` 代数作废在飞结果。**不要把预热搬回 `apply_config()`**：那 1.2s 抢 GIL 会把 `hook.start()` 从 +2.29s
+  推到 +3.70s（键更晚可用）；预热只在钩子装好后（`main` 里 `engine.warm_ec()`）和打开「反查编码」开关时做。
+  ② **缓存分两段读**（`CACHE_VER = 4`）：第一段=核心表 `(py,pk,pv,wb,wk,wv,char_py,acro)` 44.6MB，
+  第二段=**只有「词典」模式(3)用得到**的 `(ec,ek,ev,ce)` 46MB。启动只**同步**读第一段（`f.tell()` 记下第二段偏移
+  `_ec_off`，`_ec_ready=False`、`ec/ek/ev/ce=None`），第二段由 `ensure_ec()` 在后台线程里用 `_YieldingReader`
+  （每次 `read` 之间 sleep 0.2ms，让 `_pickle` 周期性交还 GIL）加载 —— 实测加载期间每键 **1–36ms**。
+  **四个部件必须打成一个 pickle 段**（`pickle.dump((ec,ek,ev,ce), f)`）：拆成 4 个会丢字符串去重，缓存 90.6MB→121.9MB。
+  `candidates()` 的 mode 3 分支在 `_ec_ready` 为假时**必须返回 `cands, False, False`**（三元组！曾经写成 `return []`
+  让 `main.refresh` 抛 `ValueError: not enough values to unpack`），并调 `ensure_ec()` 顺手起加载。
+  第二段损坏/截断（`.sig` 仍匹配、缓存"看起来可用"）→ 后台线程里 `_build_ec()` 重建；两条路都失败才 `_ec_fail` 打住
+  （否则词典模式每按一键起一个读 24MB 码表的线程）。探针：`%TEMP%\wgime-warmec-probe.py`（26 项）。
+- **加载提示窗每次启动都显示（第三十四轮）**：热启动也要读 95MB 缓存 + 装钩子（~2.3s），只在"缓存过期要重建"时
+  才显示会让热启动那两三秒毫无反馈。现在 `_splash` 无条件建，第二行按 `_dict_cache_stale()` 区分
+  "首次启动需建立索引, 请稍候 (之后走缓存, 秒开)" / "正在读取词库缓存, 几秒后即可输入"。
 - **缓存内容别"精简"**：`pk/pv/wk/wv/ek/ev` 六个派生数组看着冗余（占缓存 90MB 里的 ~57MB），但实测把它们从缓存里去掉改成启动时 `build_sorted` 重建是**净亏 308ms**（缓存只省 13.5MB，重建要 487ms）——已量化验证，保持现状。`ce`（`build_reverse` 3.3s）与 `acro`（2.0s）必须留在缓存。zlib 压缩缓存也不划算（145MB→42MB 但解压 +652ms）。
 - **冷启动反馈窗（python 版）**：`_dict_cache_stale()`（缓存缺失或比任一码表旧）为真时，在 `Engine()` 之前显示一个 320x72 的"WgIme 正在加载词库…"无边框置顶小窗，建表完成后销毁（对齐 C# 候选条的"(词库加载中...)"）。为此 `root = tk.Tk()` 已提到建表之前，**全文件只创建一次 Tk root**（`bar = CandBar(root)` 复用同一个），别再在启动后段新建 root。
 - **索引缓存（`dict-cache.pkl`）的判定与写入规则（第三十一轮，别回退）**：判定统一走 `engine.cache_is_reusable(dict_dir, data_dir)`
   = 缓存文件存在 **且** 侧车 `dict-cache.pkl.sig`（小 JSON：`ver + 绝对词库目录 + 每个码表 (size,mtime)`）
   == 当前 `engine.cache_sig(dict_dir)`。所以 **只有码表真的变了（或换了词库目录/缓存版本）才重建**，
-  热启动既不重建也**不重写**缓存文件（实测 11.5–12.7s 冷 / 2.0–2.2s 热）。铁律：
-  ① **一个码表都没读到（`py/wb/ec` 全空）绝不写缓存**，否则会留下"签名自洽的空索引缓存"，
+  热启动既不重建也**不重写**缓存文件（实测 11.5–12.7s 冷 / **0.87–1.01s 热**，见上面"两段缓存"）。铁律：
+  ① **一个码表都没读到（第一段的 `py`/`wb` 全空，第三十四轮起不再看 `ec`——它在第二段）绝不写缓存**，否则会留下"签名自洽的空索引缓存"，
   之后每次启动都命中它 → 词库凭空为空且毫无提示（用户机器上真出现过 75 字节的
   `sig=[None]*7` 缓存）；`_load_cache` 命中到空索引时也要拒绝并重建；② `_save_cache` 失败**不许静默**
   （会打印原因）；③ 缓存失效时同步删掉侧车 `.sig`，否则启动提示会以为"缓存可用"而不再显示加载窗；
@@ -195,5 +214,10 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
   `detect_format`/`convert_file`/`suggest_target`/重导入幂等）已用 oracle 对 C# 逐函数核对 **58 项 0 差异**，
   别改语义；两个坑别回退：① `write_import_file` **必须 `newline='\n'`**（C# 写裸 LF，python 默认会翻 CRLF）；
   ② 读 `parse_dict`/`load_import_base`/`_py_plugin_meta_static` 都要宽松（见 §28，GBK 码表严格 utf-8 会把启动打崩）。
+- **启动头几秒打字卡 = 已修（第三十四轮，用户报告"每次启动头几秒打不出字"）**：两个根因都在 §6 —— ① 首键同步建
+  反查表（`showcode=1` 出厂默认，1326ms）→ 后台建；② 启动同步 `pickle.load` 整份 90.6MB 缓存（2050–2611ms）→
+  缓存分两段、词典那半张表惰性后台加载（引擎加载 864ms，`main` 前缀 3.70s→2.29s，首键 1326→68ms）。另外热启动
+  也固定显示"正在加载词库"小窗。**别把这两处改回同步**（§6 有完整"别再种回去"清单）。验证：新探针 26 项 +
+  缓存生命周期 14 项 + harness 16/16 全绿，缓存体积不变（95006769 字节）。
 - chat 插件要点：relay=`chat.seee.uno` 走裸 JSON 文本帧，其余 broker 走 MQTT over WS（`/mqtt` 路径 + **必须 `mqtt` 子协议**，否则 EMQX 400/Mosquitto 断连）；TLS 需 1.2+。详见 `docs\WGIME_CHAT_技术文档.md` §8。
 - 待用户验证：chat 插件与 PC/Android 真机互通（协议层已实机验证）、词库加载速度（缓存命中路径）、固化码表后启动速度（应已降到缓存命中级别）。

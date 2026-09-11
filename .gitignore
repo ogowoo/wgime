@@ -32,3 +32,6 @@ tests/interop/*.bin
 
 # rust TSF spike build artifacts (cargo checkout lives elsewhere)
 /wgime-tsf/target/
+
+# build-release-assets.ps1 staging dir (the zips go to the GitHub release, not the repo)
+/.release-stage-*/

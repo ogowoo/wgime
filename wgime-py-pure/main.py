@@ -183,26 +183,29 @@ def _dict_cache_stale():
 root = tk.Tk()
 root.withdraw()
 _splash = None
-if _dict_cache_stale():
+try:
+    # 每次启动都给反馈, 不只在"要重建索引"时: 热启动也要读 95MB 缓存 (~2.6s), 这期间钩子还没装,
+    # 用户看不到任何痕迹就会以为没启动/打字没反应 (实测冷 12.4s / 热 2.6s)。
+    _stale = _dict_cache_stale()
+    _splash = tk.Toplevel(root)
+    _splash.overrideredirect(True)
+    _splash.attributes('-topmost', True)
+    _splash.configure(bg='#3B3836')
+    tk.Label(_splash, text='WgIme 正在加载词库…', bg='#3B3836', fg='#FFFFFF',
+             font=('Microsoft YaHei UI', 11)).place(x=0, y=12, width=320, height=26)
+    tk.Label(_splash, text=('首次启动需建立索引, 请稍候 (之后走缓存, 秒开)' if _stale
+                            else '正在读取词库缓存, 几秒后即可输入'), bg='#3B3836', fg='#B0ACA8',
+             font=('Microsoft YaHei UI', 8)).place(x=0, y=40, width=320, height=20)
     try:
-        _splash = tk.Toplevel(root)
-        _splash.overrideredirect(True)
-        _splash.attributes('-topmost', True)
-        _splash.configure(bg='#3B3836')
-        tk.Label(_splash, text='WgIme 正在加载词库…', bg='#3B3836', fg='#FFFFFF',
-                 font=('Microsoft YaHei UI', 11)).place(x=0, y=12, width=320, height=26)
-        tk.Label(_splash, text='首次启动需建立索引, 请稍候 (之后走缓存, 秒开)', bg='#3B3836', fg='#B0ACA8',
-                 font=('Microsoft YaHei UI', 8)).place(x=0, y=40, width=320, height=20)
-        try:
-            _sw, _sh = 320, 72
-            _wa = win.screen_workarea()
-            _splash.geometry('%dx%d+%d+%d' % (_sw, _sh, _wa.left + (_wa.right - _wa.left - _sw) // 2,
-                                              _wa.bottom - _sh - 120))
-        except Exception:
-            _splash.geometry('320x72+100+100')
-        _splash.update()                      # 立刻画出来(不等 mainloop)
+        _sw, _sh = 320, 72
+        _wa = win.screen_workarea()
+        _splash.geometry('%dx%d+%d+%d' % (_sw, _sh, _wa.left + (_wa.right - _wa.left - _sw) // 2,
+                                          _wa.bottom - _sh - 120))
     except Exception:
-        _splash = None
+        _splash.geometry('320x72+100+100')
+    _splash.update()                      # 立刻画出来(不等 mainloop)
+except Exception:
+    _splash = None
 
 _DICTS_MISSING = not os.path.exists(os.path.join(DICT_DIR, 'py.txt'))
 if _DICTS_MISSING:
@@ -234,6 +237,8 @@ def apply_config():
     engine.assoc_enabled = CFG.get('assoc', True)   # config assoc=0 / 托盘关闭: 不学习也不显示联想 (对齐 C# AssocEnabled)
     hook.set_punct(CFG.get('cnpunct', True))   # 全角标点开关同步给钩子线程
     hook.configure(CFG.get('hotkeys'), CFG.get('ckeys'))   # hotkey_* / key_* -> 钩子线程 (对齐 C# LoadConfig)
+    # 反查码表(rev_wb)不做启动预热: 那 1.2s 纯 Python 循环会抢 GIL, 把"装钩子"这一步推迟 1.4s。
+    # 改成首次真正需要时在**后台线程**里建 (engine.rev_wb_code -> warm_rev_wb), 输入路径永不阻塞。
 
 
 def is_tray_mode():
@@ -826,6 +831,11 @@ def toggle_showcode():
     CFG['showcode'] = not CFG.get('showcode', False)
     _dfn('showcode=%s' % CFG['showcode'])
     _write_config('showcode', '1' if CFG['showcode'] else '0')   # 写回 config.txt
+    if CFG['showcode']:
+        try:
+            engine.warm_rev_wb()      # 刚打开: 后台建反查表, 别让下一键卡 ~1.2s
+        except Exception:
+            pass
     show_page()   # 立即按新 showcode 刷新候选(显示/隐藏编码)
 
 
@@ -1759,6 +1769,11 @@ else:
     if not hook.start():                     # 钩子装不上: 对齐 C# 的"钩子失败"错误气泡 (不再静默)
         _notify('WgIme (Python) 已启动', '键盘钩子安装失败 (err %s), 输入法按键将不工作。' % hook.last_error())
     set_active(CFG['starton'])
+    try:
+        engine.warm_ec()      # 钩子已装好(= 能打字了), 这会儿在后台把「词典」模式那半张表读进来:
+                              # 等用户真切到词典模式时基本已就绪, 别再"进词典模式空候选几秒"
+    except Exception:
+        pass
     try:
         win.ensure_caret_bg()
     except Exception:

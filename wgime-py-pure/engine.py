@@ -422,13 +422,48 @@ def build_reverse(ec):
     return {k: ' '.join(v) for k, v in rev.items()}
 
 
-def build_rev_wb(wb):
-    """word -> 五笔码 (反查用, 对齐 C# BuildRevWb): 按码 ordinal 升序扫, 每词取**首个**命中的码 (即最小码)."""
+_REV_WB_CHUNK = 4000      # 后台建反查表时每处理这么多码让出一次 GIL
+_REV_WB_PAUSE = 0.008     # 让出时长(秒): 不让出的话主线程(按键)会被挤到 ~1/10 速度 (实测首键 206ms)
+
+
+class _YieldingReader(object):
+    """给 pickle 包一层: 两次 read 之间 sleep 一下让出 GIL.
+
+    `_pickle` 在调用 read() 时会释放 GIL, 于是在**后台线程**里反序列化大对象时, 主线程(按键/候选条)
+    照样能拿到 GIL 干活 —— 否则一整块 C 级反序列化会把输入路径卡住 (实测不让出时首键能到上百 ms)。
+    每次让出很短 (默认 0.2ms): 46MB / 8KB ≈ 5900 次 read -> 总共多花 ~1.2s, 但都在后台。
+    """
+
+    def __init__(self, f, pause=0.0002):
+        self._f = f
+        self._pause = pause
+
+    def read(self, n=-1):
+        if self._pause:
+            time.sleep(self._pause)
+        return self._f.read(n)
+
+    def readline(self, n=-1):
+        if self._pause:
+            time.sleep(self._pause)
+        return self._f.readline(n)
+
+
+def build_rev_wb(wb, chunk=_REV_WB_CHUNK, pause=_REV_WB_PAUSE):
+    """word -> 五笔码 (反查用, 对齐 C# BuildRevWb): 按码 ordinal 升序扫, 每词取**首个**命中的码 (即最小码).
+
+    这个循环是纯 Python, 一次性跑完会把主线程(按键/候选条)饿到 ~1/10 速度, 所以**分片让出 GIL**
+    (chunk=0 关闭, 供 oracle/测试用)。语义与 C# BuildRevWb 一致: 码升序、先到先得。
+    """
     rev = {}
+    n = 0
     for code in sorted(wb.keys()):
         for w in wb[code].split(' '):
-            if w and w not in rev:
-                rev[w] = code
+            if w:
+                rev.setdefault(w, code)      # 先到先得(码升序)= 每词取最小码; setdefault 比 in+赋值快一截
+        n += 1
+        if chunk and pause and n % chunk == 0:
+            time.sleep(pause)                # 让主线程拿到 GIL (后台建表不能阻塞输入路径)
     return rev
 
 
@@ -655,7 +690,7 @@ def _atomic_write(path, text):
             pass
 
 
-CACHE_VER = 2                    # v2: 签名加入"词库目录"+ 侧车 .sig 文件 (见 cache_sig/read_cache_sig)
+CACHE_VER = 4                    # v4: 缓存两段 (核心表 + 词典模式表 ec/ek/ev/ce 惰性后台加载)
 CACHE_FILES = ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt',
                'import_py.txt', 'import_wb.txt', 'import_ec.txt')
 
@@ -709,17 +744,22 @@ class Engine:
     def _build(self):
         self.py = parse_dict(os.path.join(self.dict_dir, 'py.txt'))
         self.wb = parse_dict(os.path.join(self.dict_dir, 'wb.txt'))
-        self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
-        self._rev_wb = None                      # 反查表(词->五笔码)惰性构建, 码表变动即失效
+        self._invalidate_rev_wb()                # 反查表(词->五笔码)后台构建, 码表变动即失效
         overlay_import(self.py, parse_dict(os.path.join(self.dict_dir, 'import_py.txt')))
         overlay_import(self.wb, parse_dict(os.path.join(self.dict_dir, 'import_wb.txt')))
-        overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
         self.pk, self.pv = build_sorted(self.py)
         self.wk, self.wv = build_sorted(self.wb)
-        self.ek, self.ev = build_sorted(self.ec)
         self.char_py = build_char_py(self.py)
         self.acro = build_acro(self.py, self.char_py)
+        self._build_ec()                         # 词典模式的表一起建好 (冷启动本来就是一次建全)
+
+    def _build_ec(self):
+        """建「词典」模式(3)那半张表 (ec 原始表 + 排序数组 + CN->EN 反查)."""
+        self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
+        overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
+        self.ek, self.ev = build_sorted(self.ec)
         self.ce = build_reverse(self.ec)
+        self._ec_ready = True
 
     def _build_wb_len(self):
         """五笔码按长度分桶(用于 z 通配等长查询, 替代全表线性扫描).
@@ -733,7 +773,14 @@ class Engine:
         t0 = time.time()
         self.data_dir = data_dir
         self.dict_dir = dict_dir
-        self._rev_wb = None                      # 反查表惰性构建 (首次 showcode 才建, 对齐 C# EnsureRevWb)
+        self._rev_wb = None                      # 反查表(词->五笔码)后台构建, 见 warm_rev_wb/rev_wb_code
+        self._rev_gen = 0                        # 反查表代数: 码表变了 +1, 让在飞的构建结果失效
+        self._rev_thread = None
+        self._ec_ready = False                   # 词典表(ec/ek/ev/ce)是否已就绪 (缓存第二段/冷建)
+        self._ec_off = None                      # 缓存里词典表的偏移 (没读到就是 None)
+        self._ec_gen = 0
+        self._ec_thread = None
+        self._ec_fail = False                    # 词典表两条路都失败: 打住, 别每次按键都重试
         self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
         self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
         self.assoc_enabled = True        # config assoc (main.apply_config 同步): 关掉则不学也不显示联想
@@ -781,44 +828,116 @@ class Engine:
             pass
 
     def _load_cache(self, paths):
+        """读缓存. 缓存文件里是**两段 pickle**: 第一段=拼音/五笔用得上的核心表,
+        第二段=只有「词典」模式(3)才用的 ec/ek/ev/ce (实测 46MB / 1.2s, 占整份一半)。
+
+        启动只同步读第一段 (实测 2.07s -> 0.98s), 第二段留到真正切到词典模式时后台加载 ——
+        这段时间正是"启动头几秒", 少占 1.1s 就能早点让输入法可用 (钩子是引擎就绪后才装的)。
+        """
         try:
             import pickle
             with open(self._cache_path(), 'rb') as f:
                 obj = pickle.load(f)
+                off = f.tell()                       # 第二段(词典表)的偏移; 文件只有一段时指向 EOF
             # 完整性由 sig(版本+词库目录+码表 size/mtime) + pickle 加载异常保底;
             # 之前对 95MB data 全量 pickle.dumps 算 md5 严重拖慢启动(~1s+), 已移除
             if obj.get('ver') != self.CACHE_VER or obj.get('sig') != self._cache_sig(paths):
                 self._drop_sig()
                 return False
-            (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
-             self.ek, self.ev, self.char_py, self.acro, self.ce) = obj['data']
-            if not self.py and not self.wb and not self.ec:
+            (self.py, self.pk, self.pv, self.wb, self.wk, self.wv,
+             self.char_py, self.acro) = obj['data']
+            if not self.py and not self.wb:
                 # 空索引缓存 (码表目录里没有码表时写下的): 当命中就等于"永远没有词库", 必须重建并提示
-                print('[wgime] 缓存里是空索引 (码表目录 %s 里没有 py/wb/ec.txt), 忽略它并重建'
+                print('[wgime] 缓存里是空索引 (码表目录 %s 里没有 py/wb.txt), 忽略它并重建'
                       % self.dict_dir, file=sys.stderr)
                 self._drop_sig()
                 return False
+            self._ec_off = off
+            self._ec_ready = False
+            self.ec = self.ek = self.ev = self.ce = None
             return True
         except Exception as e:
             print('[wgime] dict-cache load failed: %r' % (e,), file=sys.stderr)   # 缓存损坏时留痕, 便于排查
             self._drop_sig()
             return False
 
+    # ---------- 词典模式(3)那半张表: 后台加载, 不阻塞输入 ----------
+    def ensure_ec(self):
+        """词典表就绪检查: 没就绪就在后台线程里加载 (mode 3 在加载完成前先返回空候选)."""
+        if (self._ec_ready or self._ec_thread is not None
+                or self._ec_off is None or self._ec_fail):
+            return
+        t = threading.Thread(target=self._ec_worker, args=(self._ec_gen, self._ec_off),
+                             name='WgImeDictEc', daemon=True)
+        self._ec_thread = t
+        t.start()
+
+    def warm_ec(self):
+        """启动后主动预热词典表 (main 在钩子装好后调用): 等用户真切到「词典」模式时通常已就绪,
+        不必"首次进词典模式还要空候选几秒"。后台加载会让出 GIL, 不拖慢按键 (实测加载期间每键 4-29ms)。"""
+        self.ensure_ec()
+
+    def _ec_worker(self, gen, off):
+        ec = ek = ev = ce = None
+        try:
+            import pickle
+            with open(self._cache_path(), 'rb') as f:
+                f.seek(off)
+                # 用"会让出 GIL 的读取器"反序列化: _pickle 每次 read() 都释放 GIL, 这里在两次 read
+                # 之间 sleep 一小会儿 —— 46MB 那半张表在后台加载时, 主线程(按键/候选条)照样能跑,
+                # 不会被这一整块 C 级反序列化饿住 (否则就是"打字卡")。
+                ec, ek, ev, ce = pickle.load(_YieldingReader(f))
+        except Exception as e:
+            print('[wgime] 词典表缓存段读取失败: %r; 改从码表重建' % (e,), file=sys.stderr)
+        if gen == self._ec_gen and not self._ec_ready:
+            if ec is not None:
+                self.ec, self.ek, self.ev, self.ce = ec, ek, ev, ce
+                self._ec_ready = True
+            else:
+                try:
+                    self._build_ec()          # 兜底: 仍在本后台线程里从码表重建(绝不回主线程阻塞输入)
+                except Exception as e2:
+                    # 重建也失败: 记住别再重试 —— 否则词典模式每按一键就起一个读 24MB 码表的线程
+                    self._ec_fail = True
+                    print('[wgime] 词典表重建失败: %r (词典模式将没有候选)' % (e2,), file=sys.stderr)
+        self._ec_thread = None
+
+    def _load_ec_sync(self):
+        """同步把词典表弄到手 (只在写缓存/重建这类必须完整的场合调用, 输入路径绝不走这里)."""
+        if self._ec_ready:
+            return
+        if self._ec_off is not None:
+            try:
+                import pickle
+                with open(self._cache_path(), 'rb') as f:
+                    f.seek(self._ec_off)
+                    self.ec, self.ek, self.ev, self.ce = pickle.load(f)
+                self._ec_ready = True
+                return
+            except Exception:
+                pass
+        self._build_ec()                                  # 兜底: 直接从码表重算
+
     def _save_cache(self, paths):
         try:
             import pickle
-            if not self.py and not self.wb and not self.ec:
+            if not self.py and not self.wb:
                 # 一个码表都没读到 -> 绝不写这个"空索引"缓存: 写下去下次启动会把它当有效缓存,
                 # 表现为"词库凭空没了/没有候选"而且毫无提示(用户 DATA_DIR 里那个 75 字节缓存就是这么来的)。
                 print('[wgime] 未读到任何码表 (%s): 跳过写索引缓存; 请确认 py.txt/wb.txt/ec.txt 在词库目录里'
                       % self.dict_dir, file=sys.stderr)
                 return
+            if not self._ec_ready:
+                self._load_ec_sync()                      # 缓存必须两段齐全, 否则下次词典模式没表
             obj = {'ver': self.CACHE_VER, 'sig': self._cache_sig(paths),
-                   'data': (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
-                            self.ek, self.ev, self.char_py, self.acro, self.ce)}
+                   'data': (self.py, self.pk, self.pv, self.wb, self.wk, self.wv,
+                            self.char_py, self.acro)}
             tmp = self._cache_path() + '.tmp'
             with open(tmp, 'wb') as f:
                 pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+                # 第二段: 词典模式(3)那半张表, 打成一个 pickle (四个部件放一起才能共享字符串去重,
+                # 拆成 4 个 pickle 会让缓存从 90MB 涨到 122MB)
+                pickle.dump((self.ec, self.ek, self.ev, self.ce), f, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp, self._cache_path())
             self._write_sig(self._cache_sig(paths))
         except Exception as e:
@@ -1170,6 +1289,9 @@ class Engine:
             add_from_dict(self.wb, self.wk, self.wv, True, keys)
         else:
             # 词典: EN->CN 精确 + 前缀(每个命中词的全部释义, 对齐 C# AddCands), CN->EN 经全拼/简拼反查
+            if not self._ec_ready:
+                self.ensure_ec()          # 词典表在后台加载(半份缓存 ~1.2s): 先给空候选, 别卡住按键
+                return cands, False, False
             exact = self.ec.get(keys)
             if exact is not None:
                 add(exact)
@@ -1313,7 +1435,7 @@ class Engine:
             self.pk, self.pv = build_sorted(self.py)
             if wb_changed:
                 self.wk, self.wv = build_sorted(self.wb)
-                self._rev_wb = None                  # 五笔表变了, 反查表失效
+                self._invalidate_rev_wb()            # 五笔表变了, 反查表失效
             for k, ws in new_ini.items():
                 lst = self.acro.setdefault(k, [])
                 for w in ws:
@@ -1344,13 +1466,40 @@ class Engine:
         return ''.join(out)
 
     def rev_wb_code(self, w):
-        """反查: 词 -> 五笔码 (惰性建表一次; 码表变动时 _rev_wb 已被置 None). 无则 None."""
-        if self._rev_wb is None:
-            try:
-                self._rev_wb = build_rev_wb(self.wb)
-            except Exception:
-                self._rev_wb = {}
-        return self._rev_wb.get(w)
+        """反查: 词 -> 五笔码. **绝不阻塞输入路径** —— 建表(30 万码, 实测 ~1.2s)放后台线程:
+        还没建好时返回 None(候选上暂时不显示反查码), 建好后自动生效。
+
+        (原来是"首次调用同步建表", 而 showcode=1 是 config.txt 的**默认值**, 于是**每次启动的第一下按键**
+         都要卡 ~1.2s —— 用户感受到的就是"开始那几秒打字卡/打不出字"。)
+        """
+        rev = self._rev_wb
+        if rev is None:
+            self.warm_rev_wb()
+            return None
+        return rev.get(w)
+
+    def warm_rev_wb(self):
+        """预热反查表 (showcode 开着才有意义): 起后台线程, 不阻塞主线程/输入."""
+        if self._rev_wb is not None or self._rev_thread is not None:
+            return
+        t = threading.Thread(target=self._rev_wb_worker, args=(self._rev_gen,), name='WgImeRevWb', daemon=True)
+        self._rev_thread = t
+        t.start()
+
+    def _rev_wb_worker(self, gen):
+        try:
+            rev = build_rev_wb(self.wb)
+        except Exception:
+            rev = {}
+        if gen == self._rev_gen and self._rev_wb is None:      # 期间码表没被改过才装上
+            self._rev_wb = rev
+        self._rev_thread = None
+
+    def _invalidate_rev_wb(self):
+        """码表变了: 反查表作废, 并让在飞的构建结果失效 (代数 +1)."""
+        self._rev_wb = None
+        self._rev_gen = getattr(self, '_rev_gen', 0) + 1
+        self._rev_thread = None
 
     def wubi_code_for(self, w):
         """五笔 86 构词码 (WubiCodeFor)"""
@@ -1385,7 +1534,7 @@ class Engine:
             if not (curw and (' ' + curw + ' ').find(' ' + word + ' ') >= 0):
                 self.wb[wbc] = (curw + ' ' + word) if curw else word
                 self.wk, self.wv = build_sorted(self.wb)
-                self._rev_wb = None                  # 五笔表变了, 反查表失效
+                self._invalidate_rev_wb()            # 五笔表变了, 反查表失效
         ini = []
         ok = True
         for ch in word:
