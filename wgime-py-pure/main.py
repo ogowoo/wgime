@@ -209,6 +209,37 @@ try:
 except Exception:
     _splash = None
 
+# ---------- 早装键盘钩子 (第三十八轮) ----------
+# 引擎读词库 ~1.0s + 配置/候选条/托盘/插件 ~0.3s, 这段窗口里钩子原来是**最后**才装的 ——
+# 用户实测"启动后按 Shift 再打字, 还要 1-3 秒才上屏"正是打在这段窗口: 那几秒按键根本没进输入法。
+# 现在钩子先就位, 语义不变: 未激活时按键照常透传给应用(与没装钩子时一样), 已激活时按键进
+# hook.EVENTS 队列, 等 poll() 起来后按顺序处理 —— 用户前几秒敲的字不丢、也不会漏成半截拼音。
+# 这里只读一次 config (engine.load_config 不碰 Engine 实例, ~1ms); 最终 CFG 仍在引擎之后 apply_config()。
+_EARLY_CFG = {}
+try:
+    _EARLY_CFG = load_config(os.path.join(APP_DIR, 'config.txt'))
+except Exception as e:
+    _dfn('early config read err %r' % e)
+_EARLY_HOOK_OK = None
+if _EARLY_CFG.get('mode', 'ime') != 'tray':
+    try:
+        hook.configure(_EARLY_CFG.get('hotkeys'), _EARLY_CFG.get('ckeys'))
+        hook.set_punct(_EARLY_CFG.get('cnpunct', True))
+    except Exception as e:
+        _dfn('early hook configure err %r' % e)
+    try:
+        _EARLY_HOOK_OK = bool(hook.start())
+        hook.set_active(bool(_EARLY_CFG.get('starton', True)))
+        _dfn('early hook ok=%s (installed before the dict load; ACTIVE=%s)'
+             % (_EARLY_HOOK_OK, bool(_EARLY_CFG.get('starton', True))))
+    except Exception as e:
+        _EARLY_HOOK_OK = False
+        _dfn('early hook start err %r' % e)
+    try:
+        win.ensure_caret_bg()          # 与建表并行: helper 也早点起, 别都堆在最后
+    except Exception:
+        pass
+
 _DICTS_MISSING = not os.path.exists(os.path.join(DICT_DIR, 'py.txt'))
 if _DICTS_MISSING:
     print('[wgime] 没有找到码表 py.txt: 词库目录 = %s\n'
@@ -1768,7 +1799,9 @@ root.after(8, poll)
 if is_tray_mode():
     _dfn('runmode=tray (no keyboard hook)')
 else:
-    if not hook.start():                     # 钩子装不上: 对齐 C# 的"钩子失败"错误气泡 (不再静默)
+    if _EARLY_HOOK_OK is None:               # 早期没装(配置读不到/异常): 这里补装
+        _EARLY_HOOK_OK = bool(hook.start())
+    if not _EARLY_HOOK_OK:                   # 钩子装不上: 对齐 C# 的"钩子失败"错误气泡 (不再静默)
         _notify('WgIme (Python) 已启动', '键盘钩子安装失败 (err %s), 输入法按键将不工作。' % hook.last_error())
     set_active(CFG['starton'])
     try:

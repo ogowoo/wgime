@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-09-11 (第三十八轮: 启动后前几秒打字"1-3 秒才上屏" — 钩子提前装 + 跟随 helper 秒退修复)
+
+用户反馈: "整体加载速度还是比较慢；启动后按 Shift 激活再打字，大概还要 1-3 秒才能上屏。"
+
+**先量清楚**（用**真实单文件 dist** 在隔离数据目录里跑，`mode=tray` 不装键盘钩子以免抢用户的键盘）:
+
+| 里程碑 (warm) | 修复前 | 修复后 |
+|---|---|---|
+| helper 起 / ready | +2751ms / +2979ms（且用户机器上**秒退**） | **+1449ms / +1698ms（与读词库并行）** |
+| **键盘钩子装好** | **+2650ms（在引擎/插件之后）** | **+1.45s（在读词库之前）** |
+| 引擎读完 | +2394ms（load=1007ms） | +2465ms（load=1011ms） |
+| 插件加载完 / active= | +2527ms / +2650ms | +2617ms / +2711ms |
+
+也就是说：**"上屏慢 1-3 秒"不是上屏慢，是钩子还没装** —— 用户"启动后按 Shift 再打字"正好打在这段
+2.6 秒的窗口里，那几秒的按键根本没进输入法。冷启动（要重建索引）14.1–14.9s 才是"整体加载慢"的主因；
+用户 15:17 那次冷启动是前几轮改 `CACHE_VER`/重建 package 让缓存失效造成的。
+
+- **修复 1: 键盘钩子提前到「读词库」之前装**（`main.py`）。新顺序：
+  Tk/加载窗 → **读 config(1ms) + `hook.start()` + `set_active()` + 起 caret helper** → `Engine()`(词库) →
+  配置/候选条/托盘/插件/工具 → `poll` → `mainloop`。语义不变：
+  未激活时按键**照常透传**给应用（与没装钩子时完全一样，`starton=0` 的行为不变）；
+  已激活时按键进 `hook.EVENTS` 队列，等 `poll()` 起来后按顺序处理 —— 用户前几秒敲的字**不丢、
+  也不会漏成半截拼音**。尾巴上的 `hook.start()` 变成幂等（已装则 0ms），失败才弹"钩子失败"气泡；
+  另加 `_dfn('early hook ok=…')` 落进 `debug.log`，以后能直接从日志确认。
+  实测（探针把 `hook.start` 打桩，避免探针自己抢用户键盘）：hook 在 **+544ms** 装好（此前必须等引擎读完：
+  热 2.6s / 冷 14s）。
+- **修复 2: 光标跟随 helper 在用户机器上"起来就死"**（`win.py`）。用户 `debug.log` 实测：几次启动里
+  `[win] IPC helper started` 之后 **0.15–0.19 秒**就 `exited`（5 次启动 4 次立即退出），于是 UIA 跟随
+  静默失效、而且每次按键都可能白白 spawn 一个 python。根因：helper 落在
+  `%LOCALAPPDATA%\wgime-py\runtime\`，而该目录里残留 pythonnet 时代的 **python38 整包**
+  （`_ctypes.pyd`/`pyexpat.pyd`/`select.pyd`/`python38.dll`/`Lib`…），helper 以脚本目录为 `sys.path[0]`，
+  这些 `.pyd` 抢占标准库 import → 秒退。
+  **修复**：helper 落到专用子目录 **`runtime\caret-helper\`**（与残留隔离；子目录建不出来时退回原目录），
+  且**连续秒退 3 次就不再重试**（避免每按一键起一个 python）。
+  **A/B 证据**（隔离目录、同一份 helper）：放在带残留的 `runtime\` → **起不来**（exit 1 + traceback，
+  复现用户日志）；放在 `runtime\caret-helper\` → **ready（249ms）**。
+- **验证**: 新探针 `%TEMP%\wg-hookorder-probe.py` **9 项 0 失败**（钩子早于 Engine、落在 pre-engine 阶段、
+  helper 残留 A/B、`_helper_path()` 指向新子目录）；回归：`tests\pure-state-harness.py` **16/16**、
+  split-cache/派生表 **40 项**、缓存生命周期 **14 项**、QR **78 项**、wgtranslate **62 项** 全部 DIFFS=0；
+  dist 内嵌 9 模块与磁盘逐字节相同、dist==package（SHA256 `43CFF6AE…`）；真实 dist 复测见上表。
+
+---
+
 ## 2026-09-11 (第三十七轮审计: wgime-qr 二维码编码器 — 用独立解码器整链验证 + 容量提示差一)
 
 维度: `wgime-py-pure\plugins\wgime-qr.py`（v2.5，AGENTS 原写"二维码 qrcode，Nayuki 算法已逐位对齐参考实现"）。
