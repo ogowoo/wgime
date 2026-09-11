@@ -4,7 +4,57 @@
 
 ---
 
-## 2026-09-11 (第四十一轮: 托盘图标"个别机器看不见" —— 加自检 + 让它自己说出来)
+## 2026-09-11 (第四十二轮: 托盘图标"个别机器"的真凶 —— 宿主没装 Pillow；单文件改为内嵌预渲染图标)
+
+第四十一轮加的自检直接把答案报了出来（用户那台机器的弹框 + `debug.log`）：
+
+```
+NIM_ADD: None
+python: C:\Users\WALLIANG\AppData\Local\Programs\Python\Python314\pythonw.exe
+控制台: no(pythonw)
+原因: pystray/PIL 导入失败:
+      File "tray.py", line 31, in <module>
+      ModuleNotFoundError: No module named 'PIL'
+```
+
+**根因**：python 版的托盘图标是**运行时用 Pillow 现画**的（`from PIL import Image, ImageDraw, ImageFont`），
+而**单文件只内嵌了 comtypes/uiautomation/pystray，没有内嵌 Pillow**（Pillow 带编译扩展 `_imaging.pyd`，
+按 Python ABI 绑定，内嵌源码也跨版本用不了）。所以：
+
+* 机器上装了 Pillow → 有托盘图标（我们开发机就是这样，一路没发现）；
+* 机器上只有官方 Python、没装 Pillow → `import PIL` 失败 → **整个托盘没了**；
+* 而"`python wgime-py.py` 却正常"是因为 PATH 上那个 `python` 恰好是装了 Pillow 的另一个版本 ——
+  与双击用的 Python 3.14 不是同一个解释器。**"只有个别机器"= 只有没装 Pillow 的机器**。
+
+**修法（第四十二轮）**：把托盘图标**在构建时**用 Pillow 画好，存成 9 个 ICO（4 模式 × 开/关 + 工具模式，
+共 5.2 KB base64）内嵌进单文件；运行时只把 ICO 写进 `%LOCALAPPDATA%\wgime-py\runtime\icons\` 再
+`LoadImage` 成 HICON，**完全不再需要宿主装 Pillow**：
+
+* `build-wgime-pure.py`：构建时调 `tray._icon_img/_tool_icon_img` 渲染 → `TRAY_ICONS`（base64 ICO 字典）写进单文件；
+* `win.py`：新增 `icon_from_ico_bytes()`（写文件 + `LoadImageW(IMAGE_ICON, LR_LOADFROMFILE)`）；
+* `tray.py`：`HAS_PIL` 变成**可选**（`import pystray` 本身不需要 PIL，只有"设图像"那一步才要 ——
+  我们直接把 HICON 塞给 pystray，绕过它的 PIL 序列化），图标切换走 `NIM_MODIFY | NIF_ICON`；
+  没有内嵌图标（源码布局运行）时才回退到 PIL；两者都没有才报"缺 Pillow"并弹框。
+
+**顺带修掉一个自己引入的错**：切模式换图标那段日志里用了未定义的 `key`（NameError 被
+`except Exception: pass` 吞掉，所以"换了图但没日志"，看起来像没换）。现在换成内联 key，
+`tests\undefined-globals.py` 也复查过 0 处。
+
+### 验证（都用真实 `pythonw.exe` + DETACHED、无控制台、与双击同条件）
+
+| 场景 | 结果 |
+|---|---|
+| 内嵌图标 + **假 PIL**（PYTHONPATH 放一个 import 就抛 ImportError 的 `PIL.py`，复现用户机器） | `tray start ok=True`、`tray selfcheck: nim_add=True`、不弹框 |
+| 内嵌图标 + 假 PIL + 切模式 | `tray _refresh embedded mode=1 … hicon=True visible=True` → `tray icon swap -> 1i modified=True`（shell 接受了换图） |
+| 拔掉内嵌图标 + 有 Pillow | 回退 PIL 路径，`ok=True`、`nim_add=True` |
+| 真实 Python 3.14 无 Pillow（用户机器，装新单文件后） | 同上 —— 待用户复测 |
+
+探针：`%TEMP%\wg-nopil-tray-probe.py`（A/B 两条路径）、`%TEMP%\wg-nopil-switch-probe.py`（切模式换图标）。
+回归全绿：harness 16/16、split-cache 40、缓存 14、QR 78、wgtranslate 62、钩子顺序 10 全 DIFFS=0、
+dist 自检 35/35（懒装载 vs eager DIFFS=0）、dist 内嵌 9 模块逐字节一致、`undefined-globals.py` 0 处。
+单文件 756 767 → **767 991 B**（+11 KB，就是那 9 个图标）。
+
+---
 
 用户反馈：**个别机器**双击 `wgime-py.py` 后**哪里都看不到托盘图标**，而在同目录用 `python wgime-py.py`
 跑就正常；两边的进程都是 pythonw.exe。这类问题以前**完全静默**：pystray 不检查 `Shell_NotifyIcon`

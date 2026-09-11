@@ -9,6 +9,7 @@
 """
 import os
 import io
+import sys
 import base64
 import zipfile
 import importlib
@@ -63,6 +64,29 @@ with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr(rel, src)
 THIRD_ZIP_B64 = base64.b64encode(buf.getvalue()).decode('ascii')
 
+# ---- 托盘图标预渲染成 ICO 内嵌 (第四十二轮) ----
+# python 版的托盘以前要在**运行时**用 Pillow 画图标, 而宿主机不一定装了 Pillow (用户机器实测:
+# 官方 Python 3.14 没装 Pillow -> `from PIL import ...` ImportError -> 托盘图标整个没有,
+# 这就是"个别机器看不到托盘图标"). 现在构建时用 PIL 画好 9 个图标 (4 模式 × 开/关 + 工具模式),
+# 存成 ICO 内嵌进单文件; 运行时只写文件 + LoadImage, **不再需要宿主装 Pillow**。
+tray_icons = {}
+try:
+    sys.path.insert(0, BASE)
+    import tray as _traymod
+    for _m in range(4):
+        for _act, _sfx in ((True, 'a'), (False, 'i')):
+            _b = io.BytesIO()
+            _traymod._icon_img(_m, _act).save(_b, format='ICO', sizes=[(64, 64)])
+            tray_icons['%d%s' % (_m, _sfx)] = base64.b64encode(_b.getvalue()).decode('ascii')
+    _b = io.BytesIO()
+    _traymod._tool_icon_img().save(_b, format='ICO', sizes=[(64, 64)])
+    tray_icons['tool'] = base64.b64encode(_b.getvalue()).decode('ascii')
+    print('tray icons embedded: %d (%.1f KB base64)'
+          % (len(tray_icons), sum(len(v) for v in tray_icons.values()) / 1024.0))
+except Exception as e:
+    tray_icons = {}
+    print('WARN: tray icon prerender failed (%r) - 单文件将回退到宿主 Pillow' % (e,))
+
 out = []
 out.append('# -*- coding: utf-8 -*-')
 out.append('# WgIme-Pure 单文件版 (项目模块 + 插件 + comtypes/uiautomation 内嵌). 免安装, 零 .NET, 零 pip.')
@@ -70,6 +94,7 @@ out.append('import sys, types, os, base64')
 out.append('MODULES = ' + repr(modsrc))
 out.append('PLUGIN_SRC = ' + repr(plugsrc))
 out.append('THIRD_ZIP_B64 = ' + repr(THIRD_ZIP_B64))
+out.append('TRAY_ICONS = ' + repr(tray_icons) + '   # 预渲染托盘图标 (base64 ICO, 见 tray._embedded_icons)')
 out.append('_la = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "wgime-py")')
 out.append('try:')
 out.append('    os.makedirs(_la, exist_ok=True)')

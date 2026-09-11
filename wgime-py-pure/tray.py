@@ -27,8 +27,7 @@ class _CaptureLog(_logging.Handler):
 
 
 try:
-    import pystray
-    from PIL import Image, ImageDraw, ImageFont
+    import pystray                      # pystray 的 win32 后端本身**不** import PIL (只在设图标时才用)
     HAS_TRAY = True
     IMPORT_ERR = ''
     _plog = _logging.getLogger('pystray')
@@ -39,20 +38,44 @@ except Exception:
     HAS_TRAY = False
     IMPORT_ERR = _traceback.format_exc()
 
+# Pillow: 画托盘图标要用; 但**宿主机器不一定装了**(用户机器实测: 官方 Python 3.14, 没装 Pillow ->
+# `from PIL import ...` 直接 ImportError -> 整个托盘没了, 这就是"个别机器看不到托盘图标")。
+# 所以它是可选依赖: 单文件版由构建脚本预渲染好图标内嵌 (见 _embedded_icons), 运行时不需要 PIL。
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_PIL = True
+    PIL_ERR = ''
+except Exception:
+    Image = ImageDraw = ImageFont = None
+    HAS_PIL = False
+    PIL_ERR = _traceback.format_exc()
+
+
+def _embedded_icons():
+    """单文件版里由 build-wgime-pure.py 预渲染的托盘图标 (base64 ICO 字典); 源码布局下为 None。"""
+    try:
+        import sys as _s
+        return getattr(_s.modules.get('__main__'), 'TRAY_ICONS', None)
+    except Exception:
+        return None
+
 # 第四十一轮: 记下 pystray 真正发给 shell 的 NIM_ADD 返回值 —— **这是"图标登记上了没有"的唯一可靠信号**:
 # NIM_ADD 返回 True 就说明 shell 收下了 (NIM_ADD=False 才是真失败)。反过来 Shell_NotifyIconGetRect 并不可靠
 # (实测: NIM_ADD=True, GetRect 仍回 E_FAIL —— 它只能反映"在不在可见区", 不能判断有没有登记)。
-NIM = {'add_ok': None, 'add_count': 0}
+NIM = {'add_ok': None, 'add_count': 0, 'modify_ok': None}
 try:
     import pystray._win32 as _pw
     _orig_notify = _pw.win32.Shell_NotifyIcon
-    _NIM_ADD = 0
+    _NIM_ADD, _NIM_MODIFY, _NIF_ICON = 0, 1, 0x2
 
     def _spy_notify(code, nid):
         r = _orig_notify(code, nid)
-        if int(code) == _NIM_ADD:
+        code = int(code)
+        if code == _NIM_ADD:
             NIM['add_ok'] = bool(r)
             NIM['add_count'] += 1
+        elif code == _NIM_MODIFY and (int(getattr(nid, 'uFlags', 0)) & _NIF_ICON):
+            NIM['modify_ok'] = bool(r)          # 换图标 (切模式/开关) 有没有被 shell 接受
         return r
 
     _pw.win32.Shell_NotifyIcon = _spy_notify
@@ -148,12 +171,73 @@ class Tray:
         self.icon = None
         self.last_error = ''      # start() 失败原因 (第四十一轮) —— 由 main 弹框/写日志
 
+    def _hicon(self, mode, active=True):
+        """用内嵌 ICO 造 HICON (不需要 Pillow). 没有内嵌图标时返回 None (回退到 PIL 路径)。"""
+        icons = _embedded_icons()
+        if not icons:
+            return None
+        key = 'tool' if self._runmode() == 'tray' else '%d%s' % (int(mode) % 4, 'a' if active else 'i')
+        b64 = icons.get(key) or icons.get('0a')
+        if not b64:
+            return None
+        try:
+            import base64 as _b64
+            import win as _w
+            return _w.icon_from_ico_bytes(_b64.b64decode(b64), key)
+        except Exception:
+            return None
+
+    def _inject_hicon(self, h):
+        """把 HICON 直接塞给 pystray, 绕过它的 PIL 序列化 (`_assert_icon_handle` 见到句柄就直接用)。"""
+        try:
+            self.icon._icon = h or 'embedded'      # 真值: pystray 的 visible setter 要求"有图标数据"
+        except Exception:
+            pass
+        self.icon._icon_handle = h
+        try:
+            self.icon._icon_valid = True
+        except Exception:
+            pass
+
     def _refresh(self):
         try:
-            if self._runmode() == 'tray':
-                self.icon.icon = _tool_icon_img()
-            else:
-                self.icon.icon = _icon_img(self.api['get_mode'](), self.api['is_active']())
+            if self.icon is None:
+                return
+            mode, active = self.api['get_mode'](), self.api['is_active']()
+            if _embedded_icons():
+                h = self._hicon(mode, active)
+                was = False
+                try:
+                    was = bool(getattr(self.icon, 'visible', False))
+                except Exception:
+                    was = False
+                try:
+                    import win as _w
+                    _w._dlog('tray _refresh embedded mode=%s active=%s hicon=%s visible=%s'
+                             % (mode, active, bool(h), was))
+                except Exception:
+                    pass
+                if h:
+                    if was:
+                        try:
+                            self.icon._release_icon()
+                        except Exception:
+                            pass
+                    self._inject_hicon(h)
+                    if was:                         # 已经显示着 -> 通知 shell 换图 (NIM_MODIFY | NIF_ICON)
+                        try:
+                            self.icon._message(1, 0x2, hIcon=h)
+                        except Exception:
+                            pass
+                        try:
+                            import win as _w
+                            _w._dlog('tray icon swap -> %s modified=%s'
+                                     % ('%d%s' % (int(mode) % 4, 'a' if active else 'i'), NIM.get('modify_ok')))
+                        except Exception:
+                            pass
+            elif HAS_PIL:
+                self.icon.icon = (_tool_icon_img() if self._runmode() == 'tray'
+                                  else _icon_img(mode, active))
             self.icon.update_menu()   # 刷新菜单勾选态(checked 重求值), 否则切换后勾选不变、看起来"没反应"
         except Exception:
             pass
@@ -355,20 +439,37 @@ class Tray:
 
     def start(self):
         """建图标 + 起 pystray 线程. 返回 True/False (False 时 self.last_error 有原因).
-        第四十一轮: 每个可能失败的步骤都留痕 (以前 `not HAS_TRAY` 直接返回 False, 外面什么都不知道)."""
+        第四十一/四十二轮: 每个可能失败的步骤都留痕; 图标优先用内嵌 ICO (**不需要宿主装 Pillow**),
+        没有内嵌图标(源码布局)时才回退到 PIL。"""
         self.last_error = ''
         if not HAS_TRAY:
-            self.last_error = 'pystray/PIL 导入失败:\n' + (IMPORT_ERR or '(未知)')
+            self.last_error = 'pystray 导入失败:\n' + (IMPORT_ERR or '(未知)')
             return False
         try:
             if self._runmode() == 'tray':
                 items = self._tray_items()
-                icon = _tool_icon_img()
+                pil_icon = (_tool_icon_img() if HAS_PIL else None)
+                mode_for_icon = 0
             else:
                 items = self._ime_items()
-                icon = _icon_img(self.api['get_mode'](), True)
+                mode_for_icon = self.api['get_mode']()
+                pil_icon = (_icon_img(mode_for_icon, True) if HAS_PIL else None)
+            if pil_icon is None and not _embedded_icons():
+                self.last_error = ('缺 Pillow (PIL) 且单文件里没有预渲染图标, 无法创建托盘图标。\n'
+                                   'Pillow 报错:\n' + (PIL_ERR or '(未知)'))
+                return False
             menu = pystray.Menu(*items)
-            self.icon = pystray.Icon('WgIme-Pure', icon, 'WgIme-Pure', menu)
+            self.icon = pystray.Icon('WgIme-Pure', None, 'WgIme-Pure', menu)
+            if _embedded_icons():
+                # 内嵌图标可用 -> 完全不走 PIL; 先塞好句柄, run_detached 里的 NIM_ADD 就会带上它
+                h = self._hicon(mode_for_icon, True)
+                if h:
+                    self._inject_hicon(h)
+                else:
+                    self.last_error = '内嵌托盘图标加载失败 (LoadImage 返回空)'
+                    return False
+            else:
+                self.icon.icon = pil_icon
             self.icon.run_detached()
             self._refresh()
             return True

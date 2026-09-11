@@ -323,6 +323,42 @@ def tray_promoted(exe_path=None):
         return None
 
 
+def icon_from_ico_bytes(data, key):
+    """把 ICO 字节落到 runtime 目录并 LoadImage 成 HICON —— **不依赖 Pillow**（第四十二轮）.
+
+    起因: 用户机器（官方 Python 3.14, 没装 Pillow）双击运行时托盘图标完全没有, 因为 python 版的托盘
+    以前要在运行时用 PIL 画图标（`from PIL import Image...`）。单文件版现在由构建脚本预渲染好 9 个
+    图标（4 模式 × 开/关 + 工具模式）内嵌成 base64, 运行时只写文件 + LoadImage, 于是**不需要宿主装 Pillow**。
+    """
+    try:
+        base = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'wgime-py', 'runtime')
+        root = os.path.join(base, 'icons')
+        try:
+            os.makedirs(root, exist_ok=True)
+        except Exception:
+            root = base
+            os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, 'wgime-icon-%s.ico' % key)
+        need = True
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) == len(data):
+                need = False
+        except OSError:
+            need = True
+        if need:
+            with open(path, 'wb') as f:
+                f.write(data)
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x10
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, w.UINT,
+                                      ctypes.c_int, ctypes.c_int, w.UINT]
+        h = user32.LoadImageW(None, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE)
+        return int(h) if h else None
+    except Exception as e:
+        _dlog('icon_from_ico_bytes(%s) err %r' % (key, e))
+        return None
+
+
 def notify_icon_rect(hwnd, uid=1):
     """问 shell 托盘图标状态. 返回 (state, rect):
     'visible'  已登记且在工作区可见 (S_OK, rect 有效)

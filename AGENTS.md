@@ -122,17 +122,22 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     应输出 0）；② 写注释时别在行尾追加"示例代码"；③ 参与"是否还活着"判断的全局量（`_helper_fail`/`_ipc_done`）
     出现异常时先怀疑这类错误。
 
-36. **托盘图标"个别机器看不见"= 以前完全静默，现在有自检（第四十一轮，别把诊断删掉）**：pystray **不检查**
-    `Shell_NotifyIcon` 的返回值，它的报错只走 `logging`→`sys.stderr`，而双击 .py 时解释器是 pythonw（`sys.stderr is None`）
-    —— 于是"没有托盘图标"这件事**一点线索都不留**。现在：`tray.py` 收 pystray 日志（`tray.LOGS`）、
-    包一层记录 `NIM_ADD` 返回值（`tray.NIM`）、`IMPORT_ERR`/`last_error` 都留着；`main._tray_selfcheck()` 写
-    **always-on** 两行日志（`_dfn_always`，不需要 `WGIME_DEBUG`）并在真失败时**从后台线程**弹框（主线程弹会卡住 poll=打字停摆）。
-    两条别踩的坑：① **`Shell_NotifyIconGetRect` 不能当"登记上没有"的判据** —— 实测 `NIM_ADD=True` 时它仍可能回
-    E_FAIL（它只反映在不在**可见区**），第一版自检因此把好机器误报成 missing；② GetRect 的 uID 必须是
-    `id(icon)`（pystray `_win32._message()` 用 `hID=id(self)`，不是 1）。判断"用户能不能看见"用
-    `win.tray_promoted()`（`HKCU\Control Panel\NotifyIconSettings\<hash>\IsPromoted`，**新机器/新 exe 默认是隐藏进 `^`**，
-    所以才有"只有个别机器看不到"）。探针：`%TEMP%\wg-tray-selfcheck-probe.py`（正常/强制失败两条路径）、
-    `%TEMP%\wg-shellnotify-probe.py`（console 与无控制台都 NIM_ADD=True）。
+36. **托盘图标"个别机器看不见"的根因 = 宿主没装 Pillow（第四十一/四十二轮，别再依赖 PIL）**：
+    python 版托盘以前**运行时**用 Pillow 画图标，而单文件只内嵌 comtypes/uiautomation/pystray，**没内嵌 Pillow**
+    （带 `_imaging.pyd`，ABI 绑定，内嵌源码跨版本没用）→ 没装 Pillow 的机器 `import PIL` 直接失败、**整个托盘消失**；
+    "`python wgime-py.py` 却正常"是因为 PATH 上的 python 恰好是**另一个装了 Pillow 的版本**（与双击用的解释器不同）。
+    现在：构建时渲染 9 个 ICO（`build-wgime-pure.py` → `TRAY_ICONS`，5.2 KB base64）内嵌，运行时
+    `win.icon_from_ico_bytes()` 写进 `runtime\icons\` 再 `LoadImageW` 成 HICON，**不再需要宿主 Pillow**；
+    换图标走 `NIM_MODIFY|NIF_ICON`（看 `tray.NIM['modify_ok']`）；`HAS_PIL` 只作源码布局的回退路径。
+    诊断（第四十一轮，别删）：pystray **不检查** `Shell_NotifyIcon` 返回值、报错只走 `logging`→`sys.stderr`，
+    而 pythonw 下 `sys.stderr is None` → 以前一点线索都没有；现在收 `tray.LOGS`、记 `NIM['add_ok']`、
+    `IMPORT_ERR`/`last_error`，`main._tray_selfcheck()` 写 **always-on** 日志（`_dfn_always`）并在真失败时
+    **从后台线程**弹框（主线程弹会卡住 poll=打字停摆）。两个坑：① **`Shell_NotifyIconGetRect` 不能当
+    "登记上没有"的判据**（实测 `NIM_ADD=True` 时它仍可能回 E_FAIL，只反映在不在**可见区**）；② GetRect 的
+    uID 必须是 `id(icon)`。判断"用户能不能看见"用 `win.tray_promoted()`
+    （`HKCU\Control Panel\NotifyIconSettings\<hash>\IsPromoted`，**新机器/新 exe 默认隐藏进 `^`**）。
+    探针：`%TEMP%\wg-tray-selfcheck-probe.py`、`wg-nopil-tray-probe.py`（假 PIL + 真实 pythonw）、
+    `wg-nopil-switch-probe.py`（切模式换图标）、`wg-shellnotify-probe.py`。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
@@ -204,22 +209,14 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
 
 - 主分支 `master`（唯一活跃分支）。原独立 WgTray 程序已于 2026-09 退役（收敛为 `mode=tray` 运行模式），历史版本见早期 tag/提交。
 - 提交后推 `origin/master`。release 发版本用 GitHub API + zip，**已脚本化**（2026-09-10）：
-  1. `powershell -NoProfile -ExecutionPolicy Bypass -File tests\build-release-assets.ps1 -Version 1.2.7`
-     → 产出 `bat`/`ps1`/`python` 三个 zip（stage 在仓库内 `.release-stage-v127\`）。`-OnlyPython` 只重做 python 包。
-     三条坑已写进脚本：`.NET ZipFile.CreateFromDirectory` 写 `\` 分隔条目（改逐条 `CreateEntryFromFile` + 转 `/`，
-     脚本自检）、源目录必须长路径（8.3 短路径会把 `ADMINI~1` 带进条目名）、**python 包取自
-     `wgime-py-pure\package\`，改完源码必须先跑 `wgime-py-pure\build-package.ps1`**（否则发出去的是上一个构建；
-     脚本已加哈希守卫：`package\wgime-py.py` ≠ `dist\wgime-py.py` 直接 throw）。
-  2. 把 release body 存成 UTF-8 文件，`powershell -NoProfile -ExecutionPolicy Bypass -File tests\publish-release.ps1
-     -Version 1.2.7 -BodyFile <body.md> -AssetsDir <stage 目录>`（脚本自己创建 release + 上传三个资产；
-     同 tag 已存在时改走 PATCH + 覆盖同名资产）。
-     **务必先 `git push` 再 publish**：脚本已改用 `target_commitish = 本地 HEAD sha`（不再传 `master`，
-     否则 GitHub 按**远端** master 解析，会把 tag 打到上一个提交 —— v1.2.9 就踩了这条，tag 落在
-     `4abb843` 而 dist 刷新提交是 `3142cf5`），并在 HEAD≠origin/master 时打 `Write-Warning` 提醒。
-  3. 每次发完都做**回验**：下载线上 python zip → 解出 `wgime-py.py` 与本地 `dist\wgime-py.py` 逐字符比对，
-     并检查 release body 无 `?`、tag 指向本地 HEAD（v1.2.7 曾把上一个构建发出去，靠这步才发现）。
-- **发 release 的中文坑**：release body 必须用 `HttpWebRequest` + `[Text.Encoding]::UTF8.GetBytes(json)` 显式 UTF-8 字节发送（`publish-release.ps1` 已内置）。**不要用 `Invoke-RestMethod` + `ConvertTo-Json`**——PowerShell 5.1 会把中文 body 编码成 `?`（曾导致 v1.2.0~v1.2.4 的 release 描述全变问号）。
-- **Token**：`publish-release.ps1` 依次取 `-Token` → `$env:GITHUB_TOKEN` → `$env:GH_TOKEN` → Windows 凭据管理器（`git:https://github.com`，`CredRead` 直读）→ `git credential fill`。**把 `git credential fill` 放最后**：GCM 有时会弹 UI 卡死整条发布流程（2026-09-10 实际踩到，表现为脚本长时间无输出且没建 release）。另：本机 WinINET 代理 `127.0.0.1:10808` 常年失效，脚本已 `[Net.WebRequest]::DefaultWebProxy = $null` 直连。
+  1. `powershell -NoProfile -ExecutionPolicy Bypass -File tests\build-release-assets.ps1 -Version 1.2.7` → 三个 zip
+     （`.release-stage-v127\`；`-OnlyPython` 只重做 python 包）。脚本内的三条坑：zip 条目要逐条写 `/`、源目录必须长路径、
+     **python 包取自 `package\`，改完源码先跑 `build-package.ps1`**（有 hash 守卫，防发出上一个构建）。
+  2. `tests\publish-release.ps1 -Version X -BodyFile <body.md> -AssetsDir <stage>`（同 tag 走 PATCH + 覆盖资产）。
+     **务必先 push 再 publish**（脚本用本地 HEAD sha 作 target_commitish —— 传 master 会按远端解析，v1.2.9 就踩过）。
+  3. 发完**回验**：线上 python zip 的 SHA256 与 stage 相同、内层 `wgime-py.py` 与 dist 逐字符一致、body 无 `?`、tag=本地 HEAD。
+- **中文坑**：release body 用 `HttpWebRequest` 显式 UTF-8 字节发（脚本已内置）；**别用 `Invoke-RestMethod`+`ConvertTo-Json`**（PS 5.1 把中文变 `?`）。
+- **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
 - 版本 tag：`v1.0.0` ~ `v1.2.11`（后续版本递增）。插件更新不单独发 release。
   **发布回验记录**（`tests\publish-release.ps1` 之后必做：下线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD）：
   v1.2.10 = body 1789 字 0 个 `?` + python zip SHA256 与 stage 相同 + 内层 `wgime-py.py` 与 dist 一致；
