@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-09-10 (第二十一轮审计: 插件 txt 头部解析 — 只有头部的文件不算插件)
+
+换维度: C# `LoadPlugins`(4104-4146) 的**登记条件** vs python `plugins.parse_plugin`/`load_plugins`。
+
+- **补齐(真差异)**: C# 是 `if (code == null || name == null || code.Length == 0 || body.Count == 0) continue;`
+  —— **只有头部、后面一行都没有**的插件文件**连 `PluginInfo` 都不登记**(插件列表里根本不出现);
+  python 原来只查 code/name, 于是这种"半成品"文件会被登记成插件(管理器里显示 `解析失败`)。
+  已补 `elif body_start is None: p.error = 'no body'`(与 C# 的 `body.Count == 0` 同义)
+- **核对一致(未改)**: 缺 code 或缺 name → 两边都跳过; 头部后面**任意一行**(空行/注释/步骤/`[csharp]` 块)
+  都算有 body → 两边都登记; 头部解析在**第一个非头部行**处停止(之后出现的 `code=` 不再算头部)；
+  `desc:` 冒号写法; `LoadPlugins` 不看文件名(README.txt 也会被登记, 跳过它是**插件管理器**列表的规则)
+- **有意差异(保留)**: python 头部还认 `version/author/requires/perm`(§16 的权限模型), C# 头部只解析
+  `code/name/desc`; python 额外支持 `[python]` 块插件
+- **验证**: 独立实现的 C# `LoadPlugins` oracle 跑 10 组 fixtures(只有头部 / 头部+空行 / 头部+注释 /
+  头部+步骤 / 头部+`[csharp]` 块 / 缺 code / 缺 name / 非头部行先出现 / 头部注释混排 / `desc:` 冒号)
+  → **0 差异**; 目录级 `load_plugins` 三例(只有头部不登记 / 正常登记 / README.txt 仍登记) → 0 差异;
+  `tests\pure-state-harness.py` 16/16 通过; dist 内嵌 `plugins.py` 与磁盘逐字节相同、
+  `dist==package` SHA256 相同(`09039BC4…`)
+
+---
+
 ## 2026-09-10 (第二十轮审计: tools.txt 解析 — 标签页按需创建 / code 行按 C# 规则 / 空标签页保留)
 
 换维度: C# `LoadTools`(2111-2172) vs python `plugins.load_tools`(工具箱 `tools.txt` 的结构解析)。

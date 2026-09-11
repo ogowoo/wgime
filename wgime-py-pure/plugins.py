@@ -81,6 +81,10 @@ def parse_plugin(path):
         p.body = '\n'.join(lines[body_start:]) if body_start is not None else ''
     if not p.code or not p.name:
         p.error = 'missing code/name'
+    elif body_start is None:
+        # 对齐 C# LoadPlugins 的 `body.Count == 0`: 只有头部、后面一行都没有的文件**不算插件**
+        # (C# 连 PluginInfo 都不登记 -> 插件列表里根本不出现)
+        p.error = 'no body'
     return p
 
 
