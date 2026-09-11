@@ -346,7 +346,7 @@ ime = Ime()
 apply_config()
 
 # root 已在建表前创建(用于冷启动加载窗), 这里直接用它建候选条
-bar = CandBar(root)
+bar = CandBar(root, DATA_DIR)             # data_dir 用于位置持久化 (C# 同款 DataDir\pos.txt)
 bar.set_theme(CFG.get('theme', 'dark'))
 
 try:

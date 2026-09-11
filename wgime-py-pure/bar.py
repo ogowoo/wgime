@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """bar.py — tkinter 无边框置顶候选条 (真透明圆角 transparentcolor, 跟随光标, 分页指示, 双主题, 无边框)."""
+import os
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -35,9 +36,14 @@ def snap_to_edge(x, y, w, h, ra):
 
 
 class CandBar:
-    def __init__(self, root):
+    def __init__(self, root, data_dir=None):
         self.root = root
         self.theme = 'dark'
+        # 位置持久化 (对齐 C# LoadPos/SavePos: DataDir\pos.txt, 内容 "x,y").
+        # data_dir 为 None 时(测试/独立使用)不读写该文件, 行为与以前一致。
+        self._pos_file = os.path.join(data_dir, 'pos.txt') if data_dir else None
+        self._saved_pos = self._load_pos()
+        self._pos_applied = False
         self.top = tk.Toplevel(root)
         self.top.overrideredirect(True)
         self.top.attributes('-topmost', True)
@@ -51,6 +57,7 @@ class CandBar:
         self.canvas.pack(fill='both', expand=True)
         self.canvas.bind('<ButtonPress-1>', self._drag_start)
         self.canvas.bind('<B1-Motion>', self._drag_move)
+        self.canvas.bind('<ButtonRelease-1>', self._drag_end)   # 松手才落盘 (对齐 C# MouseUp -> SavePos)
         self._drag = {'x': 0, 'y': 0}
         self._snap_h = None      # 靠边粘附: 'left'/'right'/None
         self._snap_v = None      # 'top'/'bottom'/None
@@ -235,8 +242,13 @@ class CandBar:
             # 若之前拖到屏幕边缘粘附过, 这里按粘附边重新贴齐 (候选条变宽也不会离开那条边)。
             ra = win.screen_workarea()
             cx, cy = self.top.winfo_x(), self.top.winfo_y()
-            if not cx and not cy:
+            if self._saved_pos is not None and not self._pos_applied:
+                # 上次拖到/粘到的位置 (重启后仍在原处); 顺带按当前尺寸重新推断该贴哪条边
+                cx, cy = self._saved_pos
+                _x, _y, self._snap_h, self._snap_v = snap_to_edge(cx, cy, w, h, ra)
+            elif not cx and not cy:
                 cx, cy = ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40
+            self._pos_applied = True
             cx, cy = self._apply_edge_snap(cx, cy, w, h, ra)
             if cx + w > ra.right:
                 cx = ra.right - w
@@ -257,6 +269,36 @@ class CandBar:
         self.top.deiconify()
         win.set_topmost(self.top.winfo_id())   # 强制提到 topmost z-order 最顶(Win11 开始菜单不压住候选框)
 
+    def _load_pos(self):
+        """读上次拖到/粘到的位置 (C# `LoadPos`: DataDir\\pos.txt = "x,y"). 读不出就返回 None."""
+        if not self._pos_file:
+            return None
+        try:
+            try:
+                import engine as _eng            # 用户可改的文本 -> 宽松解码 (AGENTS §28)
+                txt = _eng.read_text(self._pos_file)
+            except Exception:
+                with open(self._pos_file, 'rb') as f:
+                    txt = f.read().decode('utf-8', 'replace')
+            parts = txt.strip().split(',')
+            if len(parts) == 2:
+                return (int(parts[0].strip()), int(parts[1].strip()))
+        except Exception:
+            pass
+        return None
+
+    def _save_pos(self):
+        """落盘当前位置 (C# `SavePos`). 写失败不影响使用 (位置本来就只是体验)."""
+        if not self._pos_file:
+            return
+        try:
+            x, y = self.top.winfo_x(), self.top.winfo_y()
+            with open(self._pos_file, 'w', encoding='utf-8', newline='\n') as f:
+                f.write('%d,%d' % (x, y))
+            self._saved_pos = (x, y)
+        except Exception:
+            pass
+
     def _drag_start(self, e):
         self._drag['x'] = e.x_root - self.top.winfo_x()
         self._drag['y'] = e.y_root - self.top.winfo_y()
@@ -271,6 +313,10 @@ class CandBar:
         fg=win.user32.GetForegroundWindow()
         self._anchor = (x, y, fg)
         self._window_anchor[fg] = (x, y)
+
+    def _drag_end(self, _e=None):
+        """拖动结束 -> 记住位置 (对齐 C# `lbl.MouseUp -> SavePos()`)."""
+        self._save_pos()
 
     def _apply_edge_snap(self, x, y, w, h, ra):
         """靠边粘附的"保持"部分: 候选条变宽/变高(候选数量变化)后, 依然贴着当初粘的那条边."""
