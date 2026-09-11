@@ -152,11 +152,8 @@ def _dfn(text):
 sys.path.insert(0, BASE)
 import win
 import hook
-import tools
 from engine import (Engine, dynamic_candidates, vmode_candidates, is_all_cjk,
                     load_config, shuangpin_expand, SYM_CAT_NAMES, SYM_CATS, read_text)
-import plugins as plugmod
-from bar import CandBar
 
 # 单实例 (对齐 C# 的 WgImeSingleInstance 互斥体): 双开会导致钩子互相吞键/两个托盘图标.
 # 名字带 Py 后缀, 与 C# 版互不干扰 (两种实现可以并存运行). WGIME_NO_SINGLETON=1 供测试脚本跳过.
@@ -177,6 +174,46 @@ def _dict_cache_stale():
         return not _eng.cache_is_reusable(DICT_DIR, DATA_DIR)
     except Exception:
         return False
+
+
+# ---------- 早装键盘钩子 (第三十八轮; 第三十九轮提到 Tk 之前) ----------
+# 顺序很关键: 钩子必须**最先**就位。引擎读词库 ~1.0s、配置/候选条/托盘/插件 ~0.5s, 这段窗口里
+# 按键原来根本没进输入法 —— 用户实测"启动后按 Shift 再打字, 还要 1-3 秒才上屏"就是打在这段窗口。
+# 现在: 单实例检查 -> 读 config(1ms) -> hook.start() -> set_active -> 起 caret helper -> 才建 Tk/加载窗
+#       (加载窗仍然盖住建表的 1s, 只是晚 ~0.2s 出现; 钩子早 ~1s 可用)。
+# 语义不变: 未激活时按键照常透传给应用(与没装钩子时完全一样); 已激活时按键进 hook.EVENTS 队列,
+# 等 poll() 起来后按顺序处理 —— 用户前几秒敲的字不丢、也不会漏成半截拼音。
+# 这里只读一次 config (engine.load_config 不碰 Engine 实例, ~1ms); 最终 CFG 仍在引擎之后 apply_config()。
+_EARLY_CFG = {}
+try:
+    _EARLY_CFG = load_config(os.path.join(APP_DIR, 'config.txt'))
+except Exception as e:
+    _dfn('early config read err %r' % e)
+_EARLY_HOOK_OK = None
+if _EARLY_CFG.get('mode', 'ime') != 'tray':
+    try:
+        hook.configure(_EARLY_CFG.get('hotkeys'), _EARLY_CFG.get('ckeys'))
+        hook.set_punct(_EARLY_CFG.get('cnpunct', True))
+    except Exception as e:
+        _dfn('early hook configure err %r' % e)
+    try:
+        _EARLY_HOOK_OK = bool(hook.start())
+        hook.set_active(bool(_EARLY_CFG.get('starton', True)))
+        _dfn('early hook ok=%s (installed before Tk/dict load; ACTIVE=%s)'
+             % (_EARLY_HOOK_OK, bool(_EARLY_CFG.get('starton', True))))
+    except Exception as e:
+        _EARLY_HOOK_OK = False
+        _dfn('early hook start err %r' % e)
+    try:
+        win.ensure_caret_bg()          # 与建表并行: helper 也早点起, 别都堆在最后
+    except Exception:
+        pass
+
+# 这几个模块只有 UI/工具箱/插件用到, 放在钩子之后再 import (tools 会连带 plugins/bar/ui ≈150ms),
+# 免得它们把"钩子可用"的时间往后推。
+import tools                                       # noqa: E402
+import plugins as plugmod                          # noqa: E402
+from bar import CandBar                            # noqa: E402
 
 
 # 建表在下面同步进行; 冷启动 10s+ 期间总得给点反馈 (对齐 C# 候选条的"(词库加载中...)"提示)
@@ -208,37 +245,6 @@ try:
     _splash.update()                      # 立刻画出来(不等 mainloop)
 except Exception:
     _splash = None
-
-# ---------- 早装键盘钩子 (第三十八轮) ----------
-# 引擎读词库 ~1.0s + 配置/候选条/托盘/插件 ~0.3s, 这段窗口里钩子原来是**最后**才装的 ——
-# 用户实测"启动后按 Shift 再打字, 还要 1-3 秒才上屏"正是打在这段窗口: 那几秒按键根本没进输入法。
-# 现在钩子先就位, 语义不变: 未激活时按键照常透传给应用(与没装钩子时一样), 已激活时按键进
-# hook.EVENTS 队列, 等 poll() 起来后按顺序处理 —— 用户前几秒敲的字不丢、也不会漏成半截拼音。
-# 这里只读一次 config (engine.load_config 不碰 Engine 实例, ~1ms); 最终 CFG 仍在引擎之后 apply_config()。
-_EARLY_CFG = {}
-try:
-    _EARLY_CFG = load_config(os.path.join(APP_DIR, 'config.txt'))
-except Exception as e:
-    _dfn('early config read err %r' % e)
-_EARLY_HOOK_OK = None
-if _EARLY_CFG.get('mode', 'ime') != 'tray':
-    try:
-        hook.configure(_EARLY_CFG.get('hotkeys'), _EARLY_CFG.get('ckeys'))
-        hook.set_punct(_EARLY_CFG.get('cnpunct', True))
-    except Exception as e:
-        _dfn('early hook configure err %r' % e)
-    try:
-        _EARLY_HOOK_OK = bool(hook.start())
-        hook.set_active(bool(_EARLY_CFG.get('starton', True)))
-        _dfn('early hook ok=%s (installed before the dict load; ACTIVE=%s)'
-             % (_EARLY_HOOK_OK, bool(_EARLY_CFG.get('starton', True))))
-    except Exception as e:
-        _EARLY_HOOK_OK = False
-        _dfn('early hook start err %r' % e)
-    try:
-        win.ensure_caret_bg()          # 与建表并行: helper 也早点起, 别都堆在最后
-    except Exception:
-        pass
 
 _DICTS_MISSING = not os.path.exists(os.path.join(DICT_DIR, 'py.txt'))
 if _DICTS_MISSING:

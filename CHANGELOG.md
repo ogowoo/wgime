@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-09-11 (第三十九轮: 键盘钩子再提前 ~0.5s —— 提到 Tk 与重 import 之前)
+
+接第三十八轮继续压"启动后前几秒打字没反应"：上轮把钩子放到**读词库之前**，但它前面还排着
+`tk.Tk()`/加载窗 与 `import tools`（连带 `plugins`/`bar`/`ui`）。
+
+- **改动**: 启动顺序再前移 —— `单实例检查` → `load_config`(1ms) → `hook.configure/start/set_active` →
+  `win.ensure_caret_bg()` → **然后才** `root = tk.Tk()` + 加载窗 → `import tools/plugins/bar` → `Engine()`(词库)
+  → 配置/候选条/托盘/插件/工具 → `poll` → `mainloop`。
+  两个"等不起"的点：① Tk root + 加载窗 ≈150ms；② `import tools` 会连带 `plugins`/`bar`/`ui`（实测
+  真机边际成本 **155ms**）。这两块原来都排在钩子前面，现在排在后面 —— 加载窗仍然盖住建表的 1 秒，
+  只是晚 ~0.2s 出现，而**按键可用时间提前 ~0.5s**。
+- **A/B 实测**（同一隔离数据目录、同一份码表，`git show HEAD:` 取上一版 dist 对比，各跑两遍）：
+
+  | 构建 | 钩子装好 | 引擎读完 | 启动收尾(`active=`) |
+  |---|---|---|---|
+  | HEAD（第三十八轮） | +1397 / +1419 ms | +2540 / +2501 ms | +2828 / +2758 ms |
+  | 本轮 | **+985 / +824 ms** | +2767 / +2396 ms | +3032 / +2666 ms |
+
+  即本轮再提前 **~0.45-0.57s**；相对第三十八轮之前（钩子排在插件之后，**+2650ms**）累计提前 **~1.8s**。
+- **探针**: `%TEMP%\wg-hookorder-probe.py` 扩到 **10 项 0 失败**（钩子早于 Tk、早于重 import、
+  重 import 仍早于建表、钩子 <900ms），并打印 `hook_start / tk_root / import_tools / engine_begin/end` 时间线。
+  实测（把 `hook.start` 打桩，不抢用户键盘）：**hook +48ms**、tk +157ms、import_tools +156ms、engine +662ms。
+- **探针卫生（本轮踩到，记进 AGENTS §6）**: 跑真实 dist 探针时 `APP_DIR` 是**由 DICT_DIR 推出来的**
+  （`WGIME_DICT_DIR` 指到 `package\dicts` → APP_DIR = `package`），所以放在临时目录里的
+  `config.txt (mode=tray)` **不会生效** —— 我原来的"托盘模式以免抢键盘"其实是**真的装了键盘钩子**
+  （好在那份 `package\config.txt` 是 `starton=0`，未激活时按键照常透传，没有吞键）。要真的强制 tray：
+  把码表复制到 `<stage>\dicts` 并把 `WGIME_DICT_DIR` 指过去。
+- **验证**: `tests\pure-state-harness.py` **16/16**；回归探针 split-cache/派生表 **40 项**、缓存生命周期 **14 项**、
+  QR **78 项**、wgtranslate **62 项**、钩子顺序 **10 项** 全部 DIFFS=0；dist 内嵌 9 模块与磁盘逐字节相同、
+  dist==package（SHA256 `9C7AE9B9…`）；冷启动 14.8s（不变）。
+
+---
+
 ## 2026-09-11 (第三十八轮: 启动后前几秒打字"1-3 秒才上屏" — 钩子提前装 + 跟随 helper 秒退修复)
 
 用户反馈: "整体加载速度还是比较慢；启动后按 Shift 激活再打字，大概还要 1-3 秒才能上屏。"

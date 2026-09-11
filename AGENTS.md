@@ -118,19 +118,29 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 - **词频保存后台化**：`SaveFreq` 走线程池（`freqSaving` 防堆积），退出时 `SaveFreqSync` 同步落盘。内存上限：FreqM/LastPickM 各 3 万、Freq 9 万、Assoc key 2 万。
 - **启动计时日志**：`startup: LoadFreq+BuildDicts=XXXms ApplySwap=YYYms`。
 - **固化码表预生成缓存**：`BakeTables` 固化后（无论是否勾选"删除源文件"）`PrebuildCacheAfterBake` 用 bake 后的输入重算 md5 并复用内存字典直接写 `wgime.mb`，下次启动命中缓存，跳过 ~10-24s 冷重建。md5 的 overlay 文件字节用 `SafeRead` 读实际状态；它对新码表 `TrimEnd` 末尾换行，与 `Get-DictSeg` 读数据块时的 `TrimEnd` 字节级一致，否则 md5 对不上。保留源文件时下次启动的 overlay 是幂等的（`AddDictLine` 覆盖 + `MergeUserWords` 只追加），冷启动结果等于内存字典。
-- **启动顺序：键盘钩子必须在「读词库」之前装（第三十八轮，别改回去）**。原来钩子是**最后**才装的，
-  而读词库(热 1.0s / 冷 12-15s)+配置/候选条/托盘/插件还要 0.3-0.5s —— 这 1.5-15 秒里**按键根本没进输入法**，
-  用户感受就是"启动后按 Shift 打字，要 1-3 秒才上屏"。现在顺序是：
-  `Tk/加载窗` → **`load_config`(1ms) + `hook.configure` + `hook.start()` + `hook.set_active(starton)` +
-  `win.ensure_caret_bg()`** → `Engine()`(词库) → 配置/候选条/托盘/插件/工具 → `root.after(8, poll)` → `mainloop`。
+- **启动顺序：键盘钩子必须最先装（第三十八/三十九轮，别改回去）**。原来钩子是**最后**才装的，
+  而读词库(热 1.0s / 冷 12-15s)+Tk/加载窗+重 import+配置/候选条/托盘/插件 全排在它前面 —— 这 1.5-15 秒里
+  **按键根本没进输入法**，用户感受就是"启动后按 Shift 打字，要 1-3 秒才上屏"。现在的顺序（第三十九轮定稿）：
+  `单实例检查` → **`load_config`(1ms) + `hook.configure` + `hook.start()` + `hook.set_active(starton)` +
+  `win.ensure_caret_bg()`** → `root = tk.Tk()` + 加载窗 → `import tools/plugins/bar` → `Engine()`(词库) →
+  配置/候选条/托盘/插件/工具 → `root.after(8, poll)` → `mainloop`。
+  两个"等不起"的点必须排在钩子后面：**Tk root + 加载窗（≈150ms）** 与 **`import tools`（连带 plugins/bar/ui，
+  实测边际 155ms）**；加载窗仍然盖住建表的 1 秒，只是晚 ~0.2s 出现。
   语义不变：**未激活时按键照常透传**（与没装钩子完全一样）；已激活时按键进 `hook.EVENTS` 队列，
   等 `poll()` 起来后按顺序处理（前几秒敲的字不丢、也不漏成半截拼音）。尾巴上的 `hook.start()` 现在是幂等的
   （已装则立即返回），只有真失败才弹"钩子安装失败"气泡；`_dfn('early hook ok=…')` 会写进 `debug.log`。
-  实测：钩子在 **+544ms** 装好（探针把 `hook.start` 打桩，不抢用户键盘）。探针 `%TEMP%\wg-hookorder-probe.py`。
-- **python 版启动实测（第三十八轮复测，真实单文件 dist，`mode=tray` 以免抢键盘）**：warm 全程
-  **+1449ms** helper 起、**+1698ms** helper ready（与读词库并行）、**+2465ms** 引擎读完（load≈1011ms）、
-  **+2617ms** 插件加载完、**+2711ms** `active=`；冷启动（重建索引）**14.1-14.9s**（不变）。
-  钩子在 ime 模式下 **+1.45s** 就位（此前 +2.65s）。
+  **A/B 实测**（同一隔离数据目录、`git show HEAD:` 取上一版 dist、各两遍）：钩子装好
+  **+2650ms（第三十八轮之前）→ +1397/+1419ms（第三十八轮）→ +824/+985ms（第三十九轮）**；
+  探针 stubbed `hook.start` 时是 **+48ms**（Tk +157ms、import_tools +156ms、engine +662ms）。
+  探针 `%TEMP%\wg-hookorder-probe.py`（10 项）。
+- **跑真实 dist 的探针要注意 `APP_DIR`**（第三十九轮踩到）：`APP_DIR` 是**由 `DICT_DIR` 推出来的**
+  （`APP_DIR = dirname(DICT_DIR)` 当 `DICT_DIR` 以 `dicts` 结尾，否则 `DICT_DIR`），所以
+  `WGIME_DICT_DIR=<...>\package\dicts` 时读的是 **`package\config.txt`**，放在临时目录里的
+  `config.txt (mode=tray)` **完全不生效** —— 想"托盘模式以免抢键盘"就必须把码表复制到 `<stage>\dicts`
+  并把 `WGIME_DICT_DIR` 指过去；否则探针会真的装键盘钩子（此时只有 `starton=0` 才无害，因为未激活会透传）。
+- **python 版启动实测（第三十九轮复测，真实单文件 dist，代码路径 `starton=0` → 按键透传）**：warm 全程
+  **+824~985ms** 钩子装好、helper +0.07~0.12s 起 / +0.3~0.4s ready（与读词库并行）、引擎读完 +2.4~2.8s
+  （load≈1.01~1.09s）、插件 +0.2s、`active=` +2.7~3.0s；冷启动（重建索引）**14.1-14.9s**（不变）。
 - **"启动头几秒打字卡/打不出字"的三个根因（第三十四/三十五轮，别再种回去）**：
   ① **反查表(rev_wb)绝不能同步建**：`showcode = 1` 是 `config.txt` **出厂默认值**，原来 `rev_wb_code()` 首次调用时同步
   `build_rev_wb`（30.2 万码 / 143.8 万词条纯 Python 循环）→ **每次启动的第一下按键卡 1326ms**。现在 `rev_wb_code()`
@@ -280,12 +290,13 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
   缓存 93.1MB（冷启动 ~12.1–12.9s 不变）。另外热启动也固定显示"正在加载词库"小窗。
   **别把这三处改回同步/每次重算**（§6 有完整"别再种回去"清单）。验证：`%TEMP%\wgime-warmec-probe.py` **40 项**、
   缓存生命周期 **14 项**、`tests\pure-state-harness.py` **16/16** 全绿。
-- **启动后"按 Shift 激活再打字，要 1-3 秒才上屏" = 已修（第三十八轮）**：真因是**钩子装得太晚** ——
-  它原来在引擎/插件/托盘之后（真实 dist warm **+2650ms**，冷启动 +14s），用户"启动后按 Shift 打字"正好落在
-  这段窗口里，那几秒按键根本没进输入法。现在钩子提前到**读词库之前**（**+1.45s**，探针 stubbed 时 +544ms），
-  并把 caret helper 一起提前（+1449ms 起、+1698ms ready，与读词库并行）；顺带修掉 helper 在 `runtime\`
-  残留 python38 环境下**起来就秒退**的问题（改落 `runtime\caret-helper\` 子目录 + 连续秒退 3 次不再重试）。
-  细节与"别再改回去"的说明在 §6 与 §17。验证：`%TEMP%\wg-hookorder-probe.py` **9 项 0 失败**
-  （钩子早于 Engine / 残留 A/B / 新路径解析）+ 真实 dist 复测（见 §6 的启动实测表）。
+- **启动后"按 Shift 激活再打字，要 1-3 秒才上屏" = 已修（第三十八/三十九轮）**：真因是**钩子装得太晚** ——
+  它原来排在引擎/插件/托盘之后（真实 dist warm **+2650ms**，冷启动 +14s），用户"启动后按 Shift 打字"正好落在
+  这段窗口里，那几秒按键根本没进输入法。第三十八轮把钩子提到**读词库之前**（+1.45s）+ 把 caret helper 一起提前，
+  并修掉 helper 在 `runtime\` 残留 python38 环境下**起来就秒退**的问题（改落 `runtime\caret-helper\` 子目录 +
+  连续秒退 3 次不再重试）；第三十九轮再把它提到 **Tk/加载窗与 `import tools/plugins/bar` 之前**，
+  A/B 实测钩子装好 **+2650ms → +1397ms → +824/+985ms**（stubbed 探针 +48ms）。
+  细节与"别再改回去"的说明在 §6 与 §17。验证：`%TEMP%\wg-hookorder-probe.py` **10 项 0 失败**
+  （钩子早于 Tk / 早于重 import / 重 import 仍早于建表 / 钩子 <900ms + 残留 A/B + 新路径解析）。
 - chat 插件要点：relay=`chat.seee.uno` 走裸 JSON 文本帧，其余 broker 走 MQTT over WS（`/mqtt` 路径 + **必须 `mqtt` 子协议**，否则 EMQX 400/Mosquitto 断连）；TLS 需 1.2+。详见 `docs\WGIME_CHAT_技术文档.md` §8。
 - 待用户验证：chat 插件与 PC/Android 真机互通（协议层已实机验证）、词库加载速度（缓存命中路径）、固化码表后启动速度（应已降到缓存命中级别）。
