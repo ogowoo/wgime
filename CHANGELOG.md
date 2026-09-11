@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-09-10 (第二十六轮审计: 网络工具的纯计算部分 — 逐项核对一致, 未改代码)
+
+换维度: C# `IpType`/`IpClass`/`SubnetCalc`/`SubnetSplit`/`RangeToCidr`/`MaskTable`/`TestPort`(2768-2909)
+vs python `_ip_type`/`_ip_class`/`subnet_calc`/`subnet_split`/`range_to_cidr`/`mask_table`/`test_port`。
+
+- **核对一致(未改代码)**: 用按 C# 源码**独立重写**的 oracle 逐项比对 ——
+  - `IpType` / `IpClass` 各 **20 个边界地址**(0.0.0.0 / 127.x / 10.x / 172.15-16-31-32 / 192.168 /
+    169.254 / 100.63-64-127-128 / 223 / 224 / 239 / 240 / 255.255.255.255 / 公网)
+  - `SubnetCalc` **10 组**(/0 /8 /20 /24 /30 /31 /32、点分掩码、`/24` 带斜杠写法)+ 3 个报错用例
+    (非连续掩码 `255.0.255.0`、前缀 `33`、非法掩码) 两边都抛
+  - `SubnetSplit` **7 组**(count 0/1/2/3/8、/8 拆 4、/30 拆 2 → 两边都报"拆得太碎了 (主机数不足)")
+  - `RangeToCidr` **6 组**(相邻、单地址、反向 `a>b`、`0.0.0.0-255.255.255.255`、整段对齐、跨网段)
+  - `MaskTable` 逐行一致(含 `/8` + `PadRight` 的对齐格式)
+  - `TestPort` 结果串格式与 C# 逐字相同: `open  Xms`(两个空格)、`closed (timeout Xms)`
+- **有意差异(记录)**: 连接被**拒绝**时 C# 的串是 `closed (SocketException)`, python 是
+  `closed (<Python 异常类名>)`(如 `ConnectionRefusedError`) —— 两边的异常类型体系不同, 保留(别去"对齐"类名)
+- **环境观察(不是差异)**: 本机对**未监听的回环端口**连接不返回 RST, 而是 `WSAEWOULDBLOCK`(10035) 直到超时,
+  所以 `test_port` 会报 `closed (timeout ...)`; C# 用 `BeginConnect + WaitOne(timeoutMs)` 在同一台机器上
+  同样走超时分支 → 两版表现一致
+- **验证**: 独立 oracle 比对 **0 差异**; `tests\pure-state-harness.py` 16/16 通过(本轮无产品代码改动,
+  dist 未重建)
+
+---
+
 ## 2026-09-10 (第二十五轮审计: `app =` 启动器 — 相对路径解析 + ShellExecute 启动)
 
 换维度: C# `AddAppCand`/`LaunchApp`(2009-2040) vs python `find_launcher`/`run_launcher` 的 `app` 分支。
