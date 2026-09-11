@@ -624,13 +624,56 @@ def _atomic_write(path, text):
             pass
 
 
+CACHE_VER = 2                    # v2: 签名加入"词库目录"+ 侧车 .sig 文件 (见 cache_sig/read_cache_sig)
+CACHE_FILES = ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt',
+               'import_py.txt', 'import_wb.txt', 'import_ec.txt')
+
+
+def dict_paths(dict_dir):
+    return [os.path.join(dict_dir, n) for n in CACHE_FILES]
+
+
+def cache_sig(dict_dir):
+    """索引缓存的"码表签名": 版本 + **词库目录** + 每个码表的 (size, mtime).
+
+    只有这个签名变了才需要重建索引 (**词库没变就直接吃缓存**, 见 Engine._load_cache/__init__)。
+    带上目录是必要的: 不带的话, 在"没有码表的目录"里跑出来的空索引缓存, 会在同一个
+    DATA_DIR 下被另一个目录误命中(曾实际发生: 用户 DATA_DIR 里留下 75 字节空缓存)。
+    """
+    files = []
+    for p in dict_paths(dict_dir):
+        try:
+            files.append([os.path.getsize(p), int(os.path.getmtime(p))])
+        except OSError:
+            files.append(None)
+    return {'ver': CACHE_VER, 'dir': os.path.abspath(dict_dir), 'files': files}
+
+
+def read_cache_sig(data_dir):
+    """读 dict-cache.pkl.sig (小 JSON, 毫秒级; 缓存本体是 95MB, 不能为了判断而整份反序列化)."""
+    try:
+        import json
+        with open(os.path.join(data_dir, 'dict-cache.pkl.sig'), encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def cache_is_reusable(dict_dir, data_dir):
+    """本机这次启动能不能直接用缓存 (与 Engine._load_cache 同源判定, 供启动提示复用)."""
+    try:
+        if not os.path.exists(os.path.join(data_dir, 'dict-cache.pkl')):
+            return False
+        return read_cache_sig(data_dir) == cache_sig(dict_dir)
+    except Exception:
+        return False
+
+
 class Engine:
-    CACHE_VER = 1
+    CACHE_VER = CACHE_VER
 
     def _paths(self):
-        ps = [os.path.join(self.dict_dir, n) for n in ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt')]
-        ps += [os.path.join(self.dict_dir, n) for n in ('import_py.txt', 'import_wb.txt', 'import_ec.txt')]
-        return ps
+        return dict_paths(self.dict_dir)
 
     def _build(self):
         self.py = parse_dict(os.path.join(self.dict_dir, 'py.txt'))
@@ -691,30 +734,54 @@ class Engine:
         self._save_cache(self._paths())
 
     def _cache_sig(self, paths):
-        return [(os.path.getsize(p), int(os.path.getmtime(p))) if os.path.exists(p) else None for p in paths]
+        return cache_sig(self.dict_dir)
+
+    def _sig_path(self):
+        return self._cache_path() + '.sig'
 
     def _cache_path(self):
         return os.path.join(self.data_dir, 'dict-cache.pkl')
+
+    def _drop_sig(self):
+        """缓存失效时同时删掉侧车签名, 否则启动提示会以为"缓存可用"而不再显示加载窗."""
+        try:
+            os.remove(self._sig_path())
+        except OSError:
+            pass
 
     def _load_cache(self, paths):
         try:
             import pickle
             with open(self._cache_path(), 'rb') as f:
                 obj = pickle.load(f)
-            # 完整性由 sig(码表 mtime/size) + pickle 加载异常保底;
+            # 完整性由 sig(版本+词库目录+码表 size/mtime) + pickle 加载异常保底;
             # 之前对 95MB data 全量 pickle.dumps 算 md5 严重拖慢启动(~1s+), 已移除
             if obj.get('ver') != self.CACHE_VER or obj.get('sig') != self._cache_sig(paths):
+                self._drop_sig()
                 return False
             (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
              self.ek, self.ev, self.char_py, self.acro, self.ce) = obj['data']
+            if not self.py and not self.wb and not self.ec:
+                # 空索引缓存 (码表目录里没有码表时写下的): 当命中就等于"永远没有词库", 必须重建并提示
+                print('[wgime] 缓存里是空索引 (码表目录 %s 里没有 py/wb/ec.txt), 忽略它并重建'
+                      % self.dict_dir, file=sys.stderr)
+                self._drop_sig()
+                return False
             return True
         except Exception as e:
             print('[wgime] dict-cache load failed: %r' % (e,), file=sys.stderr)   # 缓存损坏时留痕, 便于排查
+            self._drop_sig()
             return False
 
     def _save_cache(self, paths):
         try:
             import pickle
+            if not self.py and not self.wb and not self.ec:
+                # 一个码表都没读到 -> 绝不写这个"空索引"缓存: 写下去下次启动会把它当有效缓存,
+                # 表现为"词库凭空没了/没有候选"而且毫无提示(用户 DATA_DIR 里那个 75 字节缓存就是这么来的)。
+                print('[wgime] 未读到任何码表 (%s): 跳过写索引缓存; 请确认 py.txt/wb.txt/ec.txt 在词库目录里'
+                      % self.dict_dir, file=sys.stderr)
+                return
             obj = {'ver': self.CACHE_VER, 'sig': self._cache_sig(paths),
                    'data': (self.py, self.wb, self.ec, self.pk, self.pv, self.wk, self.wv,
                             self.ek, self.ev, self.char_py, self.acro, self.ce)}
@@ -722,6 +789,17 @@ class Engine:
             with open(tmp, 'wb') as f:
                 pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp, self._cache_path())
+            self._write_sig(self._cache_sig(paths))
+        except Exception as e:
+            print('[wgime] dict-cache save failed: %r' % (e,), file=sys.stderr)   # 别静默: 存不下会导致每次启动重建
+
+    def _write_sig(self, sig):
+        try:
+            import json
+            tmp = self._sig_path() + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(sig, f)
+            os.replace(tmp, self._sig_path())
         except Exception:
             pass
 

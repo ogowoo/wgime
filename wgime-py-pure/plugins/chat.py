@@ -23,6 +23,7 @@ DESC = '与 itools-chat (PC/Android) 互通的在线聊天 (纯 Python)'
 BROKERS = ['wss://chat.seee.uno', 'wss://broker.hivemq.com:8884', 'wss://broker.emqx.io:8084',
            'wss://test.mosquitto.org:8081', 'ws://broker.hivemq.com:8000']
 TOPIC = 'itools/chat/'
+HEALTHY_SEC = 20          # 一次会话稳稳跑过这么久 = 这次真连上了 -> 重连预算清零 (见 _net_loop)
 
 
 # ---------- AES-256-CBC + HMAC-SHA256 (与 itools-chat 字节兼容) ----------
@@ -107,7 +108,7 @@ class ChatUI:
     def __init__(self):
         self.win = None
         self.q = queue.Queue()
-        self.state = {'running': False, 'ws': None}
+        self.state = {'running': False, 'ws': None, 'manual': False, 'tries': 0}
         self.docid = 'py-' + os.urandom(5).hex()
         self.last_ts = {}
         self._sel_broker = BROKERS[0]
@@ -116,6 +117,7 @@ class ChatUI:
     def _on_close(self):
         """断网(不销毁窗口, 由 make_window 的 close 负责 destroy)."""
         self.state['running'] = False
+        self.state['manual'] = True          # 关窗 = 主动离开: 不重连
         try:
             if self.state['ws']:
                 self.state['ws'].close()
@@ -192,6 +194,8 @@ class ChatUI:
 
     def join(self):
         self.state['running'] = True
+        self.state['manual'] = False                 # 不是"用户主动离开" -> 掉线可以重连
+        self.state['tries'] = 0
         self.btn.config(text='离开')
         self.docid = 'py-' + os.urandom(5).hex()
         # 主线程固化配置 (tkinter 变量跨线程读不安全)
@@ -203,6 +207,7 @@ class ChatUI:
 
     def leave(self):
         self.state['running'] = False
+        self.state['manual'] = True                  # 主动离开: 不重连 (对齐 C# manualLeave)
         try:
             if self.state['ws']:
                 self.state['ws'].close()
@@ -217,13 +222,47 @@ class ChatUI:
         return url, relay
 
     def _net_loop(self):
+        """一次会话 + 掉线重连 (对齐 C# chat 的 OnDisconnected):
+        掉线 -> 每 6 秒重试一次, 最多 3 次 ("已断开, 6 秒后重连 (N/3)…"), 用尽则"重连失败, 已断开";
+        **连接失败**直接结束 (C# 同理: ConnectWorker 非 auto 分支失败即 UiJoinFailed, 不进重连);
+        用户点"离开"/关窗 (manual) 一律不重连。
+        重连计数只在"这次会话稳稳跑过 HEALTHY_SEC"后才清零 —— C# 是在 JoinComplete 里清零的,
+        那等于"连上就清零", 于是"连上后立刻掉"会无限重试、"重连失败"永远到不了;
+        这里改成按会话存活时长清零, 预算才有意义。"""
+        tries = self.state.get('tries', 0)
+        while True:
+            t0 = time.time()
+            ok = self._session()
+            lived = time.time() - t0
+            if self.state.get('manual'):
+                return
+            if not ok:
+                self.ui(lambda: self.btn.config(text='加入'))
+                self.state['running'] = False
+                return
+            if lived >= HEALTHY_SEC:
+                tries = 0                       # 稳定跑过一段 -> 重连预算重置
+            self.ui(lambda: self.add_msg('· 连接已断开'))
+            if tries >= 3:
+                self.ui(lambda: self.set_status('重连失败, 已断开'))
+                self.ui(lambda: self.btn.config(text='加入'))
+                self.state['running'] = False
+                return
+            tries += 1
+            self.state['tries'] = tries
+            self.ui(lambda t=tries: self.set_status('已断开, 6 秒后重连 (%d/3)…' % t))
+            time.sleep(6)
+            if self.state.get('manual'):
+                return
+
+    def _session(self):
+        """建一次连接并跑接收循环. 连上过(跑过接收循环)返回 True, 连接/握手失败返回 False."""
         url, relay = self._broker_info()
         room = self.state['room']
         nick = self.state['nick']
         crypto = Crypto(room, self.state['key'])
         self.ui(lambda: self.set_status('连接中…'))
         try:
-            full = url.replace('/', '', 1) if False else url
             if relay:
                 ws = wspy.WS()
                 ws.connect(url.rstrip('/') + '/room/' + room, subprotocol=None)
@@ -240,10 +279,10 @@ class ChatUI:
             else:
                 self._mqtt_handshake(ws, room, nick, crypto)
                 self._recv_loop(ws, relay, room, nick, crypto)
+            return True                              # 连上过 -> 这次是"掉线"而非"连不上"
         except Exception as e:
             self.ui(lambda: self.set_status('连接失败: %s' % e))
-            self.ui(lambda: self.btn.config(text='加入'))
-            self.state['running'] = False
+            return False
 
     def _mqtt_handshake(self, ws, room, nick, crypto):
         # 等 CONNACK (0x20) 最多 8s
@@ -295,10 +334,7 @@ class ChatUI:
                     self._handle_json(ws, payload.decode('utf-8'), relay, room, nick, crypto)
             else:
                 self._mq_handle_packet(ws, op, payload, room, nick, crypto)
-        if self.state['running']:
-            self.ui(lambda: self.set_status('已断开'))
-            self.ui(lambda: self.btn.config(text='加入'))
-            self.state['running'] = False
+        # 退出即"断线"或"用户离开"; 状态/按钮收尾与是否重连都交给 _net_loop, 这里不碰 UI
 
     def _mq_handle_packet(self, ws, op, payload, room, nick, crypto, initial=False):
         if op != wspy.OP_BIN:

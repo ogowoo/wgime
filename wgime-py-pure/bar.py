@@ -6,12 +6,32 @@ import tkinter.font as tkfont
 import win
 
 TRANSPARENT = '#010203'   # 透明关键色 (圆角四角透明)
+SNAP_PX = 24              # 靠边粘附阈值: 拖到离工作区边缘 24px 内就自动贴上去
 
 # 双主题: dark = C# Morandi 深灰褐; light = 白底
 THEMES = {
     'dark': dict(bg='#3B3836', text='#FFFFFF', sub='#B0ACA8', accent='#007AFF', alpha=0.88),
     'light': dict(bg='#FFFFFF', text='#1D1D1F', sub='#6E7485', accent='#007AFF', alpha=0.95),
 }
+
+
+def snap_to_edge(x, y, w, h, ra):
+    """靠边粘附: 离工作区某条边 <= SNAP_PX 就把那条边贴齐, 返回 (x, y, snap_h, snap_v).
+
+    水平/垂直各判一次(所以四个角也能贴); 拖离阈值外自动解除该方向的粘附 ——
+    拖动是逐帧重算的, 往外拖会自然脱开。粘附状态由 CandBar._snap_h/_snap_v 记住,
+    候选条变宽/变高时用 _apply_edge_snap 继续贴同一条边。
+    """
+    snap_h = snap_v = None
+    if x - ra.left <= SNAP_PX:
+        x, snap_h = ra.left, 'left'
+    elif ra.right - (x + w) <= SNAP_PX:
+        x, snap_h = max(ra.left, ra.right - w), 'right'
+    if y - ra.top <= SNAP_PX:
+        y, snap_v = ra.top, 'top'
+    elif ra.bottom - (y + h) <= SNAP_PX:
+        y, snap_v = max(ra.top, ra.bottom - h), 'bottom'
+    return x, y, snap_h, snap_v
 
 
 class CandBar:
@@ -32,6 +52,8 @@ class CandBar:
         self.canvas.bind('<ButtonPress-1>', self._drag_start)
         self.canvas.bind('<B1-Motion>', self._drag_move)
         self._drag = {'x': 0, 'y': 0}
+        self._snap_h = None      # 靠边粘附: 'left'/'right'/None
+        self._snap_v = None      # 'top'/'bottom'/None
         self._pad = 10
         self._fc = tkfont.Font(family='Microsoft YaHei UI', size=9)
         self._fd = tkfont.Font(family='Microsoft YaHei UI', size=11)
@@ -209,11 +231,13 @@ class CandBar:
             ra = win.screen_workarea()
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.right - w - 16, ra.bottom - h - 8))
         else:
-            # 固定模式(用户可拖动): 保持当前位置, 但候选变宽/高时 clamp 到工作区, 避免超屏看不到
+            # 固定模式(用户可拖动): 保持当前位置, 但候选变宽/高时 clamp 到工作区, 避免超屏看不到;
+            # 若之前拖到屏幕边缘粘附过, 这里按粘附边重新贴齐 (候选条变宽也不会离开那条边)。
             ra = win.screen_workarea()
             cx, cy = self.top.winfo_x(), self.top.winfo_y()
             if not cx and not cy:
                 cx, cy = ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 40
+            cx, cy = self._apply_edge_snap(cx, cy, w, h, ra)
             if cx + w > ra.right:
                 cx = ra.right - w
             if cx < ra.left:
@@ -240,10 +264,25 @@ class CandBar:
     def _drag_move(self, e):
         x = e.x_root - self._drag['x']
         y = e.y_root - self._drag['y']
+        w = max(1, self.top.winfo_width())
+        h = max(1, self.top.winfo_height())
+        x, y, self._snap_h, self._snap_v = snap_to_edge(x, y, w, h, win.workarea_at(x + w // 2, y + h // 2))
         self.top.geometry('+%d+%d' % (x, y))
         fg=win.user32.GetForegroundWindow()
         self._anchor = (x, y, fg)
         self._window_anchor[fg] = (x, y)
+
+    def _apply_edge_snap(self, x, y, w, h, ra):
+        """靠边粘附的"保持"部分: 候选条变宽/变高(候选数量变化)后, 依然贴着当初粘的那条边."""
+        if self._snap_h == 'left':
+            x = ra.left
+        elif self._snap_h == 'right':
+            x = ra.right - w
+        if self._snap_v == 'top':
+            y = ra.top
+        elif self._snap_v == 'bottom':
+            y = ra.bottom - h
+        return x, y
 
     def hide(self):
         """候选窗隐藏. 加防抖: 延迟 withdraw, 若期间又 show(连续输入/上屏后紧跟下一键)则不隐藏,

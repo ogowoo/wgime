@@ -64,22 +64,34 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _find_dict_dir():
-    """词库目录: WGIME_DICT_DIR 环境变量 > 单文件/脚本旁的 dicts 目录 > 仓库默认."""
+    """词库目录: WGIME_DICT_DIR > 单文件/脚本旁的 dicts 目录 > 上级 package/dicts > 上级目录(仓库根) > BASE.
+
+    最后两级是给**开发布局**兜底的: `python wgime-py-pure\\dist\\wgime-py.py` 时码表其实在
+    `..\\package\\dicts`(打包产物)或仓库根, 而 dist 目录里没有码表 —— 以前会静默退化成
+    "空词库"(没有候选)并把空索引写进缓存, 让问题看起来像"缓存有问题"。
+    """
     env = os.environ.get('WGIME_DICT_DIR')
     if env and os.path.exists(os.path.join(env, 'py.txt')):
         return env
-    candidates = [BASE]
+    cands = []
     try:
-        candidates.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
+        cands.append(os.path.dirname(os.path.abspath(sys.argv[0])))
     except Exception:
         pass
-    for b in candidates:
-        d = os.path.join(b, 'dicts')
-        if os.path.exists(os.path.join(d, 'py.txt')):
-            return d
-        # 兜底: 候选目录本身直接含 py.txt (单文件/开发版把码表与脚本同目录)
-        if os.path.exists(os.path.join(b, 'py.txt')):
-            return b
+    cands.append(BASE)
+    for b in list(cands):                      # 再往上一级找 (dist -> package / 仓库根)
+        up = os.path.dirname(b)
+        if up and up != b:
+            cands.append(os.path.join(up, 'package'))
+            cands.append(up)
+    seen = set()
+    for b in cands:
+        if not b or b in seen:
+            continue
+        seen.add(b)
+        for d in (os.path.join(b, 'dicts'), b):
+            if os.path.exists(os.path.join(d, 'py.txt')):
+                return d
     return BASE   # 找不到时退回脚本目录(而非写死开发机路径), 由后续词库加载提示
 
 
@@ -156,20 +168,14 @@ if not os.environ.get('WGIME_NO_SINGLETON'):
         sys.exit(0)
 
 def _dict_cache_stale():
-    """缓存缺失/比任一码表旧 -> 本次启动会重建索引 (冷启动 10s+).
-    与 engine._load_cache 的判定同源(此处只用 mtime 做廉价预判, 仅用于决定要不要显示加载窗)."""
+    """本次启动会不会重建索引 —— 与 `Engine._load_cache` **同源**判定 (都走 engine.cache_is_reusable):
+    缓存缺失 / 版本不符 / **词库目录不同** / 任一码表 (含 import_*.txt) 的 size 或 mtime 变了 -> 要重建。
+    用侧车 `dict-cache.pkl.sig`(小 JSON) 判断, 不反序列化 95MB 的缓存本体。
+    """
     try:
-        cache = os.path.join(DATA_DIR, 'dict-cache.pkl')
-        if not os.path.exists(cache):
-            return True
-        ct = os.path.getmtime(cache)
-        for n in ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt',
-                  'import_py.txt', 'import_wb.txt', 'import_ec.txt'):
-            p = os.path.join(DICT_DIR, n)
-            if os.path.exists(p) and os.path.getmtime(p) > ct:
-                return True
-        return False
-    except OSError:
+        import engine as _eng
+        return not _eng.cache_is_reusable(DICT_DIR, DATA_DIR)
+    except Exception:
         return False
 
 
@@ -197,6 +203,13 @@ if _dict_cache_stale():
         _splash.update()                      # 立刻画出来(不等 mainloop)
     except Exception:
         _splash = None
+
+_DICTS_MISSING = not os.path.exists(os.path.join(DICT_DIR, 'py.txt'))
+if _DICTS_MISSING:
+    print('[wgime] 没有找到码表 py.txt: 词库目录 = %s\n'
+          '        请把 py.txt/wb.txt/ec.txt (以及 import_*.txt) 放进该目录, 或用 WGIME_DICT_DIR 指定。\n'
+          '        现在会以"空词库"运行 —— 候选里不会有任何字词, 也不会写索引缓存。' % DICT_DIR,
+          file=sys.stderr)
 
 engine = Engine(DICT_DIR, DATA_DIR)
 _dfn('startup: engine load=%.0fms (对齐 C# 的启动计时日志)' % engine.load_ms)
@@ -1680,6 +1693,16 @@ try:
         TRAY.start()
 except Exception as e:
     _dfn('tray start err %r' % e)
+
+if _DICTS_MISSING:                              # 空词库必须让用户看见 (pythonw 下没 stderr)
+    try:
+        if TRAY and getattr(TRAY, 'icon', None):
+            TRAY.icon.notify('没有找到码表 py.txt: 词库目录 = %s\n'
+                             '输入法现在以"空词库"运行, 候选里不会有任何字词。'
+                             '请把 py.txt/wb.txt/ec.txt 放进该目录, 或用 WGIME_DICT_DIR 指定。' % DICT_DIR,
+                             'WgIme')
+    except Exception:
+        pass
 
 
 _admin_hint_shown = [False]
