@@ -1394,8 +1394,7 @@ def _list_plugin_files():
 def _py_plugin_meta_static(path):
     """读 .py 插件的模块级 manifest(不 import, 正则扫 CODE/NAME/... 字面量)."""
     try:
-        with open(path, encoding='utf-8') as f:
-            text = f.read()
+        text = read_text(path)               # 宽松解码: 插件 .py 也是用户可写的 (GBK+coding 声明 python 能跑)
     except OSError:
         return None
     m = re.search(r'^\s*CODE\s*=\s*[\'"]([^\'"]+)[\'"]', text, re.M)

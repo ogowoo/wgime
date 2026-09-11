@@ -312,24 +312,45 @@ def read_text(path):
 
 
 def parse_dict(path):
-    """code -> space-joined words (与 AddDictLine 一致: 小写 code, 后段原样)."""
+    """code -> space-joined words (与 AddDictLine 一致: 小写 code, 后段原样).
+
+    码表/导入表是**用户会手改**的文件 (记事本"另存为 ANSI"很常见), 所以:
+    ① 快路径用 `utf-8-sig` (顺手吃掉 BOM —— C# 的 ReadAllLines 会吃, 严格 utf-8 会把它留在
+       第一行的 code 里, 于是一行都读不进来); ② 解码失败才退回 read_text 宽松解码
+       (utf-8-sig -> gbk -> utf-8+replace), 对齐 C# `File.ReadAllLines(UTF8)` 的替换式解码。
+    严格 utf-8 会抛 UnicodeDecodeError, 而这个函数在 `Engine._build()` 里 —— 异常会一路冒到
+    启动流程, 表现为"启动直接崩, 报一句看不懂的解码错误", 以前就是这样。
+    """
     d = {}
     try:
-        with open(path, encoding='utf-8') as f:
+        with open(path, encoding='utf-8-sig') as f:          # 快路径: 正常 UTF-8 文件边读边解析
             for raw in f:
-                t = raw.strip()
-                if len(t) < 3:
-                    continue
-                sp = t.find(' ')
-                if sp < 1:
-                    continue
-                k = t[:sp].strip().lower()
-                v = t[sp + 1:].strip()
-                if k and v:
-                    d[k] = v
+                _add_dict_line(d, raw)
+        return d
+    except UnicodeDecodeError:
+        pass                                                # 用户存成了 ANSI/GBK -> 走宽松解码
     except OSError:
-        pass
+        return d
+    try:
+        text = read_text(path)
+    except OSError:
+        return d
+    for raw in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        _add_dict_line(d, raw)
     return d
+
+
+def _add_dict_line(d, raw):
+    t = raw.strip()
+    if len(t) < 3:
+        return
+    sp = t.find(' ')
+    if sp < 1:
+        return
+    k = t[:sp].strip().lower()
+    v = t[sp + 1:].strip()
+    if k and v:
+        d[k] = v
 
 
 def build_sorted(d):
@@ -541,32 +562,42 @@ def convert_file(text, fmt, acc):
 
 
 def load_import_base(path):
-    """读现有 import 文件 -> {code: [words]} (重导入幂等)"""
+    """读现有 import 文件 -> {code: [words]} (重导入幂等).
+
+    用 read_text 宽松解码: 这是**用户可手改**的文件 (记事本另存 ANSI 很常见), 严格 utf-8 会抛
+    UnicodeDecodeError, 而 C# 的 File.ReadAllLines(UTF8) 是替换式解码永不抛 —— 不宽松就等于
+    "导入对话框报一句看不懂的解码错误、什么都导不进去"。
+    """
     acc = {}
     try:
-        with open(path, encoding='utf-8') as f:
-            for raw in f:
-                t = raw.strip()
-                if len(t) < 3:
-                    continue
-                sp = t.find(' ')
-                if sp < 1:
-                    continue
-                k = t[:sp].strip().lower()
-                lst = []
-                for w in t[sp + 1:].split(' '):
-                    if w and w not in lst:
-                        lst.append(w)
-                if k and lst:
-                    acc[k] = lst
+        text = read_text(path)
     except OSError:
-        pass
+        return acc
+    for raw in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):   # 行切分同 ReadAllLines
+        t = raw.strip()
+        if len(t) < 3:
+            continue
+        sp = t.find(' ')
+        if sp < 1:
+            continue
+        k = t[:sp].strip().lower()
+        lst = []
+        for w in t[sp + 1:].split(' '):
+            if w and w not in lst:
+                lst.append(w)
+        if k and lst:
+            acc[k] = lst
     return acc
 
 
 def write_import_file(path, acc):
-    """写 import 文件: 'code w1 w2 ...' 每行, 按 code 排序, UTF-8 无 BOM"""
-    with open(path, 'w', encoding='utf-8') as f:
+    """写 import 文件: 'code w1 w2 ...' 每行, 按 code 排序, UTF-8 无 BOM, **LF**.
+
+    行尾必须显式 LF: C# 是 `File.WriteAllText(..., UTF8Encoding(false))` + `sb.Append('\\n')`
+    (裸 LF); python 的 `open(..., 'w')` 在 Windows 上会把 '\\n' 翻成 CRLF, 于是同一份导入
+    在两种实现下产出不同字节 (两版读者都容忍 CRLF, 但仓库里的 import_*.txt 是跟踪文件, 会被搅乱)。
+    """
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
         for k in sorted(acc.keys()):
             f.write(k)
             for w in acc[k]:

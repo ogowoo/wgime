@@ -1913,7 +1913,12 @@ def show_import(engine, dict_dir):
             _msgbox('导入', '没有新增词条')
             return
         engmod.write_import_file(import_path, acc)
-        engine.reload()
-        _msgbox('导入完成', '新增 %d 词条 (跳过 %d 行, 截断 %d 码)' % (new_words, skipped, trunc_codes))
     except Exception as ex:
         _msgbox('导入失败', str(ex))
+        return
+    try:
+        engine.reload()
+    except Exception as ex:                     # 文件已写好, 只是热重载失败: 说清楚"重启后生效"
+        _msgbox('导入完成但刷新失败', '重启 WgIme 后生效: %s' % ex)
+        return
+    _msgbox('导入完成', '新增 %d 词条 (跳过 %d 行, 截断 %d 码)' % (new_words, skipped, trunc_codes))

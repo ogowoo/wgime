@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-09-11 (第三十二轮审计: 码表导入/解析路径 — 宽松读 + 写出行尾)
+
+换维度: C# `ImportCodeTable` + 转换函数(wgime.bat 4538-4670) vs python `engine.py` 转换段 + `tools.show_import`。
+
+- **核对一致(未改)**: 按 C# 源码独立重写 oracle, **58 项 0 差异** —— `is_pure_ascii`/`is_all_digits`/
+  `valid_code`(15 个码)/`skip_line`(17 例: 空行/`#`/`;`/`//`/`---`/`...`/yaml 头/`k:v` vs `k: v`)/
+  `detect_format`(10 组语料)/`convert_file`(**fmt=1 与 fmt=2 各 14 组**: 词在前(Rime)/码在前/EN+释义/
+  尾权重/内空格/非法码/引号码/CRLF/制表符/300 词截断/50 万码截断/去重)/`suggest_target`(23 个文件名)/
+  `load_import_base`(含重导入幂等)。
+- **修复 ①: `write_import_file` 写成了 CRLF**。C# 是 `File.WriteAllText(..., UTF8Encoding(false))` +
+  `sb.Append('\n')` —— **裸 LF**; python 的 `open(..., 'w', encoding='utf-8')` 在 Windows 上会把
+  `'\n'` 翻成 CRLF, 于是同一份导入在两种实现下产出**不同字节**。而 `import_py/wb/ec.txt` 是
+  **入库跟踪**的文件, 行尾被搅乱就是整文件 diff。现在显式 `newline='\n'` (探针已按字节比对 C# 写出的内容)。
+- **修复 ②(高危): 用户把码表"另存为 ANSI(GBK)"会让启动直接崩**。`parse_dict` 原来用严格
+  `open(..., encoding='utf-8')` 且只接 `OSError` → GBK 码表抛 `UnicodeDecodeError`, 异常从
+  `Engine._build()` 一路冒到启动流程(报一句看不懂的解码错误); 另外严格 utf-8 **不处理 BOM**,
+  带 BOM 的码表**第一行读不进来**(key 变成 `'\ufeffxxx'`, 而 C# 的 `File.ReadAllLines` 会吃掉 BOM)。
+  现在快路径用 `utf-8-sig`(顺手吃 BOM, 性能不变), 解码失败才退回 `read_text` 宽松解码
+  (utf-8-sig → gbk → utf-8+replace, 对齐 C# 的替换式解码); 行解析抽成 `_add_dict_line` 共用。
+- **修复 ③: `load_import_base` 同样是严格 utf-8**(且 `except OSError` 接不住解码异常) →
+  用户手改过的 `import_*.txt` 会让导入对话框直接报解码错误、什么都导不进去。改用 `read_text`,
+  行切分与 `ReadAllLines` 对齐(`\r\n|\r|\n`)。
+- **修复 ④: `_py_plugin_meta_static` 严格 utf-8**。用户写 `# -*- coding: gbk -*-` 的插件
+  python 能正常 import, 但插件管理器列举 manifest 时会抛 `UnicodeDecodeError` 把列表打崩 → 改用 `read_text`。
+- **对齐 ⑤**: 导入写盘成功但热重载失败时, C# 提示"导入完成但刷新失败/重启后生效: …"、
+  python 原来混在"导入失败"里(会让人以为没导进去)。现在分开提示。
+- **有意差异(记录)**: C# 在"没有新增词条"时**静默返回**, python 会弹一句"没有新增词条"(更清楚, 保留)。
+- **验证**: ① 导入 oracle 58 项 0 差异(含**写出字节与 C# 完全一致**); ② `parse_dict` 探针 before/after:
+  GBK 码表改前 `UnicodeDecodeError` 把 `Engine` 构建打崩、改后正常; BOM 码表改前第一行 key 带 `\ufeff`、
+  改后正常; ③ import 读写探针 before/after: GBK 文件改前抛异常、改后读得到且中文正确, 写出由 CRLF 变 LF;
+  ④ 插件 manifest 探针 before/after: GBK 插件改前抛 `UnicodeDecodeError`、改后正确列出;
+  ⑤ `tests\pure-state-harness.py` 16/16; ⑥ 既有回归探针(计算器 73 例/时钟 187 例/wspy 20 项/
+  候选条 17 项/chat 重连 16 项/保活 11 项/缓存 14 项)全绿。
+
+---
+
 ## 2026-09-11 (第三十一轮: 候选条靠边粘附 + 索引缓存只在词库变化时重建)
 
 按用户要求做的两件事 (其中第二件顺带查出两个真 bug)。
