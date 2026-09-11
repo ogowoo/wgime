@@ -548,6 +548,22 @@ def set_topmost(hwnd):
         pass
 
 
+def shell_execute(path, args='', cwd=None):
+    """ShellExecuteW 'open' (对齐 C# `ProcessStartInfo { UseShellExecute = true }` + `Arguments`):
+    exe / 相对或绝对路径 / 文件夹 / URL 都能启动, 且参数**不经过 cmd.exe**(避免 & ^ % 被 shell 解释)。
+    返回是否成功 (ShellExecuteW > 32 视为成功)。"""
+    try:
+        shell32 = ctypes.windll.shell32
+        shell32.ShellExecuteW.restype = ctypes.c_ssize_t
+        shell32.ShellExecuteW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p,
+                                          ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_int]
+        r = shell32.ShellExecuteW(None, 'open', str(path), (str(args) or None),
+                                  (str(cwd) if cwd else None), 1)      # SW_SHOWNORMAL
+        return int(r) > 32
+    except Exception:
+        return False
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [('cbSize', w.DWORD), ('rcMonitor', RECT), ('rcWork', RECT), ('dwFlags', w.DWORD)]
 

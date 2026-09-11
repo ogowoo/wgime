@@ -1279,13 +1279,12 @@ def run_launcher(l):
     if kind == 'app':
         cmd, args = payload
         try:
-            if '://' in cmd:
-                os.startfile(cmd)
-            elif args:
-                import subprocess
-                subprocess.Popen('"%s" %s' % (cmd, args), shell=True)
-            else:
-                os.startfile(cmd)
+            # 对齐 C# LaunchApp: 相对路径(含 \ 或 / 且非绝对路径)按**程序目录**解析, 不是进程 CWD;
+            # 用 ShellExecuteW 'open' + Arguments (同 C# UseShellExecute=true), 参数不过 cmd.exe
+            if '://' not in cmd and ('\\' in cmd or '/' in cmd) and not os.path.isabs(cmd):
+                cmd = os.path.join(APP_DIR, cmd)
+            if not win.shell_execute(cmd, args):
+                raise OSError('ShellExecute 失败: %s' % cmd)
         except Exception as ex:
             _dfn('launch err %r' % ex)
             _notify('启动失败', '%s: %s' % (name, ex))     # 对齐 C# TrayTip(启动失败)

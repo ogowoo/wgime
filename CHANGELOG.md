@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-09-10 (第二十五轮审计: `app =` 启动器 — 相对路径解析 + ShellExecute 启动)
+
+换维度: C# `AddAppCand`/`LaunchApp`(2009-2040) vs python `find_launcher`/`run_launcher` 的 `app` 分支。
+
+- **补齐(真差异)**:
+  1. **相对路径解析**: C# 在 `LaunchApp` 里对"不含 `://`、含 `\` 或 `/`、且**非绝对路径**"的目标做
+     `Path.Combine(BatDir, target)` —— 相对路径按**程序目录**解析; python 原来直接交给 `os.startfile`/
+     `subprocess`, 于是 `app = xx  名称  bin\tool.exe` 会按**进程 CWD** 解析(双击启动/计划任务时 CWD
+     可能是 `C:\Windows\System32` 之类) → **启动失败**。已按 C# 加上(含正斜杠形式、UNC 绝对路径不join)
+  2. **启动方式**: C# 是 `ProcessStartInfo { UseShellExecute = true }` + `Arguments`; python 原来
+     `args` 非空时用 `subprocess.Popen('"%s" %s' % (cmd, args), shell=True)` —— **过 cmd.exe**,
+     参数里的 `&`/`^`/`%` 会被 shell 解释(注入/错参风险)。新增 `win.shell_execute()`(ctypes `ShellExecuteW`
+     `'open'` + `args`/`cwd`, 返回是否成功)并在 `run_launcher` 里使用, 与 C# 同一条 ShellExecute 路径
+- **核对一致(未改)**: 启动器候选 = `'▶' + 名称`、先去重再插到**最前**、记入 `ime.app_cand`(`appSet`),
+  且"五笔唯一四码自动上屏"排除该候选; 候选插入顺序 dynamic → vmode → **启动器** → 自定义短语(短语最后插入
+  所以居首); 冲突优先级 插件 > 步骤插件 > tools `code=` > `config app=` > 内置别名; 失败时托盘气泡
+  "启动失败: 名称: 原因"(同 C# `TrayTip`); `builtin:tools/nettools/clip/note/color/pluginmgr` 分派
+- **验证**: `win.shell_execute(不存在的路径)` 真调用返回 `False` 不抛; 用"真 main 前缀 + 桩 `shell_execute`"
+  跑 11 项断言 **0 差异** —— 相对路径(`bin\np.exe`、`sub/dir/tool.bat`)解析到 `APP_DIR`、参数原样、
+  绝对路径/裸 exe 名/URL/UNC 不变、失败给"启动失败"气泡、含 `&` 的参数原样传递(不过 shell);
+  `tests\pure-state-harness.py` 16/16 通过; dist 内嵌 `win.py`/`main.py` 与磁盘逐字节相同、
+  `dist==package` SHA256 相同(`AB9C805D…`)
+
+---
+
 ## 2026-09-10 (第二十四轮审计: 取色器 — 取色中关窗必须收掉全局鼠标钩子)
 
 换维度: C# `ColorForm`(3986-4065) vs python `tools.show_color`。
