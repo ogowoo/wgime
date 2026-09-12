@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-09-11 (第四十三轮: caret-helper 不再落盘 —— 改用 `python -c` 内联源码)
+
+用户反馈：跟随 helper 会在磁盘上生成一个 `caret-helper` 文件，能不能合并掉、不要"产生新的 caret-helper"。
+
+**改法（保留独立子进程做崩溃隔离，只去掉落盘）**：`win.py` 的 helper 源码（`_EMBEDDED_CARET_HELPER`，7200 字符）
+不再写进 `%LOCALAPPDATA%\wgime-py\runtime\caret-helper\wgime-caret-helper-v3-stable-embedded.py`，
+改成 `subprocess.Popen([sys.executable,'-u','-c',src])` **内联**传给子进程 —— 磁盘上不再产生任何 caret-helper 文件，
+UIA 仍在子进程里（provider 崩溃拖不垮键盘钩子这条不动）。
+
+- **容量/可行性**：7200 字符 << Windows 命令行上限 32767；helper 不引用 `__file__`/`sys.argv`/`sys.path`，
+  `if __name__=='__main__'` 在 `-c` 下成立。
+- **隔离要保住**：`-c` 下 `sys.path[0]` 是**当前工作目录**（不再是脚本目录），所以源码开头加 `_HELPER_PATH_SANITIZE`
+  把 `''`/`.`/cwd 从 `sys.path` 剥掉 —— 维持第三十八轮那条"标准库不被 pythonnet 残留抢占"的隔离（helper 只用标准库）。
+- **遗留清理**：`ensure_caret_bg()` 启动时 best-effort 删掉旧版落盘的那个 .py（只删这一个确切文件名，失败无妨）。
+- **实测**：内联 `-c` spawn → **137ms** 出 `ready`，请求往返 **33ms**，进程稳定存活、stderr 干净；
+  端到端（隔离 `LOCALAPPDATA`）：旧文件被清掉、helper 存活、数据目录下 **0 个 .py 产物**。
+- **回归**：`tests\pure-state-harness.py` **16/16 全通过**（exit 0）、`wgime-py-pure\tests\undefined-globals.py` **0**；
+  `dist\wgime-py.py` 重建（752.0 KB，内嵌 84 个第三方模块），已核对旧 `path=_helper_path()` 路径彻底消失。
+- 文档同步：AGENTS §17、`docs\WGIME_技术文档.md`（+release 副本）。
+
+---
+
 ## 2026-09-11 (第四十二轮: 托盘图标"个别机器"的真凶 —— 宿主没装 Pillow；单文件改为内嵌预渲染图标)
 
 第四十一轮加的自检直接把答案报了出来（用户那台机器的弹框 + `debug.log`）：

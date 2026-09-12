@@ -441,7 +441,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 |---|---|
 | `main.py` | 程序入口与状态机；注入调度、托盘 `api` 注册表；插件权限确认 |
 | `hook.py` | ctypes 直调 `WH_KEYBOARD_LL` 全局低级钩子；钩子线程只入事件队列，主线程 `poll` 消费（避免在钩子回调里做 UI/慢操作） |
-| `win.py` | ctypes Win32 封装：文本注入、原生剪贴板读写、单实例互斥体、UIA 光标跟随（**独立 Caret Helper 子进程**：内嵌纯 ctypes 源码落盘到 `runtime\wgime-caret-helper-v3-stable-embedded.py`，JSONL IPC，主进程绝不初始化 COM/UIA） |
+| `win.py` | ctypes Win32 封装：文本注入、原生剪贴板读写、单实例互斥体、UIA 光标跟随（**独立 Caret Helper 子进程**：内嵌纯 ctypes 源码经 `python -c` **内联**喂给子进程、**不落盘 .py**，JSONL IPC，主进程绝不初始化 COM/UIA） |
 | `bar.py` | 无边框圆角候选条（候选渲染、翻页、宽度上限 `max(240, min(工作区宽-24, 880px))`，超宽逐档截断候选） |
 | `engine.py` | 码表加载/解析、候选检索、词频（语料先验 + 学习词频 + 近期热度）、造句 |
 | `plugins.py` | 插件加载与执行：插件 Manifest/权限模型、步骤 DSL、`[python]` 块子进程 + JSON IPC |
