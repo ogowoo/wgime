@@ -200,6 +200,15 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     ⑦ `.py` 插件的"停用"判断要在 `exec_module` **之前**（否则被停用的插件每次启动仍执行模块级副作用）；
     ⑧ **权限是多值的**：`perm` 支持 `network,run` 这类逗号列表，判定要拆集合求交，别用整串 `in`。
 
+41. **`place()` 布局的子控件不会撑大父容器 —— Canvas 滚动区的 `inner` Frame 必须显式给尺寸（第五十三轮的真 bug）**：
+    `tools.py show_toolbox` 的磁贴区是 `Canvas` + `create_window(inner)`，而磁贴由 `ui.flat_button` 用 **`place()`** 摆。
+    **`place()` 不参与父容器的 requested size**，所以 `inner` 只有 **1x1**、`canvas.bbox('all')` = `(0,0,1,1)`、
+    window item `winsize=0x0` —— 磁贴**明明已经建出来、尺寸和坐标都对**（245x46 @ 14,14），却全被 Canvas 裁掉，
+    表现为"**标签页在、按钮一个都看不见**"（用户报的"工具箱里的配置都无法显示了"就是这个）。
+    修法：按磁贴行列算出真实尺寸，**三件事都要做** —— `inner.configure(width=, height=)`、
+    `create_window(..., width=, height=)`、`canvas.configure(scrollregion=(0,0,w,h))`（只设 scrollregion 不解决裁剪）。
+    **判据**：`canvas.bbox('all')` 若等于 `(0,0,1,1)` 就是中了这个坑。凡是"Canvas + place 子控件"的滚动区都照此办理。
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 > **细节在 `AGENTS-DETAIL.md`**：正文只留"要照着做的规则"，实测数字/探针清单/历史轮次来龙去脉

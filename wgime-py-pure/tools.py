@@ -203,12 +203,22 @@ def show_toolbox(tools, dict_dir):
         canvas.configure(yscrollcommand=vsb.set)
         inner = tk.Frame(canvas, bg=ui.BG)
         inner.bind('<Configure>', lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
-        canvas.create_window((0, 0), window=inner, anchor='nw')
         canvas.place(x=0, y=0, width=W - 20 - 12, height=H - 46 - 118)
         vsb.place(x=W - 20 - 12, y=0, width=12, height=H - 46 - 118)
         cols = max(1, min(6, tab.get('cols', 2)))
+        # 第五十三轮修(工具磁贴全部不可见): inner 里的磁贴/按钮一律用 place() 布局, 而 **place() 不参与
+        # 父容器尺寸计算** —— 于是 `create_window(...)` 拿到的 inner 是 1x1(实测 canvas bbox = (0,0,1,1),
+        # window item winsize = 0x0), 磁贴虽已建出(尺寸/坐标都对)却全被 Canvas 裁掉, 表现为"标签页在、
+        # 按钮一个都看不见"。这里按磁贴行列显式算出 inner 的真实尺寸, 既给 create_window 明确 width/height,
+        # 也把 scrollregion 设好(否则滚动条范围也是空的)。
+        nrow = (len(tab['buttons']) + cols - 1) // cols
+        inner_w = W - 20 - 12
+        inner_h = max(14 + nrow * 56, 1)            # 与下面 y=14+(bi//cols)*56、h=46 的排布对齐
+        inner.configure(width=inner_w, height=inner_h)
+        canvas.create_window((0, 0), window=inner, anchor='nw', width=inner_w, height=inner_h)
+        canvas.configure(scrollregion=(0, 0, inner_w, inner_h))
         for bi, b in enumerate(tab['buttons']):
-            bw = (W - 20 - 12 - (cols - 1) * 10 - 2 * 14) // cols
+            bw = (inner_w - (cols - 1) * 10 - 2 * 14) // cols
             holder = []
             # 按钮引用经 holder 传入 (防重入时改色需要真实 widget; 默认参数在创建时拿不到自己)
             holder.append(ui.flat_button(

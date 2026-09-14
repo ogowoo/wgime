@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-09-14 (第五十三轮: 修「WgIme 工具箱」按钮磁贴全部不可见 —— place() 不撑大父容器)
+
+用户报"tools 工具箱里的配置都无法显示了"（确认是 `tools` 拉起的「WgIme 工具箱」窗口，不是 tray 菜单）。
+
+- **现象**：窗口能开、标签页（办公/系统）都在，但**磁贴按钮一个都看不见**。
+- **根因**：磁贴区是 `Canvas + create_window(inner)`，而磁贴由 `ui.flat_button` 用 **`place()`** 摆放 ——
+  **`place()` 不参与父容器的 requested size**，于是 `inner` 只有 **1x1**。实测：
+  `canvas.bbox('all') = (0,0,1,1)`、window item `winsize=('0','0')`，而磁贴本身**已经正确建出**
+  （`245x46 @ 14,14` / `269,14`）—— 尺寸、坐标全对，纯粹被 Canvas 裁掉。
+- **修复**：按磁贴行列算出真实尺寸，`inner.configure(width,height)` + `create_window(..., width, height)`
+  + `canvas.configure(scrollregion=(0,0,w,h))` —— **三件都要做**（只设 scrollregion 不解决裁剪）。
+- **修复后实测**：显示中的标签页 `inner` = **528x70**、`bbox('all')` = `(0,0,528,70)`、scrollregion = `0 0 528 70`；
+  另一页（4 个按钮）= `0 0 528 126`（= `14 + 2*56`，与排布公式吻合）。
+- **来源（不是我这次改出来的）**：这段 Canvas 代码由 **2026-09-10 的 `7d3a5f8`（"内置工具 1:1 收尾 - 工具箱 ToolsForm"）**
+  引入，随前几次同步带进本机；修前 `tools.py` 与 `d344bc9` **逐字节相同**。
+- 回归：`tests\pure-state-harness.py` **23/23**（exit 0）、`undefined-globals.py` **0**；
+  dist 重建（830.8KB；第三方 zip 仍还原 HEAD 基线，只有 `tools` 模块变化）。
+- 文档：AGENTS 新增 **§41**（place() 不撑大父容器 / Canvas 滚动区的判据与三件套修法）。
+
+---
+
 ## 2026-09-14 (第四十四轮: caret-helper 源码改走环境变量 —— 不再出现在进程命令行里)
 
 承接第四十三轮（helper 不再落盘，改成 `python -c` 内联源码）。用户接着问"能不能再合并掉、别在命令行里带 7KB 代码"。
