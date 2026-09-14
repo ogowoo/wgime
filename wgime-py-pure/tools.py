@@ -357,7 +357,9 @@ def show_clipboard():
     if not _clip_started[0]:                            # 守卫: 轮询线程只启动一次(防多开叠加)
         _clip_started[0] = True
         _bg(_clip_poll)
-    win, content = ui.make_window('WgIme 剪贴板历史', 520, 380)
+    # 第五十五轮: 高度补上标题栏那 38px —— 下面的 y 坐标是按**可用区**排的(按钮 348+30=378),
+    # 而 content 只有 H-38; 原来按整窗高给 380, 于是按钮被窗口底边裁掉。全部按"内容需要的高度 + 38"给。
+    win, content = ui.make_window('WgIme 剪贴板历史', 520, 452)
     _clip_win[0] = win
     lst = tk.Listbox(content, font=ui.font(10), bg=ui.CARD, fg=ui.TEXT, bd=0,
                      highlightthickness=1, highlightbackground=ui.BORDER, selectbackground=ui.ACCENT,
@@ -398,8 +400,10 @@ def show_clipboard():
     ui.flat_button(content, '粘贴上屏', paste, primary=True, x=110, y=348, w=90, h=30)
     ui.flat_button(content, '清空历史', clear, x=210, y=348, w=90, h=30)
     ui.flat_button(content, '刷新', refresh, x=310, y=348, w=70, h=30)
+    # 第五十五轮: 这句提示原来放在按钮右边(x=390)且不限定宽度 —— 文字本身 216px 宽, 右边缘冲到
+    # 606, 比窗口宽 520 还多 86px, 直接被裁。挪到按钮下方单独一行, 并显式给宽度(不再溢出)。
     tk.Label(content, text='点条目=复制回剪贴板; 本窗开着也持续收集', bg=ui.BG, fg=ui.SUB,
-             font=ui.font(8.5)).place(x=390, y=352)
+             font=ui.font(8.5), anchor='w').place(x=10, y=384, width=500, height=20)
 
     def on_close():
         _clip_win[0] = None
@@ -541,12 +545,30 @@ def show_notes(data_dir):
         w.bind('<B1-Motion>', _drag_move)
 
     # 正文 + 窄滚动条
+    # 第五十五轮: 滚动条改成**按需显示** —— 原来是无条件 place, 于是空白便签也挂一条(用户嫌不优雅)。
+    # 靠 Text 的 yscrollcommand 回调判断: 装得下就是 (0.0, 1.0), 那就收起滚动条; 正文宽度不变
+    # (不因滚动条出现/消失而重排, 免得打字时文字左右跳)。
     box = tk.Text(body, bg=_NOTE_BODY[state['ci']], fg=_NOTE_TEXT, bd=0, highlightthickness=0,
                   wrap='word', font=ui.font(11))
-    box.place(x=16, y=8, width=430 - 16 - 14, height=330 - 72 - 20)
+    _SB_H = 330 - 72 - 20
+    box.place(x=16, y=8, width=430 - 16 - 14, height=_SB_H)
     sb = tk.Scrollbar(body, command=box.yview, width=10)
-    sb.place(x=430 - 18, y=8, width=10, height=330 - 72 - 20)
-    box.configure(yscrollcommand=sb.set)
+
+    def _sync_sb(*_a):
+        try:
+            first, last = box.yview()
+            need = not (first <= 0.0 and last >= 1.0)
+        except Exception:
+            need = True
+        try:
+            if need and not sb.winfo_ismapped():
+                sb.place(x=430 - 18, y=8, width=10, height=_SB_H)
+            elif not need and sb.winfo_ismapped():
+                sb.place_forget()
+        except Exception:
+            pass
+
+    box.configure(yscrollcommand=lambda f, l: (sb.set(f, l), _sync_sb()))
 
     # ---- 存储 ----
     def load_notes():
@@ -599,6 +621,7 @@ def show_notes(data_dir):
         box.delete('1.0', 'end')
         box.insert('1.0', txt)
         box.see('end')
+        _sync_sb()                     # 第五十五轮: 换便签/载入后同步滚动条显隐
 
     def title_of(path, idx):
         try:
@@ -808,7 +831,7 @@ def show_color():
     """取色器窗体 (复刻 C# ColorForm)."""
     if _reuse_win('color'):
         return
-    win, content = ui.make_window('WgIme 取色器', 320, 210)
+    win, content = ui.make_window('WgIme 取色器', 320, 246)   # 238 内容 + 38 标题栏 (按钮 y=168+30=198)
     _SINGLETON_WINS['color'] = win
     swatch = tk.Frame(content, bg='#FFFFFF', highlightthickness=1, highlightbackground=ui.BORDER)
     swatch.place(x=14, y=14, width=290, height=90)
@@ -1595,7 +1618,7 @@ def _int(s, default):
 
 # ---------- 造词对话框 ----------
 def show_makeword(data_dir, engine, prefill=''):
-    win, content = ui.make_window('WgIme 造词', 380, 200)
+    win, content = ui.make_window('WgIme 造词', 380, 232)   # 194 内容 + 38 (按钮 y=152+32=184)
     tk.Label(content, text='词语 (2-8 字)', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5)).place(x=14, y=10)
     wentry = ui.rounded_entry(content, x=14, y=30, w=352, h=32, initial=prefill)
     tk.Label(content, text='编码 (留空自动推导)', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5)).place(x=14, y=68)
@@ -1648,7 +1671,7 @@ def show_user_words(engine):
     if not engine.user_words:
         _msgbox('用户词表', '还没有用户词。用「造词」或「批量造词…」添加。')
         return
-    win, content = ui.make_window('WgIme 用户词表 (选中后点删除)', 420, 342)
+    win, content = ui.make_window('WgIme 用户词表 (选中后点删除)', 420, 378)   # 340 内容 + 38 (按钮 y=302+28=330)
     lb = tk.Listbox(content, bg=ui.CARD, fg=ui.TEXT, font=ui.font(9.5, mono=True),
                     selectmode='extended', activestyle='none',
                     highlightthickness=1, highlightbackground=ui.BORDER, bd=0)
@@ -1780,7 +1803,7 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
     except OSError:
         pass
 
-    win, content = ui.make_window('WgIme 插件管理', 560, 420)
+    win, content = ui.make_window('WgIme 插件管理', 560, 452)   # 414 内容 + 38 (关闭 y=372+32=404)
     _SINGLETON_WINS['pluginmgr'] = win
     # 顶部按钮条
     bar = tk.Frame(content, bg=ui.BG)
@@ -1914,13 +1937,15 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
         else:
             _msgbox('插件管理', '该插件无运行入口')
 
-    x = 10
+    # 第五十五轮: 原来 x 从 10 起、间距 8, 七个按钮总宽 494+48=542 > bar 的 540 —— 最右边"运行"
+    # 被窗口右边缘切掉 2px。改成贴 bar 左沿起、间距 6: 494+36=530, 右侧留 10px。
+    x = 0
     for cap, fn, prim, w in (('重载', on_reload, False, 56), ('启用/禁用', on_toggle, False, 84),
                              ('打开目录', on_open_dir, False, 80), ('编辑', on_edit, False, 56),
                              ('删除…', on_delete, False, 66), ('新建模板…', on_new, False, 92),
                              ('运行', on_run, True, 60)):
         ui.flat_button(bar, cap, fn, primary=prim, x=x, y=2, w=w, h=30)
-        x += w + 8
+        x += w + 6
     lst.bind('<Double-Button-1>', lambda e: on_run())
     win.bind('<Escape>', lambda e: win.destroy())
     refresh()
