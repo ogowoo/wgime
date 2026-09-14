@@ -17,7 +17,7 @@ import pkgutil
 import importlib.util
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ['win', 'hook', 'bar', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray']
+MODULES = ['win', 'hook', 'bar', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray', 'voice']
 OUT = os.path.join(BASE, 'dist', 'wgime-py.py')
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
@@ -67,14 +67,14 @@ THIRD_ZIP_B64 = base64.b64encode(buf.getvalue()).decode('ascii')
 # ---- 托盘图标预渲染成 ICO 内嵌 (第四十二轮) ----
 # python 版的托盘以前要在**运行时**用 Pillow 画图标, 而宿主机不一定装了 Pillow (用户机器实测:
 # 官方 Python 3.14 没装 Pillow -> `from PIL import ...` ImportError -> 托盘图标整个没有,
-# 这就是"个别机器看不到托盘图标"). 现在构建时用 PIL 画好 9 个图标 (4 模式 × 开/关 + 工具模式),
+# 这就是"个别机器看不到托盘图标"). 现在构建时用 PIL 画好每个模式的图标 (N 模式 × 开/关 + 工具模式),
 # 存成 ICO 内嵌进单文件; 运行时只写文件 + LoadImage, **不再需要宿主装 Pillow**。
-# (第四十四轮曾把模式收到 3 个 -> 7 个图标; 第四十六轮「词典/译」模式加回来, 回到 9 个)
+# (模式数跟着 tray.MODE_CHARS 走: 第四十七轮加了「语音」= 5 模式 -> 11 个图标)
 tray_icons = {}
 try:
     sys.path.insert(0, BASE)
     import tray as _traymod
-    for _m in range(4):
+    for _m in range(len(_traymod.MODE_CHARS)):
         for _act, _sfx in ((True, 'a'), (False, 'i')):
             _b = io.BytesIO()
             _traymod._icon_img(_m, _act).save(_b, format='ICO', sizes=[(64, 64)])

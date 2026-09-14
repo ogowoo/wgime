@@ -267,6 +267,33 @@ Shift 轻点一下即重新打开；托盘图标灰色=关、彩色=开。
 **Q：在管理员窗口（任务管理器等）里打不出字？**
 WgIme 以普通权限运行时，系统安全机制（UIPI）会拦截它向管理员窗口的任何注入（粘贴也一样）。以管理员身份运行 WgIme 即可在管理员窗口输入；或者复制内容后在目标窗口手动 Ctrl+V。
 
+## 语音输入（第四十七轮，Python 版）
+
+**打开**：托盘「选项 → 语音输入」（或 config.txt 里 `voice = 1`）。默认热键 **Ctrl+Alt+V**。
+
+- **按住说话**：按住 Ctrl+Alt+V 说话，松开即识别；识别结果进候选条（`1.<文字>`），按**空格/回车/1** 上屏、**Esc** 丢弃。
+  想识别完直接上屏就设 `voice_auto = 1`。
+- **「语音」模式**：`Ctrl+`` 切到第 5 个模式（托盘图标是紫色的「语」）。这个模式**不组字**（按键照常给应用），
+  候选条当状态灯用；在它里面**轻点** Ctrl+Alt+V = 开始常录（**再点一次**结束，说话停顿约 1.2 秒也会自动停）。
+- 状态都显示在候选条第二段：`按住 ctrl+alt+v 说话` / `正在听… (3s) 松开结束` / `识别中…` / `空格上屏 / Esc 丢弃`。
+
+**识别引擎**（`voice_engine`）：
+
+| 值 | 说明 |
+|---|---|
+| `system`（默认） | **系统自带离线引擎**（System.Speech）：零依赖、不联网、不占体积；识别语言由 `voice_lang` 指定（默认 `zh-CN`）。识别率一般，短句够用。 |
+| `http` | 云端或自建 STT（OpenAI Whisper 兼容的 POST）：配 `stt_url` / `stt_key` / `stt_model` / `stt_lang`，识别率最好但要网络和 key。 |
+| `cmd` | 外部命令（如本地 whisper.cpp）：`stt_cmd` 里用 `{wav}` 占位，取 stdout 第一行。离线、中文好，但要自备程序与模型。 |
+
+**用中文必须装语音包**（离线引擎按语言包分）：管理员 PowerShell 跑
+`Add-WindowsCapability -Online -Name Language.Speech~~~zh-CN~0.0.1.0`，或 设置→时间和语言→语言和区域→
+中文(简体)→语言选项→语音。没装时按热键会弹气泡告诉你这条命令。
+
+**打不开麦克风**？多半是隐私开关：设置→隐私和安全性→麦克风→**允许桌面应用访问麦克风**（气泡里也会这么说）。
+
+**相关配置键**：`voice`、`hotkey_voice`、`voice_engine`、`voice_lang`、`voice_auto`、`voice_silence`（静音自动停秒数，0=手动）、
+`voice_max`（单次上限秒）、`stt_url`/`stt_key`/`stt_model`/`stt_lang`/`stt_cmd`。
+
 ## 附录：第三方数据与许可
 
 - **`en-freq.txt`**（英语常用词表：5 万词 + 频次）：来自 **Hermit Dave 的 FrequencyWords** 项目

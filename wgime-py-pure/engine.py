@@ -207,6 +207,13 @@ def load_config(path):
                paste=3, keyfix=True, followcaret=True, theme='dark', cnpunct=True,
                mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
+               voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开
+               voice_engine='system',          # system(系统自带离线引擎) / http(云端 STT) / cmd(本地 whisper)
+               voice_auto=False,               # True: 识别完直接上屏; False: 进候选条等空格确认
+               voice_lang='',                  # 系统引擎的识别语言 (如 zh-CN); 空=系统默认
+               voice_silence=1.2,              # 连续静音多少秒自动停 (0=不自动停)
+               voice_max=20,                   # 单次录音上限(秒)
+               stt_url='', stt_key='', stt_model='', stt_lang='', stt_cmd='',   # 后两条后端的配置
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
         text = read_text(path)                     # 宽松解码: ANSI/GBK 另存的 config.txt 也能读, 不崩
@@ -241,6 +248,21 @@ def load_config(path):
                 cfg['trad'] = v in ('1', 'on', 'true')
             elif k == 'trans':
                 cfg['trans'] = v in ('1', 'on', 'true')     # 白名单语义 (同 showcode/trad): 非法值判"关"
+            elif k == 'voice':
+                cfg['voice'] = v in ('1', 'on', 'true')     # 语音输入总开关 (白名单, 非法值判"关")
+            elif k == 'voice_auto':
+                cfg['voice_auto'] = v in ('1', 'on', 'true')    # 识别完直接上屏 (白名单)
+            elif k == 'voice_engine':
+                cfg['voice_engine'] = (v.strip().lower() or 'system')   # system/http/cmd
+            elif k == 'voice_lang':
+                cfg['voice_lang'] = v.strip()               # 系统引擎语言, 如 zh-CN
+            elif k in ('voice_silence', 'voice_max'):
+                try:
+                    cfg[k] = float(v)                       # 秒; 非法值保持缺省
+                except ValueError:
+                    pass
+            elif k in ('stt_url', 'stt_key', 'stt_model', 'stt_lang', 'stt_cmd'):
+                cfg[k] = v.strip()                          # 后两条后端 (http/cmd) 的配置
             elif k == 'sentence':
                 cfg['sentence'] = v not in ('0', 'off', 'false')
             elif k == 'assoc':
@@ -270,7 +292,8 @@ def load_config(path):
             elif k == 'mode':
                 # 运行模式: ime=输入法(默认) / tray=纯托盘工具箱(现 wgtray 行为)
                 cfg['mode'] = v.strip().lower() if v.strip().lower() in ('ime', 'tray') else 'ime'
-            elif k in ('hotkey_toggle', 'hotkey_mode', 'hotkey_makeword', 'hotkey_trad'):
+            elif k in ('hotkey_toggle', 'hotkey_mode', 'hotkey_makeword', 'hotkey_trad',
+                       'hotkey_voice'):                      # hotkey_voice: 第四十七轮 语音输入
                 # 可配置快捷键 (原样收下; hook.configure 用 C# 同名解析器处理, 无效值忽略)
                 cfg['hotkeys'][k[len('hotkey_'):]] = v
             elif k in ('key_first', 'key_pageup', 'key_pagedown', 'key_back',

@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+import queue
 import importlib.util
 import ctypes
 import re
@@ -343,6 +344,8 @@ def apply_config():
     engine.assoc_enabled = CFG.get('assoc', True)   # config assoc=0 / 托盘关闭: 不学习也不显示联想 (对齐 C# AssocEnabled)
     hook.set_punct(CFG.get('cnpunct', True))   # 全角标点开关同步给钩子线程
     hook.configure(CFG.get('hotkeys'), CFG.get('ckeys'))   # hotkey_* / key_* -> 钩子线程 (对齐 C# LoadConfig)
+    hook.VOICE_ON[0] = bool(CFG.get('voice'))              # 语音功能开着时热键/松键才吞 (第四十七轮)
+    hook.VOICE_MODE[0] = (ime.mode == MODE_VOICE)
     # 反查码表(rev_wb)不做启动预热: 那 1.2s 纯 Python 循环会抢 GIL, 把"装钩子"这一步推迟 1.4s。
     # 改成首次真正需要时在**后台线程**里建 (engine.rev_wb_code -> warm_rev_wb), 输入路径永不阻塞。
 
@@ -402,8 +405,9 @@ def open_data_dir():
 
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC,
-          PUNCT=0xFD)
-MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+          PUNCT=0xFD, VOICE=0xF6, VOICE_UP=0xF7)
+MODE_NAMES = ('混合', '拼音', '五笔', '词典', '语音')
+MODE_VOICE = 4                     # 「语音」模式: 不组字 (按键透传), 候选条显示录音/识别状态 (第四十七轮)
 
 
 # 中文标点映射 (对齐 C# MapPunct; vk | 0x200 = Shift 按住, hook 编码)
@@ -475,7 +479,10 @@ def _create_tray():
         import tray as _tray_mod
         TRAY = _tray_mod.Tray(root, {
             'toggle': lambda: set_active(not ime.active),
-            'set_mode': lambda m: (setattr(ime, 'mode', int(m) % 4), reset()),   # 4 模式: 钳一下防越界
+            'set_mode': lambda m: (setattr(ime, 'mode', int(m) % 5), reset()),   # 5 模式: 钳一下防越界
+            'toggle_voice': lambda: toggle_voice(),                   # 「语音输入」开关 (第四十七轮)
+            'get_voice': lambda: CFG.get('voice', False),
+            'voice_state': lambda: _voice_state_text(),
             'trad': lambda: toggle_trad(),
             'get_trad': lambda: bool(ime.trad),           # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
             'quit': lambda: quit_app(),
@@ -635,10 +642,18 @@ def find_launcher(code):
 
 # ---------- 显示 ----------
 def show_page():
+    follow = CFG.get('followcaret', True)
+    # 语音 (第四十七轮): ① 待确认结果 -> 占一行候选, 空格上屏 / Esc 丢弃;
+    # ② 正在录/识别中/语音模式 -> 候选条当状态指示用 (显示"按住说话/正在听…")
+    if _VOICE['text'] is not None and not _VOICE['busy']:
+        bar.show('[语音|开] ', '空格上屏 / Esc 丢弃', [_VOICE['text']], 0, 0, 1, follow)
+        return
+    if _VOICE['busy'] or _VOICE['rec'] is not None or ime.mode == MODE_VOICE:
+        bar.show('[语音|开] ', _voice_state_text(), [], 0, 0, 1, follow)
+        return
     header = '[%s|开] ' % MODE_NAMES[ime.mode] + ('繁 ' if ime.trad else '')   # 对齐 C#: [模式|开] 头
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
     total = (len(ime.cands) + 8) // 9
-    follow = CFG.get('followcaret', True)
     # showcode/trans: 候选上挂反查编码 / 离线译文 (仅显示, 不改变上屏)
     # 传的是 (词, 全提示, 只译文提示) 三元组: bar 宽度不够时按 tier 丢提示而不是把提示切一半
     # (第四十五轮; 见 bar.show 的退化逻辑)
@@ -689,10 +704,21 @@ def _with_code(w):
 
 
 def refresh():
+    # 语音模式 (第四十七轮): 不组字 —— 缓冲区永远为空, 候选条交给 show_page 画录音/识别状态
+    if ime.mode == MODE_VOICE:
+        ime.buf = ''
+        ime.cands = []
+        hook.COMPOSING[0] = _VOICE['text'] is not None
+        hook.VOICE_MODE[0] = True
+        show_page()
+        return
     ime.page = 0
     ime.sel = 0
     if not ime.buf:
-        bar.hide()
+        if _VOICE['rec'] is not None or _VOICE['busy']:
+            show_page()                    # 录音/识别中: 候选条当状态指示用 (第四十七轮)
+        else:
+            bar.hide()
         return
     # 安全复位 (对齐 C# ShowCharatar 顶部): 离开 vf 或开了双拼 -> 退出符号面板状态
     if ime.sym_cat and ime.buf != 'vf':
@@ -774,7 +800,212 @@ def reset():
     ime.app_cand = None
     _last_learn = None
     hook.COMPOSING[0] = False
+    hook.VOICE_MODE[0] = (ime.mode == MODE_VOICE)      # 语音模式: 钩子按键透传 (第四十七轮)
     bar.hide()
+
+
+# ---------- 语音输入 (第四十七轮) ----------
+# 录音在 voice.py (winmm 纯 ctypes); 识别三条后端 (系统离线引擎/HTTP/外部命令) 也在那里。
+# 这里只负责: 热键、状态显示、结果进候选条(空格确认)或直接上屏。**识别走后台线程**, 主线程不卡。
+_VOICE = {'rec': None, 't0': 0.0, 'toggle': False, 'busy': False, 'text': None, 'mod': None}
+VOICE_Q = queue.Queue()
+
+
+def _voicemod():
+    """懒装载 voice.py (dist 里是懒模块: 不开语音就完全不付它的代价)."""
+    if _VOICE['mod'] is None:
+        import voice as _v
+        _VOICE['mod'] = _v
+    return _VOICE['mod']
+
+
+def _voice_hotkey_text():
+    try:
+        return (CFG.get('hotkeys') or {}).get('voice') or 'ctrl+alt+v'
+    except Exception:
+        return 'ctrl+alt+v'
+
+
+def _voice_state_text():
+    """候选条第二段 / 托盘用的状态文本."""
+    r = _VOICE['rec']
+    if r is not None:                       # 正在录优先显示 (识别上一句的同时又开始录下一句)
+        if _VOICE['toggle']:
+            return '正在听… (%ds) 再按一次结束' % (r.elapsed_ms() // 1000)
+        return '正在听… (%ds) 松开结束' % (r.elapsed_ms() // 1000)
+    if _VOICE['busy']:
+        return '识别中…'
+    if _VOICE['text'] is not None:
+        return '空格上屏 / Esc 丢弃'
+    return '按住 %s 说话' % _voice_hotkey_text()
+
+
+def _voice_ok():
+    """能不能用; 不能就提示一次并返回 False."""
+    if not CFG.get('voice'):
+        _notify('语音输入', '语音输入没打开: 托盘「选项 → 语音输入」或 config.txt 里 voice = 1')
+        return False
+    if not _voicemod().available():
+        _notify('语音输入', '找不到麦克风 (或系统不让桌面应用访问麦克风)')
+        return False
+    return True
+
+
+def voice_down():
+    """热键按下: 开始录音; 已经在录 (语音模式里点一下开始的那种) 就收尾识别."""
+    if _VOICE['rec'] is not None:
+        voice_finish()                      # 第二次点 = 结束并识别
+        return
+    if not _voice_ok():
+        return
+    v = _voicemod()
+    rec = v.Recorder(silence=float(CFG.get('voice_silence', 1.2) or 0),
+                     max_ms=int(float(CFG.get('voice_max', 20) or 20) * 1000),
+                     on_auto_stop=lambda: VOICE_Q.put(('auto',)))
+    if not rec.start():
+        _dfn_always('voice: start failed: %s' % (rec.err,))
+        _notify('语音输入', rec.err or '录音打不开')
+        return
+    _VOICE['rec'] = rec
+    _VOICE['t0'] = time.time()
+    _VOICE['toggle'] = False
+    _VOICE['text'] = None
+    hook.COMPOSING[0] = False
+    _dfn('voice: recording (engine=%s lang=%s silence=%s)'
+         % (CFG.get('voice_engine'), CFG.get('voice_lang'), CFG.get('voice_silence')))
+    show_page()
+
+
+def voice_up():
+    """热键松开: 语音模式里"轻点"= 改成常录(再点结束), 否则松开即结束."""
+    rec = _VOICE['rec']
+    if rec is None:
+        return
+    if ime.mode == MODE_VOICE and (time.time() - _VOICE['t0']) < 0.35 and not _VOICE['toggle']:
+        _VOICE['toggle'] = True             # 点一下开始, 静音自动停 / 再点一次结束
+        _dfn('voice: toggle mode (keep recording)')
+        show_page()
+        return
+    voice_finish()
+
+
+def voice_finish():
+    """停止录音 -> 写 WAV -> 后台识别 -> 结果经 VOICE_Q 回主线程."""
+    rec = _VOICE['rec']
+    if rec is None:
+        return
+    _VOICE['rec'] = None
+    ms = rec.elapsed_ms()
+    spoke = bool(getattr(rec, 'spoke', True))
+    pcm = rec.stop()
+    if ms < 400 or not pcm:
+        _dfn('voice: too short (%dms) - dropped' % ms)
+        show_page()
+        return
+    if not spoke:
+        _dfn('voice: no speech detected (%dms) - dropped' % ms)
+        _notify('语音输入', '没听到说话声 (按住热键说话, 松开结束)')
+        show_page()
+        return
+    v = _voicemod()
+    path = os.path.join(DATA_DIR, 'runtime', 'voice-last.wav')
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        v.write_wav(path, pcm)
+    except Exception as e:
+        _notify('语音输入', '录音存盘失败: %r' % (e,))
+        show_page()
+        return
+    _VOICE['busy'] = True
+    _dfn('voice: recorded %dms -> recognize via %s' % (ms, CFG.get('voice_engine')))
+    show_page()
+
+    def _work():
+        try:
+            text, err = v.recognize(path, CFG)
+        except Exception as e:
+            text, err = None, '识别异常: %r' % (e,)
+        VOICE_Q.put(('done', text, err))
+
+    threading.Thread(target=_work, name='wgime-voice-recog', daemon=True).start()
+
+
+def voice_cancel():
+    """丢弃待确认结果 / 取消正在录的这一次."""
+    if _VOICE['rec'] is not None:
+        try:
+            _VOICE['rec'].stop()
+        except Exception:
+            pass
+        _VOICE['rec'] = None
+    _VOICE['text'] = None
+    hook.COMPOSING[0] = False
+    show_page()
+
+
+def voice_commit():
+    """待确认结果上屏: 走现有 inject (剪贴板/keyfix/UIPI 全兼容); **不进词频学习/联想**."""
+    text = _VOICE['text']
+    _VOICE['text'] = None
+    if text:
+        inject(text)
+        _dfn('voice: commit %r' % text)
+    hook.COMPOSING[0] = False
+    show_page()
+
+
+def _voice_drain():
+    """主线程 (poll 里) 收识别结果与 VAD 自动停请求."""
+    while True:
+        try:
+            item = VOICE_Q.get_nowait()
+        except queue.Empty:
+            break
+        if item[0] == 'auto':
+            if _VOICE['rec'] is not None:
+                _dfn('voice: auto-stop (silence or max duration)')
+                voice_finish()
+            continue
+        _kind, text, err = (list(item) + [None, None])[:3]
+        _VOICE['busy'] = False
+        try:
+            os.remove(os.path.join(DATA_DIR, 'runtime', 'voice-last.wav'))
+        except OSError:
+            pass
+        if err:
+            _dfn_always('voice: recognize failed: %s' % err)
+            _notify('语音输入', err)
+        elif not text:
+            _notify('语音输入', '没听清, 再说一次?')
+        else:
+            _dfn_always('voice: recognized %r' % text)
+            if CFG.get('voice_auto') or not ime.active:
+                inject(text)                # 自动上屏 (输入法没激活时直接打进当前窗口)
+            else:
+                _VOICE['text'] = text
+                hook.COMPOSING[0] = True    # 让空格/数字/Esc 被钩子吞进输入法 (同组字中的候选键)
+        show_page()
+
+
+def toggle_voice():
+    """托盘「语音输入」开关 (第四十七轮)."""
+    CFG['voice'] = not CFG.get('voice', False)
+    _dfn('voice=%s' % CFG['voice'])
+    _write_config('voice', '1' if CFG['voice'] else '0')
+    hook.VOICE_ON[0] = bool(CFG['voice'])
+    if CFG['voice']:
+        try:
+            if not _voicemod().available():
+                _notify('语音输入', '打开了, 但没找到麦克风 (系统设置里允许桌面应用访问麦克风?)')
+            else:
+                _notify('语音输入', '已打开: %s 按住说话' % _voice_hotkey_text())
+        except Exception as e:
+            _notify('语音输入', '语音模块不可用: %r' % (e,))
+    else:
+        voice_cancel()
+        hook.VOICE_ON[0] = False
+    show_page()
+    _refresh_tray()
 
 
 def show_assoc():
@@ -1744,9 +1975,18 @@ def handle(vk):
         set_active(not ime.active)
         return
     if vk == VK['MODE']:
-        ime.mode = (ime.mode + 1) % 4             # 第四十六轮: 「词典/译」模式加回来了 (英中查询更方便)
+        ime.mode = (ime.mode + 1) % 5             # 第四十七轮: 加了「语音」模式 (混合/拼音/五笔/词典/语音)
+        if _VOICE['rec'] is not None or _VOICE['text'] is not None:
+            voice_cancel()                        # 切模式时把没结束的录音/待确认结果丢掉
         reset()
         _refresh_tray()
+        show_page()
+        return
+    if vk == VK['VOICE']:                         # 语音热键按下: 开始录 / 再按一次结束
+        voice_down()
+        return
+    if vk == VK['VOICE_UP']:                      # 松开: 按住说话结束 (语音模式里轻点=常录)
+        voice_up()
         return
     if vk == VK['TRAD']:
         toggle_trad()
@@ -1759,6 +1999,16 @@ def handle(vk):
         return
     if not ime.active:
         return
+    # 语音识别结果待确认 (第四十七轮, voice_auto=0): 空格/回车/1 上屏, Esc 丢弃
+    # (pending 时 hook.COMPOSING=True, 所以这些键才会被钩子吞进来)
+    if _VOICE['text'] is not None:
+        if vk in (K['first'], K['raw'], 0x31):
+            voice_commit()
+            return
+        if vk == K['cancel']:
+            voice_cancel()
+            return
+        return                                       # 其它键忽略: 别把待确认结果弄丢
     # 中文标点 (cnpunct=1 时 hook 吞键): 组字中先上屏首候选再上屏标点
     if vk in (0xBC, 0xBE, 0xBA, 0xBF, 0xDC, 0xDB, 0xDD, 0xDE) or (vk == 0x34 and sh):
         handle_punct(vk, sh)
@@ -2028,6 +2278,11 @@ def _maybe_admin_hint():
 
 def poll():
     try:
+        # 语音: VAD 自动停 / 识别结果 (后台线程入队, 此处主线程执行) —— 第四十七轮
+        try:
+            _voice_drain()
+        except Exception:
+            pass
         # 先排空托盘动作 (pystray 线程入队, 此处主线程执行)
         try:
             import tray as _traymod

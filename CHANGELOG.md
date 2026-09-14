@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-09-12 (第四十七轮: 语音输入 —— 按住 Ctrl+Alt+V 说话, 三条识别后端 + 新增「语音」模式)
+
+用户问"有没有机会加语音输入"，定了：**先打通系统自带离线引擎 + 预留云端/本地 whisper 插槽**，
+**热键和语音模式都要**。
+
+### 形态
+
+- **热键** `hotkey_voice = ctrl+alt+v`：**按住说话**（松键在 hook 里收 `WM_KEYUP` → `VK_VOICE_UP`），松开即识别。
+- **「语音」模式**（`Ctrl+`` 切到第 5 个，托盘图标紫色「语」）：**不组字**（按键一律透传给应用），候选条当状态灯用；
+  该模式下热键变成「轻点开始 / 再点结束」（常录），说话停顿 `voice_silence` 秒也会自动停。
+- 识别结果默认**进候选条等空格确认**（`1.<文本>`；空格/回车/1 上屏，Esc 丢弃）；`voice_auto = 1` 时直接上屏。
+  上屏走现有 `inject()`（剪贴板/keyfix/UIPI/简繁全兼容），**不进词频学习/联想**（整句不该被当词学）。
+- 没麦克风/没装语音包/识别失败 → **托盘气泡**说清（含"去开哪一项"）；状态显示在候选条第 2 段（`正在听… (3s) 松开结束` / `识别中…`）。
+
+### 录音 + 识别（`voice.py`，新模块）
+
+- **录音**：`winmm` waveIn，**纯 ctypes**，16kHz/单声道/16bit，8 块 200ms 轮转；回调里算 RMS 做 **VAD 静音自动停**
+  （头 500ms 估环境噪声 → 自适应阈值）与单次上限（`voice_max`）；不用 `audioop`（3.13 起已移除，用 `array` 自己算）。
+- **`system`**（默认）：系统自带离线引擎（System.Speech），经 `powershell -EncodedCommand` **内联脚本**调用
+  （**不落盘任何文件** —— 照第四十三轮 caret-helper 的规矩），结果用 **base64** 回传（绕开控制台代码页乱码）；
+  `voice_lang` 选识别引擎，没装对应语言包时给**可照做的安装提示**。
+- **`http`**：OpenAI Whisper 兼容的 multipart POST（`stt_url` / `stt_key` / `stt_model` / `stt_lang`）。
+- **`cmd`**：`stt_cmd` 里用 `{wav}` 占位，取 stdout 第一行（本地 whisper.cpp / faster-whisper 等）。
+- 换后端只改 `voice_engine` 一个键：录音/上屏/交互完全共用，`recognize()` 里一个分支的事。
+
+### 改动清单
+
+`voice.py`（新）· `hook.py`（`hotkey_voice` + `WM_KEYUP` 松键 + `VOICE_ON`/`VOICE_MODE` 标志 + 语音模式按键透传）·
+`main.py`（`_VOICE` 状态机 + `voice_down/up/finish/cancel/commit` + 后台识别线程 + `VOICE_Q` 主线程派发 +
+`show_page` 状态/待确认 + `handle` 分支 + 模式 5 个 + 托盘 api）· `engine.py`（config 键）·
+`tray.py`（5 模式 + 「语音输入」选项）· `build-wgime-pure.py`（MODULES 加 voice；图标按 `MODE_CHARS` 走 = **11 个**）·
+`config.txt`（`voice*` / `stt*` 说明）。
+
+### 验证（本机 Windows Server 2025：只有 en-US 引擎，且麦克风隐私开关 = **Deny** —— 反倒把错误路径验透了）
+
+- `%TEMP%\wg-r47-voice-probe.py`（**A 15/15 + B 20/20**）：
+  - **真端到端识别**：系统 TTS 生成 "hello world this is a voice test" 的 WAV → `system` 后端识别回来**逐字符一致**，0.7–0.8s；
+  - 没装 zh-CN 时报出「装一下语言包 + `Add-WindowsCapability -Online -Name Language.Speech~~~zh-CN~0.0.1.0`」；
+  - 隐私开关 Deny 时 `waveInOpen` 失败 → 错误信息**直指 设置→隐私和安全性→麦克风→允许桌面应用访问麦克风**；
+  - `cmd` / `http` 后端的成功与"没配某键"两条路径；WAV 头 / RMS 数值正确；
+  - dist 集成：模式 5 个、内嵌图标 11 个、**按住说话**与**轻点常录**两种交互、待确认→空格上屏、`voice_auto` 直接上屏、报错不崩。
+- 回归：harness 16/16、`undefined-globals` 0、dist 自检逐字节一致、r45 40/40、r45-onlytrans 12/12、r46 11/11、
+  r44 40/40、r43-e2e 4/4、r40 35/35、warmec 40、缓存 14、QR 78、wgtranslate 62。
+- **本机没法真录中文**（麦克风被隐私开关挡着，且只有 en-US 引擎）。你那边要先做两件事：
+  ① 允许桌面应用访问麦克风；② 装中文语音包（`Add-WindowsCapability -Online -Name Language.Speech~~~zh-CN~0.0.1.0`，
+  或 设置→时间和语言→语言和区域→中文(简体)→语言选项→语音）。装好后 `voice_lang = zh-CN` 即可说中文。
+
+---
+
 ## 2026-09-12 (第四十六轮: 「词典/译」模式加回来 —— 英中查询还是这个模式顺手)
 
 用户反馈："译模式看来还要加回来，因为有些查询还是译模式更加方便(英中)"。**加回**，同时**保留**第四十四轮的

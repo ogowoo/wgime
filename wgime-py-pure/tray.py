@@ -101,11 +101,11 @@ def L(zh, en):
     return zh if _ZH else en
 
 
-MODE_NAMES = ('混合', '拼音', '五笔', '词典')
-MODE_EN = ('Mixed', 'Pinyin', 'Wubi', 'Dict')
-# C# 同款渲染: 圆角方形 + 模式汉字镂空 + Win11 强调色 (中/拼/五/译)
-MODE_CHARS = ('中', '拼', '五', '译')
-MODE_COLORS = ((0, 120, 212), (0, 183, 195), (202, 80, 16), (136, 23, 152))
+MODE_NAMES = ('混合', '拼音', '五笔', '词典', '语音')
+MODE_EN = ('Mixed', 'Pinyin', 'Wubi', 'Dict', 'Voice')
+# C# 同款渲染: 圆角方形 + 模式汉字镂空 + Win11 强调色 (中/拼/五/译/语)
+MODE_CHARS = ('中', '拼', '五', '译', '语')
+MODE_COLORS = ((0, 120, 212), (0, 183, 195), (202, 80, 16), (136, 23, 152), (16, 124, 16))
 OFF_COLOR = (190, 185, 179)
 
 # 托盘回调 (pystray 线程) 不能直接碰 tkinter —— 入队, 主线程 poll 里执行
@@ -330,10 +330,13 @@ class Tray:
                                  *(pystray.MenuItem(L(MODE_NAMES[m], MODE_EN[m]),
                                                     self._on(lambda m=m: self.api['set_mode'](m)),
                                                     checked=lambda _it, m=m: self.api['get_mode']() == m)
-                                   for m in range(4)))),
+                                   for m in range(len(MODE_NAMES))))),
             # 选项
             pystray.MenuItem(L('选项', 'Options'),
                              pystray.Menu(
+                                 pystray.MenuItem(L('语音输入  (Ctrl+Alt+V 按住说话)', 'Voice input  (hold Ctrl+Alt+V)'),
+                                                  self._on(self.api['toggle_voice']),
+                                                  checked=lambda _it: self.api['get_voice']()),
                                  pystray.MenuItem(L('繁体输出  (Ctrl+Shift+F)', 'Trad output  (Ctrl+Shift+F)'),
                                                   self._on(self.api['trad']),
                                                   checked=lambda _it: self.api['get_trad']()),

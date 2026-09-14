@@ -24,6 +24,8 @@ VK_TAP = 0xF8           # 合成: Shift 轻拍
 VK_MODE = 0xF9          # 合成: Ctrl+` (可配 hotkey_mode)
 VK_TRAD = 0xFA          # 合成: Ctrl+Shift+F (可配 hotkey_trad)
 VK_MAKEWORD = 0xFB      # 合成: Ctrl+Alt+C (可配 hotkey_makeword)
+VK_VOICE = 0xF6         # 合成: Ctrl+Alt+V 按下 (可配 hotkey_voice; 第四十七轮 语音输入)
+VK_VOICE_UP = 0xF7      # 合成: Ctrl+Alt+V 松开 (按住说话用)
 VK_QUIT = 0xFC          # 合成: Ctrl+Alt+Q 退出 (python 额外)
 VK_PUNCT = 0xFD         # 合成: Ctrl+. 全/半角标点切换 (python 额外)
 
@@ -32,12 +34,14 @@ SHIFT_TAP = -1          # 哨兵: Shift 轻拍 (对齐 C# ModToggle = 0x80000000
 MOD_CTRL, MOD_ALT, MOD_SHIFT, MOD_WIN = 1, 2, 4, 8
 # 缺省值 (与 C# 类字段一致); 每次 configure 都从缺省重建, 所以删掉 config 行即回缺省
 DEFAULT_HOTKEYS = {'toggle': 'shift_tap', 'mode': 'ctrl+grave',
-                   'makeword': 'ctrl+alt+c', 'trad': 'ctrl+shift+f'}
+                   'makeword': 'ctrl+alt+c', 'trad': 'ctrl+shift+f',
+                   'voice': 'ctrl+alt+v'}
 DEFAULT_KEYS = {'first': 'space', 'pageup': 'minus', 'pagedown': 'plus', 'back': 'backspace',
                 'cancel': 'esc', 'raw': 'enter', 'pickfirst': 'lbracket', 'picklast': 'rbracket'}
 # action -> (mods, vk); vk=0 = 禁用; mods=SHIFT_TAP = Shift 轻拍
 HOTKEYS = {'toggle': (SHIFT_TAP, 0), 'mode': (MOD_CTRL, 0xC0),
-           'makeword': (MOD_CTRL | MOD_ALT, 0x43), 'trad': (MOD_CTRL | MOD_SHIFT, 0x46)}
+           'makeword': (MOD_CTRL | MOD_ALT, 0x43), 'trad': (MOD_CTRL | MOD_SHIFT, 0x46),
+           'voice': (MOD_CTRL | MOD_ALT, 0x56)}
 # name -> vk; 0 = 禁用
 KEYS = {'first': 0x20, 'pageup': 0xBD, 'pagedown': 0xBB, 'back': 0x08,
         'cancel': 0x1B, 'raw': 0x0D, 'pickfirst': 0xDB, 'picklast': 0xDD}
@@ -229,11 +233,16 @@ def _proc(nCode, wParam, lParam):
                         _tap_dirty[0] = True                   # 有其它键介入, 不算轻拍
                     # 可配置热键 (对齐 C#: 在 IsLocked 之前判定, 故输入法关闭/无缓冲时同样生效并按严格修饰键匹配)
                     for _act, _code in (('toggle', VK_TAP), ('mode', VK_MODE),
-                                        ('makeword', VK_MAKEWORD), ('trad', VK_TRAD)):
+                                        ('makeword', VK_MAKEWORD), ('trad', VK_TRAD),
+                                        ('voice', VK_VOICE)):
                         _mods, _hk = HOTKEYS.get(_act, (0, 0))
                         if _hk and _hk == vk and _mods != SHIFT_TAP and _match_mods(_mods):
                             EVENTS.put(_code)
                             return 1
+                    # 语音模式 (第四十七轮): 不组字, 按键一律透传给应用 (只有"识别结果待确认"
+                    # 时 COMPOSING 为真, 继续往下走让空格/数字/Esc 被吞进来)
+                    if VOICE_MODE[0] and not COMPOSING[0]:
+                        return user32.CallNextHookEx(None, nCode, wParam, lParam)
                     if ACTIVE[0]:
                         if ctrl and not shift and not alt and vk == 0xBE:   # Ctrl+. 全/半角标点 (python 额外)
                             EVENTS.put(VK_PUNCT)
@@ -275,6 +284,12 @@ def _proc(nCode, wParam, lParam):
                             and time.time() - _tap_time[0] < 0.4:
                         EVENTS.put(VK_TAP)                     # 孤立快速 Shift 轻拍: 切换 (激活/关闭)
                     _tap_time[0] = None
+                elif VOICE_ON[0]:
+                    # 语音热键的**松键** (按住说话): 只在语音功能开着时才吞, 否则 Ctrl+Alt+V 照常给应用
+                    _mods, _hk = HOTKEYS.get('voice', (0, 0))
+                    if _hk and _hk == vk and _mods != SHIFT_TAP:
+                        EVENTS.put(VK_VOICE_UP)
+                        return 1
     except Exception:
         return user32.CallNextHookEx(None, nCode, wParam, lParam)
     return user32.CallNextHookEx(None, nCode, wParam, lParam)
@@ -282,6 +297,9 @@ def _proc(nCode, wParam, lParam):
 
 _tap_time = [None]
 _tap_dirty = [True]
+# 第四十七轮 语音输入: main.apply_config 同步这两个标志
+VOICE_ON = [False]       # 语音功能开着 (热键与松键才吞)
+VOICE_MODE = [False]     # 当前是「语音」模式 (不组字, 按键透传)
 
 _rebuild_swallow()          # 模块导入即装缺省快捷键/候选键, main.apply_config 会再 configure 一次
 
