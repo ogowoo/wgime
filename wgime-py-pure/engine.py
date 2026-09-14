@@ -4,9 +4,11 @@
 逐行对齐 C# WordBoard 语义 (wgime.bat):
 - 码表格式: "code word1 word2 ..." (小写 code; 文件源不拆 packed chars)
 - 候选顺序 (ShowCharatar): exact dict -> prefix 单字 -> 简拼 -> 模糊音 -> 词频排序(稳定) -> lastpick 置顶
-- 模式: 0=混合(五笔先) 1=拼音 2=五笔 (C# 的 3=词典(英汉/汉英) 在第四十四轮取消;
-        词典表 ec/ek/ev/ce 保留, 改由「译文」选项在任一模式下挂译文/兜底查词)
+- 模式: 0=混合(五笔先) 1=拼音 2=五笔 3=词典(英汉/汉英; 第四十四轮曾取消、第四十六轮按用户要求加回,
+        所以 `ime.mode` 是 0..3 而**不是**只剩 0..2)。「译文」选项 (`config trans`) 是**另一个**开关:
+        非词典模式给候选挂译文、且仅在本模式零候选时才拿词典结果兜底; 词典模式本身不挂译文。
 - 词频: FreqM[mode] 分桶 + Freq 合并视图; userdict_{mix,py,wb}.txt / lastpick_*.txt 与 C# 版同格式
+        (读取时按 '\n' 切行后必须 rstrip('\r'): read_text 是二进制解码, CRLF 的 \r 会留在行尾)
 """
 import bisect
 import math
