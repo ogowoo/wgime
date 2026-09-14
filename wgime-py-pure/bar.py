@@ -146,23 +146,48 @@ class CandBar:
         wa = win.screen_workarea()
         # 候选条最大宽度: 不铺满屏, 封顶 min(屏幕宽-24, 880px); ≥240
         max_w = max(240, min((wa.right - wa.left) - 24, 880))
-        def clip(s, n):
-            return s if len(s) <= n else s[:n] + '…'
         line1 = self._pad + self._measure(self._fc, header) + self._measure(self._fc, code)
         page_ind = '◀ %d/%d ▶' % (page + 1, total) if total > 1 else ''
         ind_w = self._measure(self._fc, page_ind) if page_ind else 0
-        # 动态收紧候选截断: 候选总宽超 max_w 时, 逐步缩短每个候选(24→8), 直到候选条不铺满屏,
-        # 且每个候选仍可见(都剪短, 数字键/翻页可选); 到最小仍超则窗口封顶 max_w 自动裁
+        # 动态收紧候选截断: 候选总宽超 max_w 时**逐级退化**, 而不是把提示切一半 ——
+        # 第四十五轮修 (`测试 (imya)→dvdram` 曾被均匀砍到 8 字符, 于是显示成 `测试 (imya…`,
+        # 译文一个字都看不见)。候选可以是普通字符串, 也可以是 main._cand_variants 给的
+        # `(词, 全提示, 只译文提示)` 三元组 —— 三元组时渲染成 `截断后的词 + 提示`, 逐级:
+        #   tier0 = 每条都挂 `(码)→译`; tier1 = **只给当前选中那条**挂 (其余只显示词);
+        #   tier2 = 每条只挂译文 (丢编码); tier3 = 只剩词 (丢提示)。
+        #   **提示永远是完整的**, 只有"词"本身太长才会截词 + 省略号。
+        # 普通字符串 (没开反查/译文时) 走老路子: 整串按 24→8 字符截断。
+        # (别写成 `for c in cands`: c 是上面的 canvas!)
         cands = list(cands or [])
+
+        def _hint(_cd, tier, _i):
+            if not isinstance(_cd, tuple) or len(_cd) < 3:
+                return ''
+            if tier == 0:
+                return _cd[1]                          # 完整提示: 词 (码)→译
+            if tier == 1:
+                return _cd[1] if _i == sel else ''     # 只给当前选中那条挂 (反查/译文都还在)
+            if tier == 2:
+                return _cd[2]                          # 只挂译文: 词→译
+            return ''                                  # 只剩词
+
         clipped = cands
         line2 = self._pad
-        for n in range(24, 7, -2):
-            clipped = [clip(x, n) for x in cands]
-            line2 = self._pad
-            for i2, cnd in enumerate(clipped):
-                line2 += self._measure(self._fd, '%d.%s' % (i2 + 1, cnd)) + 16
-            if line2 <= max_w or n <= 8:
-                break
+        for tier in (0, 1, 2, 3):
+            parts = []
+            for _i, _cd in enumerate(cands):
+                parts.append((_cd[0] if isinstance(_cd, tuple) else _cd, _hint(_cd, tier, _i)))
+            last = parts
+            for n in range(24, 7, -2):
+                last = [(w if len(w) <= n else w[:n] + '…') + h for (w, h) in parts]
+                line2 = self._pad
+                for i2, cnd in enumerate(last):
+                    line2 += self._measure(self._fd, '%d.%s' % (i2 + 1, cnd)) + 16
+                if line2 <= max_w or n <= 8:
+                    break
+            clipped = last
+            if line2 <= max_w:
+                break                       # 这一级装得下就不必再丢提示了
         cands = clipped
         w = max(line1 + ind_w + 18, line2 + self._pad, 120)
         w = min(w, max_w)                              # 钳制到候选条最大宽度, 不再无限长

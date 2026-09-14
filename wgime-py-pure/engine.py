@@ -413,8 +413,70 @@ def build_acro(py, char_py):
     return acro
 
 
-def build_reverse(ec):
-    """CN word -> EN words (BuildReverse: 每词上限 8)"""
+EN_HINT_MAX_RANK = 50000     # 译文只认 en-freq.txt 里最常用的这 N 个英语词 (第四十五轮)
+
+
+def load_en_rank(dict_dir):
+    """英语常用度排名: `en-freq.txt` = "词 频次" 按频次降序 (MIT, Hermit Dave FrequencyWords).
+
+    返回 {小写词: 行号(=排名, 越小越常用)}。**读不到就返回空 dict**: build_reverse 会退回
+    "字母序取前 8 个"的旧行为 (不排序不筛), 也就是老版本的样子 —— 宁可回到旧行为, 也不能崩。
+    """
+    ranks = {}
+    try:
+        text = read_text(os.path.join(dict_dir, 'en-freq.txt'))
+    except OSError:
+        return ranks
+    for i, ln in enumerate(text.split('\n')):
+        w = ln.split(' ', 1)[0].strip().lower()
+        if w:
+            ranks.setdefault(w, i)
+    return ranks
+
+
+def _en_common(e, ranks):
+    """这个英文候选算不算"常用英语词": >=2 字母、纯 ASCII、且在常用表里 (顺序见 EN_HINT_MAX_RANK)。"""
+    if len(e) < 2 or not e.isascii() or not e.isalpha():
+        return False
+    r = ranks.get(e.lower())
+    return r is not None and r < EN_HINT_MAX_RANK
+
+
+_REV_CAP = 32                # 反建时每个中文词最多收这么多英文候选 (排序前; 排序后只留 8 个)
+
+
+def build_reverse(ec, ranks=None):
+    """CN word -> EN words (对齐 C# `BuildReverse`: 每词上限 8)。
+
+    **第四十五轮的两层修正** (用户实测: 译文本是词典里字母序第一个 → 测试->dvdram、你好->alohas、
+    老师->dorina, 全是生僻词/人名/缩写):
+    ① 候选按**英语常用度**排序 (en-freq.txt), 不再按字母序 —— 测试->test、中国->china、老师->teacher;
+    ② **不常用的候选直接丢掉**: 一个中文词只有在"至少有一个常用英语词"时才进 `ce`, 否则宁可不挂译文
+       (不然又会冒出 whiches/cujus/kiped 这种)。没装 en-freq.txt (ranks 空) 时退回旧行为。
+    """
+    rev = {}
+    for en in sorted(ec.keys()):
+        for cn in ec[en].split(' '):
+            if not cn:
+                continue
+            lst = rev.setdefault(cn, [])
+            if en not in lst and len(lst) < _REV_CAP:
+                lst.append(en)
+    out = {}
+    for cn, lst in rev.items():
+        if ranks:
+            known = [e for e in lst if _en_common(e, ranks)]
+            if not known:
+                continue                     # 没有常用词 -> 不挂译文 (查不到就不挂)
+            known.sort(key=lambda e: (ranks[e.lower()], e))
+            out[cn] = ' '.join(known[:8])
+        else:
+            out[cn] = ' '.join(lst[:8])
+    return out
+
+
+def build_reverse_legacy(ec):
+    """旧版反建 (字母序前 8 个, 不排序不筛) —— 只给对照探针用, 生产走 build_reverse。"""
     rev = {}
     for en in sorted(ec.keys()):
         for cn in ec[en].split(' '):
@@ -424,6 +486,7 @@ def build_reverse(ec):
             if len(lst) < 8 and en not in lst:
                 lst.append(en)
     return {k: ' '.join(v) for k, v in rev.items()}
+
 
 
 _REV_WB_CHUNK = 4000      # 后台建反查表时每处理这么多码让出一次 GIL
@@ -698,7 +761,9 @@ CACHE_VER = 5                    # v5: 第一段再加 char_wb/wb_by_len/word_fr
                                  #     见 _build_core_extra); v4: 两段缓存 + 词典表 ec/ek/ev/ce 后台加载
 CACHE_FILES = ('py.txt', 'wb.txt', 'ec.txt', 'trad.txt',
                'import_py.txt', 'import_wb.txt', 'import_ec.txt',
-               'pywfreq.txt')    # v5: word_freq 进缓存了, 签名必须覆盖 pywfreq.txt (否则改了语料不重建)
+               'pywfreq.txt',
+               'en-freq.txt')    # v5: word_freq 进缓存了, 签名必须覆盖 pywfreq.txt (否则改了语料不重建)
+                                 # 第四十五轮: 英语常用词表也进签名 (换了词表 -> ce 要重排)
 
 
 def dict_paths(dict_dir):
@@ -765,7 +830,12 @@ class Engine:
         self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
         overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
         self.ek, self.ev = build_sorted(self.ec)
-        self.ce = build_reverse(self.ec)
+        _ranks = load_en_rank(self.dict_dir)
+        self._en_rank_n = len(_ranks)                 # 探针/诊断用: 常用英语词表读进来多少个
+        if not _ranks:
+            print('[wgime] en-freq.txt 没读到 (译文退回"字母序第一个"旧行为)',
+                  file=sys.stderr)
+        self.ce = build_reverse(self.ec, _ranks)      # 第四十五轮: 按英语常用度排序+过滤
         self._ec_ready = True
 
     def _build_wb_len(self):

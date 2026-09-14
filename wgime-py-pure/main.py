@@ -9,6 +9,9 @@ import time
 import importlib.util
 import ctypes
 import re
+
+VERSION = '1.2.12-py'      # 单文件里唯一的版本标识: 写在启动 always-on 日志里, 方便确认"跑的是哪个文件"
+                           # (第四十五轮: 用户机器上出现过"拿旧的 wgime-py.py 测新功能"的混乱)
 # 注意: tkinter **不在这里** import (第四十轮). 首次 import tkinter ≈70ms, 而"单实例 -> 读 config ->
 # 装键盘钩子"这一段完全用不到它; 挪到钩子装好之后 (见下面的"钩子之后才 import"段)。
 # dist 里 bar/ui/tools/tray 也改成懒 exec, 所以这里的延迟 import 才是真的延迟。
@@ -637,8 +640,10 @@ def show_page():
     total = (len(ime.cands) + 8) // 9
     follow = CFG.get('followcaret', True)
     # showcode/trans: 候选上挂反查编码 / 离线译文 (仅显示, 不改变上屏)
+    # 传的是 (词, 全提示, 只译文提示) 三元组: bar 宽度不够时按 tier 丢提示而不是把提示切一半
+    # (第四十五轮; 见 bar.show 的退化逻辑)
     if CFG.get('showcode') or CFG.get('trans'):
-        page_c = [_with_code(w) for w in page_c]
+        page_c = [_cand_variants(w) for w in page_c]
     if ime.assoc_showing:
         bar.show(header + '↪联想', '', page_c, 0, ime.page, total, follow)
     elif ime.buf:
@@ -651,24 +656,35 @@ def show_page():
         bar.hide()
 
 
-def _with_code(w):
-    """候选 + 反查编码 (showcode) + 离线词典译文 (trans) —— 两个选项互相独立, 都只影响显示.
+def _cand_variants(w):
+    """候选的 `(词, 全提示, 只译文提示)` —— 给 bar 按宽度逐级退化用 (第四十五轮).
 
-    反查编码: 五笔模式显**拼音**码, 其余模式显**五笔**码 (对齐 C# CodeHint/RevWb)。
-    译文 (选项「译文」, 第四十四轮): 中文候选挂英文 (ce 反查表), 英文候选挂中文 (ec 表) ——
-    离线、秒出、查不到就不挂。这样正常打字就能顺眼看/顺手选译文 (译模式已取消, 变成这个选项)。"""
+    反查编码 (showcode): 五笔模式显**拼音**码, 其余模式显**五笔**码 (对齐 C# CodeHint/RevWb)。
+    译文 (trans, 第四十四轮): 中文候选挂英文 (ce 反查表), 英文候选挂中文 (ec 表) —— 离线、秒出、
+    查不到就不挂。两个开关互相独立。
+    形态: `词 (码)→译` / `词→译` / `词`。bar 装不下就逐级丢提示, **不会**把 `测试 (imya)` 切成
+    `测试 (imya…` 那种半截提示 (用户实测的 `不太妙`)。
+    """
     try:
-        s = w
+        code = ''
         if CFG.get('showcode'):
             c = engine.code_for(w) if ime.mode == 2 else engine.rev_wb_code(w)
-            s = '%s (%s)' % (w, c) if c else w
+            if c:
+                code = ' (%s)' % c
+        tr = ''
         if CFG.get('trans'):
             t = engine.translate_hint(w)
             if t:
-                s = '%s→%s' % (s, t)
-        return s
+                tr = '→%s' % t
+        return (w, '%s%s' % (code, tr), tr)
     except Exception:
-        return w
+        return (w, '', '')
+
+
+def _with_code(w):
+    """候选的**完整**显示串 (`词 (码)→译`) —— `_cand_variants` 的第 0+1 段拼起来."""
+    v = _cand_variants(w)
+    return v[0] + v[1]
 
 
 def refresh():
@@ -973,11 +989,26 @@ def toggle_showcode():
 def toggle_trans():
     """「译文」开关 (第四十四轮, 原译/词典模式): 候选挂**离线词典译文**; 而且当本模式查不到任何
     候选时, 再补一次离线词典查询 (打英文 -> 出中文, 打拼音 -> 出英文)。
-    离线词典表在后台加载, 打开时顺手预热, 不影响按键。"""
+    离线词典表在后台加载, 打开时顺手预热, 不影响按键。
+
+    第四十五轮: 打开/关闭都写一条 **always-on** 日志, 并报告词典表状态 —— 用户报过"只开译文
+    看不到东西" (多半是跑着旧文件, 或词典表还没加载完), 有这条日志就能一眼看出来。"""
     CFG['trans'] = not CFG.get('trans', True)
     _dfn('trans=%s' % CFG['trans'])
     _write_config('trans', '1' if CFG['trans'] else '0')          # 写回 config.txt
+    try:
+        _dfn_always('trans=%s showcode=%s ec_ready=%s ec_fail=%s en_rank=%s'
+                    % (CFG['trans'], CFG.get('showcode'), getattr(engine, '_ec_ready', None),
+                       getattr(engine, '_ec_fail', None), getattr(engine, '_en_rank_n', None)))
+    except Exception:
+        pass
     if CFG['trans']:
+        _ready = bool(getattr(engine, '_ec_ready', False))
+        _fail = bool(getattr(engine, '_ec_fail', False))
+        if _fail:
+            _notify('译文', '词典表 (ec.txt / import_ec.txt) 读不出来, 译文没法显示 (详见 debug.log)。')
+        elif not _ready:
+            _notify('译文', '词典表正在后台加载, 等几秒再打一次就出来了 (首次从码表重建要十几秒)。')
         try:
             engine.warm_ec()          # 译文要用词典表 (ce/ec): 顺手起后台加载
         except Exception:
@@ -2043,4 +2074,7 @@ else:
     except Exception:
         pass
 _dfn('startup: mainloop start (poll every 8ms; 从这里开始排队按键上屏)')
+_dfn_always('startup: WgIme-Pure %s; showcode=%s trans=%s cn=%s shuangpin=%s starton=%s dict=%s'
+            % (VERSION, CFG.get('showcode'), CFG.get('trans'), CFG.get('cnpunct'),
+               CFG.get('shuangpin'), CFG.get('starton'), DICT_DIR))
 root.mainloop()

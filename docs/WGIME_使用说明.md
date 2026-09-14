@@ -266,3 +266,12 @@ Shift 轻点一下即重新打开；托盘图标灰色=关、彩色=开。
 
 **Q：在管理员窗口（任务管理器等）里打不出字？**
 WgIme 以普通权限运行时，系统安全机制（UIPI）会拦截它向管理员窗口的任何注入（粘贴也一样）。以管理员身份运行 WgIme 即可在管理员窗口输入；或者复制内容后在目标窗口手动 Ctrl+V。
+
+## 附录：第三方数据与许可
+
+- **`en-freq.txt`**（英语常用词表：5 万词 + 频次）：来自 **Hermit Dave 的 FrequencyWords** 项目
+  （<https://github.com/hermitdave/FrequencyWords>，**MIT License**，基于 OpenSubtitles 2018 语料）。
+  仅用于「译文」选项：给中文词挑一个**常用**英文词（不再出现 `测试→dvdram` 这类生僻词），
+  Python 版读它做反查排序与过滤（见 CHANGELOG 第四十五轮）。该文件逐字节原样随分发目录一起发布；
+  删掉它也不影响使用 —— 只是译文会退回旧行为（按字母序取第一个）。
+- 其余码表（`py.txt` / `wb.txt` / `ec.txt` / `trad.txt` / `import_*.txt` / `pywfreq.txt`）为本项目自带数据。

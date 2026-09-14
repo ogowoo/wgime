@@ -20,7 +20,7 @@ Copy-Item (Join-Path $here 'package-readme.txt') (Join-Path $pkg 'README.txt') -
 
 # 3. refresh dicts (码表 + import 产物) from the repo root -> package\dicts\
 $src = Split-Path $here -Parent
-foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'import_py.txt', 'import_wb.txt', 'import_ec.txt')) {
+foreach ($n in @('py.txt', 'wb.txt', 'ec.txt', 'trad.txt', 'pywfreq.txt', 'en-freq.txt', 'import_py.txt', 'import_wb.txt', 'import_ec.txt')) {
     $p = Join-Path $src $n
     if (Test-Path $p) { Copy-Item $p $dicts -Force } else { Write-Warning "missing $n in $src" }
 }

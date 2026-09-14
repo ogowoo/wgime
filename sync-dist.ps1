@@ -38,7 +38,7 @@ if (Test-Path $pdir) {
 }
 
 # 3) dict txt
-foreach ($f in @('py.txt', 'wb.txt', 'ec.txt', 'import_py.txt', 'import_wb.txt')) {
+foreach ($f in @('py.txt', 'wb.txt', 'ec.txt', 'import_py.txt', 'import_wb.txt', 'en-freq.txt')) {
     $src = Join-Path $root $f
     if (Test-Path $src) { Copy-To $src (Join-Path $rel $f) }
 }
