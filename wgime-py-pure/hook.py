@@ -239,6 +239,8 @@ def _proc(nCode, wParam, lParam):
                             continue        # 语音没开: Ctrl+Alt+V 照常给应用 (不吞、也不弹"没打开")
                         _mods, _hk = HOTKEYS.get(_act, (0, 0))
                         if _hk and _hk == vk and _mods != SHIFT_TAP and _match_mods(_mods):
+                            if _act == 'voice':
+                                VOICE_DOWN[0] = True     # 记下"这次按下真被我们吞了" (见 WM_KEYUP)
                             EVENTS.put(_code)
                             return 1
                     # 语音模式 (第四十七轮): 不组字, 按键一律透传给应用 (只有"识别结果待确认"
@@ -287,9 +289,13 @@ def _proc(nCode, wParam, lParam):
                         EVENTS.put(VK_TAP)                     # 孤立快速 Shift 轻拍: 切换 (激活/关闭)
                     _tap_time[0] = None
                 elif VOICE_ON[0]:
-                    # 语音热键的**松键** (按住说话): 只在语音功能开着时才吞, 否则 Ctrl+Alt+V 照常给应用
+                    # 语音热键的**松键** (按住说话): 只有"刚才那次按下确实被我们吞了"才吞松键 ——
+                    # 第五十二轮: 原来只看 vk, 于是语音功能开着时**普通 V / Ctrl+V 的松键也被吞**,
+                    # 应用收到 keydown 却没有 keyup (V 卡住、push-to-talk 类应用不收尾)。
+                    # C# 对非 Shift 的 WM_KEYUP 一律 CallNextHookEx。
                     _mods, _hk = HOTKEYS.get('voice', (0, 0))
-                    if _hk and _hk == vk and _mods != SHIFT_TAP:
+                    if VOICE_DOWN[0] and _hk and _hk == vk and _mods != SHIFT_TAP:
+                        VOICE_DOWN[0] = False
                         EVENTS.put(VK_VOICE_UP)
                         return 1
     except Exception:
@@ -301,6 +307,7 @@ _tap_time = [None]
 _tap_dirty = [True]
 # 第四十七轮 语音输入: main.apply_config 同步这两个标志
 VOICE_ON = [False]       # 语音功能开着 (热键与松键才吞)
+VOICE_DOWN = [False]     # 语音热键"这次按下被吞过" -> 松键才吞 (第五十二轮)
 VOICE_MODE = [False]     # 当前是「语音」模式 (不组字, 按键透传)
 
 _rebuild_swallow()          # 模块导入即装缺省快捷键/候选键, main.apply_config 会再 configure 一次
@@ -329,10 +336,17 @@ def start():
 
     def work():
         try:
-            h = user32.SetWindowsHookExW(WH_KEYBOARD_LL, _hook[0], None, 0)
+            # 第五十二轮: 用**专用 use_last_error** 的 WinDLL 装钩子 —— `ctypes.windll.user32` 不维护
+            # ctypes 的私有 last-error, `ctypes.get_last_error()` 恒为 0 (气泡里的"钩子安装失败 (err 0)"
+            # 完全没有诊断价值)。必须在别的 win32 调用之前取值。
+            u32e = ctypes.WinDLL('user32', use_last_error=True)
+            u32e.SetWindowsHookExW.restype = ctypes.c_void_p
+            u32e.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, ctypes.c_void_p, ctypes.c_uint]
+            h = u32e.SetWindowsHookExW(WH_KEYBOARD_LL, _hook[0], None, 0)
+            err = ctypes.get_last_error()
             _installed[0] = bool(h)
             if not h:
-                _last_err[0] = ctypes.get_last_error()
+                _last_err[0] = err
         except Exception:
             try:
                 _last_err[0] = ctypes.get_last_error()

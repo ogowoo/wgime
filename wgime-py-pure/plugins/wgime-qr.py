@@ -568,7 +568,16 @@ def copy_image_to_clipboard(w, h, bgrx):
     # CF_DIB: BITMAPINFOHEADER (bottom-up) + 像素
     hdr = struct.pack('<IiiHHIIiiII', 40, w, h, 1, 32, 0, w * h * 4, 2835, 2835, 0, 0)
     stride = w * 4
-    rows = b''.join(bgrx[y * stride:(y + 1) * stride] for y in range(h - 1, -1, -1))
+
+    def _opaque(row):
+        # 第五十二轮: GDI DIBSection 的第 4 字节实测**恒为 0x00** (651x755 全是 0), 而 32bpp BI_RGB
+        # 的 CF_DIB 在按 alpha 混合的应用 (Word/PPT/浏览器) 里会被当成**全透明** -> 粘出来是空白。
+        # 写 CF_DIB 前统一置 0xFF (不透明); 保存 PNG 那条路转 RGB8, 不受影响。
+        b = bytearray(row)
+        b[3::4] = b'\xff' * (len(b) // 4)
+        return bytes(b)
+
+    rows = b''.join(_opaque(bgrx[y * stride:(y + 1) * stride]) for y in range(h - 1, -1, -1))
     data = hdr + rows
     if not user32.OpenClipboard(None):
         raise OSError('无法打开剪贴板')
@@ -640,12 +649,43 @@ def _draw_preview(canvas, qr, caption, footer):
                            fill='#696969', font=ui.font(8), width=320 - 28)
 
 
+FULL_H = 884          # 设计高度 (原固定值)
+
+
+def calc_layout(screen_h):
+    """按屏幕高度算窗口布局 -> (窗口高 H, 卡片高 card_h, 按钮 y, 状态栏 y)。
+
+    第五十二轮: 原来固定 560x884, 而 1366x768 / 1280x800 这类小屏上底部按钮 (y=778..814) 直接
+    落到屏幕外 —— overrideredirect 窗不能缩放也不能滚动, 插件等于没法用。现在按可用屏高收缩,
+    下半部分整体上移, 按钮始终贴窗口底部 (小屏上预览区矮一些, 但四个按钮一定点得到)。
+    """
+    sh = int(screen_h or 0)
+    H = FULL_H
+    if sh and sh - 80 < FULL_H:
+        H = max(660, sh - 80)          # 下限 660: 再矮就没法同时放下输入区/卡片/状态栏/按钮
+    btn_y = H - 106
+    status_y = H - 148
+    # 卡片高度由"状态栏之上还剩多少"倒推, 保证它绝不压到状态栏 (大屏时就是设计值 390)
+    card_h = min(390, max(120, status_y - 336 - 8))
+    return H, card_h, btn_y, status_y
+
+
 def run():
     import tkinter as tk
     from tkinter import filedialog
     import ui
 
-    win, content = ui.make_window('WgIme 二维码生成器', 560, 884)
+    # 第五十二轮: 原来固定 560x884, 而 1366x768 / 1280x800 这类小屏上窗口底部(按钮 y=778..814)
+    # 直接落到屏幕外 —— overrideredirect 的窗口不能缩放也不能滚动, 插件等于没法用。
+    # 现在按可用屏幕高度收缩窗口, 并把下半部分(二维码卡片/状态/按钮)整体上移,
+    # 按钮始终贴窗口底部 (小屏上二维码预览区会矮一些, 但四个按钮一定点得到)。
+    _sh = 0
+    try:
+        _sh = int(tk._default_root.winfo_screenheight()) if tk._default_root else 0
+    except Exception:
+        _sh = 0
+    H, card_h, btn_y, status_y = calc_layout(_sh)
+    win, content = ui.make_window('WgIme 二维码生成器', 560, H)
 
     tk.Label(content, text='二维码生成器', bg=ui.BG, fg=ui.TEXT,
              font=ui.font(17, bold=True)).place(x=18, y=14, width=300, height=32)
@@ -672,16 +712,16 @@ def run():
 
     card = tk.Frame(content, bg=ui.CARD, highlightthickness=1,
                     highlightbackground=ui.BORDER)
-    card.place(x=105, y=336, width=350, height=390)
+    card.place(x=105, y=336, width=350, height=card_h)
     canvas = tk.Canvas(card, bg=ui.CARD, bd=0, highlightthickness=0)
-    canvas.place(x=15, y=15, width=320, height=360)
+    canvas.place(x=15, y=15, width=320, height=max(120, card_h - 30))
     empty = tk.Label(card, text='输入内容及上下方文字后点击“生成”', bg=ui.CARD, fg=ui.SUB,
                      font=ui.font(10))
-    empty.place(x=15, y=15, width=320, height=360)
+    empty.place(x=15, y=15, width=320, height=max(120, card_h - 30))
 
     status = tk.Label(content, text='准备就绪', bg=ui.BG, fg=ui.SUB,
                       font=ui.font(8.5), anchor='w')
-    status.place(x=18, y=736, width=524, height=24)
+    status.place(x=18, y=status_y, width=524, height=24)
 
     state = {'qr': None, 'img': None}          # img = (w, h, bgrx)
 
@@ -742,10 +782,10 @@ def run():
         input_box.focus_set()
         set_status('已清空', ui.SUB)
 
-    ui.flat_button(content, '生成', make, primary=True, x=18, y=778, w=116, h=36)
-    ui.flat_button(content, '复制图片', do_copy, x=148, y=778, w=116, h=36)
-    ui.flat_button(content, '保存 PNG', do_save, x=278, y=778, w=116, h=36)
-    ui.flat_button(content, '清空', do_clear, x=408, y=778, w=116, h=36)
+    ui.flat_button(content, '生成', make, primary=True, x=18, y=btn_y, w=116, h=36)
+    ui.flat_button(content, '复制图片', do_copy, x=148, y=btn_y, w=116, h=36)
+    ui.flat_button(content, '保存 PNG', do_save, x=278, y=btn_y, w=116, h=36)
+    ui.flat_button(content, '清空', do_clear, x=408, y=btn_y, w=116, h=36)
 
     input_box.bind('<Control-Return>', lambda e: (make(), 'break')[1])
     caption_box.bind('<Return>', lambda e: (make(), 'break')[1])

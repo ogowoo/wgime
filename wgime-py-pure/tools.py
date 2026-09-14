@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """tools.py — 纯 tkinter 内置工具窗体, 遵循 docs/WGIME_窗体设计语言.md (浅蓝灰底+白卡片+深色控制台+圆角)."""
 import os
+import re
 import threading
 import time
 import tkinter as tk
@@ -140,7 +141,9 @@ def show_toolbox(tools, dict_dir):
 
     pages = []
     tabbtns = []
-    running = [False]
+    # 第五十二轮: 防重入改成**按按钮**记 (对齐 C# "点击即禁用被点的那个按钮") —— 原来整窗一个
+    # `running[0]`, 跑 A 时点 B 完全没反应也没提示, 而现在不同按钮可以并发(与 C# 一致)。
+    running = set()
 
     def show_tab(i):
         for j, p in enumerate(pages):
@@ -151,9 +154,9 @@ def show_toolbox(tools, dict_dir):
             b.configure(fg=ui.ACCENT if j == i else ui.SUB)
 
     def run_action(btn, name, steps):
-        if running[0]:                                   # 防重入 (对齐 C# 点击即禁用)
+        if btn in running:                               # 防重入: 只挡**同一个**按钮的重复点击
             return
-        running[0] = True
+        running.add(btn)
         try:
             btn.configure(bg=ui.SURF2)
         except Exception:
@@ -180,7 +183,7 @@ def show_toolbox(tools, dict_dir):
             except Exception as ex:
                 log('-- 失败: %s --' % ex)
             finally:
-                running[0] = False
+                running.discard(btn)
                 try:
                     btn.configure(bg=ui.CARD)
                 except Exception:
@@ -759,9 +762,34 @@ def _rgb_to_hsv(r, g, b):
     return 'H %d  S %d%%  V %d%%' % (round(h), round(sv * 100), round(mx * 100))
 
 
+# ---------- 单例窗口 (第五十二轮) ----------
+# 取色器 / 插件管理器 / 剪贴板历史这几个"工具窗"在 C# 里都是单例 (ShowColor/ShowPluginMgr/ShowClip);
+# python 原来可以开多个: 关掉任一个就把共享状态置空, 另一个还开着的窗从此半死 (取色器还会重复装键盘钩子)。
+_SINGLETON_WINS = {}
+
+
+def _reuse_win(name):
+    """同名工具窗还开着就提到前面并返回 True (调用方直接 return)。窗口已被销毁时清掉记录。"""
+    w = _SINGLETON_WINS.get(name)
+    if w is None:
+        return False
+    try:
+        if w.winfo_exists():
+            w.deiconify()
+            w.lift()
+            return True
+    except Exception:
+        pass
+    _SINGLETON_WINS.pop(name, None)
+    return False
+
+
 def show_color():
     """取色器窗体 (复刻 C# ColorForm)."""
+    if _reuse_win('color'):
+        return
     win, content = ui.make_window('WgIme 取色器', 320, 210)
+    _SINGLETON_WINS['color'] = win
     swatch = tk.Frame(content, bg='#FFFFFF', highlightthickness=1, highlightbackground=ui.BORDER)
     swatch.place(x=14, y=14, width=290, height=90)
     lbl = tk.Label(content, text='—', bg=ui.BG, fg=ui.TEXT, font=ui.font(10.5, mono=True),
@@ -862,28 +890,20 @@ def ping_rtt(host, size, timeout_ms):
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                              encoding='mbcs', errors='replace')
         out, _ = p.communicate(timeout=timeout_s + 3)
-        # 从输出解析 time=XXms (中英文系统: time= / 时间=)
+        # 从输出解析时延: 英文 `time=12ms` / `time<1ms`, 中文 `时间=12ms` / `时间<1ms`
+        # 第五十二轮: 原来只认 'time=', 中文 Windows 的 `时间=13ms` 全部落到下面的兜底分支 ->
+        # **时延恒显示 0ms**(实测: 打桩中文回显, 真值 13ms 被读成 0)。
         for ln in out.splitlines():
             ln_low = ln.lower()
-            if 'time=' in ln_low or 'time<' in ln_low:
-                m = None
-                for tok in ln.replace('<', '=').replace('ms', '').split():
-                    if tok.startswith('time='):
-                        try:
-                            m = int(tok.split('=')[1])
-                        except ValueError:
-                            pass
-                if m is None and '=' in ln_low:
-                    try:
-                        m = int(ln_low.split('time=')[1].split('ms')[0].strip())
-                    except Exception:
-                        pass
-                if m is not None:
-                    return True, m
+            m = re.search(r'(?:time|时间)\s*[=<]\s*(\d+)\s*ms', ln_low)
+            if m:
+                return True, int(m.group(1))
             if 'ttl=' in ln_low and ('bytes=' in ln_low or '字节' in ln):
                 return True, 0
         return p.returncode == 0, -1
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
+        # 只吞"ping 起不来/超时"这类真 IO 错 —— 以前是 `except Exception`, 于是编程错误
+        # (比如第五十二轮我自己写错的裸 `re`) 会被静默降级成"ping 失败", 查半天查不出来。
         return False, -1
 
 
@@ -906,15 +926,21 @@ def hop_once(host, ttl, timeout_ms):
         out, _ = p.communicate(timeout=timeout_s + 3)
         for ln in out.splitlines():
             low = ln.lower()
-            if 'reply from' in low or ('time=' in low and 'ttl=' in low):
+            if 'reply from' in low or ('time=' in low and 'ttl=' in low) or ('时间=' in ln and 'ttl=' in low):
                 return '%d  %s  (done)' % (ttl, host), True
-            if 'ttl expired' in low or 'ttl 过期' in ln:
-                # 提取中转地址
+            # 英文 "TTL expired in transit" / 中文 "TTL 传输中过期" (第五十二轮: 原来只认前两种写法,
+            # 中文机每跳都被当成 timeout)
+            if 'ttl expired' in low or 'ttl 过期' in ln or 'ttl' in low and '过期' in ln:
+                # 取行里第一个 IPv4 (中文行 "来自 192.168.1.1 的回复: TTL 传输中过期。" 的地址不在行尾;
+                # 以前直接取最后一个 token, 中文机拿到的是 '传输中过期。')
+                m = re.search(r'\b\d{1,3}(?:\.\d{1,3}){3}\b', ln)
+                if m:
+                    return '%d  %s' % (ttl, m.group(0)), False
                 parts = ln.split()
                 addr = parts[-1] if parts else '?'
                 return '%d  %s' % (ttl, addr), False
         return '%d  timeout' % ttl, False
-    except Exception as ex:
+    except (OSError, subprocess.SubprocessError) as ex:
         return '%d  error: %s' % (ttl, ex), False
 
 
@@ -1619,12 +1645,26 @@ def show_user_words(engine):
     def sel_none():
         lb.selection_clear(0, 'end')
 
+    def _cur_items():
+        """按**当前** Listbox 内容取 (词, 编码) 列表。
+
+        第五十二轮: 原来用开窗时的 `items` 快照 + Listbox 下标 —— 删掉几行后下标就错位, 第二次删除
+        会删错词(真跑复现: 想删 dd 结果又删了 cc, dd 留在 userwords.txt 里永远删不掉, 状态栏还谎报
+        "已删除 1 个词")。C# 是模态一次性对话框, 不存在这个状态。
+        """
+        out = []
+        for i in range(lb.size()):
+            w, _, c = lb.get(i).partition('\t')
+            out.append((w, c))
+        return out
+
     def do_del():
+        cur = _cur_items()
         idx = list(lb.curselection())
         if not idx:
             status.config(text='没有选中任何词', fg=ui.RED)
             return
-        words = [items[i][0] for i in idx]
+        words = [cur[i][0] for i in idx if 0 <= i < len(cur)]
         for i in reversed(idx):
             lb.delete(i)
         n = engine.remove_user_words(words)
@@ -1713,12 +1753,15 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
     列表(名称/编码/类型/启停/文件) + 按钮(重载/启用禁用/打开目录/编辑/删除/新建模板/运行)."""
     import subprocess
     pdir = plugin_dir_fn() if plugin_dir_fn else os.path.join(data_dir, 'plugins')
+    if _reuse_win('pluginmgr'):                # 单例 (对齐 C# ShowPluginMgr)
+        return
     try:
         os.makedirs(pdir, exist_ok=True)
     except OSError:
         pass
 
     win, content = ui.make_window('WgIme 插件管理', 560, 420)
+    _SINGLETON_WINS['pluginmgr'] = win
     # 顶部按钮条
     bar = tk.Frame(content, bg=ui.BG)
     bar.place(x=10, y=10, width=540, height=34)

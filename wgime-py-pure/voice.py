@@ -16,6 +16,7 @@
 import base64
 import ctypes
 import json
+import locale
 import os
 import struct
 import subprocess
@@ -445,10 +446,45 @@ def _http_recognize(wav, cfg):
 
 
 # ---------------- 识别后端 3: 外部命令 (本地 whisper 等) ----------------
+def _decode_console(b):
+    """把子进程输出解成文本。
+
+    第五十二轮: 以前固定 `decode('utf-8')` —— 而**控制台程序按 OEM 代码页输出**(中文机是 936/GBK,
+    本模块 305 行给 system 后端走 base64 回传就是为了绕开这件事), 于是中文识别结果全变 `????` /
+    `\\ufffd` 而且还当成功上屏。现在: 先试 UTF-8(现代工具/whisper.cpp 都按 UTF-8 输出), 失败后在
+    (OEM / ANSI / GBK) 里挑"最像正常文本"的那个 —— cp437 硬解 GBK 会得到一堆 `─║╔╩` 框线字符,
+    而按 GBK 解出的是汉字, 用"含多少 CJK、含多少框线"打分即可稳定选对(中文机 OEM=ANSI=936, 三者等价)。
+    """
+    b = b or b''
+    try:
+        return b.decode('utf-8')
+    except (UnicodeDecodeError, LookupError):
+        pass
+    cands = []
+    for enc in ('oem', 'mbcs', 'gbk'):
+        try:
+            cands.append(b.decode(enc))
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    def score(t):
+        cjk = sum(1 for ch in t if u'\u4e00' <= ch <= u'\u9fff')
+        box = sum(1 for ch in t if ch in u'\u2500\u2502\u250c\u2510\u2551\u2554\u2569\u2560')
+        return (cjk, -box)
+
+    if cands:
+        cands.sort(key=score, reverse=True)
+        return cands[0]
+    return b.decode('utf-8', 'replace')
+
+
 def _cmd_recognize(wav, cfg):
     cmd = (cfg.get('stt_cmd') or '').strip()
     if not cmd:
         return None, 'voice_engine=cmd 但 config.txt 里没配 stt_cmd (用 {wav} 占位)'
+    if '{wav}' not in cmd:
+        # 忘写占位时以前会把命令自己的输出当识别结果(**静默成功**), 明确报错更靠谱
+        return None, 'stt_cmd 里缺 {wav} 占位 (写成 `你的命令 {wav}`)'
     line = cmd.replace('{wav}', '"%s"' % wav)
     try:
         p = subprocess.run(line, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -457,9 +493,9 @@ def _cmd_recognize(wav, cfg):
         return None, '外部识别命令超时 (180s)'
     except Exception as e:
         return None, '外部识别命令失败: %r' % (e,)
-    out = (p.stdout or b'').decode('utf-8', 'replace')
+    out = _decode_console(p.stdout)
     if p.returncode != 0:
-        err = (p.stderr or b'').decode('utf-8', 'replace').strip().splitlines()
+        err = _decode_console(p.stderr).strip().splitlines()
         return None, '外部识别命令退出码 %s: %s' % (p.returncode, err[-1] if err else '(无 stderr)')
     for ln in out.splitlines():
         if ln.strip():

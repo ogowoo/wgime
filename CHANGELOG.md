@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-09-14 (第五十二轮: 把第五十一轮审计剩下的 23 项全部修完 + 语音真机验收)
+
+用户："36项继续修 / 1) 让拖动生效 2) 保持现状 / 语音隐私已经 allow，可以测试了 / 再接着做 D5 清单吧"。
+
+第五十一轮审计共 56 条候选、当时修了 20 项，剩下 23 项（`AGENTS-DETAIL.md` §D5 的"未修"清单）本轮**全部修完**，
+并按用户决定处理了两条产品决策。每项都有可复跑探针（`%TEMP%\wg-r52-*.py`）。
+
+**A. tools（4 项）**
+
+- **用户词表"第二次删除删错词"**：`do_del` 用开窗时的 `items` 快照配 Listbox 现已变化的行号 → 第二次删除删的是别的词、
+  被选中的词留在 `userwords.txt` 里永远删不掉（状态栏还谎报"已删除 1 个词"）。改成每次从 **Listbox 当前内容**重新取
+  `(词, 编码)`（`_cur_items()`）。探针用真 Tk 窗口驱动：删 cc → 再删 dd，验证 dd 真被删掉（旧逻辑会又删 cc）。
+- **取色器 / 插件管理器没有单例**：开两个窗后关掉任一个就把共享状态置空，另一个半死（取色器还会重复装 WH_MOUSE_LL 钩子）。
+  新增 `_SINGLETON_WINS` + `_reuse_win()`（同名窗还开着就 deiconify/lift 并返回），与剪贴板窗（第五十一轮修的）一致。
+- **中文 Windows 的 Ping/Tracert**：`ping_rtt` 原来只认 `time=`，中文回显 `时间=13ms` 全落到兜底分支 → **时延恒显示 0ms**；
+  `hop_once` 只认 `ttl expired`/`ttl 过期`，中文实际是 `TTL 传输中过期` → **每跳都报 timeout**。改成正则同时认中英文，
+  并优先从行里提取 IPv4 作为中转地址。探针打桩中英文回显：`时间=13ms -> 13`、`time<1ms -> 1`、中文过期行 -> `2  192.168.1.1`。
+- **工具箱防重入粒度**：整窗一个 `running[0]`，跑 A 时点 B 完全没反应也没提示（C# 只禁用被点的那个按钮）。
+  改成按按钮记（`running = set()`），不同按钮可并发、同按钮重复点击仍被挡。
+
+**B. chat（7 项）**
+
+- **重连等待期内"离开→加入"产生两个并发会话**（实测并发峰值 2、消息显示两遍）：加**会话代次**（`state['gen']`，
+  `join()`/`leave()` 各自 +1），`_net_loop(gen)` 每轮和睡醒后都校验。探针 A/B：旧代码被作废的线程仍继续跑会话（stale=3→4），
+  新代码 stale=1 且不再复活。
+- **relay 空闲房间每 ~60s 被判死重连**（PONG 被 wspy 就地吃掉，`idle` 单调涨到 2）：改成按"最后收到数据或最后一次保活成功"
+  的时间差判死（`IDLE_DEAD_SEC=90`，保活 15s 一次）。探针用可控时钟验证：保活成功时空闲 300s 仍不退出、两样都停 90s 后退出。
+- **`send()` 不看连接状态**：未连接/已离开时回车会清空输入框并本地回显一条"像发出去了"的消息。改成先判 `running`/`ws`，
+  不满足就给状态提示且**不清输入框**；`_send_json` 返回成败，只有真发出去才清框 + 回显（对齐 C# `if (t.Length==0 || !running) return;`）。
+- **`state['joined']` 跨会话不复位**：第二次会话收到任意包就算"握手成功"，而 SUBSCRIBE/join 只在 CONNACK 分支里发
+  → UI 显示"已连接 (MQTT)"却收不到消息、对端也看不到你。改成 `_session` 开头复位。
+- **离开不发 leave**：对端"在线 N"永不减少、也没有"xx 离开了"。`leave()` 先发 `type=leave` 再关连接。
+- **连接期间不禁用 昵称/房间/密钥**：`send()` 用实时控件值、会话用 join 快照，房间框被清空后密钥不一致 → 对端全是
+  `[encrypted]`。`join()` 置 `disabled`、`leave()`/失败时恢复，`send()` 改用会话快照。
+- **缺 `PERM='network'`**：`plugin_meta` 默认 `low` → 运行"聊天"**不弹联网确认**（§16 权限模型对它失效），版本列也空。
+  补 `PERM/VERSION/AUTHOR`。
+
+**C. hook / win / voice（6 项）**
+
+- **语音热键的松键无条件被吞**：语音开着时普通 `V`、`Ctrl+V` 的 keyup 也被吞 → 应用收到 keydown 没有 keyup（V 卡住）。
+  新增 `VOICE_DOWN` 只在"按下那次真被我们吞了"时才吞松键（探针伪造 lParam 验证四种情形）。
+- **`_focus_edit_rect` 用线程本地的 `GetFocus()`**：拿到的要么是 NULL、要么是**自己窗口**（实测前台 msedge 时返回本进程
+  隐藏窗坐标 (12,12)，候选条锚到自己身上）。改成用 `get_caret_pos()` 已算出的 GUITI `hwndFocus`（C# 从不用 GetFocus）。
+- **`voice._cmd_recognize` 固定 utf-8 解子进程输出**：控制台程序按 OEM 代码页输出（中文机 GBK），中文识别结果变
+  `????`/`\ufffd` 还当成功上屏。新增 `_decode_console()`：先 UTF-8，失败后在 OEM/ANSI/GBK 里挑"含 CJK 最多、含框线字符最少"
+  的那个（cp437 硬解 GBK 会得到一堆 `─║╔`，GBK 解得汉字 —— 打分即可稳定选对）；顺带 `stt_cmd` 忘写 `{wav}` 现在直接报错
+  （以前会把命令自己的输出当识别结果，静默成功）。
+- **`hook.last_error()` 恒 0**：`ctypes.windll.user32` 不维护 ctypes 私有 last-error。`start()` 改用
+  `WinDLL('user32', use_last_error=True)` 装钩子，并在别的 win32 调用之前取值（探针实测：windll=0 / 专用 WinDLL=87）。
+- **`clipboard_set` 没有失败信号**：`paste_text` 不看结果就按 Ctrl+V → 剪贴板被占用时粘出**上一份内容**（静默上屏错字）。
+  现在 `clipboard_set` 检查 `OpenClipboard`/`EmptyClipboard`/`SetClipboardData` 并返回 bool（失败时 `GlobalFree`，修了句柄泄漏），
+  `paste_text` 写不进去就退回 `send_unicode`。
+- **死状态/无界增长**：`_sys` 在 import 之前就被 `tray_promoted` 用（潜伏 NameError）→ 提到文件头；删掉恒 False 的
+  `_uia_disabled`、只写不读的 `_ipc_started`；`_ipc_req_hwnd` 超过 64 条时回收已回包的条目（helper 卡住时原来只增不减）。
+
+**D. clock / qr / calc（4 项）**
+
+- **主时钟窗关掉后闹钟管理窗每次操作都抛 TclError**（`changed()` 指向已销毁控件）→ 包 try/except（与同文件另一处一致）。
+- **二维码窗固定 884px 高**：1366×768/1280×800 小屏上底部四个按钮落在屏幕外，而 overrideredirect 窗不能缩放也不能滚动
+  → 插件没法用。抽出 `calc_layout(screen_h)`：按可用屏高收缩窗口、下半部分上移、按钮贴底、卡片高度由"状态栏之上还剩多少"
+  倒推（保证不压状态栏）。探针验 1080/900/864/800/768/600 六档：按钮底一律 ≤ 屏高、状态栏始终在卡片下方、大屏仍是原设计值。
+- **「复制图片」的 CF_DIB 第 4 字节全 0**：32bpp BI_RGB 的 CF_DIB 在按 alpha 混合的应用（Word/PPT/浏览器）里会被当成
+  **全透明** → 粘出来空白。写 CF_DIB 前统一置 `0xFF`（保存 PNG 那条路转 RGB8，不受影响）。
+- **`calc._to_long` 与 C# 不同**：按用户"保持现状"，只在 docstring 写明是**有意差异**（csc unchecked 让 C# 的 `(long)` 对
+  NaN/越界给 long.MinValue，`99999999999999999999 % 3` 在 C# 里是 -2 这种垃圾值；python 报 Err 更合理）——同时登记到 AGENTS §27。
+
+**E. 两条产品决策（按用户要求）**
+
+- **`hideidle=0`（候选条常驻）现在"拖动生效"**：`show_page` 原来每次刷新都传 `fixed='bottom-right'`，走"直接 geometry"
+  分支，既不读 `pos.txt` 也不看拖动后的位置（而 `_drag_end` 照旧写 `pos.txt`）→ 拖走了下一次刷新弹回右下角。
+  改成传 `fixed=None`，交给 bar 的"保持当前位置 + 越界才钳"分支（首次仍用 `pos.txt`/底部居中）。
+- **hook 的两处差异保持现状**（Shift 轻拍的修饰键/0.4s 门控、字母键判定在空格之后），连同"python 有意比 C# 好的几处"
+  一起写进 `AGENTS.md` §27 的反向差异清单，避免下一轮又被当 bug "对齐"掉。
+
+**F. 语音真机验收（用户已把麦克风隐私改成 Allow）**
+
+`%TEMP%\wg-r52-voice-probe.py` **7/7**：`mic_consent()='Allow'`、`waveInOpen` 成功、**真录 2 秒**（58452 B / 1.83s /
+16k 单声道 16bit 的合法 WAV）、`system` 后端（System.Speech）真跑识别无异常、`recognize()` 正确派发。
+本机是英文 Windows Server（无 zh-CN 语音包），录的是环境音所以识别结果为空 —— **中文识别质量仍需在中文机上验收**，
+但"录音 → WAV → 引擎 → 回调"这条路已经实机打通（第五十一轮之前的 `waveInOpen rc=1` 是隐私开关导致，现已解决）。
+
+**验证汇总**：`wg-r52-tools-probe.py` **11/11**（含真 Tk 窗驱动的删除用例）、`wg-r52-chat-probe.py` **13/13**
+（同一探针跑 `HEAD` 版 chat.py 时 11 项 FAIL，A/B 对照成立）、`wg-r52-hookwin-probe.py` **24/24**、
+`wg-r52-dprobe.py` **17/17**、`wg-r52-voice-probe.py` **7/7**；回归：`tests\pure-state-harness.py` **23 项全过**、
+`undefined-globals.py` **0**、dist/package 逐字节同步、`wg-r50-lastpick 11/11`、`wg-r51-invariants 30/30`、
+`wg-r51-cfg 16/16`、`wg-r51-plugins 12/12`、`wg-r50-package 3/3`。
+**下一轮可做**：中文机上的语音识别质量验收、C# 侧的语音输入（需走 §3 的瘦 DLL + ps1 + 15 项测试链）。
+
+---
+
 ## 2026-09-14 (第五十一轮: 全量功能/逻辑审计 —— 7 路并行审计 + 修掉 20 项确认缺陷)
 
 用户要求："再 review 一下所有的功能、逻辑吧，我担心还有别的漏洞。"

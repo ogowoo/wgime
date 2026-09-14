@@ -227,6 +227,16 @@
 
 **未修（已测量/已定位，留待后续）**：
 
+> **第五十二轮更新：下面这批已按用户要求全部修完**（明细见 CHANGELOG 第五十二轮）。各项探针：
+> `%TEMP%\wg-r52-tools-probe.py`（11/11，含真 Tk 窗口驱动的用户词表删除用例）、
+> `wg-r52-chat-probe.py`（13/13；同一探针跑 HEAD 版 chat.py 有 11 项 FAIL，A/B 成立）、
+> `wg-r52-hookwin-probe.py`（24/24）、`wg-r52-dprobe.py`（17/17）、`wg-r52-voice-probe.py`（7/7，真麦克风）。
+> 两条产品决策按用户的话办：**`hideidle=0` 让拖动生效**（`show_page` 改传 `fixed=None`，交给 bar 的"保持当前位置、
+> 越界才钳"分支；首次仍用 pos.txt/底部居中）、**hook 两处差异保持现状**（已写入 `AGENTS.md` §27 反向差异清单，
+> 避免下轮又被当 bug "对齐"）。**语音真机**：麦克风隐私改成 Allow 后实测 `waveInOpen` 成功、真录 2s
+> （58452 B/1.83s/16k 单声道）、System.Speech 后端无异常；本机是英文 Windows Server（无 zh-CN 语音包）所以识别为空，
+> 中文识别质量仍需在中文机验收。
+
 - **tools**：① 用户词表"第二次删除删错词"（`items` 快照与已删短的 Listbox 下标错位；真跑复现：删 cc 后再删
   dd 实际又删 cc，dd 仍在文件里且永远删不掉）；② 取色器 / 插件管理器**没有单例**（开两个后关任一个，另一个
   半死，与剪贴板同类）；③ 中文 Windows 下 Ping RTT 恒 0ms、Tracert 每跳 timeout（解析 `时间=13ms`/`TTL 传输中过期`

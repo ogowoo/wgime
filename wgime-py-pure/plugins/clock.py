@@ -511,7 +511,13 @@ def show_alarm_manager(changed=None):
             lst.insert('end', ('● ' if a['enabled'] else '○ ') + a['time'] + '   ' +
                        a['name'] + '   [' + a['repeat'] + ']')
         if changed:
-            changed()
+            # 第五十二轮: `changed()` 是主窗的摘要刷新 (refresh_alarm_summary) —— 主时钟窗被关掉后
+            # 它就是已销毁控件, 会抛 TclError (异常只进 stderr, pythonw 下看不见, 表现为"删了但列表
+            # 不选中新项"), 而闹钟其实已经落盘。跟 628 行同样的保护。
+            try:
+                changed()
+            except Exception:
+                pass
 
     def load_item(idx):
         with _CFG_LOCK:

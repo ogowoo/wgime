@@ -3,6 +3,7 @@
 import ctypes
 import ctypes.wintypes as w
 import os
+import sys as _sys
 
 # debug 日志(光标跟随耗时排查用): 设 WGIME_DEBUG=1 时才记录, 不拖慢正常输入.
 # 写 %LOCALAPPDATA%\wgime-py\debug.log (与 main.py _dfn 同文件, 便于一起看).
@@ -187,7 +188,11 @@ def paste_text(text, magic=MAGIC):
         prev = None                                            # 空原文不恢复
     _paste_gen[0] += 1
     gen = _paste_gen[0]
-    clipboard_set(text)
+    if not clipboard_set(text):
+        # 第五十二轮: 剪贴板没写成功就**别按 Ctrl+V** —— 否则粘的是上一份内容(静默上屏错字)。
+        # 退回直接注入文本 (调用方本来就是为了绕过提权窗口的注入限制, 但打错字更糟)。
+        _dlog('paste: clipboard_set failed -> fallback send_unicode')
+        return send_unicode(text)
     import time
     time.sleep(0.06)
     # 注入 Ctrl+V
@@ -247,25 +252,43 @@ def clipboard_text():
 
 
 def clipboard_set(text):
-    """写剪贴板文本 (ctypes 原生); 失败静默."""
+    """写剪贴板文本 (ctypes 原生). **返回是否成功** (第五十二轮: 以前失败也静默返回, 于是
+    paste_text 不看结果就按 Ctrl+V -> 粘贴出的是上一份剪贴板内容, 用户看到"上屏了错字")。
+
+    另外修了句柄泄漏: GlobalLock/SetClipboardData 失败时 h 没有 GlobalFree。
+    """
     if text is None:
         text = ''
     try:
-        user32.OpenClipboard(0)
+        if not user32.OpenClipboard(0):
+            return False
     except Exception:
-        return
+        return False
+    h = None
     try:
-        user32.EmptyClipboard()
+        if not user32.EmptyClipboard():
+            return False
         data = (str(text) + '\0').encode('utf-16-le')
         h = kernel32.GlobalAlloc(0x0002, len(data))   # GMEM_MOVEABLE
         if not h:
-            return
+            return False
         p = kernel32.GlobalLock(h)
-        if p:
-            ctypes.memmove(p, data, len(data))
-            kernel32.GlobalUnlock(h)
-            user32.SetClipboardData(13, h)            # CF_UNICODETEXT
+        if not p:
+            return False
+        ctypes.memmove(p, data, len(data))
+        kernel32.GlobalUnlock(h)
+        if not user32.SetClipboardData(13, h):        # CF_UNICODETEXT
+            return False
+        h = None                                      # 所有权已交给剪贴板, 不能再 GlobalFree
+        return True
+    except Exception:
+        return False
     finally:
+        if h:
+            try:
+                kernel32.GlobalFree(h)
+            except Exception:
+                pass
         user32.CloseClipboard()
 
 
@@ -410,9 +433,9 @@ _guiti_hist = _col.deque(maxlen=5)
 
 # ---------------- 独立 Caret Helper IPC ----------------
 # 主输入法绝不初始化 COM/UIA。所有 UIA 调用均在 wgime-caret-helper.py 子进程。
-import subprocess as _sp, threading as _th, json as _json, time as _time, sys as _sys
-_uia_el=[None]; _uia_fg=[0]; _uia_t=[0.0]; _uia_disabled=[False]
-_ipc_proc=[None]; _ipc_started=[False]; _ipc_id=[0]; _ipc_done=[0]; _ipc_lock=_th.Lock(); _ipc_last_start=[0.0]
+import subprocess as _sp, threading as _th, json as _json, time as _time
+_uia_el=[None]; _uia_fg=[0]; _uia_t=[0.0]
+_ipc_proc=[None]; _ipc_id=[0]; _ipc_done=[0]; _ipc_lock=_th.Lock(); _ipc_last_start=[0.0]
 _helper_t0=[0.0]; _helper_fail=[0]         # helper 启动时刻 / 连续秒退计数 (见 _start_helper/_ipc_reader)
 # 第四十轮修: 下面这两个全局量原来被写进了上一行的**行尾注释**里 (「...; _ipc_req_hwnd={}; _last_fg=[0]」),
 # 于是从未真正执行 —— request_caret_refresh() 里 `_ipc_req_hwnd[rid]=hwnd` 抛 NameError, 被它自己的
@@ -452,6 +475,11 @@ def _ipc_reader(proc):
                 if o.get('type')!='result':continue
                 rid=int(o.get('id',0));_ipc_done[0]=max(_ipc_done[0],rid)
                 expected=_ipc_req_hwnd.pop(rid,None);current=int(user32.GetForegroundWindow())
+                # 第五十二轮: 顺带清理已经过期/丢失的请求 —— helper 卡住或回包丢了时这个表只增不减
+                # (实测 helper 不读 stdin 时积了 63 条), 属于无界增长。只留 id 大于已回包最大值的。
+                if len(_ipc_req_hwnd)>64:
+                    for _r in [k for k in _ipc_req_hwnd if k<=_ipc_done[0]]:
+                        _ipc_req_hwnd.pop(_r,None)
                 if o.get('ok') and expected is not None and int(o.get('hwnd',0))==expected and current==expected and rid>=_ipc_id[0]-1:
                     _uia_el[0]=(int(o['x']),int(o['y']));_uia_fg[0]=expected;_uia_t[0]=_time.monotonic()
                 elif o.get('ok'):_dlog('IPC stale reject id=%d expected=%r current=%r result=%r'%(rid,expected,current,o.get('hwnd')))
@@ -465,7 +493,6 @@ def _ipc_reader(proc):
         else:
             _helper_fail[0]=0
         if _ipc_proc[0] is proc:_ipc_proc[0]=None
-        _ipc_started[0]=False
         _uia_el[0]=None
 
 def _start_helper():
@@ -480,7 +507,7 @@ def _start_helper():
         # 源码内联: 不再把 helper 落盘成 .py, 子进程直接从命令行拿到源码(实测 spawn 137ms 出 ready).
         src=_HELPER_PATH_SANITIZE+_EMBEDDED_CARET_HELPER
         p=_sp.Popen([_sys.executable,'-u','-c',src],stdin=_sp.PIPE,stdout=_sp.PIPE,stderr=_sp.DEVNULL,text=True,encoding='utf-8',bufsize=1,creationflags=flags)
-        _ipc_proc[0]=p;_ipc_started[0]=True;_helper_t0[0]=_time.monotonic()
+        _ipc_proc[0]=p;_helper_t0[0]=_time.monotonic()
         _th.Thread(target=_ipc_reader,args=(p,),name='WgImeCaretIPC',daemon=True).start()
         _dlog('IPC helper started pid=%d (inline -c, no file on disk)'%p.pid);return True
     except Exception as e:_dlog('IPC start failed '+repr(e));return False
@@ -540,19 +567,22 @@ def get_caret_pos():
         _last_fg[0]=fg_now;_last_caret[0]=None;_uia_el[0]=None;_guiti_hist.clear()
         _dlog('foreground changed: cleared caret caches hwnd=%s'%fg_now)
     # UIA 缓存(后台线程刷新的精确 caret)首选; 主线程只读缓存, 绝不在此跑 UIA.
-    if not _uia_disabled[0] and _uia_el[0] is not None:
+    if _uia_el[0] is not None:               # 第五十二轮: 去掉了恒 False 的 `_uia_disabled` 死条件
         # UIA 缓存只在"前台窗口未变"时可靠(后台线程按前台刷新). 前台已变(刚切换应用)时缓存是旧窗口的
         # 坐标, 用它会让候选窗先跳到旧位置再跳回来(表现为"刚输入就跳"). 故前台变时忽略缓存, 走下去用 GUITI.
         if _uia_fg[0] == user32.GetForegroundWindow():
             _last_caret_source[0] = 'uia'
             _dlog('get_caret_pos: UIA-cache(%.1fms) -> %s' % ((_t.time()-_t0)*1000, _uia_el[0]))
             return _uia_el[0]
+    hwnd_focus = 0                                # GUITI 的 hwndFocus (第五十二轮: 给下面兜底用)
     try:
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
         g = GUITHREADINFO()
         g.cbSize = ctypes.sizeof(GUITHREADINFO)
         ok = bool(user32.GetGUIThreadInfo(tid, ctypes.byref(g)))
+        if ok:
+            hwnd_focus = int(g.hwndFocus or 0)
         # 宽容判定(对齐 C# TryGetCaretScreenRect): 只要 hwndCaret 存在就采纳, 用 rcCaret.top 定位,
         # 容忍退化 caret(某些 Electron/Qt 给的是 2x2/零尺寸, 但 (x,y) 真实跟踪光标).
         if ok and g.hwndCaret:
@@ -581,7 +611,8 @@ def get_caret_pos():
     except Exception as e:
         _dlog('get_caret_pos: GUITI exc(%.1fms) %s' % ((_t.time()-_t0)*1000, repr(e)))
     # GUITI 无 caret: 尝试聚焦输入框矩形(纯 Win32, 很多现代应用的文本控件是真 HWND).
-    fr = _focus_edit_rect()
+    # 第五十二轮: 传 GUITI 拿到的 hwndFocus (原来 _focus_edit_rect 内部用线程本地的 GetFocus, 拿的是自己)
+    fr = _focus_edit_rect(hwnd_focus)
     if fr is not None:
         _last_caret_source[0] = 'focus'
         _dlog('get_caret_pos: focus-edit(%.1fms) -> %s' % ((_t.time()-_t0)*1000, fr))
@@ -659,14 +690,19 @@ def _caret_jittery(cand):
     return False
 
 
-def _focus_edit_rect():
-    """取当前聚焦窗口(GetFocus)的屏幕矩形, 作为"输入框"位置的近似. 纯 Win32(不依赖 UIA):
-    很多现代应用(Chrome/部分 Electron 对话框)的文本控件是真实 HWND, GetWindowRect 能拿到其
-    位置, 比鼠标更贴近输入框. 若能拿到且矩形合理(非全屏/非空), 返回 (x, y) 光标近似点."""
+def _focus_edit_rect(hwnd_focus=None):
+    """取"当前前台线程聚焦的那个控件"的屏幕矩形, 作为输入框位置的近似 (纯 Win32, 不依赖 UIA)。
+
+    **第五十二轮修**: 原来用 `user32.GetFocus()` —— 它返回的是**调用线程**消息队列的焦点窗口,
+    我们的线程跟前台应用不是同一个队列, 所以它要么是 NULL(这条兜底恒不触发=死代码), 要么返回
+    **输入法自己的窗口**矩形(实测: 前台是 msedge 时返回本进程隐藏窗的位置 (12,12), 候选条直接
+    锚到自己窗口上)。C# `TryGetCaretScreenRect` 从不用 GetFocus, 只用 GetGUIThreadInfo 的
+    `hwndFocus` —— 调用方 `get_caret_pos()` 已经算出来了, 直接传进来。
+    """
     try:
-        hwnd = user32.GetFocus()
-        if not hwnd:
+        if not hwnd_focus:
             return None
+        hwnd = hwnd_focus
         r = RECT()
         if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
             return None

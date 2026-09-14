@@ -39,7 +39,13 @@ class _P(object):
 
 
 def _to_long(v):
-    """C# `(long)double`: 向零截断; NaN/Inf/越界抛异常 (对齐 .NET OverflowException -> Err)."""
+    """C# `(long)double`: 向零截断; NaN/Inf/越界 -> Err.
+
+    **第五十二轮: 这一处和 C# 不同, 是**有意保留**的差异** —— csc 默认 unchecked, 所以 C# 的
+    `(long)v` 对 NaN/±Inf/越界**不抛异常**, 而是给 long.MinValue (-9223372036854775808),
+    于是 `99999999999999999999 % 3` 在 C# 里算出 **-2**、`1/0 % 3` 也算 **-2** (溢出垃圾值)。
+    python 报 Err 更合理, 故不改; 已登记在 AGENTS.md §27 的反向差异清单。
+    """
     if v != v or v == _INF or v == -_INF or abs(v) >= 2 ** 63:
         raise ValueError('cast')
     return int(v)

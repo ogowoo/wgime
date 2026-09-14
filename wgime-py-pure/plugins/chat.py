@@ -19,11 +19,17 @@ import wspy
 CODE = 'lt'
 NAME = '聊天'
 DESC = '与 itools-chat (PC/Android) 互通的在线聊天 (纯 Python)'
+# 第五十二轮补全 manifest: 没有 PERM 时 plugin_meta 默认 'low' -> 运行"聊天"**不弹联网确认**
+# (AGENTS §16 的权限模型对它失效), 插件管理器的"版本"列也一直空着。
+VERSION = '2.0.0'
+AUTHOR = 'Walt Liang'
+PERM = 'network'
 
 BROKERS = ['wss://chat.seee.uno', 'wss://broker.hivemq.com:8884', 'wss://broker.emqx.io:8084',
            'wss://test.mosquitto.org:8081', 'ws://broker.hivemq.com:8000']
 TOPIC = 'itools/chat/'
 HEALTHY_SEC = 20          # 一次会话稳稳跑过这么久 = 这次真连上了 -> 重连预算清零 (见 _net_loop)
+IDLE_DEAD_SEC = 90        # 既没收到数据、保活也没成功过这么久才判"真断开" (见 _recv_loop; 保活 15s 一次)
 
 
 # ---------- AES-256-CBC + HMAC-SHA256 (与 itools-chat 字节兼容) ----------
@@ -108,7 +114,10 @@ class ChatUI:
     def __init__(self):
         self.win = None
         self.q = queue.Queue()
-        self.state = {'running': False, 'ws': None, 'manual': False, 'tries': 0}
+        # 第五十二轮: gen=会话代次(重连期间"离开→加入"会作废旧线程); last_ka=最近一次保活成功时间;
+        # joined=本会话是否已完成 CONNACK 握手 (必须每会话复位, 否则重连时收到任意包就算"连上了")
+        self.state = {'running': False, 'ws': None, 'manual': False, 'tries': 0,
+                      'gen': 0, 'last_ka': 0.0, 'joined': False}
         self.docid = 'py-' + os.urandom(5).hex()
         self.last_ts = {}
         self._sel_broker = BROKERS[0]
@@ -196,6 +205,8 @@ class ChatUI:
         self.state['running'] = True
         self.state['manual'] = False                 # 不是"用户主动离开" -> 掉线可以重连
         self.state['tries'] = 0
+        self.state['gen'] = self.state.get('gen', 0) + 1   # 作废上一轮可能还在 sleep 的 _net_loop
+        self.state['last_ka'] = 0.0
         self.btn.config(text='离开')
         self.docid = 'py-' + os.urandom(5).hex()
         # 主线程固化配置 (tkinter 变量跨线程读不安全)
@@ -203,16 +214,40 @@ class ChatUI:
         self.state['room'] = self.room.get().strip() or 'T_Fuck'
         self.state['key'] = self.key.get().strip()
         self.state['broker'] = self._sel_broker
-        threading.Thread(target=self._net_loop, daemon=True).start()
+        self._cfg_enabled(False)                     # 连接期间禁用 昵称/房间/密钥 (对齐 C# Enabled=false)
+        threading.Thread(target=self._net_loop, args=(self.state['gen'],), daemon=True).start()
+
+    def _cfg_enabled(self, on):
+        """连接期间禁用/恢复 昵称/房间/密钥 三个输入框 (C# chat 连上后把三个框 Enabled=false)。
+
+        不禁用的话: send() 用实时控件值、会话用 join 快照 —— 把房间框清空再发消息, 自己显示正常,
+        对端全是 [encrypted] (密钥不一致)。
+        """
+        st = 'normal' if on else 'disabled'
+        for w in (getattr(self, 'nick', None), getattr(self, 'room', None), getattr(self, 'key', None)):
+            try:
+                w.configure(state=st)
+            except Exception:
+                pass
 
     def leave(self):
+        # 先发 leave 再关连接 (对齐 C# `if (!lanOnly) SendLeave();`) —— 否则对端"在线 N"永不减少、
+        # 也没有"xx 离开了"。
+        try:
+            if self.state.get('ws') is not None and self.state.get('running'):
+                self._send_json(self.state['ws'], {'type': 'leave', 'nick': self.state.get('nick') or '',
+                                                   'ts': int(time.time() * 1000), 'id': self.docid})
+        except Exception:
+            pass
         self.state['running'] = False
         self.state['manual'] = True                  # 主动离开: 不重连 (对齐 C# manualLeave)
+        self.state['gen'] = self.state.get('gen', 0) + 1   # 让在飞的 _net_loop 立刻收工
         try:
             if self.state['ws']:
                 self.state['ws'].close()
         except Exception:
             pass
+        self._cfg_enabled(True)
         self.btn.config(text='加入')
         self.ui(lambda: self.set_status('未连接'))
 
@@ -221,23 +256,34 @@ class ChatUI:
         relay = 'chat.seee.uno' in url
         return url, relay
 
-    def _net_loop(self):
+    def _net_loop(self, gen=None):
         """一次会话 + 掉线重连 (对齐 C# chat 的 OnDisconnected):
         掉线 -> 每 6 秒重试一次, 最多 3 次 ("已断开, 6 秒后重连 (N/3)…"), 用尽则"重连失败, 已断开";
         **连接失败**直接结束 (C# 同理: ConnectWorker 非 auto 分支失败即 UiJoinFailed, 不进重连);
         用户点"离开"/关窗 (manual) 一律不重连。
         重连计数只在"这次会话稳稳跑过 HEALTHY_SEC"后才清零 —— C# 是在 JoinComplete 里清零的,
         那等于"连上就清零", 于是"连上后立刻掉"会无限重试、"重连失败"永远到不了;
-        这里改成按会话存活时长清零, 预算才有意义。"""
+        这里改成按会话存活时长清零, 预算才有意义。
+
+        **第五十二轮**: 加会话代次 `gen` —— 在这 6 秒等待期里点"离开"再点"加入"会起第二个 _net_loop,
+        而睡着的旧线程醒来时 manual 已被 join() 置回 False, 于是继续 _session(): 两个 WS 会话并存,
+        消息显示两遍、对端看到两次"加入"(实测并发峰值 2)。现在代次变了就立刻收工。
+        """
+        expired = lambda: self.state.get('manual') or (gen is not None and gen != self.state.get('gen'))
+        if gen is None:
+            gen = self.state.get('gen', 0)       # 直接调用(探针/兼容路径)时以"进入时的代次"为准
         tries = self.state.get('tries', 0)
         while True:
+            if expired():
+                return
             t0 = time.time()
             ok = self._session()
             lived = time.time() - t0
-            if self.state.get('manual'):
+            if expired():
                 return
             if not ok:
                 self.ui(lambda: self.btn.config(text='加入'))
+                self._cfg_enabled(True)              # 连不上 -> 把 昵称/房间/密钥 放回可编辑
                 self.state['running'] = False
                 return
             if lived >= HEALTHY_SEC:
@@ -246,13 +292,14 @@ class ChatUI:
             if tries >= 3:
                 self.ui(lambda: self.set_status('重连失败, 已断开'))
                 self.ui(lambda: self.btn.config(text='加入'))
+                self._cfg_enabled(True)
                 self.state['running'] = False
                 return
             tries += 1
             self.state['tries'] = tries
             self.ui(lambda t=tries: self.set_status('已断开, 6 秒后重连 (%d/3)…' % t))
             time.sleep(6)
-            if self.state.get('manual'):
+            if expired():
                 return
 
     def _session(self):
@@ -261,6 +308,10 @@ class ChatUI:
         room = self.state['room']
         nick = self.state['nick']
         crypto = Crypto(room, self.state['key'])
+        # 第五十二轮: 每个新会话都必须重新等 CONNACK —— joined 不复位时, 第二次会话收到**任意**一个包
+        # 就被 _mqtt_handshake 当成"已连上"返回, 而 SUBSCRIBE/join 只在 CONNACK 分支里发 ->
+        # UI 显示"已连接 (MQTT)"却既没订阅也没加入, 收不到消息、对端也看不到你。
+        self.state['joined'] = False
         self.ui(lambda: self.set_status('连接中…'))
         try:
             if relay:
@@ -311,20 +362,23 @@ class ChatUI:
                     ws.ping()
                 else:
                     ws.send_bin(b'\xc0\x00')          # MQTT PINGREQ
+                self.state['last_ka'] = time.time()   # 保活成功 -> 链路还活着 (给 _recv_loop 判活用)
             except Exception:
                 return
 
     def _recv_loop(self, ws, relay, room, nick, crypto):
-        idle = 0
+        last_rx = time.time()
         while self.state['running']:
             try:
                 op, payload = ws.recv_message()
-                idle = 0
+                last_rx = time.time()
             except socket.timeout:
-                # 只是"这段时间没有数据", 不等于断线 (保活线程在维持连接):
-                # 连续两轮(≈60s)一个字节都收不到才判死, 免得把空闲房间/慢网络误判成断开。
-                idle += 1
-                if idle >= 2:
+                # "这段时间没有数据"不等于断线 (保活线程每 15s 在发 PING/PINGREQ)。
+                # 第五十二轮: 原来按"连续两次读超时(≈60s)"判死 —— 而 relay 通道的 PONG 被 wspy 就地
+                # 吃掉、不会让 recv_message 返回, 于是**空闲房间每 ~60s 被判死重连**(对端反复看到
+                # "xx 加入了"; lived>=HEALTHY_SEC 还会清零重连预算 -> 可以无限循环)。
+                # 现在按"最后一次收到数据或最后一次保活成功"的时间差判死: 只有 90s 两样都没有才 break。
+                if time.time() - max(last_rx, self.state.get('last_ka', 0.0)) > IDLE_DEAD_SEC:
                     break
                 continue
             except Exception:
@@ -370,25 +424,38 @@ class ChatUI:
 
     # ---- helpers ----
     def _send_json(self, ws, obj):
+        """发一条 JSON; 返回是否真的发出去了 (第五十二轮: 以前失败/无连接都静默 return)。"""
         s = json_dumps(obj)
         if ws is None:
-            return
-        if 'chat.seee.uno' in self.state.get('broker', ''):
-            ws.send_text(s)
-        else:
-            ws.send_bin(_mq_publish(TOPIC + self.state.get('room', ''), s.encode('utf-8')))
+            return False
+        try:
+            if 'chat.seee.uno' in self.state.get('broker', ''):
+                ws.send_text(s)
+            else:
+                ws.send_bin(_mq_publish(TOPIC + self.state.get('room', ''), s.encode('utf-8')))
+            return True
+        except Exception as ex:
+            self.ui(lambda: self.set_status('发送失败: %s' % ex))
+            return False
 
     def send(self, _ev=None):
         text = self.input.get()
         if not text.strip():
             return
-        self.input.delete(0, 'end')
-        nick = self.nick.get().strip() or 'User'
-        self.add_msg('%s  %s' % (nick, text))
-        crypto = Crypto(self.room.get().strip(), self.key.get().strip())
+        # 第五十二轮: 先看连接状态 (对齐 C# `if (t.Length == 0 || !running) return;`) ——
+        # 以前未连接/已离开时回车会把输入框清空、本地回显一条"像发出去了"的消息, 对端永远收不到。
+        if not self.state.get('running') or self.state.get('ws') is None:
+            self.set_status('未连接: 先点「加入」')
+            return
+        nick = self.state.get('nick') or (self.nick.get().strip() or 'User')
+        # 房间/密钥用 join 时的快照 (连接期间输入框已禁用, 这里再兜一层)
+        crypto = Crypto(self.state.get('room') or '', self.state.get('key') or '')
         enc = crypto.enc(text)
-        self._send_json(self.state['ws'], {'type': 'chat', 'nick': nick, 'text': enc, 'enc': True,
-                                           'ts': int(time.time() * 1000), 'id': self.docid})
+        if not self._send_json(self.state['ws'], {'type': 'chat', 'nick': nick, 'text': enc, 'enc': True,
+                                                  'ts': int(time.time() * 1000), 'id': self.docid}):
+            return
+        self.input.delete(0, 'end')                 # 真发出去了才清输入框
+        self.add_msg('%s  %s' % (nick, text))
 
     def _handle_json(self, ws, raw, relay, room, nick, crypto):
         try:

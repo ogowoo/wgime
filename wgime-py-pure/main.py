@@ -682,8 +682,13 @@ def show_page():
         # 缓冲非空即显示 (即使无候选) —— 无候选时也能看到已输入的编码, 不会"消失"
         bar.show(header, ime.buf, page_c, ime.sel, ime.page, total, follow)
     elif not CFG.get('hideidle', True):
-        # hideidle=0: 常驻候选窗, 固定屏幕右下角(贴任务栏), 不跟随; 显示 C# 同款空闲提示 (对齐 RefreshLabel)
-        bar.show(header.rstrip(), '(Shift开关 Ctrl+` 模式 vf符号)', [], 0, 0, 1, False, 'bottom-right')
+        # hideidle=0: 常驻候选窗 (贴任务栏), 不跟随; 显示 C# 同款空闲提示 (对齐 RefreshLabel)。
+        # 第五十二轮: **不再强制 bottom-right** —— 用户要求"让拖动生效": 原来每次刷新都传
+        # fixed='bottom-right', 走 bar 的"直接 geometry"分支, 既不读 pos.txt 也不看拖动后的位置
+        # (而 _drag_end 照样把位置写进 pos.txt), 表现为"拖走了下一次刷新又弹回右下角"。
+        # 传 fixed=None 让 bar 的固定分支接管: 首次用 pos.txt/居中, 之后保持当前位置并只在
+        # 越界时钳进工作区。
+        bar.show(header.rstrip(), '(Shift开关 Ctrl+` 模式 vf符号)', [], 0, 0, 1, False, None)
     else:
         bar.hide()
 
