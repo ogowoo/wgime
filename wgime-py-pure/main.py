@@ -403,7 +403,7 @@ def open_data_dir():
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC,
           PUNCT=0xFD)
-MODE_NAMES = ('混合', '拼音', '五笔')
+MODE_NAMES = ('混合', '拼音', '五笔', '词典')
 
 
 # 中文标点映射 (对齐 C# MapPunct; vk | 0x200 = Shift 按住, hook 编码)
@@ -475,7 +475,7 @@ def _create_tray():
         import tray as _tray_mod
         TRAY = _tray_mod.Tray(root, {
             'toggle': lambda: set_active(not ime.active),
-            'set_mode': lambda m: (setattr(ime, 'mode', int(m) % 3), reset()),   # 3 模式: 钳一下防越界
+            'set_mode': lambda m: (setattr(ime, 'mode', int(m) % 4), reset()),   # 4 模式: 钳一下防越界
             'trad': lambda: toggle_trad(),
             'get_trad': lambda: bool(ime.trad),           # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
             'quit': lambda: quit_app(),
@@ -672,7 +672,8 @@ def _cand_variants(w):
             if c:
                 code = ' (%s)' % c
         tr = ''
-        if CFG.get('trans'):
+        # 词典模式(3)的候选本身就是译文, 不再挂 →英文 (第四十三轮的判断, 第四十六轮模式回来后保留)
+        if CFG.get('trans') and ime.mode < 3:
             t = engine.translate_hint(w)
             if t:
                 tr = '→%s' % t
@@ -997,9 +998,11 @@ def toggle_trans():
     _dfn('trans=%s' % CFG['trans'])
     _write_config('trans', '1' if CFG['trans'] else '0')          # 写回 config.txt
     try:
-        _dfn_always('trans=%s showcode=%s ec_ready=%s ec_fail=%s en_rank=%s'
+        _ef = os.path.join(DICT_DIR, 'en-freq.txt')          # 诊断: 用**文件大小**判"常用词表部署了没",
+        _ef_n = os.path.getsize(_ef) if os.path.exists(_ef) else 0   # 不看 _en_rank_n (吃缓存时是 0)
+        _dfn_always('trans=%s showcode=%s ec_ready=%s ec_fail=%s en-freq=%sB'
                     % (CFG['trans'], CFG.get('showcode'), getattr(engine, '_ec_ready', None),
-                       getattr(engine, '_ec_fail', None), getattr(engine, '_en_rank_n', None)))
+                       getattr(engine, '_ec_fail', None), _ef_n))
     except Exception:
         pass
     if CFG['trans']:
@@ -1741,7 +1744,7 @@ def handle(vk):
         set_active(not ime.active)
         return
     if vk == VK['MODE']:
-        ime.mode = (ime.mode + 1) % 3             # 第四十四轮: 译(词典)模式已取消, 只剩 混合/拼音/五笔
+        ime.mode = (ime.mode + 1) % 4             # 第四十六轮: 「词典/译」模式加回来了 (英中查询更方便)
         reset()
         _refresh_tray()
         return

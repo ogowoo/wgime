@@ -101,12 +101,11 @@ def L(zh, en):
     return zh if _ZH else en
 
 
-MODE_NAMES = ('混合', '拼音', '五笔')
-MODE_EN = ('Mixed', 'Pinyin', 'Wubi')
-# C# 同款渲染: 圆角方形 + 模式汉字镂空 + Win11 强调色 (中/拼/五; C# 还有第 4 个"译",
-# python 第四十四轮取消译模式, 只剩三个)
-MODE_CHARS = ('中', '拼', '五')
-MODE_COLORS = ((0, 120, 212), (0, 183, 195), (202, 80, 16))
+MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+MODE_EN = ('Mixed', 'Pinyin', 'Wubi', 'Dict')
+# C# 同款渲染: 圆角方形 + 模式汉字镂空 + Win11 强调色 (中/拼/五/译)
+MODE_CHARS = ('中', '拼', '五', '译')
+MODE_COLORS = ((0, 120, 212), (0, 183, 195), (202, 80, 16), (136, 23, 152))
 OFF_COLOR = (190, 185, 179)
 
 # 托盘回调 (pystray 线程) 不能直接碰 tkinter —— 入队, 主线程 poll 里执行
@@ -115,11 +114,11 @@ TRAY_Q = queue.Queue()
 
 def _icon_img(mode, active):
     """C# 同款: 圆角方形 + 模式汉字镂空 + 模式色."""
-    color = MODE_COLORS[mode % 3] if active else OFF_COLOR
+    color = MODE_COLORS[mode % 4] if active else OFF_COLOR
     img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([0, 0, 63, 63], 14, fill=color + (255,))
-    ch = MODE_CHARS[mode % 3]
+    ch = MODE_CHARS[mode % 4]
     try:
         font = ImageFont.truetype('msyh.ttc', 52)
     except Exception:
@@ -177,7 +176,7 @@ class Tray:
         icons = _embedded_icons()
         if not icons:
             return None
-        key = 'tool' if self._runmode() == 'tray' else '%d%s' % (int(mode) % 3, 'a' if active else 'i')
+        key = 'tool' if self._runmode() == 'tray' else '%d%s' % (int(mode) % 4, 'a' if active else 'i')
         b64 = icons.get(key) or icons.get('0a')
         if not b64:
             return None
@@ -233,7 +232,7 @@ class Tray:
                         try:
                             import win as _w
                             _w._dlog('tray icon swap -> %s modified=%s'
-                                     % ('%d%s' % (int(mode) % 3, 'a' if active else 'i'), NIM.get('modify_ok')))
+                                     % ('%d%s' % (int(mode) % 4, 'a' if active else 'i'), NIM.get('modify_ok')))
                         except Exception:
                             pass
             elif HAS_PIL:
@@ -331,7 +330,7 @@ class Tray:
                                  *(pystray.MenuItem(L(MODE_NAMES[m], MODE_EN[m]),
                                                     self._on(lambda m=m: self.api['set_mode'](m)),
                                                     checked=lambda _it, m=m: self.api['get_mode']() == m)
-                                   for m in range(3)))),
+                                   for m in range(4)))),
             # 选项
             pystray.MenuItem(L('选项', 'Options'),
                              pystray.Menu(

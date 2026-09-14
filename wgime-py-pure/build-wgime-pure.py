@@ -67,14 +67,14 @@ THIRD_ZIP_B64 = base64.b64encode(buf.getvalue()).decode('ascii')
 # ---- 托盘图标预渲染成 ICO 内嵌 (第四十二轮) ----
 # python 版的托盘以前要在**运行时**用 Pillow 画图标, 而宿主机不一定装了 Pillow (用户机器实测:
 # 官方 Python 3.14 没装 Pillow -> `from PIL import ...` ImportError -> 托盘图标整个没有,
-# 这就是"个别机器看不到托盘图标"). 现在构建时用 PIL 画好 7 个图标 (3 模式 × 开/关 + 工具模式),
+# 这就是"个别机器看不到托盘图标"). 现在构建时用 PIL 画好 9 个图标 (4 模式 × 开/关 + 工具模式),
 # 存成 ICO 内嵌进单文件; 运行时只写文件 + LoadImage, **不再需要宿主装 Pillow**。
-# (第四十四轮: 模式数 4 -> 3, 「词典/译」模式已取消, 译文变成「译文」选项)
+# (第四十四轮曾把模式收到 3 个 -> 7 个图标; 第四十六轮「词典/译」模式加回来, 回到 9 个)
 tray_icons = {}
 try:
     sys.path.insert(0, BASE)
     import tray as _traymod
-    for _m in range(3):
+    for _m in range(4):
         for _act, _sfx in ((True, 'a'), (False, 'i')):
             _b = io.BytesIO()
             _traymod._icon_img(_m, _act).save(_b, format='ICO', sizes=[(64, 64)])

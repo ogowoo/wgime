@@ -896,6 +896,8 @@ class Engine:
         self._ec_gen = 0
         self._ec_thread = None
         self._ec_fail = False                    # 词典表两条路都失败: 打住, 别每次按键都重试
+        self._en_rank_n = 0                      # en-freq.txt 常用词数 (只有冷建/重建走 _build_ec 时才填;
+                                                 # 吃缓存时留在 0 —— 诊断别拿它当"表在不在"的判据)
         self._core_extra_ready = False           # char_wb/wb_by_len/word_freq 是否已就绪(缓存第一段/冷建)
         self.learn_k = DEFAULT_LEARN_K   # 全量学习词频排序权重 (config learnk, main.py 覆盖)
         self.recent_k = DEFAULT_RECENT_K  # 近期热度排序权重 (config recentk)
