@@ -164,6 +164,41 @@
   **Tk/加载窗/重 import/读词库之前**（钩子可用 +2650ms → +498/+416ms）、把读词库放后台线程与 UI 并行、
   把插件/托盘/tools 收尾挪进主循环（`poll` 起来 +2694ms → **+1954/+1877ms**）。**别把这几处改回同步/串行**，
   细节与"别再改回去"清单都在 §6。验证：`%TEMP%\wgime-warmec-probe.py`（40 项）、缓存生命周期（14 项）、
-  `%TEMP%\wg-r40-selftest.py`（35 项）、harness 16/16。
+  `%TEMP%\wg-r40-selftest.py`（35 项）、harness 18/18。
 - chat 插件要点：relay=`chat.seee.uno` 走裸 JSON 文本帧，其余 broker 走 MQTT over WS（`/mqtt` 路径 + **必须 `mqtt` 子协议**，否则 EMQX 400/Mosquitto 断连）；TLS 需 1.2+。详见 `docs\WGIME_CHAT_技术文档.md` §8。
 - 待用户验证：chat 插件与 PC/Android 真机互通（协议层已实机验证）、词库加载速度（缓存命中路径）、固化码表后启动速度（应已降到缓存命中级别）。
+
+## §D4 `lastpick_*.txt` 的 `\r` 累积（第五十轮）
+
+- **现场**：用户指着 `%LOCALAPPDATA%\wgime-py\lastpick_mix.txt` 说"有点诡异"。实测该文件 1375 B / 68 条，
+  每个词后面挂着一串**裸 CR**：`bm 出\r\r\r\r\r\r\r\r\r\r\r\r`（最老的 12 个）；`Get-Content` 按
+  `StreamReader.ReadLine` 切（`\r`、`\n`、`\r\n` 都算行尾）会得到 730 行，其中 662 行是空行。
+  统计：`CR=730 LF=68 CRLF=68 bareCR=662`。C# 侧 `%LOCALAPPDATA%\wgime\lastpick_mix.txt` 干净：
+  3302 B / 293 条 / `CR=LF=CRLF=293 bareCR=0`（C# `File.WriteAllLines` 写 CRLF，值里不带 `\r`）。
+- **根因**：`engine._load_freq` 的 `for line in read_text(p).split('\n')` + `line[sp+1:].rstrip('\n')`。
+  `read_text` 是**二进制读 + 解码**（`open(path,'rb')` + `utf-8-sig → gbk → utf-8+replace`），
+  **没有 universal newlines**，所以 CRLF 的 `\r` 留在行尾、被当成词的一部分；写盘 `open(...,'w')` 又把
+  `\n` 翻成 `\r\n` → **每轮 载入/存盘 净增一个 `\r`**。探针实测一轮往返 17 → 19 字节、值 `'出\r'` → `'出\r\r'`；
+  这也解释了 CR 个数为什么是 12/11/8/7/6/5/4/3 递减（不同时间加入的词经历的存盘轮数不同）。
+- **为什么是真 bug（不只是文件难看）**：`candidates()` 的 LastPick 置顶是
+  `lp = self.lastpick_m[mode].get(keys)` → `if lp and lp in cands: cands.remove(lp); cands.insert(0, lp)`，
+  **字符串比较**；值带 `\r` 永不相等 → "上次选的词置顶"（§14 机制）**静默失效**。
+  探针 C 组：脏值 `['办','出']`（没置顶）vs 干净值 `['出','办']`（置顶生效）。
+  另外破坏 §28 说的"C#/python lastpick 同格式可互换"。
+- **修法**：`_load_freq` 两个解析点各加一行 `line = line.rstrip('\r')`（userdict 那处原来写的是**无效的**
+  `line.rstrip('\n')`——行已按 `\n` 切过——一并纠正）。写盘保持 CRLF（对齐 C# `File.WriteAllLines`），
+  值干净后自愈；**用户已有的脏文件不用手删**：载入时值即干净（`'出\r\r\r'` → `'出'`），
+  下次存盘整份重写成 `bm 出\r\n`。
+- **探针**：`%TEMP%\wg-r50-lastpick-probe.py`（A 载入 CRLF 键值都干净 / B 一轮往返 15→15 且行尾仍 CRLF /
+  C 脏值置顶失效 vs 干净值置顶生效 / D userdict int 对照组 / E 12 个 CR 的脏文件载入干净 + 存盘痊愈）。
+  修前 **5 通过 / 4 失败**（A1/B1/B2/B3），修后 **11/11**。
+- **永久回归**：`tests\pure-state-harness.py` 从 16 项加到 **18 项**（新增两条在"退格"之后）：
+  ① 往隔离数据目录写一份 CRLF（且尾部故意带 3 个裸 `\r`）的 `lastpick_mix.txt`，`eng._load_freq()` 后
+  `lastpick_m[0].get(k1)` 必须等于纯词；② 取该编码候选的**第二个**词当"上次选的词"，置顶必须真的把它
+  换到第一位（故意不用首候选，否则置顶失效也看不出来）。写文件的键/词对取自 `eng.char_py`，
+  数据目录在临时目录内（harness 自带隔离断言）。
+- **顺手扫过的同类读取点**（都没问题，别改回没 `strip()` 的写法）：`engine.load_config`（`raw.strip()`）、
+  `_load_assoc`（`line[tab+1:].strip()`）、`load_user_words`（`raw.strip()`）、`load_en_rank`（`.strip()`）、
+  `convert_file`/`_add_dict_line`（`.strip()`）、`parse_dict`（快路径 text 模式自动处理 CRLF；慢路径显式
+  `replace('\r\n','\n').replace('\r','\n')`）、`plugins.py:163`（`raw.rstrip('\r\n')`）、
+  `main` 的 pastemode/plugins-disabled、`tools.py` 的造词/插件禁用名单、`clock.py` 的 `cfg` 读取。

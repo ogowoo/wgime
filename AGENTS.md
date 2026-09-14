@@ -48,7 +48,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1    # WgIme ps1 版（15 项）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\chat-protocol-smoke.ps1  # chat 协议冒烟（需联网）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-interop.ps1  # chat 双向互通验证（需联网+node）
-python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（16 项，不装钩子/不联网）
+python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（18 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 ```
@@ -90,6 +90,8 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
 27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、**「译文」选项（离线词典译文；与「词典」模式并存：模式管逐条翻看，选项管日常打字的提示/兜底）**、造词对话框（C# 是剪贴板直造）。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
 28. **用户可改的文本一律用 `engine.read_text()` 读**（`utf-8-sig` → `gbk` → `utf-8+replace`）：中文 Windows 下记事本/编辑器"另存为 ANSI(GBK)"会把 config.txt / tools.txt / plugins\*.txt / pastemode.txt / plugins-disabled.txt / userwords.txt / userdict_*.txt / lastpick_*.txt / assoc.txt 写成非 UTF-8 —— 用 `open(..., encoding='utf-8')` 会**抛 UnicodeDecodeError 直接崩启动**（C# 侧 `File.ReadAllLines(UTF8)` 是替换式解码, 不抛）。`read_text` 只以 OSError 表示不可读，编码问题一律降级；新增读取点照此办理（plugins.py 已 `import engine as engmod` 复用）。**便签文件也在名单里**（第二十三轮）：`notes\*.txt`（便签正文，用户最常拿记事本改）、`notes.txt`（旧版迁移源）、`notes-meta.txt`、`note-color.txt` —— 用严格 `open(..., encoding='utf-8')` 读会抛 `UnicodeDecodeError`，而那里的 `except OSError` 抓不到，结果是**便签窗口打不开/半死**（`_note_win[0]` 已置上，再点只是 deiconify 坏窗口），C# 的 `File.ReadAllText(UTF8)` 则是替换式解码永不抛。**码表与插件也在名单里**（第三十二轮）：`py.txt`/`wb.txt`/`ec.txt`/`trad.txt`/`import_*.txt`（`engine.parse_dict` —— 严格 utf-8 会让 GBK 码表**把启动直接打崩**，且 BOM 会让**第一行读不进来**，所以快路径用 `utf-8-sig`、失败退回 `read_text`）、用户手改过的 `import_*.txt`（`load_import_base`）、插件 `.py`（`main._py_plugin_meta_static`：GBK+coding 声明的插件 python 能跑，严格 utf-8 会让插件管理器列举时崩）。
    **配套：写这些文件时行尾要跟 C# 对齐** —— C# 的 `ImportCodeTable` 写 `import_*.txt` 是 `WriteAllText(..., UTF8Encoding(false))` + `'\n'`（**裸 LF**），python 的 `open(..., 'w')` 在 Windows 上会翻成 CRLF（`import_*.txt` 是入库跟踪文件，被翻成 CRLF 就是整文件 diff）；所以 `engine.write_import_file` 必须带 `newline='\n'`。反之 `config.txt` 是 C# `WriteAllLines`（CRLF），python 默认写 CRLF 正好一致。
+   **读的那一侧注意（第五十轮）**：`read_text` 是**二进制读 + 解码**，**不做 universal newlines**（§39），
+   所以按 `'\n'` 切行后行尾的 `\r` 还在——需要值干净的地方必须自己 `line = line.rstrip('\r')`。
 29. **未闭合的多行块整块丢弃**（对齐 C# `ParseToolSteps`/`LoadTools`：块只在遇到闭标签时才入 steps）：`plugins.run_steps` 若扫描到行尾仍没找到闭标签，记一条 `块未闭合…已跳过` 就 `continue`，**不要执行**半截块（否则会把后面的行当脚本体跑掉）。
 30. **改 `.py` 的脚本必须用二进制写**：python 文件在仓库里是 **LF**（只有 `wgime.bat` 走 `eol=crlf`）。用 `open(p, 'w', encoding='utf-8')` 在 Windows 上写会把 `\n` 自动翻成 `\r\n`，于是**整个文件变成"全部改动"**（曾造成 1885 行幽灵 diff，还得回滚重写）。脚本改文件时用 `open(p,'w',encoding='utf-8',newline='')` 或 `[IO.File]::WriteAllBytes` 写二进制；改完用 `CRLF=0` 自检（PowerShell 统计 `\r\n` 数），并确认 `git diff --stat` 的行数符合预期。`build-wgime-pure.py` 内嵌模块源码，**行尾变了要重新构建 dist** 否则 payload 与源码不一致。
 
@@ -161,6 +163,19 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     **第四十九轮**：**切到「语音」模式 = 顺手打开语音功能**（`_voice_set_on`，幂等；否则模式菜单点了"没作用"）；
     离开模式不关功能（热键随处可用）；**选项里关掉语音时若在语音模式则自动切回混合**；模式子菜单显示名
     「语音模式」（`tray.MODE_MENU`），选项叫「语音输入 (总开关)」——别再两个都叫"语音"。
+
+39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
+    **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。
+    `engine._load_freq` 读 `lastpick_*.txt` 时按 `'\n'` 切行后只 `rstrip('\n')`（**无效**，行早就按 `\n` 切了），
+    于是 `\r` 被当成词的一部分存进 `lastpick_m`；写盘时 text 模式又把 `\n` 翻成 `\r\n` →
+    **每轮"载入/存盘"长一个 `\r`**（用户现场 `%LOCALAPPDATA%\wgime-py\lastpick_mix.txt` =
+    `bm 出\r\r\r\r\r\r\r\r\r\r\r\r`，探针实测 17→19 字节/轮）。**真危害**：`candidates()` 的 LastPick 置顶是
+    `lp = lastpick_m[mode].get(keys); if lp and lp in cands` 的**比较** —— 值带 `\r` 永不相等，
+    "上次选的词置顶"**静默失效**（文件难看只是表征）。**规则**：按 `'\n'` 切行后第一件事 `line = line.rstrip('\r')`
+    （或像 `plugins.py` 那样 `rstrip('\r\n')`）；扫过的其它读取点（config/assoc/userwords/pastemode/tools/插件/便签）
+    都靠 `strip()` 侥幸躲过——**新写的解析点别省这一步**。写盘仍保持 CRLF（与 C# `File.WriteAllLines` 一致）；
+    脏文件在下次载入/存盘时自愈。永久回归：harness **18 项**（`lastpick 值不带 \r` + `lastpick 仍置顶`），
+    探针 `%TEMP%\wg-r50-lastpick-probe.py`（修前 5/9 → 修后 11/11）。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 

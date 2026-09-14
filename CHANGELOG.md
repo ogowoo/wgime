@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-09-14 (第五十轮: 修 `lastpick_*.txt` 的 `\r` 累积 —— "上次选的词置顶"一直在静默失效)
+
+用户反馈："`lastpick_mix.txt` 这个文件好像有点诡异哦。"
+
+实测现场文件（`%LOCALAPPDATA%\wgime-py\lastpick_mix.txt`，1375 B / 68 条）：`bm 出\r\r\r\r\r\r\r\r\r\r\r\r`
+—— 每个词后面挂着一串**裸 CR**（最老的 12 个，新的 3~11 个递减），而 C# 侧同名文件字节干净
+（`bm 出\r\n`，293 行 / 3302 B）。
+
+**根因**：`engine._load_freq` 读 lastpick 用 `read_text(p).split('\n')` 切行，值只 `rstrip('\n')`。
+但 `read_text` 是**二进制读 + 解码**（为兼容记事本"另存 ANSI"，AGENTS §28），**不做 universal newlines**，
+于是 CRLF 的行尾 `\r` 原样进了值；写盘时 `open(...,'w')` 又把 `\n` 翻成 `\r\n` ——
+**每轮"载入/存盘"就长一个 `\r`**（探针实测 17 → 19 字节/轮，与文件里 3~12 个递减的 CR 完全吻合）。
+
+**真危害不是文件难看**：`candidates()` 的 LastPick 置顶是
+`lp = self.lastpick_m[mode].get(keys); if lp and lp in cands` 的**字符串比较** —— 值带 `\r` 时永远不相等，
+"上次选的词置顶"（§14 的 learn/LastPick 机制）**静默失效**；同时 python/C# 的 lastpick "同格式可互换"被破坏。
+
+**修法**（`engine.py`）：`_load_freq` 的两个解析点都先 `line = line.rstrip('\r')` 再找分隔符
+（userdict 那处原来是**无效的** `line.rstrip('\n')`，因为行已经按 `\n` 切过了，一并纠正）。
+写盘仍保持 CRLF（与 C# `File.WriteAllLines` 一致），只是值里不再夹 `\r`；
+**用户已有的脏文件会在下次载入/存盘时自动痊愈**（载入时值就干净了，存盘会重写整份文件）。
+
+**验证**：`%TEMP%\wg-r50-lastpick-probe.py`（修前 **5 通过 / 4 失败** → 修后 **11/11**）：
+
+- A 载入 C# 风格 CRLF 时键、值都不带 `\r`（修前 `bm -> '出\r'`）；
+- B 一轮往返字节数不变（修后 15→15；修前 17→19，值 `'出\r'`→`'出\r\r'`）；
+- C 值带 `\r` 时置顶失效 / 干净值置顶生效（`['办','出']` vs `['出','办']`）；
+- D 对照组：userdict（值是 int）本来就不受影响；
+- E 现场那种 12 个 CR 的脏文件，载入后值 = `出`，存盘后 = `bm 出\r\n`（痊愈）。
+
+**永久回归**：`tests\pure-state-harness.py` 新增 2 项（16 项 → **18 项**）：CRLF 的
+`lastpick_mix.txt` 载入后值不带 `\r`，且**非首位**的"上次选的词"仍被置顶（故意挑第 2 个候选，只有置顶生效才会跑到第一）。
+回归：`undefined-globals` **0**、dist/package 同步 **OK**（10 模块 + main.py 逐字节一致）。
+
+---
+
 ## 2026-09-12 (第四十九轮: 「语音」模式与「语音输入」选项不再打架 —— 切模式就等于开启)
 
 用户反馈："你这是搞了两个菜单啊？**mode 里的变动没任何作用，option 菜单里的才开启**"。

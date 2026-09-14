@@ -1140,7 +1140,8 @@ class Engine:
             p = os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m])
             try:
                 for line in read_text(p).split('\n'):
-                    sp = line.rstrip('\n').rfind(' ')
+                    line = line.rstrip('\r')        # 第五十轮: read_text 是二进制解码, CRLF 的 \r 会留在行尾
+                    sp = line.rfind(' ')
                     if sp < 1:
                         continue
                     try:
@@ -1153,10 +1154,16 @@ class Engine:
             p = os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m])
             try:
                 for line in read_text(p).split('\n'):
+                    # 第五十轮: **行尾 \r 绝不能进值**. C# 版 File.WriteAllLines 写 CRLF, python 的
+                    # text 模式写盘也翻成 CRLF, 而 read_text 走二进制解码(不做 universal newlines),
+                    # 于是 \r 会被当成词的一部分存起来; 存盘时再翻一个 \n -> 每轮 载入/存盘 长一个 \r
+                    # (用户实测 lastpick_mix.txt 里 "bm 出\r\r\r\r..."), 更严重的是 candidates() 的
+                    # LastPick 置顶是 `lp in cands` 字符串比较 -> 值带 \r 永远不相等, 置顶静默失效.
+                    line = line.rstrip('\r')
                     sp = line.find(' ')
                     if sp < 1:
                         continue
-                    self.lastpick_m[m][line[:sp]] = line[sp + 1:].rstrip('\n')
+                    self.lastpick_m[m][line[:sp]] = line[sp + 1:]
             except OSError:
                 pass
         for b in self.freq_m:

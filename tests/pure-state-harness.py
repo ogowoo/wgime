@@ -197,6 +197,19 @@ def main():
     ns['handle'](0x08)
     check('退格: 缓冲少一个字符', ime.buf == k1, repr(ime.buf))
 
+    print('--- lastpick_*.txt: CRLF 的行尾 \\r 不进值, LastPick 仍置顶 (第五十轮) ---')
+    # 现场形状: C# 写 CRLF; 老 python 版本把行尾 \r 当成词的一部分, 每轮 载入/存盘 又长一个 \r
+    # (`bm 出\r\r\r...`) -> candidates() 里 `lp in cands` 永远不等, 置顶静默失效。
+    eng.lastpick_m[0] = {}
+    base = eng.candidates(k1, 0)[0]
+    lp_word = base[1] if len(base) > 1 else ''            # 故意选非首位的词: 只有置顶生效才会跑到第一
+    with open(os.path.join(data_dir, 'lastpick_mix.txt'), 'wb') as f:
+        f.write((k1 + ' ' + lp_word + '\r' * 3 + '\r\n').encode('utf-8'))
+    eng._load_freq()
+    check('lastpick 值不带 \\r', eng.lastpick_m[0].get(k1) == lp_word, repr(eng.lastpick_m[0].get(k1)))
+    cands1 = eng.candidates(k1, 0)[0]
+    check('lastpick 仍置顶', bool(lp_word) and cands1[0] == lp_word, repr(cands1[:5]))
+
     ns['root'].destroy()
     shutil.rmtree(tmp, ignore_errors=True)
     if fails:
