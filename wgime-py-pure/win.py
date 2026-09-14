@@ -446,8 +446,8 @@ _ipc_req_hwnd={}                           # rid -> 请求时的前台 hwnd (回
 _last_fg=[0]                               # 上次的前台窗口 (变了就清 caret 缓存)
 _EMBEDDED_CARET_HELPER = '# -*- coding: utf-8 -*-\n"""WgIme Caret Helper. UIA lives only in this process. JSONL stdin/stdout IPC."""\nimport ctypes, ctypes.wintypes as w, json, os, sys, time, traceback\nLOG=os.path.join(os.environ.get(\'LOCALAPPDATA\',os.path.expanduser(\'~\')),\'wgime-py\',\'caret-helper.log\')\ndef log(s):\n    if os.environ.get(\'WGIME_DEBUG\',\'\')!=\'1\':return\n    try:\n        os.makedirs(os.path.dirname(LOG),exist_ok=True)\n        with open(LOG,\'a\',encoding=\'utf-8\') as f:f.write(\'%.3f [helper:%d] %s\\n\'%(time.time(),os.getpid(),s))\n    except Exception: pass\ndef emit(o):\n    sys.stdout.write(json.dumps(o,ensure_ascii=False,separators=(\',\',\':\'))+\'\\n\');sys.stdout.flush()\nclass GUID(ctypes.Structure):\n    _fields_=[(\'Data1\',w.DWORD),(\'Data2\',w.WORD),(\'Data3\',w.WORD),(\'Data4\',ctypes.c_ubyte*8)]\ndef guid(s):\n    g=GUID();hr=ctypes.windll.ole32.CLSIDFromString(s,ctypes.byref(g))\n    if hr<0:raise OSError(\'CLSIDFromString 0x%08X\'%(hr&0xffffffff))\n    return g\nCLSID=guid(\'{FF48DBA4-60EF-4201-AA87-54103EEF594E}\')\nIID_AUTO=guid(\'{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}\')\nIID_TP2=guid(\'{506A921A-FCC9-409F-B23B-37EB74106872}\')\nIID_TP=guid(\'{32EBA289-3583-42C9-9C59-3B6D9A1E9B6A}\')\nole32=ctypes.OleDLL(\'ole32\');oa=ctypes.OleDLL(\'oleaut32\')\nole32.CoInitializeEx.argtypes=[ctypes.c_void_p,w.DWORD];ole32.CoInitializeEx.restype=ctypes.c_long\nole32.CoCreateInstance.argtypes=[ctypes.POINTER(GUID),ctypes.c_void_p,w.DWORD,ctypes.POINTER(GUID),ctypes.POINTER(ctypes.c_void_p)];ole32.CoCreateInstance.restype=ctypes.c_long\ndef pv(p):\n    try:return int(p.value or 0) if hasattr(p,\'value\') else int(p or 0)\n    except:return 0\ndef call(p,i,rt,args,*xs):\n    v=ctypes.cast(p,ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents\n    addr=pv(v[i]);log(\'call i=%d obj=0x%X method=0x%X\'%(i,pv(p),addr))\n    if addr<0x10000:raise OSError(\'bad method %d 0x%X\'%(i,addr))\n    return ctypes.WINFUNCTYPE(rt,ctypes.c_void_p,*args)(addr)(p,*xs)\ndef release(p):\n    if pv(p):\n        try:call(p,2,w.ULONG,[])\n        except:pass\ndef rect(rng,pattern):\n    psa=ctypes.c_void_p();hr=call(rng,10,ctypes.c_long,[ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(psa))\n    log(\'%s GetBoundingRectangles hr=0x%08X psa=0x%X\'%(pattern,hr&0xffffffff,pv(psa)))\n    if hr<0 or not psa.value:return None\n    lo=ctypes.c_long();hi=ctypes.c_long();data=ctypes.c_void_p();access=False\n    try:\n        if oa.SafeArrayGetLBound(psa,1,ctypes.byref(lo))<0 or oa.SafeArrayGetUBound(psa,1,ctypes.byref(hi))<0:return None\n        n=hi.value-lo.value+1\n        if n<4 or n>4096 or oa.SafeArrayAccessData(psa,ctypes.byref(data))<0:return None\n        access=True;v=ctypes.cast(data,ctypes.POINTER(ctypes.c_double));raw=[float(v[i]) for i in range(n)]\n        x,y,cw,ch=raw[-4:];log(\'%s raw=%r\'%(pattern,raw[:24]))\n        if ch<1 or ch>240 or x<-10000 or y<-10000:return None\n        return {\'x\':round(x),\'y\':round(y+ch),\'rect\':[x,y,cw,ch],\'raw\':raw[:24],\'provider\':pattern}\n    finally:\n        if access:\n            try:oa.SafeArrayUnaccessData(psa)\n            except:pass\n        try:oa.SafeArrayDestroy(psa)\n        except:pass\ndef try_element(el,label):\n    pat=ctypes.c_void_p();rng=ctypes.c_void_p();arr=ctypes.c_void_p()\n    try:\n        log(\'PROBE %s el=0x%X\'%(label,pv(el)))\n        hr=call(el,14,ctypes.c_long,[ctypes.c_int,ctypes.POINTER(GUID),ctypes.POINTER(ctypes.c_void_p)],10024,ctypes.byref(IID_TP2),ctypes.byref(pat))\n        log(\'%s TP2 hr=0x%08X pat=0x%X\'%(label,hr&0xffffffff,pv(pat)))\n        if hr>=0 and pat.value:\n            active=w.BOOL();hr2=call(pat,10,ctypes.c_long,[ctypes.POINTER(w.BOOL),ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(active),ctypes.byref(rng))\n            log(\'%s GetCaretRange hr=0x%08X active=%d rng=0x%X\'%(label,hr2&0xffffffff,active.value,pv(rng)))\n            if hr2>=0 and active.value and rng.value:\n                p=rect(rng,\'TextPattern2\')\n                if p:p[\'element_path\']=label;return p\n            release(rng);rng=ctypes.c_void_p();release(pat);pat=ctypes.c_void_p()\n        hr=call(el,14,ctypes.c_long,[ctypes.c_int,ctypes.POINTER(GUID),ctypes.POINTER(ctypes.c_void_p)],10014,ctypes.byref(IID_TP),ctypes.byref(pat))\n        log(\'%s TP hr=0x%08X pat=0x%X\'%(label,hr&0xffffffff,pv(pat)))\n        if hr<0 or not pat.value:return None\n        hr=call(pat,3,ctypes.c_long,[ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(arr))\n        log(\'%s GetSelection hr=0x%08X arr=0x%X\'%(label,hr&0xffffffff,pv(arr)))\n        if hr<0 or not arr.value:return None\n        n=ctypes.c_int();hr=call(arr,3,ctypes.c_long,[ctypes.POINTER(ctypes.c_int)],ctypes.byref(n))\n        if hr<0 or n.value<1:return None\n        hr=call(arr,4,ctypes.c_long,[ctypes.c_int,ctypes.POINTER(ctypes.c_void_p)],0,ctypes.byref(rng))\n        if hr<0 or not rng.value:return None\n        p=rect(rng,\'TextPattern\')\n        if p:p[\'element_path\']=label\n        return p\n    finally:release(rng);release(arr);release(pat)\n_FAIL_UNTIL={}\nFAIL_COOLDOWN_S=8.0\n\ndef query(auto,hwnd):\n    now=time.monotonic()\n    until=_FAIL_UNTIL.get(hwnd,0.0)\n    if now<until:\n        return None,\'ProviderCooldown\',0\n    el=ctypes.c_void_p()\n    try:\n        hr=call(auto,8,ctypes.c_long,[ctypes.POINTER(ctypes.c_void_p)],ctypes.byref(el))\n        log(\'GetFocusedElement hwnd=%d hr=0x%08X el=0x%X\'%(hwnd,hr&0xffffffff,pv(el)))\n        if hr<0 or not el.value:\n            _FAIL_UNTIL[hwnd]=now+FAIL_COOLDOWN_S\n            return None,\'GetFocusedElement\',hr\n        p=try_element(el,\'focus\')\n        if p:\n            _FAIL_UNTIL.pop(hwnd,None)\n            return p,\'focus\',0\n        # The focused provider does not expose a usable caret. Do not scan the whole\n        # WebView tree on every keystroke. The main process keeps a per-window anchor.\n        _FAIL_UNTIL[hwnd]=time.monotonic()+FAIL_COOLDOWN_S\n        log(\'NO_CARET_PROVIDER hwnd=%d cooldown=%.1fs\'%(hwnd,FAIL_COOLDOWN_S))\n        return None,\'NoCaretProvider\',0\n    finally:\n        release(el)\ndef main():\n    hr=ole32.CoInitializeEx(None,0);log(\'START CoInitializeEx=0x%08X\'%(hr&0xffffffff));auto=ctypes.c_void_p()\n    try:\n        hr2=ole32.CoCreateInstance(ctypes.byref(CLSID),None,1,ctypes.byref(IID_AUTO),ctypes.byref(auto));log(\'CoCreateInstance=0x%08X auto=0x%X\'%(hr2&0xffffffff,pv(auto)))\n        if hr2<0 or not auto.value:return 2\n        emit({\'type\':\'ready\',\'pid\':os.getpid(),\'mode\':\'stable-focus-cooldown\',\'cooldown_s\':FAIL_COOLDOWN_S})\n        for line in sys.stdin:\n            try:\n                q=json.loads(line);rid=int(q.get(\'id\',0));t=time.perf_counter();p,stage,h=query(auto,int(q.get(\'hwnd\',0)));ms=(time.perf_counter()-t)*1000\n                o={\'type\':\'result\',\'id\':rid,\'ok\':bool(p),\'stage\':stage,\'hr\':\'0x%08X\'%(h&0xffffffff),\'elapsed_ms\':round(ms,2),\'pid\':os.getpid(),\'hwnd\':int(q.get(\'hwnd\',0))}\n                if p:o.update(p)\n                emit(o)\n            except BaseException as e:\n                log(\'QUERY EXC \'+repr(e)+\' \'+traceback.format_exc());emit({\'type\':\'result\',\'id\':q.get(\'id\',0) if \'q\' in locals() else 0,\'ok\':False,\'stage\':\'exception\',\'error\':repr(e),\'pid\':os.getpid(),\'hwnd\':int(q.get(\'hwnd\',0))})\n    finally:\n        release(auto)\n        try:ole32.CoUninitialize()\n        except:pass\nif __name__==\'__main__\':raise SystemExit(main())\n'
 def _legacy_helper_path():
-    """旧版(第四十二轮及以前)把 helper 源码落盘到这个 .py 文件. 现在改用 `python -c` 直接把源码
-    喂给子进程, **磁盘上不再产生 caret-helper 文件**; 此路径只为清理历史遗留文件而保留."""
+    """旧版(第四十二轮及以前)把 helper 源码落盘到这个 .py 文件. 现在改用**环境变量**把源码交给子进程
+    (不落盘、也不进命令行), **磁盘上不再产生 caret-helper 文件**; 此路径只为清理历史遗留文件而保留."""
     base=os.path.join(os.environ.get('LOCALAPPDATA',os.path.expanduser('~')),'wgime-py','runtime')
     return os.path.join(base,'caret-helper','wgime-caret-helper-v3-stable-embedded.py')
 
@@ -461,12 +461,19 @@ def _cleanup_legacy_helper():
     except Exception as e:
         _dlog('legacy helper cleanup skipped '+repr(e))
 
-# helper 源码直接经 `python -c` 传给子进程(不落盘): 7200 字符 << Windows 命令行上限 32767.
-# 隔离: `-c` 下 sys.path[0] 是**当前工作目录**, 先剥掉 —— 保持第三十八轮那条"标准库不被抢占"的
-# 隔离(历史 lib 目录里残留过 pythonnet 时代的 python38 整包, _ctypes.pyd/json.py 会顶掉标准库,
-# 害得 helper 起来就秒退). helper 只用标准库, 剥掉 cwd 无副作用.
-_HELPER_PATH_SANITIZE=("import sys as _wgs,os as _wgo\n"
-                        "_wgs.path[:]=[p for p in _wgs.path if p not in ('','.',_wgo.getcwd())]\n")
+# helper 源码经**环境变量**交给子进程: 既不落盘, 也不出现在进程命令行里(第四十三轮先做成命令行内联,
+# 但那份源码有 7200 字符, EDR/任务管理器记录的"进程创建命令行"会是一条 7.4KB 的怪异 -c; 改走环境块后
+# 命令行只剩下面这段 ~250 字符引导). 实测子进程逐字节收到源码(sha256 一致), 继承环境块才 5.4KB + 7.2KB,
+# 远低于上限(实测塞到 100KB 仍能创建进程).
+_HELPER_SRC_ENV='WGIME_CARET_HELPER_SRC'
+# 引导脚本两件事:
+# ① 剥掉 sys.path 里的 cwd —— `-c` 下 sys.path[0] 是**当前工作目录**, 保持第三十八轮那条"标准库不被
+#    抢占"的隔离(历史目录里残留过 pythonnet 时代的 python38 整包, _ctypes.pyd/json.py 会顶掉标准库,
+#    害得 helper 起来就秒退). helper 只用标准库, 剥掉 cwd 无副作用.
+# ② 从环境块取源码执行, 取走即 pop —— 不把 7KB 源码留在 helper 自己的环境里(也不传给它的任何子进程).
+_HELPER_BOOTSTRAP=("import os,sys\n"
+                   "sys.path[:]=[p for p in sys.path if p not in ('','.',os.getcwd())]\n"
+                   "exec(compile(os.environ.pop('%s'),'<wgime-caret-helper>','exec'))\n"%_HELPER_SRC_ENV)
 def _ipc_reader(proc):
     try:
         for line in proc.stdout:
@@ -504,12 +511,13 @@ def _start_helper():
     _ipc_last_start[0]=now
     try:
         flags=getattr(_sp,'CREATE_NO_WINDOW',0)
-        # 源码内联: 不再把 helper 落盘成 .py, 子进程直接从命令行拿到源码(实测 spawn 137ms 出 ready).
-        src=_HELPER_PATH_SANITIZE+_EMBEDDED_CARET_HELPER
-        p=_sp.Popen([_sys.executable,'-u','-c',src],stdin=_sp.PIPE,stdout=_sp.PIPE,stderr=_sp.DEVNULL,text=True,encoding='utf-8',bufsize=1,creationflags=flags)
+        # 源码走环境块, 命令行只留引导(实测 OS CommandLine 7427 -> 281 字符, 子进程收到的源码 sha256 一致).
+        # 传 env= 会替换整个环境, 所以必须复制 os.environ(保住 PATH 等), 再挂上源码变量.
+        env=dict(os.environ);env[_HELPER_SRC_ENV]=_EMBEDDED_CARET_HELPER
+        p=_sp.Popen([_sys.executable,'-u','-c',_HELPER_BOOTSTRAP],stdin=_sp.PIPE,stdout=_sp.PIPE,stderr=_sp.DEVNULL,text=True,encoding='utf-8',bufsize=1,creationflags=flags,env=env)
         _ipc_proc[0]=p;_helper_t0[0]=_time.monotonic()
         _th.Thread(target=_ipc_reader,args=(p,),name='WgImeCaretIPC',daemon=True).start()
-        _dlog('IPC helper started pid=%d (inline -c, no file on disk)'%p.pid);return True
+        _dlog('IPC helper started pid=%d (env-passed source, no file, %d-char cmdline)'%(p.pid,len(_HELPER_BOOTSTRAP)));return True
     except Exception as e:_dlog('IPC start failed '+repr(e));return False
 
 def ensure_caret_bg():
