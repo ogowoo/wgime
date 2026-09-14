@@ -258,8 +258,12 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
   3. 发完**回验**：线上 python zip 的 SHA256 与 stage 相同、内层 `wgime-py.py` 与 dist 逐字符一致、body 无 `?`、tag=本地 HEAD。
 - **中文坑**：release body 用 `HttpWebRequest` 显式 UTF-8 字节发（脚本已内置）；**别用 `Invoke-RestMethod`+`ConvertTo-Json`**（PS 5.1 把中文变 `?`）。
 - **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
-- 版本 tag：`v1.0.0` ~ `v1.2.11`（后续版本递增）。插件更新不单独发 release。
+- 版本 tag：`v1.0.0` ~ `v1.2.12`（后续版本递增）。插件更新不单独发 release。
   **发布回验记录**（`tests\publish-release.ps1` 之后必做：下线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD）：
+  v1.2.12（release id 388497981，含 bat/ps1/python 三个资产；第四十四～五十五轮，19 个提交）= body 2385 字、
+  **0 个 `?`**、含中文；三个 zip 的 SHA256 全部与 `.release-stage-v1212\` 相同（bat `4F9C04D1…`、ps1 `7DD902A8…`、
+  python `72C96996…`）；线上 python zip **与 stage 逐字节一致**且内层 `wgime-py.py` 853398 B / `E2B88F4A…`
+  与本地 dist 一致（含 `dicts/`）；tag = 本地 HEAD `e1934bb`。
   v1.2.11（第四十轮，release id 386885107，含 bat/ps1/python 三个资产）= body 与本地逐字符一致（1478 字、
   0 个 `?`）、三个 zip 的 SHA256 全部与 `.release-stage-v1211\` 相同、`wgime-v1.2.11-python.zip` 内层
   `wgime-py.py` 744413 B / `6D6A6505…` 与本地 dist 一致、target = 本地 HEAD。
