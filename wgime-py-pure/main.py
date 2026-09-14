@@ -991,19 +991,22 @@ def toggle_voice():
     """托盘「语音输入」开关 (第四十七轮)."""
     CFG['voice'] = not CFG.get('voice', False)
     _dfn('voice=%s' % CFG['voice'])
-    _write_config('voice', '1' if CFG['voice'] else '0')
+    _saved = _write_config('voice', '1' if CFG['voice'] else '0')
     hook.VOICE_ON[0] = bool(CFG['voice'])
+    if not _saved:                      # 写不进去就说清楚, 别让用户以为"菜单没反应"
+        _notify('语音输入', 'config.txt 写不进去 (%s), 这次的开关状态重启后会丢'
+                % os.path.join(APP_DIR, 'config.txt'))
     if CFG['voice']:
         try:
             if not _voicemod().available():
                 _notify('语音输入', '打开了, 但没找到麦克风 (系统设置里允许桌面应用访问麦克风?)')
             else:
-                _notify('语音输入', '已打开: %s 按住说话' % _voice_hotkey_text())
+                _notify('语音输入', '已打开: 按住 %s 说话 (已写入 config.txt)'
+                        % _voice_hotkey_text())
         except Exception as e:
             _notify('语音输入', '语音模块不可用: %r' % (e,))
     else:
         voice_cancel()
-        hook.VOICE_ON[0] = False
     show_page()
     _refresh_tray()
 
@@ -1169,11 +1172,21 @@ def inject(text):
 
 # ---------- 状态机 ----------
 def _write_config(key, value):
-    """原子改写 config.txt 的一行 key (保留行尾, utf-8-sig 兼容 BOM, 正则精确匹配)."""
+    """原子改写 config.txt 的一行 key (保留行尾, utf-8-sig 兼容 BOM, 正则精确匹配).
+
+    **返回 True/False** —— 第四十八轮修两个静默失败:
+    ① 以前 `APP_DIR\\config.txt` **不存在就直接 open 失败被 `except OSError: pass` 吞掉**,
+       于是"托盘开关点了 config.txt 没变"(python 版可以不带 config.txt 跑, 默认值全在代码里);
+       现在文件不存在就**新建**一个;
+    ② 写失败一定写 always-on 日志(并在调用处给用户气泡), 不再无声无息。
+    """
+    path = os.path.join(APP_DIR, 'config.txt')
     try:
-        path = os.path.join(APP_DIR, 'config.txt')
-        with open(path, encoding='utf-8-sig') as f:
-            text = f.read()
+        try:
+            with open(path, encoding='utf-8-sig') as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = '; WgIme (Python) 配置 (托盘开关改动后自动创建; 完整模板见发行包里的 config.txt)\n'
         lines = text.split('\n')
         found = False
         for i, l in enumerate(lines):
@@ -1185,8 +1198,10 @@ def _write_config(key, value):
             lines.append('%s = %s' % (key, value))
         with open(path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
-    except OSError:
-        pass
+        return True
+    except OSError as e:
+        _dfn_always('config: 写入 %s = %s 失败 (%s): %r' % (key, value, path, e))
+        return False
 
 
 def toggle_trad():

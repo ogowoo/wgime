@@ -151,6 +151,10 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     里 `VOICE_MODE` 让钩子把按键**全部透传**（不组字），轻点热键 = 常录。结果默认进候选条等空格确认
     （`voice_auto=1` 直接上屏），上屏走 `inject()` 但**不进词频学习**。麦克风隐私开关 Deny 时 `waveInOpen` 会 rc=1 →
     必须报"去开 设置→隐私和安全性→麦克风→允许桌面应用访问麦克风"（`voice.mic_consent()`）。
+    **第四十八轮补的坑**：① `_write_config()` 以前在 `APP_DIR\config.txt` **不存在**时静默失败（`except OSError: pass`），
+    而 python 版可以不带 config.txt 跑 → **所有托盘开关都"点了不落盘"**；现在文件不存在就**新建**，返回 `True/False`，
+    失败写 always-on 日志。② hook 里 voice 热键的**按下**也要按 `VOICE_ON` 门控，否则"没开语音"时 Ctrl+Alt+V
+    被吞还弹"没打开"气泡（语音没开就该完全透传）。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 

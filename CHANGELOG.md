@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-09-12 (第四十八轮: 修"托盘开关点了 config.txt 不变" —— `_write_config` 静默失败 + 热键门控)
+
+用户实测反馈：托盘「语音输入」切不动、**切换后 `config.txt` 没变**；同时按 Ctrl+Alt+V 弹出"语音输入没打开"的气泡。
+
+**根因 ①（影响所有托盘开关，不只语音）**：`_write_config()` 里 `APP_DIR\config.txt` **不存在**时 `open()` 直接抛
+`FileNotFoundError`，而 `except OSError: pass` 把错误**静默吞掉** —— python 版可以**不带 config.txt** 跑
+（默认值都在代码里），于是这种部署里每个托盘开关都"点了不落盘"。修法：文件不存在就**新建**一个；
+`_write_config` 返回 `True/False`；写失败写 **always-on 日志**，语音开关还会弹气泡告知 `config.txt` 的完整路径。
+
+**根因 ②**：hook 里 Ctrl+Alt+V 的**按下**没看 `VOICE_ON` —— 语音没开时也吞键并弹"没打开"气泡（就是截图那个）。
+修法：**语音没开时这条热键完全不拦**（透传给应用），开着时才吞、才报松键。
+
+**改动**：`main.py`（`_write_config` 新建 + 返回值 + 日志；`toggle_voice` 写入失败要给气泡）、
+`hook.py`（voice 热键按 `VOICE_ON` 门控）。
+
+**验证**：`%TEMP%\wg-r48-traytoggle-probe.py` **23/23** ——
+
+- 伪造 lParam 直接调 `hook._proc` 的判定矩阵：语音关 → `Ctrl+Alt+V` **透传且不产生事件**；语音开 → **吞 + `VK_VOICE`**；松键 → `VK_VOICE_UP`；语音关时松键也不吞；
+- `toggle_voice()` 三处状态一致（`CFG` / `hook.VOICE_ON` / `config.txt`），并有"已打开…(已写入 config.txt)"气泡；
+- **把 `config.txt` 挪走后 `_write_config` 仍返回 True 并自动建文件**（这条正是用户踩的坑）；
+- 托盘 `TRAY_Q` 路径（点击 → 队列 → 主线程执行）确实会执行开关。
+- 回归：harness 16/16、r47 **A 15/15 + B 20/20**、r46 11/11、r45 40/40、r45-onlytrans 12/12、r44 40/40、
+  r43-e2e 4/4、r40 35/35、warmec 40、QR 78、`undefined-globals` 0、dist 自检逐字节一致。
+
+> 提示：python 版的配置**就在 `wgime-py.py` 旁边**（`APP_DIR\config.txt`，`APP_DIR` 由 `dicts\` 的位置推出来）；
+> 仓库根目录那份 `config.txt` 只是**模板**，改它不影响正在跑的实例。
+
+---
+
 ## 2026-09-12 (第四十七轮: 语音输入 —— 按住 Ctrl+Alt+V 说话, 三条识别后端 + 新增「语音」模式)
 
 用户问"有没有机会加语音输入"，定了：**先打通系统自带离线引擎 + 预留云端/本地 whisper 插槽**，

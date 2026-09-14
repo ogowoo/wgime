@@ -235,6 +235,8 @@ def _proc(nCode, wParam, lParam):
                     for _act, _code in (('toggle', VK_TAP), ('mode', VK_MODE),
                                         ('makeword', VK_MAKEWORD), ('trad', VK_TRAD),
                                         ('voice', VK_VOICE)):
+                        if _act == 'voice' and not VOICE_ON[0]:
+                            continue        # 语音没开: Ctrl+Alt+V 照常给应用 (不吞、也不弹"没打开")
                         _mods, _hk = HOTKEYS.get(_act, (0, 0))
                         if _hk and _hk == vk and _mods != SHIFT_TAP and _match_mods(_mods):
                             EVENTS.put(_code)
