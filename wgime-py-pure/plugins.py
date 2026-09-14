@@ -41,14 +41,31 @@ def parse_plugin(path):
     except OSError as e:
         p.error = str(e)
         return p
-    m = re.search(r'(?s)\[csharp\]\s*(.*?)\[/csharp\]', text)
-    if m:
+    # [csharp]/[python] 块: **整行**且 Trim 后恰好等于标签 (对齐 C# ExtractPluginBlock) ——
+    # 第五十一轮: 以前是在整份文本里非贪婪搜 `[csharp]...[/csharp]`, 于是注释里写一句
+    # `; 说明: [csharp] 是 C# 块 [/csharp]` 就能把插件类型从 steps 改成 csharp/python,
+    # 标签之间的文字被拿去编译/执行, 原来的步骤一条都不跑。
+    def _block(tag):
+        out = []
+        inside = False
+        for line in text.split('\n'):
+            t = line.strip()
+            if not inside:
+                if t.lower() == '[%s]' % tag:
+                    inside = True
+                continue
+            if t.lower() == '[/%s]' % tag:
+                return '\n'.join(out)
+            out.append(line.rstrip('\r'))
+        return None
+    _cs = _block('csharp')
+    if _cs is not None:
         p.kind = 'csharp'
-        p.body = m.group(1)
-    mp = re.search(r'(?s)\[python\]\s*(.*?)\[/python\]', text)
-    if mp:
+        p.body = _cs
+    _py = _block('python')
+    if _py is not None:
         p.kind = 'python'                                # [python] 块: 纯 Python 代码 (替代 [csharp])
-        p.body = mp.group(1)
+        p.body = _py
     # 头部: code/name/desc (第一个非"键=值"非注释行起为步骤区)
     lines = text.split('\n')
     body_start = None
@@ -136,7 +153,12 @@ def plugin_meta(p):
 
 
 def is_high_perm(meta):
-    return meta.get('perm', 'low') in HIGH_PERM
+    """有没有高权限声明. 第五十一轮: `perm` 支持**逗号/空格/竖线分隔的多个权限**
+    (内置「剪贴板翻译」写的是 `PERM = "network,run"`), 以前用整串 `in HIGH_PERM` 比对 ->
+    多值一律判"低权限", 运行它**不弹确认**(AGENTS-DETAIL §D3 明写它运行前要弹确认)。
+    """
+    raw = str(meta.get('perm', 'low') or 'low').lower()
+    return bool(set(re.split(r'[,\s|/+]+', raw)) & set(HIGH_PERM))
 
 
 # ---------- tools.txt (工具箱) ----------
@@ -159,10 +181,20 @@ def load_tools(path):
             tabs.append({'name': '工具', 'cols': 2, 'buttons': []})
         return tabs[-1]
 
+    _blk = None                                        # 当前正在读的多行块期望的闭标签 (None=不在块里)
     try:
         for raw in engmod.read_text(path).split('\n'):
             t = raw.rstrip('\r\n')                     # 与 C# File.ReadAllLines 一致: 行尾 CR/LF 都不带进步骤文本
             s = t.strip()
+            if _blk is not None:
+                # 第五十一轮: 块内**原样**收进当前按钮的 steps (含注释/空行/[xxx] 行), 直到匹配的闭标签 ——
+                # 对齐 C# LoadTools 的 blockClose 状态。以前不记状态: 块内 `[CmdletBinding()]` 会变成一个
+                # 假按钮、块内 `code = x` 被当成按钮编码、注释/空行从脚本里消失, 原按钮的块还会"未闭合"不执行。
+                if btn is not None:
+                    btn['steps'].append(t)
+                if s.lower() == _blk:
+                    _blk = None
+                continue
             if not s or s[0] in ';#':
                 continue
             if s.startswith('[') and s.endswith(']'):
@@ -170,6 +202,8 @@ def load_tools(path):
                 if inner.lower() in _TOOL_BLOCK_TAGS:      # [shell]...[/powershellx] 等块标签不是按钮 (对齐 C#)
                     if btn is not None:
                         btn['steps'].append(t)
+                    if btn is not None and inner.lower() in _BLOCK_END:
+                        _blk = _BLOCK_END[inner.lower()]   # 开标签: 进入块状态, 后面原样收
                     continue
                 low = inner.lower()
                 if low.startswith('tab '):                 # [tab 名]: 新标签页 (空名字 -> "?")
@@ -306,7 +340,9 @@ def run_steps(body, log, msgbox, confirm, on_step=None):
                                         'powershell' if tag in ('powershell', 'ps') else 'psx')
             block = []
             end_tag = _BLOCK_END[tag]
-            while i < len(lines) and lines[i].strip() != end_tag:
+            # 第五十一轮: 闭标签比较也要**大小写不敏感** (开标签的 _BLOCK_OPEN_RE 带 re.I) ——
+            # 否则 `[PS]…[/PS]` 能开块却等不到闭标签, 该按钮及其后的正常步骤被整块静默跳过。
+            while i < len(lines) and lines[i].strip().lower() != end_tag:
                 block.append(lines[i])
                 i += 1
             if i >= len(lines):                      # 未找到闭标签: C# ParseToolSteps/LoadTools 会整块丢弃, 这里同样不执行
@@ -321,9 +357,11 @@ def run_steps(body, log, msgbox, confirm, on_step=None):
                 _slog('块执行失败: %s' % e)
                 _done(shown, 1)
             continue
-        sp = t.find(' ')
-        verb = (t[:sp] if sp > 0 else t).lower()
-        arg = t[sp + 1:].strip() if sp > 0 else ''
+        # 动词/参数按**任意空白**切分 (对齐 C# ToolToks: char.IsWhiteSpace, tab 也算) ——
+        # 第五十一轮: 原来只按空格找, `msg\thello` 整行被当动词 -> "未知动词"并记一步失败。
+        _vm = re.match(r'^(\S+)(?:\s+(.*))?$', t, re.S)
+        verb = (_vm.group(1) if _vm else t).lower()
+        arg = ((_vm.group(2) or '') if _vm else '').strip()
         # 破坏性动词: 执行前确认 (拒绝则跳过该步并计 fail)
         if verb in DESTRUCTIVE_VERBS and confirm and not confirm('插件要执行[%s] %s\n确定继续?' % (verb, arg[:50])):
             fails += 1
@@ -472,10 +510,19 @@ def _list_procs_by_name(name):
     except Exception:
         pass
     # 无 psutil: 用 taskkill (无法逐个计数, 记 1)
+    # 第五十一轮: **必须看返回码** —— 以前无论成功失败都返回一个假进程对象, 于是对不存在的进程
+    # 也报 `killed 1 x xxx` (把失败当成功)。现在 rc!=0 (含"没有找到进程") 就返回空列表。
+    try:
+        rc = subprocess.run(['taskkill', '/f', '/im', name + '.exe'],
+                            capture_output=True, timeout=60).returncode
+    except Exception:
+        return []
+
     class _P:
         def kill(self):
-            subprocess.run(['taskkill', '/f', '/im', name + '.exe'], capture_output=True, timeout=60)
-    return [_P()]
+            return True                      # 已在上面的 taskkill 里杀掉了
+
+    return [_P()] if rc == 0 else []
 
 
 def _file_del(arg, log):
@@ -575,7 +622,11 @@ def _delete_subkey_tree(hive, sub):
                 _delete_subkey_tree(key, n)
     except OSError:
         pass
-    winreg.DeleteKey(hive, sub)
+    try:
+        winreg.DeleteKey(hive, sub)
+    except FileNotFoundError:
+        pass                                  # 第五十一轮: 键本来就不存在 = 已经是目标状态 (C# 静默成功),
+                                              # 以前记一步失败, 幂等清理脚本每次都报 "1 个步骤失败"
 
 
 def _run_block(tag, content, log):

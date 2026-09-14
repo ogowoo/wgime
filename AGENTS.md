@@ -48,7 +48,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1    # WgIme ps1 版（15 项）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\chat-protocol-smoke.ps1  # chat 协议冒烟（需联网）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-interop.ps1  # chat 双向互通验证（需联网+node）
-python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（18 项，不装钩子/不联网）
+python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（23 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 ```
@@ -174,8 +174,24 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     "上次选的词置顶"**静默失效**（文件难看只是表征）。**规则**：按 `'\n'` 切行后第一件事 `line = line.rstrip('\r')`
     （或像 `plugins.py` 那样 `rstrip('\r\n')`）；扫过的其它读取点（config/assoc/userwords/pastemode/tools/插件/便签）
     都靠 `strip()` 侥幸躲过——**新写的解析点别省这一步**。写盘仍保持 CRLF（与 C# `File.WriteAllLines` 一致）；
-    脏文件在下次载入/存盘时自愈。永久回归：harness **18 项**（`lastpick 值不带 \r` + `lastpick 仍置顶`），
+    脏文件在下次载入/存盘时自愈。永久回归：harness（`lastpick 值不带 \r` + `lastpick 仍置顶`），
     探针 `%TEMP%\wg-r50-lastpick-probe.py`（修前 5/9 → 修后 11/11）。
+
+40. **全量审计的硬规则（第五十一轮）**：7 路 subagent 分模块审 + 横切 AST/不变量探针（56 条候选，
+    修掉 20 项；已修/未修明细见 CHANGELOG 第五十一轮与 `AGENTS-DETAIL.md` §D5）。要照做的：
+    ① **`_merge_user_words` 必须 py + wb + acro 三样都补**（C# 是 `MergeUserWords` → `MergeUserWordsWb`
+    → `BuildAcro`），且 `_init_state` 里三张派生表（char_wb/wb_by_len/word_freq）要在合并用户词**之前**就绪
+    （合并要用 `char_wb` 算五笔构词码）—— 只并拼音表的后果是"造的词重启后简拼/五笔查不到"；
+    ② **读用户文件要先读完再动内存**：`clock.load_cfg` 原来开头就 `ALARMS.clear()`，读失败（被独占/GBK/
+    读到 C# 写一半）就只剩"空"，紧接着一次无条件 `save_cfg` 把整份闹钟覆盖掉；
+    ③ **缓存/索引签名要覆盖它依赖的全部输入**（`userwords.txt` 曾漏 → 删词后出现删不掉的"幽灵词"）；
+    ④ **给 helper/子进程写管道必须非阻塞**（helper 串行读 stdin + 4KB 管道 ⇒ `stdin.write` 会把 Tk 主线程
+    永久阻塞，输入法卡死且不可自愈；改 `os.set_blocking(fd, False)` + `os.write`，满则丢弃这次刷新）；
+    ⑤ **后台线程里的异常必须兜住并报出来**（pythonw 下 `sys.stdout/stderr` 都是 None，裸线程抛异常完全无声，
+    用户只看到"点了没反应"）—— `main._bg_plugin` 是统一入口；
+    ⑥ 菜单/图标/模式表索引一律 `% len(表)`，不要写死数字（第四十九轮 `% 5`、第五十一轮托盘图标 `% 4`）；
+    ⑦ `.py` 插件的"停用"判断要在 `exec_module` **之前**（否则被停用的插件每次启动仍执行模块级副作用）；
+    ⑧ **权限是多值的**：`perm` 支持 `network,run` 这类逗号列表，判定要拆集合求交，别用整串 `in`。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 

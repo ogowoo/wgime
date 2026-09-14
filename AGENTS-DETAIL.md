@@ -202,3 +202,52 @@
   `convert_file`/`_add_dict_line`（`.strip()`）、`parse_dict`（快路径 text 模式自动处理 CRLF；慢路径显式
   `replace('\r\n','\n').replace('\r','\n')`）、`plugins.py:163`（`raw.rstrip('\r\n')`）、
   `main` 的 pastemode/plugins-disabled、`tools.py` 的造词/插件禁用名单、`clock.py` 的 `cfg` 读取。
+
+## §D5 第五十一轮全量审计台账（7 路并行审计 + 已修/未修清单）
+
+**做法**：`wgime-py-pure` 的 10 个模块 + 5 个插件分 7 份，各起一个只读审计 subagent（要求：精确 `文件:行号` +
+可复跑证据 + 区分"有意设计/真 bug"，禁止改仓库文件、禁止启动真输入法、禁止碰 `%LOCALAPPDATA%\wgime-py`），
+我同时跑横切检查：`%TEMP%\wg-r51-ast-probe.py`（重复定义 / dict 重复键 / if-else 同体 / 不可达代码 / 空 try /
+宽异常静默点清单：**A~E 结构性 0 条，F 列出 127 处 `except Exception: pass` 供人工分诊**）、
+`%TEMP%\wg-r51-invariants-probe.py`（30 项跨模块不变量）。**共 56 条候选，本轮修掉 20 项。**
+
+**已修（20）**：`_merge_user_words` 五笔+简拼（engine）｜`clock.cfg` 读失败覆盖整份闹钟（clock，高危）｜
+缓存签名加 `userwords.txt`（engine）｜`_write_config` 走 `read_text` + 行尾跟原文件（main）｜`pywfreq.txt`
+宽松读（engine）｜`unlearn` 只回滚自己写的 lastpick（engine）｜剪贴板历史 list 当函数传（tools）｜剪贴板窗口
+单例（tools）｜perm 多值绕过确认（plugins）｜Caret Helper stdin 非阻塞写（win，最严重：主线程会永久冻死）｜
+`_destroy_splash` NameError（main）｜`_run_csharp_plugin` 宽松读 + `_bg_plugin` 兜底（main）｜rev_wb 并发构建
++ 缓存 tmp 清理（engine）｜`win.dfn_always` + 换图失败 always-on（win/tray）｜托盘 `_on` try/finally（tray）｜
+托盘切语音模式要开语音（main，第四十九轮漏的入口）｜语音待确认 COMPOSING（main）｜vf 里 `[`/`]` 发 【/】（main）｜
+以词定字学整词 + dyn 门控 + 联想（main）｜标点路径补 `learn_assoc`/`last_commit`（main）｜托盘图标 `% 4`→`% len`
+（tray）｜候选条截断下限 8→4 字（bar）｜非跟随钳制取所在屏工作区（bar）｜主题切换重绘 + `ui.font` 缓存（main/ui）｜
+`[csharp]`/`[python]` 标签锚定整行（plugins）｜闭标签大小写（plugins）｜`load_tools` 块状态机（plugins）｜
+动词按任意空白切分（plugins）｜`kill` 看返回码（plugins）｜`reg-del` 缺键视为成功（plugins）｜DNS 自指指针死循环
+（tools）｜造词手填编码校验（tools）｜子网地址类型用输入地址（tools）｜时钟 nan/inf（clock）｜`poll` 里
+`import tray` 抢跑（main）｜被停用 .py 插件先判断再 exec（main）｜3 处死代码（main/engine）。
+
+**未修（已测量/已定位，留待后续）**：
+
+- **tools**：① 用户词表"第二次删除删错词"（`items` 快照与已删短的 Listbox 下标错位；真跑复现：删 cc 后再删
+  dd 实际又删 cc，dd 仍在文件里且永远删不掉）；② 取色器 / 插件管理器**没有单例**（开两个后关任一个，另一个
+  半死，与剪贴板同类）；③ 中文 Windows 下 Ping RTT 恒 0ms、Tracert 每跳 timeout（解析 `时间=13ms`/`TTL 传输中过期`
+  的中文回显；本机是英文 locale，只做了打桩验证）；④ 工具箱防重入粒度过粗（整窗一个 `running[0]`）。
+- **chat**：⑤ 重连 6s 等待期内"离开→加入"产生两个并发会话（实测并发峰值 2，需加会话代次）；⑥ relay 空闲房间
+  约 60s 被判死重连（PONG 被 wspy 消费不上抛，`idle` 单调涨）；⑦ `send()` 不看连接状态（未连接也会清空输入框 +
+  本地回显）；⑧ `state['joined']` 跨会话不复位（重连不等 CONNACK 就算"已连接"，但没发 SUBSCRIBE/join）；
+  ⑨ 离开不发 leave（对端"在线 N"永不减少）；⑩ 连接期间不禁用 昵称/房间/密钥（send 用实时控件、会话用快照，
+  房间框清空后密钥不一致 → 对端全是 `[encrypted]`）；⑪ `chat.py` 缺 `PERM='network'`/VERSION（运行不弹联网确认）。
+- **hook/win/voice**：⑫ 语音热键的 **keyup 无条件吞**（`VOICE_ON` 为真时普通 V / Ctrl+V 的松键也被吞 →
+  应用侧 V 卡住；要记住"这次按下是否真命中热键"）；⑬ `_focus_edit_rect` 用 `GetFocus()`（线程本地，永远拿的是
+  自己窗口）→ 改用 GUITI 的 `hwndFocus`；⑭ `voice._cmd_recognize` 按 utf-8 解子进程输出（控制台是 OEM 代码页
+  → 中文变 `????` 且当成功上屏）；⑮ `hook.last_error()` 恒 0（`ctypes.windll` 不维护私有 last-error，要
+  `WinDLL(use_last_error=True)`）；⑯ `clipboard_set` 无失败信号（`OpenClipboard`/`SetClipboardData` 失败时
+  `paste_text` 仍按 Ctrl+V → 粘出上一份内容；`GlobalLock` 失败还漏 HGLOBAL）；⑰ `win.py` 的 `_sys` 在 import 前使用
+  （潜伏 NameError）、`_uia_disabled`/`_ipc_started` 死状态、`_ipc_req_hwnd` 无界增长。
+- **clock/qr/calc**：⑱ 主时钟窗关掉后闹钟管理窗每次操作抛 TclError（`changed()` 没 try）；⑲ 二维码窗固定 884px
+  高（1366×768 屏上底部按钮在屏幕外）；⑳ 二维码「复制图片」的 32bpp CF_DIB 第 4 字节全 0（按 alpha 混合的应用
+  会当全透明）；㉑ `calc._to_long` 判 Err，而 C# 的 `(long)` 是 unchecked（给 long.MinValue）——**python 的 Err
+  更合理，建议只在 docstring 写明是有意差异**。
+- **需要产品决策**：㉒ `hideidle=0` 常驻时每次 `show(fixed='bottom-right')` 覆盖位置，`pos.txt` 记的拖动位置
+  在这条路径上永远不生效（要么承认"常驻固定右下角"并停止写 pos.txt，要么改 `fixed=None` 让固定分支接管）；
+  ㉓ hook 的 Shift 轻拍有"Ctrl/Alt/Win 按住不武装 + 0.4s 时限"（C# 两者都没有）、字母判定排在空格/翻页之后
+  （C# 在前，`key_first=a` 时行为不同）——两条都更像 python 的有意保守化，建议写进 §27 而不是改代码。

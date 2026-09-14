@@ -116,11 +116,11 @@ TRAY_Q = queue.Queue()
 
 def _icon_img(mode, active):
     """C# 同款: 圆角方形 + 模式汉字镂空 + 模式色."""
-    color = MODE_COLORS[mode % 4] if active else OFF_COLOR
+    color = MODE_COLORS[mode % len(MODE_COLORS)] if active else OFF_COLOR
     img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([0, 0, 63, 63], 14, fill=color + (255,))
-    ch = MODE_CHARS[mode % 4]
+    ch = MODE_CHARS[mode % len(MODE_CHARS)]
     try:
         font = ImageFont.truetype('msyh.ttc', 52)
     except Exception:
@@ -178,7 +178,9 @@ class Tray:
         icons = _embedded_icons()
         if not icons:
             return None
-        key = 'tool' if self._runmode() == 'tray' else '%d%s' % (int(mode) % 4, 'a' if active else 'i')
+        # 第五十一轮: 原来是 `% 4` —— 模式表有 5 项(混合/拼音/五笔/词典/语音), 模式 4 会退化成 0,
+        # 于是「语音模式」的托盘图标与「混合」一模一样(构建脚本按 5 个模式预渲的 '4a'/'4i' 白占体积)。
+        key = 'tool' if self._runmode() == 'tray' else '%d%s' % (int(mode) % len(MODE_CHARS), 'a' if active else 'i')
         b64 = icons.get(key) or icons.get('0a')
         if not b64:
             return None
@@ -220,11 +222,13 @@ class Tray:
                 except Exception:
                     pass
                 if h:
-                    if was:
-                        try:
-                            self.icon._release_icon()
-                        except Exception:
-                            pass
+                    # 第五十一轮: 旧句柄**无条件**先释放。以前只在 was(已可见) 时释放, 而 start() 注入 h0 后
+                    # 立刻 _refresh() 与 pystray 的 setup 线程竞态(visible 是 setup 线程置的) -> was=False,
+                    # h0 被覆盖且永不 DestroyIcon (每次启动漏一个 GDI 句柄)。
+                    try:
+                        self.icon._release_icon()
+                    except Exception:
+                        pass
                     self._inject_hicon(h)
                     if was:                         # 已经显示着 -> 通知 shell 换图 (NIM_MODIFY | NIF_ICON)
                         try:
@@ -233,8 +237,13 @@ class Tray:
                             pass
                         try:
                             import win as _w
-                            _w._dlog('tray icon swap -> %s modified=%s'
-                                     % ('%d%s' % (int(mode) % 4, 'a' if active else 'i'), NIM.get('modify_ok')))
+                            # 第五十一轮: 换图失败要有 **always-on** 记录 (§36 把 modify_ok 当唯一信号,
+                            # 而 _dlog 是 debug-only -> "图标换了但没生效"现场没有任何证据)
+                            _k = '%d%s' % (int(mode) % len(MODE_CHARS), 'a' if active else 'i')
+                            if NIM.get('modify_ok') is False:
+                                _w.dfn_always('tray icon swap FAILED -> %s (Shell_NotifyIcon modify 返回失败)' % _k)
+                            else:
+                                _w._dlog('tray icon swap -> %s modified=%s' % (_k, NIM.get('modify_ok')))
                         except Exception:
                             pass
             elif HAS_PIL:
@@ -263,7 +272,20 @@ class Tray:
     def _on(self, fn):
         def wrap(_icon, _item):
             # 入队给主线程执行 (tkinter 不能跨线程调用), 随后刷新图标
-            TRAY_Q.put(lambda: (fn(), self._refresh()))
+            # 第五十一轮: 用 try/finally 包住动作 —— 以前 fn() 抛异常时 `self._refresh()` 不执行,
+            # 异常还被 main.poll 的宽 except 吞掉, 用户看到的是"点了没反应"且日志里查不到。
+            def _go(_fn=fn):
+                try:
+                    _fn()
+                except Exception as ex:
+                    try:
+                        import win as _w
+                        _w.dfn_always('tray action err: %r' % (ex,))
+                    except Exception:
+                        pass
+                finally:
+                    self._refresh()
+            TRAY_Q.put(_go)
         return wrap
 
     # ---------- 运行模式子菜单 (ime/tray 切换 -> 写 config + 重启) ----------

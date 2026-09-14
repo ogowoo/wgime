@@ -5,6 +5,7 @@
 入口 run() 在宿主 tkinter 主线程建窗 (ui.py 设计系统); 报时/闹钟守护线程经队列派发回主线程.
 """
 import datetime
+import math
 import os
 import queue
 import re
@@ -80,19 +81,35 @@ def _read_text(path):
         fn = None
     if fn is not None:
         return fn(path)
-    with open(path, encoding='utf-8-sig') as f:
-        return f.read()
+    # 第五十一轮: 回退分支原来只认 utf-8-sig, 与 docstring 承诺的"GBK 也能读"不符 ->
+    # 用户把 clock.cfg 另存为 ANSI 时抛 UnicodeDecodeError, 上游把它当成"没有闹钟"。
+    with open(path, 'rb') as f:
+        _b = f.read()
+    for _enc in ('utf-8-sig', 'gbk'):
+        try:
+            return _b.decode(_enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return _b.decode('utf-8', 'replace')
 
 
 def load_cfg():
     try:
         with _CFG_LOCK:
-            ALARMS.clear()
             if not os.path.isfile(CFG_PATH):
+                ALARMS.clear()                     # 真没有配置文件 = 没有闹钟
                 return
+            # 第五十一轮: **先读完再清空**。以前开头就 ALARMS.clear(), 一旦读取抛异常(文件被独占/
+            # 杀软扫描/GBK 另存/读到 C# 正在写一半的文件) 就只剩"空"这一个状态 —— 而 save_cfg 是无条件
+            # 落盘的, 于是"打开时钟 -> 点新增/删除"会把用户**整份闹钟**覆盖掉(重启后全没了)。
+            try:
+                _txt = _read_text(CFG_PATH)
+            except OSError:
+                return                             # 读不到就保持现有闹钟不动 (宁可不刷新, 不可清空)
+            ALARMS.clear()
             alarm_time = ''
             alarm_on = False
-            for raw in _read_text(CFG_PATH).splitlines():   # 行切分同 C# ReadAllLines (末尾空行丢弃)
+            for raw in _txt.splitlines():           # 行切分同 C# ReadAllLines (末尾空行丢弃)
                 t = raw.strip()
                 eq = t.find('=')
                 if eq < 1:
@@ -772,7 +789,10 @@ def run():
             return
         try:
             m = float(ed_min.get().strip())
-            if m <= 0:
+            # 第五十一轮: 必须挡住 nan/inf/1e999 —— float() 接受它们而 `m <= 0` 为假, 之后
+            # fmt_cd 的 int(sec) 每 100ms 抛一次(被 tick 的 except 吞掉) -> 圆环不画、
+            # 秒表/番茄一起冻住, 而且永不结束。
+            if not math.isfinite(m) or m <= 0:
                 m = 25.0
         except (ValueError, TypeError):
             m = 25.0
@@ -791,7 +811,7 @@ def run():
         cd['flash'] = 0
         try:
             m = float(ed_min.get().strip())
-            if m <= 0:
+            if not math.isfinite(m) or m <= 0:     # 同上: nan/inf 会冻住 tick
                 m = 25.0
         except (ValueError, TypeError):
             m = 25.0

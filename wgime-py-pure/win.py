@@ -22,6 +22,23 @@ def _dlog(text):
     except Exception:
         pass
 
+def dfn_always(text):
+    """不看 WGIME_DEBUG 也写 debug.log 的诊断 (与 main._dfn_always 同一个文件/格式).
+
+    第五十一轮: tray.py 需要一条 always-on 记录(换图失败/tray 动作异常), 但它不能 import main(循环),
+    所以这里给一个同款的最小实现。只用在"排障必须"的少数地方。
+    """
+    try:
+        la = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
+        d = os.path.join(la, 'wgime-py')
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'debug.log'), 'a', encoding='utf-8') as f:
+            f.write('%.3f [tray] %s\n' % (__import__('time').time(), text))
+    except Exception:
+        pass
+
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 gdi32 = ctypes.windll.gdi32
@@ -475,15 +492,32 @@ def request_caret_refresh(reason='candidate'):
     if not _start_helper():return 0
     with _ipc_lock:
         _ipc_id[0]+=1;rid=_ipc_id[0];p=_ipc_proc[0]
+        data=None
         try:
             hwnd=int(user32.GetForegroundWindow());_ipc_req_hwnd[rid]=hwnd
-            p.stdin.write(_json.dumps({'id':rid,'reason':reason,'hwnd':hwnd,'t':_time.time()},separators=(',',':'))+'\n');p.stdin.flush()
-            _dlog('IPC send id=%d reason=%s'%(rid,reason));return rid
+            data=(_json.dumps({'id':rid,'reason':reason,'hwnd':hwnd,'t':_time.time()},separators=(',',':'))+'\n').encode('utf-8')
         except Exception as e:
-            _dlog('IPC send failed '+repr(e));
+            _dlog('IPC build failed '+repr(e));return 0
+        # 第五十一轮: **非阻塞写**. helper 是串行处理 stdin 的(一次 UIA 查询卡住就不读下一行),
+        # 而管道只有 ~4KB: 原来用 `p.stdin.write(...)` 时, 大约第 45-65 个请求就会把管道填满 ->
+        # 调用方(bar.show -> Tk 主线程, 每键都调)永久阻塞在 write 上, poll 停摆、按键被吞没人处理,
+        # 整个输入法卡死且不可自愈。改成直接写裸 fd + 非阻塞: 管道满就 **丢掉这次刷新**
+        # (光标跟随本来就是 best-effort, 下一键会再来一次), 绝不阻塞主线程。
+        try:
+            _fd=p.stdin.fileno()
+            try:os.set_blocking(_fd,False)
+            except Exception:pass
+            _n=os.write(_fd,data)
+        except BlockingIOError:
+            _ipc_req_hwnd.pop(rid,None)
+            _dlog('IPC send skipped (pipe full) id=%d'%rid);return 0
+        except Exception as e:
+            _dlog('IPC send failed '+repr(e))
+            _ipc_req_hwnd.pop(rid,None)
             try:p.kill()
             except:pass
             return 0
+        _dlog('IPC send id=%d reason=%s bytes=%s'%(rid,reason,_n));return rid
 def get_precise_caret_cache(max_age=0.8):
     if _uia_el[0] is not None and _uia_fg[0]==user32.GetForegroundWindow() and _time.monotonic()-_uia_t[0]<=max_age:return _uia_el[0]
     return None

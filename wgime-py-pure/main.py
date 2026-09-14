@@ -316,7 +316,10 @@ if _splash is not None:
         # 卡在"词库已读完 -> poll 起来"之间, 等于又给上屏加 90ms。改成先 withdraw (隐藏, 快得多),
         # 真正的 destroy 丢给主循环的 after(120) —— 反正主循环马上就起来了。
         _splash.withdraw()
-        root.after(120, _destroy_splash)
+        # 第五十一轮: `root.after(120, _destroy_splash)` 会在**注册时**就对 `_destroy_splash` 求值, 而它
+        # 定义在下面几行 —— NameError 被 except 吞掉, 于是隐藏的加载窗**永远不会被 destroy**(每进程漏一个
+        # Toplevel, 与注释/AGENTS-DETAIL 的"主循环里再 destroy"不符)。用 lambda 把名字求值推迟到调用时。
+        root.after(120, lambda: _destroy_splash())
     except Exception:
         pass
 
@@ -467,6 +470,20 @@ bar.set_theme(CFG.get('theme', 'dark'))
 TRAY = None
 
 
+def _set_mode_from_tray(m):
+    """托盘「模式」子菜单: 切模式 (钳一下防越界) —— 且切到「语音」时**顺手打开语音功能**.
+
+    第五十一轮: 第四十九轮只给 Ctrl+` 那条路径补了 `_voice_set_on(True)`, 托盘这条入口漏了 ->
+    从托盘切到「语音模式」后候选条写着"按住 ctrl+alt+v 说话", 但热键被 VOICE_ON 门控透传,
+    按了毫无反应(用户报过的原症状)。
+    """
+    ime.mode = int(m) % 5
+    reset()
+    if ime.mode == MODE_VOICE:
+        _voice_set_on(True, why='tray-mode')
+    show_page()
+
+
 def _create_tray():
     """建托盘对象 (第四十轮: 从启动主路径挪进主循环).
 
@@ -479,7 +496,7 @@ def _create_tray():
         import tray as _tray_mod
         TRAY = _tray_mod.Tray(root, {
             'toggle': lambda: set_active(not ime.active),
-            'set_mode': lambda m: (setattr(ime, 'mode', int(m) % 5), reset()),   # 5 模式: 钳一下防越界
+            'set_mode': lambda m: _set_mode_from_tray(m),   # 5 模式: 钳一下防越界 (+ 切语音模式时开语音)
             'toggle_voice': lambda: toggle_voice(),                   # 「语音输入」开关 (第四十七轮)
             'get_voice': lambda: CFG.get('voice', False),
             'voice_state': lambda: _voice_state_text(),
@@ -582,15 +599,15 @@ def load_py_plugins():
         for fn in sorted(os.listdir(pdir)):
             if not fn.lower().endswith('.py') or fn.startswith('_'):continue
             path=os.path.join(pdir,fn);modname='wgime_ext_'+str(abs(hash(os.path.abspath(path))))+'_'+fn[:-3]
-            try:
-                spec=importlib.util.spec_from_file_location(modname,path)
+            if fn.lower() in disabled:continue                # 第五十一轮: 禁用判断提到 exec **之前**
+            try:                                              # (以前在 exec 之后 -> 被停用的插件
+                spec=importlib.util.spec_from_file_location(modname,path)   # 每次启动仍会执行模块级代码/副作用)
                 if spec is None or spec.loader is None:raise ImportError('no module spec')
                 m=importlib.util.module_from_spec(spec);sys.modules[modname]=m
                 spec.loader.exec_module(m)
                 code=getattr(m,'CODE',None)
                 if not code or not callable(getattr(m,'run',None)):
                     raise ValueError('plugin must define CODE and callable run()')
-                if fn.lower() in disabled:continue                     # 按文件名禁用 (对齐 C#; 管理器写的就是文件名)
                 # External plugin wins over built-in with the same launch code.
                 PLUGINS[:]=[x for x in PLUGINS if getattr(x,'CODE',None)!=code]
                 PLUGINS.append(m);seen.add(code)
@@ -695,12 +712,6 @@ def _cand_variants(w):
         return (w, '%s%s' % (code, tr), tr)
     except Exception:
         return (w, '', '')
-
-
-def _with_code(w):
-    """候选的**完整**显示串 (`词 (码)→译`) —— `_cand_variants` 的第 0+1 段拼起来."""
-    v = _cand_variants(w)
-    return v[0] + v[1]
 
 
 def refresh():
@@ -1199,11 +1210,19 @@ def _write_config(key, value):
     path = os.path.join(APP_DIR, 'config.txt')
     try:
         try:
-            with open(path, encoding='utf-8-sig') as f:
-                text = f.read()
-        except FileNotFoundError:
+            # 第五十一轮: 走 read_text 宽松解码 —— 用户把 config.txt 另存为 ANSI(GBK) 时, 严格 utf-8 抛的
+            # UnicodeDecodeError **不是 OSError**, 会从 Tk 回调里冒出去(pythonw 下无声), 表现是
+            # "所有写配置的开关点了都没反应、也不落盘" (§28)。read_text 是二进制读+解码, 不做行尾翻译,
+            # 正好也是下面"行尾跟原文件走"需要的。
+            text = read_text(path)
+        except OSError:
             text = '; WgIme (Python) 配置 (托盘开关改动后自动创建; 完整模板见发行包里的 config.txt)\n'
-        lines = text.split('\n')
+        # 行尾**跟原文件走** (对齐 C# `SaveConfigKey` 的 `nl = t.Contains("\r\n") ? "\r\n" : "\n"`):
+        # 出厂模板 config.txt 是 LF, 以前这里固定 '\n' 再交给 text 模式 -> 第一次翻托盘开关就把整份
+        # LF 配置变成 CRLF (整文件变动, 也与 C# 写出来的不一致)。现在自己按原行尾拼, 并用 newline=''
+        # 禁止再翻译; 每行先把残留的 \r 去掉 (C# 的 Split("\r\n","\n") 也是丢终止符)。
+        nl = '\r\n' if '\r\n' in text else '\n'
+        lines = [l[:-1] if l.endswith('\r') else l for l in text.split('\n')]
         found = False
         for i, l in enumerate(lines):
             if re.match(r'^\s*%s\s*=' % re.escape(key), l):
@@ -1212,19 +1231,32 @@ def _write_config(key, value):
                 break
         if not found:
             lines.append('%s = %s' % (key, value))
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines))
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(nl.join(lines))
         return True
     except OSError as e:
         _dfn_always('config: 写入 %s = %s 失败 (%s): %r' % (key, value, path, e))
         return False
 
 
+def _save_cfg(key, value, label):
+    """写回 config.txt, **失败要告诉用户** (第四十八轮只给语音加了提示, 其余开关会静默丢设置).
+
+    第四十八轮的教训: 写失败只写日志时, 用户看到的是"开关点了没用 / 重启又变回来"。C# 的
+    `SaveConfigKey` 是 `catch {}` 完全静默 —— 这里**有意做得比 C# 好**, 记在 AGENTS §27 的反向差异清单。
+    """
+    if _write_config(key, value):
+        return True
+    _notify('设置未保存', '%s 已生效, 但写 config.txt 失败 (目录只读?), 重启后会回到旧值: %s'
+            % (label, os.path.join(APP_DIR, 'config.txt')))
+    return False
+
+
 def toggle_trad():
     """简繁输出切换 (Ctrl+Shift+F / 托盘): 立即生效 + 写回 config.txt (对齐 C# Hook_OnToggleTrad 的持久化)."""
     ime.trad = not ime.trad
     _dfn('trad=%s' % ime.trad)
-    _write_config('trad', '1' if ime.trad else '0')
+    _save_cfg('trad', '1' if ime.trad else '0', '繁体输出')
     reset()
     _refresh_tray()
 
@@ -1232,7 +1264,7 @@ def toggle_trad():
 def toggle_followcaret():
     CFG['followcaret'] = not CFG.get('followcaret', True)
     _dfn('followcaret=%s' % CFG['followcaret'])
-    _write_config('followcaret', '1' if CFG['followcaret'] else '0')   # 写回 config.txt
+    _save_cfg('followcaret', '1' if CFG['followcaret'] else '0', '跟随光标')
     show_page()   # 立即用新 followcaret 重定位候选框(组字/常驻), 否则"点了没反应"
 
 
@@ -1240,7 +1272,7 @@ def toggle_showcode():
     """反查编码开关: 候选上显示反查编码(五笔用五笔码, 否则拼音)."""
     CFG['showcode'] = not CFG.get('showcode', False)
     _dfn('showcode=%s' % CFG['showcode'])
-    _write_config('showcode', '1' if CFG['showcode'] else '0')   # 写回 config.txt
+    _save_cfg('showcode', '1' if CFG['showcode'] else '0', '反查编码')
     if CFG['showcode']:
         try:
             engine.warm_rev_wb()      # 刚打开: 后台建反查表, 别让下一键卡 ~1.2s
@@ -1258,7 +1290,7 @@ def toggle_trans():
     看不到东西" (多半是跑着旧文件, 或词典表还没加载完), 有这条日志就能一眼看出来。"""
     CFG['trans'] = not CFG.get('trans', True)
     _dfn('trans=%s' % CFG['trans'])
-    _write_config('trans', '1' if CFG['trans'] else '0')          # 写回 config.txt
+    _save_cfg('trans', '1' if CFG['trans'] else '0', '译文')          # 写回 config.txt
     try:
         _ef = os.path.join(DICT_DIR, 'en-freq.txt')          # 诊断: 用**文件大小**判"常用词表部署了没",
         _ef_n = os.path.getsize(_ef) if os.path.exists(_ef) else 0   # 不看 _en_rank_n (吃缓存时是 0)
@@ -1288,7 +1320,7 @@ def toggle_hideidle():
     """空闲隐藏开关: 空闲时隐藏候选窗(0=常驻). 切后直接 show_page(按 hideidle 立即常驻/隐藏)."""
     CFG['hideidle'] = not CFG.get('hideidle', True)
     _dfn('hideidle=%s' % CFG['hideidle'])
-    _write_config('hideidle', '1' if CFG['hideidle'] else '0')
+    _save_cfg('hideidle', '1' if CFG['hideidle'] else '0', '空闲隐藏')
     show_page()
 
 
@@ -1296,7 +1328,7 @@ def toggle_sentence():
     """整句输入开关: 全拼连打按词频搜最佳路径."""
     CFG['sentence'] = not CFG.get('sentence', True)
     _dfn('sentence=%s' % CFG['sentence'])
-    _write_config('sentence', '1' if CFG['sentence'] else '0')
+    _save_cfg('sentence', '1' if CFG['sentence'] else '0', '整句输入')
     if ime.buf:
         refresh()
 
@@ -1305,7 +1337,7 @@ def toggle_assoc():
     """联想开关: 上屏后出联想候选."""
     CFG['assoc'] = not CFG.get('assoc', True)
     _dfn('assoc=%s' % CFG['assoc'])
-    _write_config('assoc', '1' if CFG['assoc'] else '0')
+    _save_cfg('assoc', '1' if CFG['assoc'] else '0', '联想')
 
 
 def toggle_cnpunct():
@@ -1313,15 +1345,21 @@ def toggle_cnpunct():
     CFG['cnpunct'] = not CFG.get('cnpunct', True)
     hook.set_punct(CFG['cnpunct'])
     _dfn('cnpunct=%s' % CFG['cnpunct'])
-    _write_config('cnpunct', '1' if CFG['cnpunct'] else '0')
+    _save_cfg('cnpunct', '1' if CFG['cnpunct'] else '0', '全角标点')
     _refresh_tray()
 
 
 def set_theme(name):
     CFG['theme'] = name
     bar.set_theme(name)
+    # 第五十一轮: 候选条的颜色只在 show() 里取自 THEMES, 所以换主题后必须重绘 —— 以前只改 alpha,
+    # 于是"切主题"看起来只是变半透明, 底色/文字要到下一次按键才变。
+    if ime.buf:
+        refresh()
+    else:
+        show_page()
     _dfn('theme=%s' % name)
-    _write_config('theme', name)   # 写回 config.txt
+    _save_cfg('theme', name, '主题')   # 写回 config.txt
 
 
 def quit_app():
@@ -1345,7 +1383,8 @@ def switch_mode(new_mode):
     """托盘「运行模式」切换: 写回 config mode=ime|tray, 然后重启进程生效.
     对齐 C# 侧设计: 切换不热改 hook/菜单, 重启后按新 mode 干净启动."""
     new_mode = 'ime' if new_mode == 'ime' else 'tray'
-    _write_config('mode', new_mode)
+    if not _save_cfg('mode', new_mode, '运行模式'):
+        return                       # 写不进去就别重启: 否则重启后还是旧模式, 用户看到的是"切换没生效"
     _dfn('switch mode -> %s' % new_mode)
     try:
         if 'TRAY' in globals() and TRAY and getattr(TRAY, 'icon', None):
@@ -1468,13 +1507,21 @@ def digit_as_code():
 
 
 def commit_char(idx):
+    """以词定字 (`[` / `]`): 取首候选的首字/末字上屏 (对齐 C# `Hook_OnPickChar`).
+
+    第五十一轮对齐 C# 三点: ① 学的是**整个候选词** `w`(送出去的是单字 `c`) —— 以前把单字当词学,
+    于是多字词永远得不到这次提升/LastPick; ② 动态候选**不学**(C# `!dynSet.Contains(w)`, 与 §14 一致);
+    ③ 定字后按 C# 调 `BeginAssoc(c)` 出联想 (以前 reset() 直接清掉, 定字后没有联想)。
+    """
     if not ime.cands:
         return
     w = ime.cands[0]
     c = w if len(w) == 1 else (w[0] if idx == 0 else w[-1])
-    engine.learn(ime.buf, c, ime.mode)
+    if w not in ime.dyn_set:
+        engine.learn(ime.buf, w, ime.mode)
     inject(c)
     reset()
+    begin_assoc(c)
 
 
 def _refresh_tray():
@@ -1659,6 +1706,23 @@ public static class WgPluginHost {
 '''
 
 
+def _bg_plugin(fn, *args):
+    """后台线程里跑插件/工具任务的统一入口: **异常必须报出来**。
+
+    pythonw 下 `sys.stdout/stderr` 都是 None, 裸线程里抛异常是完全无声的 (threading.excepthook 自己
+    也打不出东西) —— 用户看到的就是"点了插件没反应"。这里兜住并走气泡 (对齐 §25 的状态反馈) + 日志。
+    """
+    try:
+        fn(*args)
+    except Exception as ex:
+        _dfn('%s err %r' % (getattr(fn, '__name__', 'task'), ex))
+        try:
+            name = getattr(args[0], 'name', '') if args else ''
+            _notify('插件运行出错', '%s: %r' % (name, ex))
+        except Exception:
+            pass
+
+
 def _find_csc():
     """找 .NET Framework 自带 csc.exe (系统组件, 无需安装)."""
     for root in (r'C:\Windows\Microsoft.NET\Framework64\v4.0.30319',
@@ -1673,7 +1737,7 @@ def _run_csharp_plugin(payload):
     """[csharp] 插件: 直接调系统自带 csc.exe 编译成独立 exe 并运行 (不再经 PowerShell+CodeDom sidecar).
     产物按源码 md5 缓存在 DATA_DIR/runtime/csc/, 二次启动零编译. csc 缺失/编译失败回退 ps1 sidecar."""
     import subprocess
-    text = open(payload.path, encoding='utf-8').read()
+    text = read_text(payload.path)            # 宽松解码 (§28): 用户可能把插件 txt 存成 ANSI/GBK
     m = re.search(r'(?s)\[csharp\]\s*(.*?)\[/csharp\]', text)
     if not m:
         _dfn('csharp plugin %s: no [csharp] block' % payload.name)
@@ -1748,7 +1812,7 @@ def run_launcher(l):
         threading.Thread(target=_run_python_plugin_actions, args=(payload, ctx), daemon=True).start()
         return
     if kind == 'csharp':                                   # [csharp] 插件: 直编 csc.exe+缓存 (后台线程, 不阻塞打字)
-        threading.Thread(target=_run_csharp_plugin, args=(payload,), daemon=True).start()
+        threading.Thread(target=_bg_plugin, args=(_run_csharp_plugin, payload), daemon=True).start()
         return
     if kind == 'builtin':
         _show_builtin(payload)
@@ -1894,7 +1958,7 @@ def _run_plugin_file(path):
     if not _confirm_plugin(p):
         return
     if p.kind == 'csharp':
-        threading.Thread(target=_run_csharp_plugin, args=(p,), daemon=True).start()
+        threading.Thread(target=_bg_plugin, args=(_run_csharp_plugin, p), daemon=True).start()
     elif p.kind == 'python':
         ctx = {'code': p.code, 'name': p.name, 'buff': ime.buf, 'mode': ime.mode}
         threading.Thread(target=_run_python_plugin_actions, args=(p, ctx), daemon=True).start()
@@ -1956,7 +2020,7 @@ _HALF_PUNCT = {
     (0xBC, False): ',', (0xBC, True): '<', (0xBE, False): '.', (0xBE, True): '>',
     (0xBA, False): ';', (0xBA, True): ':', (0xBF, False): '/', (0xBF, True): '?',
     (0xDC, False): '\\', (0xDC, True): '|', (0xDB, False): '[', (0xDB, True): '{',
-    (0xDD, False): ']', (0xDD, True): '}', (0x34, False): '4', (0x34, True): '$',
+    (0xDD, False): ']', (0xDD, True): '}', (0x34, True): '$',
     (0xDE, False): "'", (0xDE, True): '"',
 }
 
@@ -1974,7 +2038,12 @@ def handle_punct(vk, sh):
     # [ ] 组字中以词定字 (取首候选首/末字), 空候选或空闲才是书名号 【】 (对齐 C# OnPickChar 优先级)
     # 键位按 config key_pickfirst/key_picklast (缺省 [ ]), 且只在还有候选时算"定字"
     _pk1, _pk2 = hook.KEYS.get('pickfirst', 0), hook.KEYS.get('picklast', 0)
-    if vk in (_pk1, _pk2) and _pk1 != _pk2 and ime.buf and ime.cands:
+    if vk in (_pk1, _pk2) and _pk1 != _pk2 and ime.buf:
+        if ime.buf == 'vf' or not ime.cands:
+            # C# Hook_OnPickChar 第一句: `if (cands.Count == 0 || keys == "vf") { Send(firstLast==0?"【":"】"); return; }`
+            # 第五十一轮: 以前漏了 vf 门控 -> 符号面板里按 [ 会把分类名/符号当汉字上屏并学进词频。
+            inject('【' if vk == _pk1 else '】')
+            return
         commit_char(0 if vk == _pk1 else 1)
         return
     if not CFG.get('cnpunct', True):
@@ -1988,6 +2057,11 @@ def handle_punct(vk, sh):
         top = ime.cands[0]
         if top != ime.app_cand:
             inject(top)
+            # 第五十一轮: 对齐 C# `RecordCommit` 的第一句 `LearnAssoc(前词, w)` —— 标点这条路也要记
+            # bigram 并推进前词, 否则下一次 commit 的联想前词会停留在更早的词上(联想错配)。
+            if ime.last_commit and len(top) <= 8 and is_all_cjk(top):
+                engine.learn_assoc(ime.last_commit, top)
+            ime.last_commit = top if (len(top) <= 8 and is_all_cjk(top)) else None
             record_commit(top, ime.buf)     # 对齐 C# Hook_OnPunct 的 RecordCommit (自动造词链; 词频仍不强化)
     if ime.buf or ime.assoc_showing:
         reset()                                    # 清组字/联想/vf 符号面板, 再上屏标点
@@ -2320,13 +2394,14 @@ def poll():
             pass
         # 先排空托盘动作 (pystray 线程入队, 此处主线程执行)
         try:
-            import tray as _traymod
-            for _ in range(8):
-                try:
-                    a = _traymod.TRAY_Q.get_nowait()
-                except Exception:
-                    break
-                a()
+            if TRAY is not None:               # 第五十一轮: 托盘没起来时 TRAY_Q 必然是空的,
+                import tray as _traymod        # 别在这里 `import tray`(实测 ~128ms) 去抢
+                for _ in range(8):             # _deferred_tray 刻意安排到 150ms 那档的装载时间 ——
+                    try:                       # 它原来排在本函数的开头, 把"排队的键"压在后面处理。
+                        a = _traymod.TRAY_Q.get_nowait()
+                    except Exception:
+                        break
+                    a()
         except Exception:
             pass
         for _ in range(64):
@@ -2337,7 +2412,10 @@ def poll():
             handle(vk)
         _maybe_admin_hint()   # 提权前台 + 未提权 wgime: 托盘提示(节流一次)
     finally:
-        hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat)
+        hook.COMPOSING[0] = bool(ime.buf or ime.assoc_showing or ime.sym_cat
+                                 or _VOICE.get('text') is not None)   # 语音待确认结果也要让钩子吞空格/Esc/数字
+                                                                     # (第五十一轮: 以前这一拍就把 COMPOSING
+                                                                     #  重算成 False, 识别结果永远收不回来)
         try:
             if root.winfo_exists():
                 root.after(8, poll)                # 键盘事件轮询间隔: 15→8ms, 降每键等待 (空转仅 queue 探测, 开销可忽略)

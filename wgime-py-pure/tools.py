@@ -304,7 +304,12 @@ def _clip_poll():
             t = w32.clipboard_text()
             if _clip_consider(t, _clip_win[0] is not None):
                 try:
-                    _clip_win[0].after(0, _clip_refresh)
+                    # 第五十一轮修: 这里原来传的是 **list** `_clip_refresh`(刷新函数在 `[0]` 里), Tk 回调期
+                    # 抛 `TypeError: 'list' object is not callable` —— 那个 try/except 在另一个线程里抓不到,
+                    # 表现为"窗口开着复制新内容列表不刷新"(要手点刷新或重开窗口)。
+                    _fn = _clip_refresh[0]
+                    if _fn is not None:
+                        _clip_win[0].after(0, _fn)
                 except Exception:
                     pass
         except Exception:
@@ -316,6 +321,16 @@ _clip_refresh = [None]
 
 
 def show_clipboard():
+    # 第五十一轮: 加单例 (对齐 C# ShowClip) —— 没有它时开两个窗, 关掉任一个就把 _clip_win[0] 置 None,
+    # 另一个还开着的窗从此完全不收集剪贴板, 也不刷新。
+    _w0 = _clip_win[0]
+    try:
+        if _w0 is not None and _w0.winfo_exists():
+            _w0.deiconify()
+            _w0.lift()
+            return
+    except Exception:
+        pass
     if not _clip_started[0]:                            # 守卫: 轮询线程只启动一次(防多开叠加)
         _clip_started[0] = True
         _bg(_clip_poll)
@@ -954,7 +969,8 @@ def _dns_read_name(msg, pos):
                 pos = p + 2
             p = ptr
             jumped = True
-            continue
+            guard += 1                 # 第五十一轮: 指针跳转也要计守卫 —— 自指压缩指针(0xC0 0x0C 指回自己)
+            continue                   # 原来只有真实标签才 guard+=1 -> 死循环 100% CPU 永不返回
         labels.append(msg[p + 1:p + 1 + ln].decode('ascii', 'replace'))
         p += 1 + ln
         if not jumped:
@@ -1094,6 +1110,10 @@ def subnet_calc(ip_text, mask_text):
     net = _parse_net(ip_text, mask_text)
     bits = net.prefixlen
     mask = int(net.netmask)
+    try:
+        _addr = ipaddress.IPv4Address(str(ip_text).split('/')[0].strip())
+    except Exception:
+        _addr = net.network_address         # 理论上到不了 (上面已解析过)
     mb = bin(mask)[2:].zfill(32)
     mb = '.'.join(mb[i:i + 8] for i in range(0, 32, 8))
     return [
@@ -1104,7 +1124,9 @@ def subnet_calc(ip_text, mask_text):
         '可用范围:  %s - %s' % (net.network_address + (0 if bits >= 31 else 1),
                                 net.broadcast_address - (0 if bits >= 31 else 1)),
         '可用主机数:     %d' % (net.num_addresses if bits == 32 else (2 if bits == 31 else net.num_addresses - 2)),
-        '地址类型:      %s  (类别 %s)' % (_ip_type(net.network_address), _ip_class(net.network_address)),
+        # 第五十一轮: 地址类型/类别看**输入的那个地址**(对齐 C# `IpType(ip)`), 不是网络地址 ——
+        # 例如 `192.168.1.1/8`: 输入地址是私有, 而网络地址 192.0.0.0 会被判成"公网"。
+        '地址类型:      %s  (类别 %s)' % (_ip_type(_addr), _ip_class(_addr)),
         '二进制:      %s' % mb,
     ]
 
@@ -1556,6 +1578,14 @@ def show_makeword(data_dir, engine, prefill=''):
         if not c:
             status.config(text='无法推导编码', fg=ui.RED)
             return
+        # 第五十一轮: 手填的编码也要过 engine.valid_code —— 否则 `a b` 这种脏编码会被写成
+        # `a b 词`(下次启动按首个空格切 -> 把 'b' 当词), 大写/中文编码则永远打不出来。
+        try:
+            if not engmod.valid_code(c):
+                status.config(text='编码不合法 (只收小写字母)', fg=ui.RED)
+                return
+        except AttributeError:
+            pass
         if engine.add_user_word(w, c):
             status.config(text='已造词: %s (%s)' % (w, c), fg=ui.GREEN)
             win.after(900, win.destroy)

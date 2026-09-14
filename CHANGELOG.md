@@ -4,6 +4,109 @@
 
 ---
 
+## 2026-09-14 (第五十一轮: 全量功能/逻辑审计 —— 7 路并行审计 + 修掉 20 项确认缺陷)
+
+用户要求："再 review 一下所有的功能、逻辑吧，我担心还有别的漏洞。"
+
+做法：把 `wgime-py-pure` 的 10 个模块 + 5 个插件分成 7 份，各起一个只读审计 subagent（每份都要求
+"精确到 `文件:行号` + 可复跑证据 + 区分'有意设计'与真 bug"，禁止改文件/启动真输入法/碰真实用户数据），
+同时我自己跑横切检查（AST 结构体检、不变量探针）。**共 56 条候选，逐条复核后本轮修掉 20 项**（其余
+按"低危/需产品决策/无法本机验证"记在 AGENTS-DETAIL §D5，留待后续）。
+
+**A. 数据/内容类（会静默丢东西，最要紧）**
+
+1. **`lastpick` 的 `\r` 累积已在第五十轮修掉**（本轮审计复核：`read_text` 的消费点全部干净）。
+2. **用户词重启后丢五笔/简拼注册**（engine.py `_merge_user_words`）：只并了拼音表 + 重建 pk/pv，没并
+   `wb`、没重建 `acro`。C# 的顺序是 `MergeUserWords(py) → MergeUserWordsWb(wb,CharWb) → BuildAcro(py)`。
+   症状：造词「你好世界」→ 重启/导入码表后全拼能出、**简拼 nhsj 和五笔 wval 都查不到**。
+   修法：按 C# 顺序补五笔注册 + 重建简拼，并把 `_init_state` 里"三张派生表"的构建提到合并用户词**之前**
+   （合并要 `char_wb` 算构词码）。证据：审计探针由 `acro=[]/wb 无` → `acro=['nhsj']/wb 有/candidates('nhsj')=['你好世界']`。
+3. **`clock.cfg` 读取失败被当成"没有闹钟"，下一次保存覆盖用户整份闹钟**（clock.py，**高危数据丢失**）：
+   原来开头 `ALARMS.clear()` 再读，读失败（文件被独占/杀软扫描/GBK 另存/读到 C# 写一半的文件）就只剩"空"，
+   而 `save_cfg` 是无条件落盘的 → 打开时钟点一下"新增/删除"就把闹钟全清。修法：**先读完再清空**，
+   读不到就保持现状；回退解码改成 utf-8-sig→gbk→replace（docstring 早就承诺能读 GBK，实现却没做）。
+4. **删除用户词的"幽灵词"**（engine.py 缓存签名）：`reload()` 会把已合并用户词的 py/wb 写进 `dict-cache.pkl`，
+   而缓存签名原来只看码表（C# 的 md5 含 `uwF`）→ 删掉 `userwords.txt` 里的词后仍命中缓存，删不掉的词永远在候选里。
+   修法：`cache_sig(dict_dir, data_dir)` 把 `userwords.txt` 的 (size, mtime) 也算进签名。
+5. **`_write_config` 用严格 utf-8 读 config.txt**（main.py，**GBK 配置下所有开关一起炸**）：用户把 config.txt
+   另存为 ANSI 后，任何写配置的开关都抛 `UnicodeDecodeError`（不是 OSError，`except OSError` 抓不到、pythonw
+   下无声），值翻转了却不落盘、也轮不到第四十八轮加的失败气泡。修法：读改走 `read_text()`（同时保留"行尾跟
+   原文件走"需要的原始 `\r\n`）。**顺带**：`_write_config` 现在保持文件原有行尾（对齐 C# `SaveConfigKey` 的 `nl`），
+   出厂模板是 LF，以前翻一次开关就把整份配置改成 CRLF。
+6. **`pywfreq.txt` 严格 utf-8 读且只 `except OSError`**：用户把语料另存成 ANSI → `UnicodeDecodeError` 穿到
+   `Engine.__init__` → **启动直接崩**。修法：走 `read_text()`。
+7. **`unlearn` 无条件 `lastpick.pop(code)`**：回滚旧学习会抹掉之后学的新词置顶。修法：只在
+   `lb.get(code) == w` 时 pop。
+8. **剪贴板历史窗口开着时不再实时刷新**（tools.py `_clip_poll`）：`after(0, _clip_refresh)` 传的是 **list**
+   （刷新函数在 `[0]`），Tk 回调期抛 `TypeError` 且那个 try/except 在别的线程里抓不到。修法：取 `[0]` 再传。
+   顺带给剪贴板窗口加**单例**（对齐 C# `ShowClip`）：以前开两个窗、关掉任一个就把 `_clip_win[0]` 清空，
+   另一个还开着的窗从此完全不收集。
+9. **多权限插件绕过确认框**（plugins.py `is_high_perm`，**权限模型失效**）：内置「剪贴板翻译」写的是
+   `PERM = "network,run"`，而 `is_high_perm` 用整串 `in HIGH_PERM` 比对 → 判成低权限、**运行时不弹确认**
+   （AGENTS-DETAIL §D3 明写它要弹）。修法：按 `[,\s|/+]+` 拆成集合求交。
+
+**B. 卡死/资源类**
+
+10. **Caret Helper 的 stdin 写入会永久冻死主线程**（win.py `request_caret_refresh`，**最严重**）：helper 是串行
+    处理 stdin 的（一次 UIA 查询卡住就不读下一行），管道只有 ~4KB；`p.stdin.write(...)` 在第 45-65 个请求后
+    阻塞并被 Tk 主线程调用（每键 `bar.show`）→ 输入法整体卡死、按键被吞没人处理、不可自愈。
+    修法：**非阻塞写裸 fd**（`os.set_blocking(fd, False)` + `os.write`），管道满就丢掉这次刷新
+    （光标跟随本就是 best-effort，下一键还会再来）。
+11. **`_destroy_splash` 永远不会被调用**（main.py）：`root.after(120, _destroy_splash)` 在**注册时**就对
+    5 行之后才定义的函数求值 → NameError 被 `except` 吞掉，隐藏的加载窗每进程漏一个 Toplevel。
+    修法：`lambda: _destroy_splash()`（延迟求值）。
+12. **`_bg_plugin` 兜底 + `[csharp]` 插件 txt 宽松读**（main.py）：`_run_csharp_plugin` 原来用严格 utf-8 读
+    用户可写的插件 txt（§28 违规）→ ANSI 另存的插件"点了没反应"（裸线程里抛 UnicodeDecodeError，pythonw
+    下 stdout/stderr 都是 None，什么也看不到）。修法：`read_text()` + 给后台插件线程加统一兜底（异常 → 气泡 + 日志）。
+13. **反查表后台构建被重复并发启动**（engine.py `_invalidate_rev_wb` 顺手清 `_rev_thread`）：实测并发峰值 2。
+    修法：失效不清 `_rev_thread`，worker 收尾只清自己那一格。**缓存写失败留下 ~95MB `.tmp`** 也在同一处修掉。
+14. **`_save_cache` 失败不删 tmp**；**`_ipc_req_hwnd` 无界增长**（helper 不回包时）；**托盘换图失败没有任何
+    always-on 记录**（`modify_ok` 只进 debug 日志）→ 新增 `win.dfn_always()`，换图失败写 always-on 日志。
+15. **托盘 `_on` 包装没有 try/finally**：动作抛异常时 `_refresh()` 不执行、异常被 poll 的宽 except 吞掉
+    （"点了没反应"且日志里查不到）。修法：try/except/finally + always-on 记录。
+
+**C. 行为/一致类**
+
+16. **托盘「模式→语音模式」没开语音**（main.py `set_mode`，第四十九轮只修了 Ctrl+` 那条路径）→ 候选条写着
+    "按住 ctrl+alt+v 说话"但热键完全不响应。修法：抽 `_set_mode_from_tray()`，切到语音模式时 `_voice_set_on(True)`。
+17. **语音待确认结果被 `poll()` 的 finally 立刻清掉 COMPOSING** → 识别完按空格只是给应用打个空格、
+    Esc 无效、再按热键静默丢弃（表现为"时灵时不灵"）。修法：COMPOSING 的表达式加上 `_VOICE['text'] is not None`。
+18. **`vf` 符号面板里按 `[`/`]` 把分类名/符号当汉字上屏并学词频**（C# 此时发 【/】）：补 `keys == "vf"` 门控。
+19. **以词定字 (`[`/`]`) 三处与 C# 不一致**：学了单字而不是整词、没有动态候选门控、定字后没有联想。
+    修法：学整词 + `dyn_set` 门控 + `begin_assoc(c)`。
+20. **标点自动上屏不学联想 bigram、不推进 `last_commit`** → 下一次联想的"前词"错配（C# `RecordCommit`
+    第一句就是 `LearnAssoc`）。修法：标点路径补 `learn_assoc(前词, top)` 并推进 `last_commit`。
+
+**D. 其他同批修掉的（低危但都是真缺陷）**
+
+- 托盘图标索引写死 `% 4`（模式表有 5 项）→「语音模式」的图标与「混合」一模一样；构建脚本预渲的 `'4a'/'4i'` 是 `'0a'/'0i'` 的复制品。改 `% len(MODE_CHARS)`。
+- 候选条退化到最小截断（8 字）仍超宽时窗口被硬钳、尾部候选被裁掉；把截断下限放到 4 字（§15 的"全部候选可见"在词典长候选下更接近成立）。
+- 非跟随模式用**主屏**工作区钳制 → 拖到副屏的候选条被拉回主屏；改用 `win.workarea_at(候选条中心)`。
+- 换主题只改 alpha 不重绘（底色/文字要等下一次按键）；`ui.font()` 每次枚举全系统字体（实测 0.8ms/次）；`plugin_dir`/`voice_state` 是没人用的 api 项。
+- 插件：`[csharp]`/`[python]` 标签不锚定行（注释里写一对标签就能把插件类型从 steps 改成 csharp 并执行标签间的文字）；闭标签大小写敏感（`[PS]…[/PS]` 整块被跳过）；`load_tools` 不记多行块状态（块内 `[CmdletBinding()]` 变假按钮、`code=` 被吞、注释丢失）；动词只按空格切（tab 行整行当动词）；`kill` 无 psutil 回退时对不存在的进程也报 `killed 1`；`reg-del` 删不存在的键记失败（C# 静默成功）。
+- 工具：DNS 名解析的自指压缩指针死循环（守护线程 100% CPU 永不返回）；造词手填编码不过 `valid_code`（`a b` 会污染 userwords.txt）；子网"地址类型"看网络地址而非输入地址（`192.168.1.1/8` 判成"公网"）；时钟"分"输入接受 nan/inf/1e999 → tick 每 100ms 抛异常被吞、秒表/番茄一起冻结。
+- main：`poll()` 第一拍就 `import tray`（~128ms），抢在刻意推迟到 150ms 的托盘装载之前 → 启动首键被压；被"停用"的 .py 插件在判断禁用**之前**就 `exec_module`（模块级副作用照跑）；`_with_code`、`_HALF_PUNCT[(0x34, False)]` 死代码；`_save_assoc` 是死代码（联想落盘只有 `save_freq` 一处）。
+
+**验证**（全部真跑，隔离 `LOCALAPPDATA`）：
+
+- `%TEMP%\wg-r50-lastpick-probe.py` **11/11**、`wg-r51-invariants-probe.py` **30/30**（托盘写的 11 个
+  config 键都被 load_config 认、模板 35 键全认、tray 引用的 48 个 api 键全存在、5 张模式表长度一致、
+  22 个键真跑"改了确实生效"）、`wg-r51-cfg-probe.py` **16/16**（LF/CRLF 行尾保持、写失败返回 False +
+  bubble、9 个 toggle 都处理写失败）、`wg-r51-plugins-probe.py` **12/12**、`wg-r50-package-probe.py` **3/3**
+  （直接从成品单文件里内嵌的 engine 源码跑）、`wg-r51-f1-ab.py`（HEAD 抛 UnicodeDecodeError / 修后正常 +
+  `_bg_plugin` 把线程异常转成气泡）。
+- 审计方自己的探针复跑：engine（用户词五笔/简拼、缓存签名、GBK pywfreq、unlearn、rev_wb 并发）、
+  tray 图标 `%4`、bar 宽度、plugins perm/标签/块、tools 剪贴板/DNS、clock 覆盖/nan。
+- `tests\pure-state-harness.py` **23 项全过**（新增 5 项：LF/CRLF 配置写回、写失败要通知、GBK 插件 txt 不抛、
+  lastpick 的 2 项）、`undefined-globals.py` = **0**、dist/package 逐字节同步 OK。
+
+**本轮未修（已记录，见 AGENTS-DETAIL §D5）**：用户词表二次删除下标错位、取色器/插件管理器单例、
+中文 Windows 的 ping RTT/tracert 文案、chat 的 6 项（重连并发/空闲超时/send 门控/joined 复位/离开不通知/
+输入框不禁用）、calc `_to_long` 的 unchecked 语义、hook 语音 keyup 无条件吞、`_focus_edit_rect` 用 `GetFocus`、
+`voice._cmd_recognize` 的 OEM 解码、hook `last_error()` 恒 0、clipboard_set 无失败信号。
+
+---
+
 ## 2026-09-14 (第五十轮: 修 `lastpick_*.txt` 的 `\r` 累积 —— "上次选的词置顶"一直在静默失效)
 
 用户反馈："`lastpick_mix.txt` 这个文件好像有点诡异哦。"

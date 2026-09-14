@@ -210,6 +210,46 @@ def main():
     cands1 = eng.candidates(k1, 0)[0]
     check('lastpick 仍置顶', bool(lp_word) and cands1[0] == lp_word, repr(cands1[:5]))
 
+    print('--- config.txt 写回: 行尾跟原文件走 + 写失败要告诉用户 (第五十一轮) ---')
+    # ⚠ APP_DIR 在 harness 里指向**仓库源码目录**(main.py 所在处), 碰 _write_config 前必须先改到临时目录
+    real_app_dir = ns['APP_DIR']
+    cfg_dir = os.path.join(tmp, 'appdir')
+    os.makedirs(cfg_dir, exist_ok=True)
+    ns['APP_DIR'] = cfg_dir
+    assert os.path.abspath(cfg_dir).startswith(os.path.abspath(tmp)), cfg_dir
+    cfg_path = os.path.join(cfg_dir, 'config.txt')
+    with open(cfg_path, 'wb') as f:
+        f.write(b'fuzzy = none\ntrad = 0\n')             # 出厂模板 config.txt 就是 LF
+    ns['_write_config']('trad', '1')
+    raw = open(cfg_path, 'rb').read()
+    check('LF 配置写回后仍是 LF', b'\r' not in raw and b'trad = 1' in raw, repr(raw))
+    with open(cfg_path, 'wb') as f:
+        f.write(b'fuzzy = none\r\ntrad = 0\r\n')
+    ns['_write_config']('trad', '1')
+    raw = open(cfg_path, 'rb').read()
+    check('CRLF 配置写回后仍是 CRLF', raw.count(b'\r\n') == 2 and b'trad = 1' in raw, repr(raw))
+    blocked = os.path.join(tmp, 'blocked')
+    with open(blocked, 'wb') as f:                       # 同名文件挡路 -> 写一定失败
+        f.write(b'x')
+    ns['APP_DIR'] = os.path.join(blocked, 'sub')
+    del log[:]
+    saved = ns['_save_cfg']('trad', '1', '繁体输出')
+    check('写失败时 _save_cfg 返回 False', saved is False, repr(saved))
+    check('写失败时通知用户', ('notify', '设置未保存') in log, repr(log))
+    ns['APP_DIR'] = real_app_dir
+
+    print('--- [csharp] 插件 txt 用宽松解码读 (第五十一轮: ANSI/GBK 另存不能崩线程) ---')
+    gbk_plugin = os.path.join(tmp, 'gbk-plugin.txt')
+    with open(gbk_plugin, 'wb') as f:
+        f.write('code = gbk1\nname = 插件\n'.encode('gbk'))      # 无 [csharp] 块: 读完即返回, 不会真编译
+    payload = type('P', (), {'name': 'gbk1', 'path': gbk_plugin})()
+    err = ''
+    try:
+        ns['_run_csharp_plugin'](payload)
+    except Exception as ex:
+        err = repr(ex)
+    check('GBK 插件 txt 不再抛异常', err == '', err)
+
     ns['root'].destroy()
     shutil.rmtree(tmp, ignore_errors=True)
     if fails:

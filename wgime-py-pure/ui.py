@@ -25,14 +25,25 @@ RED = '#FF375F'
 FONT_NAMES = ['Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei UI']
 
 
+_FAMS_CACHE = [None]         # 第五十一轮: 字体族枚举实测 ~0.8ms/次(tkfont.families 有 900+ 项),
+                             # font() 又被每个控件调用 -> 缓存一次即可 (root 建好前后各算一次)
+
+
+def _families():
+    if _FAMS_CACHE[0] is None:
+        try:
+            if getattr(tk, '_default_root', None):
+                _FAMS_CACHE[0] = set(tkfont.families(tk._default_root))
+        except Exception:
+            return set()                      # 这次不算数(下次再试), 别把"空集"缓存进去
+    return _FAMS_CACHE[0] or set()
+
+
 def font(size, bold=False, mono=False):
     if mono:
         return ('Consolas', int(size))
     # 检测系统实际可用字体(避免 tkinter 静默替换为空 / 修复原 try/except 永不触发的死代码)
-    try:
-        fams = set(tkfont.families(tk._default_root)) if getattr(tk, '_default_root', None) else set()
-    except Exception:
-        fams = set()
+    fams = _families()
     for n in FONT_NAMES:
         if not fams or n in fams:
             return (n, int(round(size)), 'bold' if bold else 'normal')

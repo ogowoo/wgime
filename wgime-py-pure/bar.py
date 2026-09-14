@@ -178,12 +178,12 @@ class CandBar:
             for _i, _cd in enumerate(cands):
                 parts.append((_cd[0] if isinstance(_cd, tuple) else _cd, _hint(_cd, tier, _i)))
             last = parts
-            for n in range(24, 7, -2):
-                last = [(w if len(w) <= n else w[:n] + '…') + h for (w, h) in parts]
-                line2 = self._pad
+            for n in range(24, 3, -2):        # 第五十一轮: 截断下限 8 -> 4 字 (原来 8 字仍可能远超 max_w,
+                last = [(w if len(w) <= n else w[:n] + '…') + h for (w, h) in parts]   # 窗口被硬钳后
+                line2 = self._pad                                                      # 尾部候选直接被裁掉)
                 for i2, cnd in enumerate(last):
                     line2 += self._measure(self._fd, '%d.%s' % (i2 + 1, cnd)) + 16
-                if line2 <= max_w or n <= 8:
+                if line2 <= max_w or n <= 4:
                     break
             clipped = last
             if line2 <= max_w:
@@ -265,8 +265,13 @@ class CandBar:
         else:
             # 固定模式(用户可拖动): 保持当前位置, 但候选变宽/高时 clamp 到工作区, 避免超屏看不到;
             # 若之前拖到屏幕边缘粘附过, 这里按粘附边重新贴齐 (候选条变宽也不会离开那条边)。
-            ra = win.screen_workarea()
             cx, cy = self.top.winfo_x(), self.top.winfo_y()
+            # 第五十一轮: 钳制要用**候选条所在那块屏**的工作区 —— 原来固定取主屏(SPI_GETWORKAREA),
+            # 多显示器下会把拖到副屏的候选条硬拉回主屏(pos.txt 里的副屏坐标同样被钳)。取不到再退回主屏。
+            try:
+                ra = win.workarea_at(cx + w // 2, cy + h // 2) or win.screen_workarea()
+            except Exception:
+                ra = win.screen_workarea()
             if self._saved_pos is not None and not self._pos_applied:
                 # 上次拖到/粘到的位置 (重启后仍在原处); 顺带按当前尺寸重新推断该贴哪条边
                 cx, cy = self._saved_pos

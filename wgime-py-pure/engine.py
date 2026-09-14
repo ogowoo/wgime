@@ -795,12 +795,15 @@ def dict_paths(dict_dir):
     return [os.path.join(dict_dir, n) for n in CACHE_FILES]
 
 
-def cache_sig(dict_dir):
-    """索引缓存的"码表签名": 版本 + **词库目录** + 每个码表的 (size, mtime).
+def cache_sig(dict_dir, data_dir=None):
+    """索引缓存的"码表签名": 版本 + **词库目录** + 每个码表的 (size, mtime) + userwords.txt。
 
     只有这个签名变了才需要重建索引 (**词库没变就直接吃缓存**, 见 Engine._load_cache/__init__)。
     带上目录是必要的: 不带的话, 在"没有码表的目录"里跑出来的空索引缓存, 会在同一个
     DATA_DIR 下被另一个目录误命中(曾实际发生: 用户 DATA_DIR 里留下 75 字节空缓存)。
+    **第五十一轮**: `userwords.txt` 也必须进签名 —— `reload()`(导入码表)会把"已合并用户词"的
+    py/wb 写进缓存, 而 python 的签名原来只看码表, 于是删掉 userwords.txt 里的词后仍命中缓存,
+    出现删不掉的"幽灵词" (C# 的缓存 md5 里是带 uwF 的, 这里对齐)。
     """
     files = []
     for p in dict_paths(dict_dir):
@@ -808,7 +811,14 @@ def cache_sig(dict_dir):
             files.append([os.path.getsize(p), int(os.path.getmtime(p))])
         except OSError:
             files.append(None)
-    return {'ver': CACHE_VER, 'dir': os.path.abspath(dict_dir), 'files': files}
+    sig = {'ver': CACHE_VER, 'dir': os.path.abspath(dict_dir), 'files': files}
+    if data_dir:
+        p = os.path.join(data_dir, 'userwords.txt')
+        try:
+            sig['uw'] = [os.path.getsize(p), int(os.path.getmtime(p))]
+        except OSError:
+            sig['uw'] = None
+    return sig
 
 
 def read_cache_sig(data_dir):
@@ -826,7 +836,7 @@ def cache_is_reusable(dict_dir, data_dir):
     try:
         if not os.path.exists(os.path.join(data_dir, 'dict-cache.pkl')):
             return False
-        return read_cache_sig(data_dir) == cache_sig(dict_dir)
+        return read_cache_sig(data_dir) == cache_sig(dict_dir, data_dir)
     except Exception:
         return False
 
@@ -852,6 +862,8 @@ class Engine:
 
     def _build_ec(self):
         """建「词典」模式(3)那半张表 (ec 原始表 + 排序数组 + CN->EN 反查)."""
+        self._ec_gen += 1          # 第五十一轮: 代数 +1 —— 让"正在后台读缓存段"的线程作废,
+                                   # 否则它可能在 reload() 重建之后把旧表盖回来 (_ec_gen 原来是死字段)
         self.ec = parse_dict(os.path.join(self.dict_dir, 'ec.txt'))
         overlay_import(self.ec, parse_dict(os.path.join(self.dict_dir, 'import_ec.txt')))
         self.ek, self.ev = build_sorted(self.ec)
@@ -893,18 +905,20 @@ class Engine:
         self.word_freq = {}
         self.word_freq_total = 0
         try:
-            with open(os.path.join(self.dict_dir, 'pywfreq.txt'), encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    c = line.rfind(':')
-                    if c < 1:
-                        continue
-                    try:
-                        n = int(line[c + 1:])
-                    except ValueError:
-                        continue
-                    self.word_freq[line[:c]] = n
-                    self.word_freq_total += n
+            # 第五十一轮: 走 read_text 宽松解码 —— 用户把 pywfreq.txt 另存为 ANSI/GBK 时,
+            # 严格 utf-8 抛的 UnicodeDecodeError **不是 OSError**, 会一路穿到 Engine.__init__,
+            # 表现为"启动直接崩"(AGENTS §28)。同目录其它码表都是宽松读, 只有这里漏了。
+            for line in read_text(os.path.join(self.dict_dir, 'pywfreq.txt')).split('\n'):
+                line = line.strip()
+                c = line.rfind(':')
+                if c < 1:
+                    continue
+                try:
+                    n = int(line[c + 1:])
+                except ValueError:
+                    continue
+                self.word_freq[line[:c]] = n
+                self.word_freq_total += n
         except OSError:
             pass
         self._core_extra_ready = True
@@ -935,7 +949,14 @@ class Engine:
         self._init_state()
 
     def _merge_user_words(self):
-        """把 userwords.txt 合并进 self.py 并重建索引 (启动/热重载共用, 避免导入码表后丢用户词)."""
+        """把 userwords.txt 合并进候选表并重建索引 (启动/热重载共用, 避免导入码表后丢用户词).
+
+        第五十一轮修: 以前**只并拼音表 + 重建 pk/pv** —— 于是"重启/导入码表后"用户词丢了五笔注册
+        与简拼索引(会话内造词正常, 因为 `add_user_word` 两样都补), 用户看到的是"造的词过一会儿
+        就只有全拼能打出来, 简拼 nhsj / 五笔码都查不到"。C# `BuildDicts` 的顺序是
+        MergeUserWords(py) → MergeUserWordsWb(wb, CharWb) → BuildAcro(py), 这里对齐。
+        依赖 `char_wb`(算构词码), 所以调用方必须保证三张派生表已就绪 —— 见 `_init_state` 的次序。
+        """
         if not self.user_words:
             return
         for w, c in self.user_words.items():
@@ -946,6 +967,21 @@ class Engine:
             else:
                 self.py[c] = w
         self.pk, self.pv = build_sorted(self.py)
+        # 五笔表: 用户词的构词码也要注册 (C# MergeUserWordsWb)
+        wb_changed = False
+        for w in self.user_words:
+            wbc = self.wubi_code_for(w)
+            if not wbc:
+                continue
+            curw = self.wb.get(wbc)
+            if curw and (' ' + curw + ' ').find(' ' + w + ' ') >= 0:
+                continue
+            self.wb[wbc] = (curw + ' ' + w) if curw else w
+            wb_changed = True
+        if wb_changed:
+            self.wk, self.wv = build_sorted(self.wb)
+            self._invalidate_rev_wb()            # 五笔表变了, 反查表作废
+        self.acro = build_acro(self.py, self.char_py)   # 简拼索引必须在并完用户词之后重建
 
     def reload(self):
         """导入码表后热重载: 重建索引 + 刷新缓存 + 重放用户词(否则已造用户词丢失)."""
@@ -954,7 +990,7 @@ class Engine:
         self._save_cache(self._paths())
 
     def _cache_sig(self, paths):
-        return cache_sig(self.dict_dir)
+        return cache_sig(self.dict_dir, self.data_dir)
 
     def _sig_path(self):
         return self._cache_path() + '.sig'
@@ -1044,7 +1080,8 @@ class Engine:
                     # 重建也失败: 记住别再重试 —— 否则词典模式每按一键就起一个读 24MB 码表的线程
                     self._ec_fail = True
                     print('[wgime] 词典表重建失败: %r (词典模式将没有候选)' % (e2,), file=sys.stderr)
-        self._ec_thread = None
+        if self._ec_thread is threading.current_thread():
+            self._ec_thread = None          # 只清自己那一格 (第五十一轮: 被失效后已起新线程时别抹掉它)
 
     def _load_ec_sync(self):
         """同步把词典表弄到手 (只在写缓存/重建这类必须完整的场合调用, 输入路径绝不走这里)."""
@@ -1089,6 +1126,10 @@ class Engine:
             self._write_sig(self._cache_sig(paths))
         except Exception as e:
             print('[wgime] dict-cache save failed: %r' % (e,), file=sys.stderr)   # 别静默: 存不下会导致每次启动重建
+            try:
+                os.remove(self._cache_path() + '.tmp')     # 第五十一轮: 别把 ~95MB 的半截缓存留在用户目录
+            except OSError:
+                pass
 
     def _write_sig(self, sig):
         try:
@@ -1245,8 +1286,8 @@ class Engine:
             if 0 <= mode < 3:
                 dec(self.freq_m[mode], w)
                 lb = self.lastpick_m[mode]
-                if code in lb:
-                    lb.pop(code, None)
+                if lb.get(code) == w:            # 只回滚**自己写的那条**: 期间又学了别的词就别抹掉它
+                    lb.pop(code, None)           # (第五十一轮: 原来是无条件 pop, 会抹掉更新的置顶)
                 self._untouch_recent(mode, w)
             self.freq_dirty += 1   # 消费掉回滚, 触发后续落盘
 
@@ -1336,15 +1377,8 @@ class Engine:
         except OSError:
             pass
 
-    def _save_assoc(self):
-        try:
-            snap = sorted(self.assoc.items(), key=lambda kv: -sum(kv[1].values()))[:20000]
-            with open(os.path.join(self.data_dir, 'assoc.txt'), 'w', encoding='utf-8') as f:
-                for k, m in snap:
-                    tops = sorted(m.items(), key=lambda kv: -kv[1])[:8]
-                    f.write('%s\t%s\n' % (k, ' '.join('%s:%d' % (w, c) for w, c in tops)))
-        except OSError:
-            pass
+    # (第五十一轮: 删掉了死代码 `_save_assoc` —— 联想落盘只有 `save_freq` 一处, 两份序列化逻辑
+    #  改一处漏一处的风险比省几行大)
 
     def save_freq(self):
         # 锁内做快照(防 UI 线程 learn/learn_assoc 并发写被打断), 锁外写盘(写盘不阻塞学习)
@@ -1642,13 +1676,17 @@ class Engine:
             rev = {}
         if gen == self._rev_gen and self._rev_wb is None:      # 期间码表没被改过才装上
             self._rev_wb = rev
-        self._rev_thread = None
+        if self._rev_thread is threading.current_thread():
+            self._rev_thread = None        # 只清自己那一格: 失效后又起了新线程时别把它的占位抹掉
 
     def _invalidate_rev_wb(self):
-        """码表变了: 反查表作废, 并让在飞的构建结果失效 (代数 +1)."""
+        """码表变了: 反查表作废, 并让在飞的构建结果失效 (代数 +1).
+
+        第五十一轮: **不再清 `_rev_thread`** —— 老线程可能还在跑, 清了会让 `warm_rev_wb` 又起一个
+        并发构建(实测并发峰值 2: 白烧 CPU/内存, 挤输入路径)。老线程收尾时只清它自己那一格。
+        """
         self._rev_wb = None
         self._rev_gen = getattr(self, '_rev_gen', 0) + 1
-        self._rev_thread = None
 
     def wubi_code_for(self, w):
         """五笔 86 构词码 (WubiCodeFor)"""
