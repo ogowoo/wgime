@@ -128,11 +128,18 @@ def show_toolbox(tools, dict_dir):
     win, content = ui.make_window('WgIme 工具箱', 560, 470)
     _toolbox_win[0] = win
     W, H = 560, 470
+    # 第五十三轮修(日志框底边被窗口裁掉): `content` 是标题栏下方那块(见 ui.make_window: y=38, 高 h-38),
+    # 而这里原先按**整窗高**算 y=H-118 却把控件挂在 content 上 —— 日志框底边落到 content 的 456 处、
+    # 超出内容区(432)整整 24px, 于是最后几行被窗口边缘切掉。下面统一按内容区高度 CH 来排。
+    CH = H - 38
+    LOG_H = 132                                  # 底部深色日志高度 (第五十三轮: 104 太矮, 输出一多就看不全)
+    GAP = 10                                     # 日志框与窗口底边 / 磁贴区的间距
+    BODY_H = CH - 46 - LOG_H - GAP - 4           # 磁贴区高度 (46=标签栏下沿, 4=与日志框的间距)
     tabbar = tk.Frame(content, bg=ui.BG)
     tabbar.place(x=10, y=8, width=W - 20, height=34)
     body = tk.Frame(content, bg=ui.BG)
-    body.place(x=10, y=46, width=W - 20, height=H - 46 - 118)
-    logarea = ui.console_text(content, x=10, y=H - 118, w=W - 20, h=104)   # 底部深色日志
+    body.place(x=10, y=46, width=W - 20, height=BODY_H)
+    logarea = ui.console_text(content, x=10, y=CH - LOG_H - GAP, w=W - 20, h=LOG_H)   # 底部深色日志
     logarea.configure(state='disabled')
 
     def log(s):
@@ -148,7 +155,7 @@ def show_toolbox(tools, dict_dir):
     def show_tab(i):
         for j, p in enumerate(pages):
             p.place_forget()
-        pages[i].place(x=0, y=0, width=W - 20, height=H - 46 - 118)
+        pages[i].place(x=0, y=0, width=W - 20, height=BODY_H)
         pages[i].lift()
         for j, b in enumerate(tabbtns):
             b.configure(fg=ui.ACCENT if j == i else ui.SUB)
@@ -199,21 +206,24 @@ def show_toolbox(tools, dict_dir):
         page = tk.Frame(body, bg=ui.BG)
         # 磁贴区用 Canvas + 内层 Frame 实现滚动 (对齐 C# viewport + 滚动条)
         canvas = tk.Canvas(page, bg=ui.BG, bd=0, highlightthickness=0)
-        vsb = tk.Scrollbar(page, orient='vertical', command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
         inner = tk.Frame(canvas, bg=ui.BG)
         inner.bind('<Configure>', lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
-        canvas.place(x=0, y=0, width=W - 20 - 12, height=H - 46 - 118)
-        vsb.place(x=W - 20 - 12, y=0, width=12, height=H - 46 - 118)
         cols = max(1, min(6, tab.get('cols', 2)))
         # 第五十三轮修(工具磁贴全部不可见): inner 里的磁贴/按钮一律用 place() 布局, 而 **place() 不参与
         # 父容器尺寸计算** —— 于是 `create_window(...)` 拿到的 inner 是 1x1(实测 canvas bbox = (0,0,1,1),
         # window item winsize = 0x0), 磁贴虽已建出(尺寸/坐标都对)却全被 Canvas 裁掉, 表现为"标签页在、
         # 按钮一个都看不见"。这里按磁贴行列显式算出 inner 的真实尺寸, 既给 create_window 明确 width/height,
-        # 也把 scrollregion 设好(否则滚动条范围也是空的)。
+        # 也把 scrollregion 设好。
         nrow = (len(tab['buttons']) + cols - 1) // cols
         inner_w = W - 20 - 12
         inner_h = max(14 + nrow * 56, 1)            # 与下面 y=14+(bi//cols)*56、h=46 的排布对齐
+        # 第五十三轮修(磁贴没几个也挂滚动条): 滚动条原来是**无条件** place 的。只有内容真的超出可视区
+        # 才放它 —— 磁贴宽度沿用 inner_w(两种情况下栅格不变, 出现/消失滚动条时磁贴不会跳)。
+        if inner_h > BODY_H:
+            vsb = tk.Scrollbar(page, orient='vertical', command=canvas.yview)
+            canvas.configure(yscrollcommand=vsb.set)
+            vsb.place(x=inner_w, y=0, width=12, height=BODY_H)
+        canvas.place(x=0, y=0, width=inner_w, height=BODY_H)
         inner.configure(width=inner_w, height=inner_h)
         canvas.create_window((0, 0), window=inner, anchor='nw', width=inner_w, height=inner_h)
         canvas.configure(scrollregion=(0, 0, inner_w, inner_h))

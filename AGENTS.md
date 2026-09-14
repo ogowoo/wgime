@@ -208,6 +208,14 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     修法：按磁贴行列算出真实尺寸，**三件事都要做** —— `inner.configure(width=, height=)`、
     `create_window(..., width=, height=)`、`canvas.configure(scrollregion=(0,0,w,h))`（只设 scrollregion 不解决裁剪）。
     **判据**：`canvas.bbox('all')` 若等于 `(0,0,1,1)` 就是中了这个坑。凡是"Canvas + place 子控件"的滚动区都照此办理。
+    **同一处还有两个连带坑（第五十三轮一并修掉）**：
+    ① **滚动条只在内容真的超出可视区时才 place**——原文无条件 `vsb.place(...)`，两个磁贴也挂一条滚动条
+    （`need_sb = inner_h > BODY_H`）。磁贴宽度两种情况下都用 `inner_w`，免得滚动条出现/消失时栅格跳动。
+    ② **挂在 `content` 上的控件必须按内容区高度算 y/height**——`ui.make_window` 的 `content` 是**标题栏下方**那块
+    （`y=38, height=h-38`），而日志框原先按**整窗高**算 `y=H-118` 却挂在 `content` 上，底边落到 456、超出内容区
+    (432) 整整 24px，最后几行被窗口边缘切掉。**统一用 `CH = H - 38` 推**（本窗：`LOG_H=132`、`BODY_H=CH-46-LOG_H-GAP-4=240`，
+    240 仍够放 4 行磁贴）。底部日志由 `ui.console_text` 建，第五十三轮给它补了**垂直滚动条 + 滚轮**
+    （工具箱/网络工具/聊天窗三处共用；以前光秃秃一个 `Text` + `wrap='none'` + `see('end')`，输出一多就只剩最后几行且无法回看）。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 

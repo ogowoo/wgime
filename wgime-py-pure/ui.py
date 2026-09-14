@@ -157,11 +157,23 @@ def flat_button(parent, text, command, primary=False, x=0, y=0, w=90, h=32):
     return btn
 
 
-def console_text(parent, x=0, y=0, w=400, h=200):
-    """深色控制台 Text (Consolas, 深色底)."""
+def console_text(parent, x=0, y=0, w=400, h=200, scrollbar=True):
+    """深色控制台 Text (Consolas, 深色底).
+
+    第五十三轮: 补**垂直滚动条 + 滚轮** —— 以前是光秃秃一个 Text, 而 `wrap='none'` 加调用方的
+    `see('end')` 意味着输出一多就只能看见最后几行、也没法往回翻(用户报"执行后的信息窗口显示得
+    不够好")。滚动条常驻(控制台里它是正常观感, 也提示"可以往回翻"), 宽度从正文里让出来。
+    """
+    sb_w = 12 if scrollbar else 0
     tb = tk.Text(parent, font=font(9.5, mono=True), bg=CONBG, fg=CONFG,
                  bd=0, highlightthickness=0, wrap='none')
-    tb.place(x=x, y=y, width=w, height=h)
+    tb.place(x=x, y=y, width=w - sb_w, height=h)
+    if scrollbar:
+        vsb = tk.Scrollbar(parent, orient='vertical', command=tb.yview)
+        tb.configure(yscrollcommand=vsb.set)
+        vsb.place(x=x + w - sb_w, y=y, width=sb_w, height=h)
+        tb.bind('<MouseWheel>',
+                lambda e: (tb.yview_scroll(-1 if e.delta > 0 else 1, 'units'), 'break'))
     return tb
 
 
