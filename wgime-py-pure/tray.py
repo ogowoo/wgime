@@ -103,6 +103,8 @@ def L(zh, en):
 
 MODE_NAMES = ('混合', '拼音', '五笔', '词典', '语音')
 MODE_EN = ('Mixed', 'Pinyin', 'Wubi', 'Dict', 'Voice')
+# 第四十九轮: 模式子菜单里叫「语音模式」, 跟选项里的「语音输入(总开关)」区分开 (两个都叫"语音"用户会混)
+MODE_MENU = ('混合', '拼音', '五笔', '词典', '语音模式')
 # C# 同款渲染: 圆角方形 + 模式汉字镂空 + Win11 强调色 (中/拼/五/译/语)
 MODE_CHARS = ('中', '拼', '五', '译', '语')
 MODE_COLORS = ((0, 120, 212), (0, 183, 195), (202, 80, 16), (136, 23, 152), (16, 124, 16))
@@ -327,14 +329,16 @@ class Tray:
             # 模式
             pystray.MenuItem(L('模式  (Ctrl+` 循环)', 'Mode  (Ctrl+` cycles)'),
                              pystray.Menu(
-                                 *(pystray.MenuItem(L(MODE_NAMES[m], MODE_EN[m]),
+                                 *(pystray.MenuItem(L(MODE_MENU[m] if m < len(MODE_MENU) else MODE_NAMES[m],
+                                                      (MODE_EN[m] + ' mode') if m == len(MODE_NAMES) - 1 else MODE_EN[m]),
                                                     self._on(lambda m=m: self.api['set_mode'](m)),
                                                     checked=lambda _it, m=m: self.api['get_mode']() == m)
                                    for m in range(len(MODE_NAMES))))),
             # 选项
             pystray.MenuItem(L('选项', 'Options'),
                              pystray.Menu(
-                                 pystray.MenuItem(L('语音输入  (Ctrl+Alt+V 按住说话)', 'Voice input  (hold Ctrl+Alt+V)'),
+                                 pystray.MenuItem(L('语音输入 (总开关, Ctrl+Alt+V 按住说话)',
+                                                    'Voice input (master switch, hold Ctrl+Alt+V)'),
                                                   self._on(self.api['toggle_voice']),
                                                   checked=lambda _it: self.api['get_voice']()),
                                  pystray.MenuItem(L('繁体输出  (Ctrl+Shift+F)', 'Trad output  (Ctrl+Shift+F)'),

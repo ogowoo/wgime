@@ -987,26 +987,42 @@ def _voice_drain():
         show_page()
 
 
-def toggle_voice():
-    """托盘「语音输入」开关 (第四十七轮)."""
-    CFG['voice'] = not CFG.get('voice', False)
-    _dfn('voice=%s' % CFG['voice'])
-    _saved = _write_config('voice', '1' if CFG['voice'] else '0')
-    hook.VOICE_ON[0] = bool(CFG['voice'])
-    if not _saved:                      # 写不进去就说清楚, 别让用户以为"菜单没反应"
+def _voice_set_on(on, why=''):
+    """把语音**功能**打开/关掉 (幂等). 托盘「选项→语音输入」和「语音」模式都用它, 免得两处状态打架。
+
+    第四十九轮: 用户反馈"模式菜单里的语音点了没作用, 只有选项里的才开启" —— 因为模式那个只切了
+    `ime.mode`, 没开 `voice`。现在**切到语音模式 = 顺手打开语音功能**, 两边表现一致。
+    """
+    want = bool(on)
+    if CFG.get('voice', False) == want:
+        return want
+    CFG['voice'] = want
+    _dfn('voice=%s (%s)' % (want, why or 'toggle'))
+    _saved = _write_config('voice', '1' if want else '0')
+    hook.VOICE_ON[0] = want
+    if not _saved:
         _notify('语音输入', 'config.txt 写不进去 (%s), 这次的开关状态重启后会丢'
                 % os.path.join(APP_DIR, 'config.txt'))
-    if CFG['voice']:
+    if want:
         try:
             if not _voicemod().available():
-                _notify('语音输入', '打开了, 但没找到麦克风 (系统设置里允许桌面应用访问麦克风?)')
+                _notify('语音输入', '语音已打开, 但没找到麦克风 (设置→隐私和安全性→麦克风→允许桌面应用访问麦克风?)')
             else:
-                _notify('语音输入', '已打开: 按住 %s 说话 (已写入 config.txt)'
-                        % _voice_hotkey_text())
+                _notify('语音输入', '语音已打开: 按住 %s 说话' % _voice_hotkey_text())
         except Exception as e:
             _notify('语音输入', '语音模块不可用: %r' % (e,))
     else:
         voice_cancel()
+    return want
+
+
+def toggle_voice():
+    """托盘「选项 → 语音输入」: 语音功能总开关 (第四十七轮)."""
+    on = _voice_set_on(not CFG.get('voice', False), why='tray-option')
+    if not on and ime.mode == MODE_VOICE:
+        # 关掉语音时别把人留在"语音模式"里干瞪眼: 自动切回混合模式
+        ime.mode = 0
+        reset()
     show_page()
     _refresh_tray()
 
@@ -1994,6 +2010,10 @@ def handle(vk):
         if _VOICE['rec'] is not None or _VOICE['text'] is not None:
             voice_cancel()                        # 切模式时把没结束的录音/待确认结果丢掉
         reset()
+        if ime.mode == MODE_VOICE:
+            # 第四十九轮: 切到「语音」模式就**顺手把语音功能打开** —— 否则模式菜单里点了没反应
+            # (用户反馈: "mode 里的变动没任何作用, option 里的才开启")
+            _voice_set_on(True, why='enter-voice-mode')
         _refresh_tray()
         show_page()
         return
