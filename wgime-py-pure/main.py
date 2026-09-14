@@ -400,7 +400,7 @@ def open_data_dir():
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC,
           PUNCT=0xFD)
-MODE_NAMES = ('混合', '拼音', '五笔', '词典')
+MODE_NAMES = ('混合', '拼音', '五笔')
 
 
 # 中文标点映射 (对齐 C# MapPunct; vk | 0x200 = Shift 按住, hook 编码)
@@ -472,7 +472,7 @@ def _create_tray():
         import tray as _tray_mod
         TRAY = _tray_mod.Tray(root, {
             'toggle': lambda: set_active(not ime.active),
-            'set_mode': lambda m: (setattr(ime, 'mode', m), reset()),
+            'set_mode': lambda m: (setattr(ime, 'mode', int(m) % 3), reset()),   # 3 模式: 钳一下防越界
             'trad': lambda: toggle_trad(),
             'get_trad': lambda: bool(ime.trad),           # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
             'quit': lambda: quit_app(),
@@ -487,6 +487,8 @@ def _create_tray():
             'get_followcaret': lambda: CFG.get('followcaret', True),
             'toggleshowcode': lambda: toggle_showcode(),
             'get_showcode': lambda: CFG.get('showcode', False),
+            'toggletrans': lambda: toggle_trans(),                    # 「译文」(原译模式, 第四十四轮)
+            'get_trans': lambda: CFG.get('trans', True),
             'togglesentence': lambda: toggle_sentence(),
             'get_sentence': lambda: CFG.get('sentence', True),
             'toggleassoc': lambda: toggle_assoc(),
@@ -634,8 +636,8 @@ def show_page():
     page_c = ime.cands[ime.page * 9:(ime.page + 1) * 9]
     total = (len(ime.cands) + 8) // 9
     follow = CFG.get('followcaret', True)
-    # showcode: 候选上显示反查编码 (仅显示, 不改变上屏)
-    if CFG.get('showcode'):
+    # showcode/trans: 候选上挂反查编码 / 离线译文 (仅显示, 不改变上屏)
+    if CFG.get('showcode') or CFG.get('trans'):
         page_c = [_with_code(w) for w in page_c]
     if ime.assoc_showing:
         bar.show(header + '↪联想', '', page_c, 0, ime.page, total, follow)
@@ -650,14 +652,21 @@ def show_page():
 
 
 def _with_code(w):
-    """候选 + 反查编码: 五笔模式显**拼音**码, 其余模式显**五笔**码 (对齐 C# CodeHint/RevWb).
-    注意别搞反 —— 反查的意义是显示"另一种码", 把刚打的码再显示一遍没有意义."""
+    """候选 + 反查编码 (showcode) + 离线词典译文 (trans) —— 两个选项互相独立, 都只影响显示.
+
+    反查编码: 五笔模式显**拼音**码, 其余模式显**五笔**码 (对齐 C# CodeHint/RevWb)。
+    译文 (选项「译文」, 第四十四轮): 中文候选挂英文 (ce 反查表), 英文候选挂中文 (ec 表) ——
+    离线、秒出、查不到就不挂。这样正常打字就能顺眼看/顺手选译文 (译模式已取消, 变成这个选项)。"""
     try:
-        if ime.mode == 2:
-            c = engine.code_for(w)
-        else:
-            c = engine.rev_wb_code(w)
-        return '%s (%s)' % (w, c) if c else w
+        s = w
+        if CFG.get('showcode'):
+            c = engine.code_for(w) if ime.mode == 2 else engine.rev_wb_code(w)
+            s = '%s (%s)' % (w, c) if c else w
+        if CFG.get('trans'):
+            t = engine.translate_hint(w)
+            if t:
+                s = '%s→%s' % (s, t)
+        return s
     except Exception:
         return w
 
@@ -679,6 +688,14 @@ def refresh():
         return
     py = shuangpin_expand(ime.buf, CFG['shuangpin']) if (CFG['shuangpin'] > 0 and ime.mode < 2) else ime.buf
     cands, exact_wubi, extendable = engine.candidates(ime.buf, ime.mode, py)
+    # 选项「译文」+ 本模式查不到任何候选 -> 补一次**离线词典查询** (原译模式的 EN->CN / CN->EN)。
+    # 只在"没有候选"时补, 所以绝不会把真正的拼音候选顶掉 (对齐 §22 的教训: 拼音模式无条件查 ec
+    # 会让打 no/shi 时串进"不/没有"; 这里 nihao 有拼音候选 -> 根本不查 ec)。
+    # `not exact_wubi` 是额外保险: 五笔精确码命中时绝不掺词典词, 免得动到"唯一四码自动上屏"的判定。
+    if CFG.get('trans') and not cands and not exact_wubi and ime.mode < 3:
+        extra, _x, _y = engine.candidates(ime.buf, 3, py)
+        if extra:
+            cands = list(extra)
     if CFG['sentence'] and (ime.mode == 1 or (ime.mode == 0 and len(py) > 4)):
         sent = engine.best_sentence(py.replace("'", ''))
         if sent and len(sent) > 1 and sent not in cands:
@@ -951,6 +968,24 @@ def toggle_showcode():
         except Exception:
             pass
     show_page()   # 立即按新 showcode 刷新候选(显示/隐藏编码)
+
+
+def toggle_trans():
+    """「译文」开关 (第四十四轮, 原译/词典模式): 候选挂**离线词典译文**; 而且当本模式查不到任何
+    候选时, 再补一次离线词典查询 (打英文 -> 出中文, 打拼音 -> 出英文)。
+    离线词典表在后台加载, 打开时顺手预热, 不影响按键。"""
+    CFG['trans'] = not CFG.get('trans', True)
+    _dfn('trans=%s' % CFG['trans'])
+    _write_config('trans', '1' if CFG['trans'] else '0')          # 写回 config.txt
+    if CFG['trans']:
+        try:
+            engine.warm_ec()          # 译文要用词典表 (ce/ec): 顺手起后台加载
+        except Exception:
+            pass
+    if ime.buf:
+        refresh()                     # 立即按新开关刷新候选
+    else:
+        show_page()
 
 
 def toggle_hideidle():
@@ -1675,7 +1710,7 @@ def handle(vk):
         set_active(not ime.active)
         return
     if vk == VK['MODE']:
-        ime.mode = (ime.mode + 1) % 4
+        ime.mode = (ime.mode + 1) % 3             # 第四十四轮: 译(词典)模式已取消, 只剩 混合/拼音/五笔
         reset()
         _refresh_tray()
         return
@@ -1999,8 +2034,8 @@ else:
         _notify('WgIme (Python) 已启动', '键盘钩子安装失败 (err %s), 输入法按键将不工作。' % hook.last_error())
     set_active(CFG['starton'])
     try:
-        engine.warm_ec()      # 钩子已装好(= 能打字了), 这会儿在后台把「词典」模式那半张表读进来:
-                              # 等用户真切到词典模式时基本已就绪, 别再"进词典模式空候选几秒"
+        engine.warm_ec()      # 钩子已装好(= 能打字了), 这会儿在后台把词典表(ec/ek/ev/ce)读进来:
+                              # 「译文」默认开着, 到用户打第一个英文/查译时基本已就绪, 别"空候选几秒"
     except Exception:
         pass
     try:

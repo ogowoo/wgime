@@ -79,12 +79,12 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
 19. **单实例（wgime-py-pure）**：`win.single_instance('WgImePySingleInstance')`（ctypes 命名互斥体，句柄存 `main._SINGLETON` 保活）+ `win.message_box`（纯 Win32 弹窗，启动早期不建 tk）；已有实例则提示并 `sys.exit(0)`。名字带 `Py` 后缀，与 C# 的 `WgImeSingleInstance` 互不干扰；测试用 `WGIME_NO_SINGLETON=1` 跳过。
 20. **联想开关要真的生效**：`engine.assoc_enabled`（由 `main.apply_config` 从 `CFG['assoc']` 同步）同时管**学习**（`learn_assoc` 提前返回）与**显示**（`get_assoc` 返回空 + `main.show_assoc` 提前返回），对齐 C# `AssocEnabled`。以前只翻了托盘勾选、实际照学照显示，是 bug。
 21. **反查编码 (showcode) 的方向别搞反**：C# `CodeHint` = 五笔模式显**拼音**码、其余模式显**五笔**码（即"显示另一种码"）。python 侧用 `engine.build_rev_wb`（词→五笔码，按码 ordinal 升序扫、每词取最小码，同 C# `BuildRevWb`）+ `Engine.rev_wb_code()` **后台**建表（第三十四轮改：**首次用绝不同步建** —— `showcode=1` 是出厂默认值，同步建会让**每次启动的首键卡 1326ms**；没建好直接返回 `None`，`warm_rev_wb()` 起后台线程，`_invalidate_rev_wb()` 在 `_build()`/造词改 wb 时失效；详见 §6）。`main._with_code` 是唯一入口。
-22. **英汉表 (ec) 只在「词典」模式 (mode 3) 参与候选**（C# `AddTranslate`）：`engine.candidates` 的 mode 0/1 绝不能查 ec——实测拼音模式打 `no` 会串出"不/没有/无"并把"弄/浓/农"顶掉。词典模式的 EN 前缀匹配要给**每个命中词的全部释义**（C# `AddCands`），不是只取首个。**第十七轮核对结论（别再"修"）**：mode 3 的候选**集合**与 C# `AddTranslate` 逐条一致 —— EN 精确 + EN 前缀 + CN→EN 反查（`PyDict` 全拼 + `Acro` 简拼 → 每个中文词查 `ce`）；`ce`（CN→EN）由 `build_reverse` 建，与 C# `BuildReverse` 逐行一致（EN ordinal 升序、每词上限 8、去重），实测 **701531 键全等**；mode 3 用**合并**频率视图（`self.freq`，同 C# `fb = ... : Freq`）且**不做** LastPick 置顶（同 C# `lpb = null`）。**唯一差异是 python §14 的频率排序**（稳定排序，探针复算后与 engine 输出逐项相同），不是 bug。
+22. **英汉表 (ec) 只在「词典」模式 (mode 3) 参与候选**（C# `AddTranslate`）：`engine.candidates` 的 mode 0/1 绝不能查 ec——实测拼音模式打 `no` 会串出"不/没有/无"并把"弄/浓/农"顶掉。词典模式的 EN 前缀匹配要给**每个命中词的全部释义**（C# `AddCands`），不是只取首个。**第十七轮核对结论（别再"修"）**：mode 3 的候选**集合**与 C# `AddTranslate` 逐条一致 —— EN 精确 + EN 前缀 + CN→EN 反查（`PyDict` 全拼 + `Acro` 简拼 → 每个中文词查 `ce`）；`ce`（CN→EN）由 `build_reverse` 建，与 C# `BuildReverse` 逐行一致（EN ordinal 升序、每词上限 8、去重），实测 **701531 键全等**；mode 3 用**合并**频率视图（`self.freq`，同 C# `fb = ... : Freq`）且**不做** LastPick 置顶（同 C# `lpb = null`）。**唯一差异是 python §14 的频率排序**（稳定排序，探针复算后与 engine 输出逐项相同），不是 bug。**第四十四轮**：python 取消「词典」模式（`ime.mode` 只 0/1/2，`% 3`），词典管线改由「译文」选项（`config trans`，默认开）驱动 —— ① 候选挂 `translate_hint` 译文；② **仅当本模式零候选**（`not cands and not exact_wubi`）才 `candidates(buf,3,py)` 兜底，所以本条"有拼音候选绝不查 ec"照旧成立。
 23. **双拼 (shuangpin>0) 下的门控**（C# `if (Shuangpin == 0)`）：rq/sj/xq 动态候选、v 金额候选、**启动器候选**都不挂（两键即音节会撞码）；`digit_as_code()` 也要带 `CFG['shuangpin'] == 0`。另 `refresh()` 开头要有 C# 的两处面板复位：`sym_cat>0 && buf != 'vf'` 与 `shuangpin>0` 时清 `sym_cat`。
 24. **五笔唯一四码自动上屏**要排除启动器候选：`refresh()` 里条件含 `cands[0] != ime.app_cand`（对齐 C# `!appSet.Contains(cands[0])`），否则会"自动启动程序"。
 25. **状态反馈 = 托盘气泡（不是弹窗、也不是只写日志）**：C# 所有 `TrayTip`/`ShowBalloonTip` 调用点在 python 都有对应：`msg` 步骤、工具/插件执行结果（`开始执行…`/`完成`/`已取消`/失败）、per-app 上屏与 keyfix 切换结果、启动失败、[csharp] 插件编译/运行错误、造词剪贴板无汉字、钩子安装失败（`hook.start()` 同步返回成功与否 + `last_error()`，main 气泡）。python 侧统一走 `main._notify` → `TRAY.notify`（pystray），无托盘时退回 `tools._msgbox`；tools 层走 `tools._tip`。别再给这类结果提示写回 `_msgbox` 或只写 `_dfn`。
 26. **tools.txt / 插件 txt 的块标签集合要完整**：`plugins.py` 的 `_TOOL_BLOCK_TAGS` 必须含 **8 个开标签**（shell/cmd/powershell/ps/shellx/cmdx/powershellx/psx）**与 8 个闭标签**——原来正则漏了 `cmdx`/`powershellx`/`[/cmd]`/`[/ps]` 等，会把块标签建成假按钮、块内容错位。另外 `load_tools` 要认 `[button 名]` 前缀、`code = xx` 允许写在步骤之后（都对齐 C# `LoadTools`）。块标签在 steps 里保留原文，由 `run_steps` 执行期配对（闭标签必须与开标签对应：`[ps]` 只由 `[/ps]` 收尾，同 C#）。**第二十轮补齐的 tools.txt 结构规则别回退**：① 默认标签 `工具` **按需创建**（第一个 `[cols N]`/按钮出现时才建；只含注释的 tools.txt 必须返回**空列表**，好让 `show_toolbox` 给"tools.txt 为空"提示）；② **没有按钮的标签页要保留**（C# 会显示成空页，别再 `filter(t['buttons'])`）；③ `[tab ]` 空名字用 `"?"`；④ `code` 行的判定是 C# 的 `t.StartsWith("code")`（**大小写敏感**）+ `ToolToks(t)[2]` 非空 → 认 `code = x`/`codes = x`/`code = x 多余`，`CODE = x` 不算 code 行（会当步骤）；⑤ 步骤文本行尾不带 `\r`（`rstrip('\r\n')`）。oracle 对照见 CHANGELOG 第二十轮 11 组 fixtures。
-27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、造词对话框（C# 是剪贴板直造）。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
+27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、**「译文」选项（离线词典译文；python 只有 3 个模式，C# 是 4 个）**、造词对话框（C# 是剪贴板直造）。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
 28. **用户可改的文本一律用 `engine.read_text()` 读**（`utf-8-sig` → `gbk` → `utf-8+replace`）：中文 Windows 下记事本/编辑器"另存为 ANSI(GBK)"会把 config.txt / tools.txt / plugins\*.txt / pastemode.txt / plugins-disabled.txt / userwords.txt / userdict_*.txt / lastpick_*.txt / assoc.txt 写成非 UTF-8 —— 用 `open(..., encoding='utf-8')` 会**抛 UnicodeDecodeError 直接崩启动**（C# 侧 `File.ReadAllLines(UTF8)` 是替换式解码, 不抛）。`read_text` 只以 OSError 表示不可读，编码问题一律降级；新增读取点照此办理（plugins.py 已 `import engine as engmod` 复用）。**便签文件也在名单里**（第二十三轮）：`notes\*.txt`（便签正文，用户最常拿记事本改）、`notes.txt`（旧版迁移源）、`notes-meta.txt`、`note-color.txt` —— 用严格 `open(..., encoding='utf-8')` 读会抛 `UnicodeDecodeError`，而那里的 `except OSError` 抓不到，结果是**便签窗口打不开/半死**（`_note_win[0]` 已置上，再点只是 deiconify 坏窗口），C# 的 `File.ReadAllText(UTF8)` 则是替换式解码永不抛。**码表与插件也在名单里**（第三十二轮）：`py.txt`/`wb.txt`/`ec.txt`/`trad.txt`/`import_*.txt`（`engine.parse_dict` —— 严格 utf-8 会让 GBK 码表**把启动直接打崩**，且 BOM 会让**第一行读不进来**，所以快路径用 `utf-8-sig`、失败退回 `read_text`）、用户手改过的 `import_*.txt`（`load_import_base`）、插件 `.py`（`main._py_plugin_meta_static`：GBK+coding 声明的插件 python 能跑，严格 utf-8 会让插件管理器列举时崩）。
    **配套：写这些文件时行尾要跟 C# 对齐** —— C# 的 `ImportCodeTable` 写 `import_*.txt` 是 `WriteAllText(..., UTF8Encoding(false))` + `'\n'`（**裸 LF**），python 的 `open(..., 'w')` 在 Windows 上会翻成 CRLF（`import_*.txt` 是入库跟踪文件，被翻成 CRLF 就是整文件 diff）；所以 `engine.write_import_file` 必须带 `newline='\n'`。反之 `config.txt` 是 C# `WriteAllLines`（CRLF），python 默认写 CRLF 正好一致。
 29. **未闭合的多行块整块丢弃**（对齐 C# `ParseToolSteps`/`LoadTools`：块只在遇到闭标签时才入 steps）：`plugins.run_steps` 若扫描到行尾仍没找到闭标签，记一条 `块未闭合…已跳过` 就 `continue`，**不要执行**半截块（否则会把后面的行当脚本体跑掉）。
@@ -126,7 +126,7 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     python 版托盘以前**运行时**用 Pillow 画图标，而单文件只内嵌 comtypes/uiautomation/pystray，**没内嵌 Pillow**
     （带 `_imaging.pyd`，ABI 绑定，内嵌源码跨版本没用）→ 没装 Pillow 的机器 `import PIL` 直接失败、**整个托盘消失**；
     "`python wgime-py.py` 却正常"是因为 PATH 上的 python 恰好是**另一个装了 Pillow 的版本**（与双击用的解释器不同）。
-    现在：构建时渲染 9 个 ICO（`build-wgime-pure.py` → `TRAY_ICONS`，5.2 KB base64）内嵌，运行时
+    现在：构建时渲染 7 个 ICO（`build-wgime-pure.py` → `TRAY_ICONS`，3.7 KB base64）内嵌，运行时
     `win.icon_from_ico_bytes()` 写进 `runtime\icons\` 再 `LoadImageW` 成 HICON，**不再需要宿主 Pillow**；
     换图标走 `NIM_MODIFY|NIF_ICON`（看 `tray.NIM['modify_ok']`）；`HAS_PIL` 只作源码布局的回退路径。
     诊断（第四十一轮，别删）：pystray **不检查** `Shell_NotifyIcon` 返回值、报错只走 `logging`→`sys.stderr`，
@@ -159,8 +159,8 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
   （前几秒敲的字不丢、也不漏成半截拼音）。尾巴上的 `hook.start()` 是幂等的，只有真失败才弹气泡。
   **A/B 实测**（同一隔离数据目录 + 同一份码表、`git show HEAD:` 取上一版 dist、各两遍，从进程启动算）：
   钩子装好 **+2650ms（三十八轮前）→ +1397（三十八）→ +824/+985（三十九）→ +498/+416（四十）**；
-  主循环起来 **+2694/+2590ms（三十九）→ +1954/+1877ms（四十）**。探针：`%TEMP%\wg-hookorder-probe.py`（10 项）、
-  `%TEMP%\wg-r40-timeline.py`（逐里程碑插桩）、`%TEMP%\wg-r40-ab.py`（A/B 口径）、`%TEMP%\wg-r40-selftest.py`（35 项）。
+  主循环起来 **+2694/+2590ms（三十九）→ +1954/+1877ms（四十）**。探针：`%TEMP%\wg-r40-timeline.py`（逐里程碑插桩）、
+  `%TEMP%\wg-r40-ab.py`（A/B 口径）、`%TEMP%\wg-r40-selftest.py`（35 项）。
 - **dist 单文件的内嵌模块是"懒装载"的（第四十轮，别改回全量 eager）**：`build-wgime-pure.py` 只 eager exec
   **`win`/`hook`/`engine`**，`bar`/`wspy`/`plugins`/`ui`/`tools`/`tray` 用 PEP 562 模块级 `__getattr__`
   在**首次属性访问**时才 exec（`_EAGER`/`_PENDING`/`_load_into`，`threading.RLock` 可重入）。原来 9 个模块
@@ -219,7 +219,6 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
 - **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
 - 版本 tag：`v1.0.0` ~ `v1.2.11`（后续版本递增）。插件更新不单独发 release。
   **发布回验记录**（`tests\publish-release.ps1` 之后必做：下线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD）：
-  v1.2.10 = body 1789 字 0 个 `?` + python zip SHA256 与 stage 相同 + 内层 `wgime-py.py` 与 dist 一致；
   v1.2.11（第四十轮，release id 386885107，含 bat/ps1/python 三个资产）= body 与本地逐字符一致（1478 字、
   0 个 `?`）、三个 zip 的 SHA256 全部与 `.release-stage-v1211\` 相同、`wgime-v1.2.11-python.zip` 内层
   `wgime-py.py` 744413 B / `6D6A6505…` 与本地 dist 一致、target = 本地 HEAD。
@@ -307,6 +306,6 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
   **Tk/加载窗/重 import/读词库之前**（钩子可用 +2650ms → +498/+416ms）、把读词库放后台线程与 UI 并行、
   把插件/托盘/tools 收尾挪进主循环（`poll` 起来 +2694ms → **+1954/+1877ms**）。**别把这几处改回同步/串行**，
   细节与"别再改回去"清单都在 §6。验证：`%TEMP%\wgime-warmec-probe.py`（40 项）、缓存生命周期（14 项）、
-  `%TEMP%\wg-hookorder-probe.py`（10 项）、`%TEMP%\wg-r40-selftest.py`（35 项）、harness 16/16。
+  `%TEMP%\wg-r40-selftest.py`（35 项）、harness 16/16。
 - chat 插件要点：relay=`chat.seee.uno` 走裸 JSON 文本帧，其余 broker 走 MQTT over WS（`/mqtt` 路径 + **必须 `mqtt` 子协议**，否则 EMQX 400/Mosquitto 断连）；TLS 需 1.2+。详见 `docs\WGIME_CHAT_技术文档.md` §8。
 - 待用户验证：chat 插件与 PC/Android 真机互通（协议层已实机验证）、词库加载速度（缓存命中路径）、固化码表后启动速度（应已降到缓存命中级别）。

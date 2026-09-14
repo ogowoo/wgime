@@ -4,7 +4,8 @@
 逐行对齐 C# WordBoard 语义 (wgime.bat):
 - 码表格式: "code word1 word2 ..." (小写 code; 文件源不拆 packed chars)
 - 候选顺序 (ShowCharatar): exact dict -> prefix 单字 -> 简拼 -> 模糊音 -> 词频排序(稳定) -> lastpick 置顶
-- 模式: 0=混合(五笔先) 1=拼音 2=五笔 3=词典(英汉/汉英)
+- 模式: 0=混合(五笔先) 1=拼音 2=五笔 (C# 的 3=词典(英汉/汉英) 在第四十四轮取消;
+        词典表 ec/ek/ev/ce 保留, 改由「译文」选项在任一模式下挂译文/兜底查词)
 - 词频: FreqM[mode] 分桶 + Freq 合并视图; userdict_{mix,py,wb}.txt / lastpick_*.txt 与 C# 版同格式
 """
 import bisect
@@ -205,6 +206,7 @@ def load_config(path):
                trad=False, sentence=True, assoc=True, starton=True, apps={},
                paste=3, keyfix=True, followcaret=True, theme='dark', cnpunct=True,
                mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
+               trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
         text = read_text(path)                     # 宽松解码: ANSI/GBK 另存的 config.txt 也能读, 不崩
@@ -237,6 +239,8 @@ def load_config(path):
                                     'zrm': 2, 'ms': 3, '微软': 3, 'mspy': 3}.get(v, 0)
             elif k == 'trad':
                 cfg['trad'] = v in ('1', 'on', 'true')
+            elif k == 'trans':
+                cfg['trans'] = v in ('1', 'on', 'true')     # 白名单语义 (同 showcode/trad): 非法值判"关"
             elif k == 'sentence':
                 cfg['sentence'] = v not in ('0', 'off', 'false')
             elif k == 'assoc':
@@ -916,8 +920,8 @@ class Engine:
         t.start()
 
     def warm_ec(self):
-        """启动后主动预热词典表 (main 在钩子装好后调用): 等用户真切到「词典」模式时通常已就绪,
-        不必"首次进词典模式还要空候选几秒"。后台加载会让出 GIL, 不拖慢按键 (实测加载期间每键 4-29ms)。"""
+        """启动后主动预热词典表 (main 在钩子装好后调用): 「译文」默认开着, 等用户第一次打英文/
+        查译时通常已就绪, 不必"首查空候选几秒"。后台加载会让出 GIL, 不拖慢按键 (实测加载期间每键 4-29ms)。"""
         self.ensure_ec()
 
     def _ec_worker(self, gen, off):
@@ -1487,6 +1491,24 @@ class Engine:
                 return None
             out.append(ps[0])
         return ''.join(out)
+
+    def translate_hint(self, w):
+        """**离线**词典译文 (不打网络, 不阻塞输入): 中文词 -> 英文 (ce 反查表), 英文词 -> 中文 (ec).
+
+        「译文」选项用 (main._with_code 挂在候选后面): 只给**单词**词条 (ec/ce 就是词条表);
+        多义项只取第一个, 避免候选被译文撑长。词典表没就绪(后台还在加载)就返回 None。"""
+        if not self._ec_ready:
+            return None
+        try:
+            if is_all_cjk(w) and len(w) >= 2:
+                t = self.ce.get(w)
+            elif w.isascii() and w.isalpha() and len(w) >= 2:
+                t = self.ec.get(w.lower()) or self.ec.get(w)
+            else:
+                return None
+            return t.split(' ')[0] if t else None
+        except Exception:
+            return None
 
     def rev_wb_code(self, w):
         """反查: 词 -> 五笔码. **绝不阻塞输入路径** —— 建表(30 万码, 实测 ~1.2s)放后台线程:

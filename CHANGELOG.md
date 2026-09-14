@@ -4,6 +4,65 @@
 
 ---
 
+## 2026-09-12 (第四十四轮: 取消「译/词典」模式 —— 译文改成「译文」选项，顺手给输入法用户查译)
+
+用户提出：译模式（mode 3，菜单里叫「词典」）要 Ctrl+` 连切 3 下才到、只认词典固定词条，对**输入法用户**太别扭
+（"正常打字的人根本不会为查个词去切模式"）；问能不能把译文**并进候选显示**、再像「繁体输出」那样做成一个选项。**采纳**。
+
+### 方案：模式回到 3 个，"译文"独立成选项
+
+1. **模式循环 4 → 3**：只剩 `混合 / 拼音 / 五笔`（`MODE_NAMES`、`ime.mode = (ime.mode + 1) % 3`、托盘模式子菜单
+   `range(3)`、托盘图标 `MODE_CHARS/MODE_COLORS` 3 项、构建时预渲染 ICO 9 → **7 个**）。C# 的第 4 个模式
+   `3=词典` python 侧不再对外暴露（`engine.candidates(mode=3)` 的词典管线**保留**，改由下面的选项调用）。
+2. **新增选项「译文」**（托盘「选项」菜单，紧挨「繁体输出」；`config.txt` 键 `trans`，白名单语义同
+   `showcode`/`trad`，**出厂默认开**）。打开后管两件事，都是**纯离线**（现成的 70 万词条 `ec`/`ce` 表，零联网）：
+
+   | 打字 | 做的事 | 例子 |
+   |---|---|---|
+   | 有候选 | 每个候选后面挂**词典译文**（中文→英文 `ce`，英文→中文 `ec`） | `nihao` → `你好 (wqvb)→alohas` |
+   | **一个候选都没有** | 补一次词典查询兜底，**打英文直接出中文** | `hello` → `嘿` |
+
+   兜底只在"本模式零候选"时触发 —— 所以**绝不会顶掉真正的拼音候选**（AGENTS §22 的教训：拼音模式无条件查 `ec`
+   会让打 `no`/`shi` 串进"不/没有"；这里 `nihao` 有拼音候选 → 根本不查 `ec`）。
+3. **反查编码 (`showcode`) 与译文 (`trans`) 是两个互不干扰的开关**，只影响显示，都开时叠成 `词 (码)→译文`。
+
+| showcode | trans | `_with_code('你好')` |
+|---|---|---|
+| 0 | 0 | `你好` |
+| 1 | 0 | `你好 (wqvb)` |
+| 0 | 1 | `你好→alohas` |
+| 1 | 1 | `你好 (wqvb)→alohas` |
+
+- 查不到就不挂（`translate_hint` 返回 `None`）；**单字不挂**（防噪音）；词典表没就绪（后台还在加载）返回 `None`，
+  **绝不阻塞输入路径**。
+
+### 改动
+
+- `engine.py`：新增 `Engine.translate_hint(w)`（中文词 ≥2 字 → `ce`，英文词 ≥2 字母 → `ec`，取第一个义项）；
+  `load_config` 新增 `trans` 键（缺省 True，白名单 `1/on/true`，与 C# 的 `v == "1" || …` 大小写敏感逐字对齐）。
+- `main.py`：`_with_code(w)` 按两个开关独立叠加；`show_page()` 的门控改成 `showcode or trans`；
+  `refresh()` 加"零候选才补词典"的兜底（`not cands and not exact_wubi` —— 五笔精确码命中时绝不掺词典词，
+  免得动到"唯一四码自动上屏"的判定）；`toggle_trans()` 写回 config + 预热词典表；托盘 api 加
+  `toggletrans`/`get_trans`（成对，勾选态是活状态）。
+- `tray.py`：模式表 4 → 3 项（含 `% 4` → `% 3` 三处、图标 key）；「选项」菜单新增「译文 / Translation」。
+- `config.txt`：`showcode = 1` 下面加一行 `; trans: …` + `trans = 1`（C# 版 `LoadConfig` 忽略未知键、
+  `SaveConfigKey` 保留其它键与注释，所以两版共用同一份 config.txt 不冲突）。
+- `build-wgime-pure.py`：托盘 ICO 预渲染 `range(4)` → `range(3)`（内嵌 **7 个** ICO / 3.7 KB base64）。
+- **本轮只改 python 版**（C# 版仍保留 `3=词典` 模式；按 AGENTS §27，要往 C# 补需用户明确要求）。
+
+### 验证
+
+- `%TEMP%\wg-r44-trans-probe.py`（**40/40**，A 段源码级 + B 段真实 dist 端到端）：
+  `trans` 配置 14 组取值（缺省/无空格/键名大小写/值大小写敏感/非法值判关）、模式循环 `1,2,0,1`（无第 4 模式）、
+  词典表未就绪 → `None`、`你好→alohas` / `hello→嘿` / 单字与查不到 → `None`、
+  `_with_code` 四种组合逐字符相等、拼音候选不被顶掉（`nihao` 首候选 `你好`；`no` 首候选仍是拼音字，无"不/没有"）、
+  `hello` 兜底出候选且候选条带 `→嘿`、`trans=0` 时兜底不生效、`toggle_trans` 翻转 + 落盘（保留其它键）、
+  托盘 `get_trans` 存在。
+- 回归全绿：`tests\pure-state-harness.py` 16/16、`undefined-globals.py` 0 处、dist 自检（9 模块 + main.py 逐字节一致）、
+  r40 自检 35/35、split-cache 40、缓存 14、QR 78、wgtranslate 62、r43 两个探针照旧通过。
+
+---
+
 ## 2026-09-11 (第四十三轮: caret-helper 不再落盘 —— 改用 `python -c` 内联源码)
 
 用户反馈：跟随 helper 会在磁盘上生成一个 `caret-helper` 文件，能不能合并掉、不要"产生新的 caret-helper"。
