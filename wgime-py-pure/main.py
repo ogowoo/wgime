@@ -302,6 +302,42 @@ try:
 except Exception:
     _splash = None
 
+# ---------- 第五十三轮: 把托盘图标**提前**挂出来 ----------
+# 词库加载是主线程 join 的 (热启动 ~1.5-1.9s, 冷启动从码表重建要十几秒), 而托盘原来排在 join 之后的
+# `after(150, _deferred_tray)` 里 —— 于是"刚启动那几秒/十几秒托盘里根本没有图标"(用户报的
+# "icon 加载不及时, 特别是刚启动后")。这里在等词库之前先把图标挂出来(最小菜单: 开关/退出),
+# 词库读完后再由 `_deferred_tray` 换成完整菜单 + 真实状态。
+# `import tray` 会顺带拉起 pystray(~130ms), 但那段时间词库线程本来就在跑, 不额外拖慢上屏。
+TRAY = None
+_TRAY_BOOT = [False]
+
+
+def _boot_tray():
+    """启动早期挂出托盘图标 (最小菜单)。失败就静默留给 _deferred_tray 重试并报错。"""
+    global TRAY
+    if TRAY is not None:
+        return
+    try:
+        import tray as _tray_mod
+        # 最小 api: 只给"建图标/刷图标"真正会立刻求值的那几个 (其余等 _deferred_tray 换完整 api)
+        api0 = {'toggle': lambda: set_active(not ime.active),
+                'is_active': lambda: ime.active,
+                'get_mode': lambda: ime.mode,
+                'quit': lambda: quit_app()}
+        TRAY = _tray_mod.Tray(root, api0)
+        if TRAY.start(boot=True):
+            _TRAY_BOOT[0] = True
+            _dfn_always('tray: boot icon shown BEFORE dict join (dict thread still running)')
+        else:
+            _dfn('tray boot start failed: %s' % ((getattr(TRAY, 'last_error', '') or '')[-200:],))
+            TRAY = None
+    except Exception as e:
+        _dfn('tray boot err %r' % e)
+        TRAY = None
+
+
+_boot_tray()
+
 if _engine_th is not None:
     _engine_th.join()                      # 等后台线程读完词库 (与上面的 Tk/加载窗并行)
 if _engine_err:
@@ -467,8 +503,6 @@ apply_config()
 bar = CandBar(root, DATA_DIR)             # data_dir 用于位置持久化 (C# 同款 DataDir\pos.txt)
 bar.set_theme(CFG.get('theme', 'dark'))
 
-TRAY = None
-
 
 def _set_mode_from_tray(m):
     """托盘「模式」子菜单: 切模式 (钳一下防越界) —— 且切到「语音」时**顺手打开语音功能**.
@@ -484,74 +518,81 @@ def _set_mode_from_tray(m):
     show_page()
 
 
+def _tray_api():
+    """托盘的 api 字典: 全是**延迟求值**的 lambda —— 所以启动早期(ime/CFG/bar 还没建)也能先把
+    图标对象建起来, 真正被调用时那些名字早就有了 (第五十三轮拆出来给"早挂图标"复用)。"""
+    return {
+        'toggle': lambda: set_active(not ime.active),
+        'set_mode': lambda m: _set_mode_from_tray(m),   # 5 模式: 钳一下防越界 (+ 切语音模式时开语音)
+        'toggle_voice': lambda: toggle_voice(),                   # 「语音输入」开关 (第四十七轮)
+        'get_voice': lambda: CFG.get('voice', False),
+        'voice_state': lambda: _voice_state_text(),
+        'trad': lambda: toggle_trad(),
+        'get_trad': lambda: bool(ime.trad),           # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
+        'quit': lambda: quit_app(),
+        'is_active': lambda: ime.active,
+        'get_mode': lambda: ime.mode,
+        'apppaste': lambda: toggle_app_paste(),
+        # 托盘「这个程序」两项的勾选态 (对齐 C# RefreshMenuChecks: AppModes[前台] == 1 / EffectiveKeyfix())
+        'get_apppaste': lambda: APPMODES.get(win.foreground_process_name(), 0) == 1,
+        'get_appkeyfix': lambda: bool(effective_keyfix()),
+        'appkeyfix': lambda: toggle_app_keyfix(),
+        'followcaret': lambda: toggle_followcaret(),
+        'get_followcaret': lambda: CFG.get('followcaret', True),
+        'toggleshowcode': lambda: toggle_showcode(),
+        'get_showcode': lambda: CFG.get('showcode', False),
+        'toggletrans': lambda: toggle_trans(),                    # 「译文」(原译模式, 第四十四轮)
+        'get_trans': lambda: CFG.get('trans', True),
+        'togglesentence': lambda: toggle_sentence(),
+        'get_sentence': lambda: CFG.get('sentence', True),
+        'toggleassoc': lambda: toggle_assoc(),
+        'get_assoc': lambda: CFG.get('assoc', True),
+        'togglecnpunct': lambda: toggle_cnpunct(),
+        'get_cnpunct': lambda: CFG.get('cnpunct', True),
+        'togglehideidle': lambda: toggle_hideidle(),
+        'get_hideidle': lambda: CFG.get('hideidle', True),
+        'set_theme': lambda name: set_theme(name),
+        'get_theme': lambda: CFG.get('theme', 'dark'),
+        'import_table': lambda: tools.show_import(engine, DICT_DIR),
+        'makeword': lambda: makeword_clipboard(),
+        'batchmakeword': lambda: tools.show_batch_makeword(engine, DATA_DIR),
+        'userwords': lambda: tools.show_user_words(engine),
+        'reload': lambda: reload_config(),
+        'open_config': lambda: open_config_file(),
+        'open_datadir': lambda: open_data_dir(),
+        # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
+        'get_runmode': lambda: CFG.get('mode', 'ime'),
+        'switch_runmode': lambda m: switch_mode(m),
+        # --- tray 模式工具入口 (等价 wgtray 托盘菜单; ime 模式亦可用) ---
+        'toolbox': lambda: tools.show_toolbox(TOOLS, APP_DIR),
+        'nettools': lambda: tools.show_nettools(),
+        'clipboard': lambda: tools.show_clipboard(),
+        'notes': lambda: tools.show_notes(DATA_DIR),
+        'color': lambda: tools.show_color(),
+        'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
+                                                   run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
+                                                   plugin_dir_fn=_plugin_dir),
+        'run_app': lambda code: _run_app_by_code(code),
+        'apps': lambda: list(sorted((CFG.get('apps') or {}).items())),
+        # --- 插件 (托盘菜单列出 + 运行; 插件管理器复用) ---
+        'list_plugins': lambda: _list_plugin_files(),
+        'run_plugin_file': lambda path: _run_plugin_file(path),
+        'plugin_dir': lambda: _plugin_dir(),
+    }
+
+
 def _create_tray():
     """建托盘对象 (第四十轮: 从启动主路径挪进主循环).
 
     `import tray`(=pystray + PIL) 实测要 ~300ms (它连带 zipimport 第三方库), 以前排在
     `root.after(8, poll)` 之前 —— 而那会儿钩子早在收键排队了, 这 300ms 纯粹是"上屏"白等。
-    现在由 _deferred_tray() 在主循环里调 (托盘图标晚 0.15s 出现, 打字不受影响)。
+    现在由 _deferred_tray() 在主循环里调; **但若启动早期已经 `_boot_tray()` 挂过图标了,
+    _deferred_tray 只补完整菜单** (见那里), 不会重复建。
     """
     global TRAY
     try:
         import tray as _tray_mod
-        TRAY = _tray_mod.Tray(root, {
-            'toggle': lambda: set_active(not ime.active),
-            'set_mode': lambda m: _set_mode_from_tray(m),   # 5 模式: 钳一下防越界 (+ 切语音模式时开语音)
-            'toggle_voice': lambda: toggle_voice(),                   # 「语音输入」开关 (第四十七轮)
-            'get_voice': lambda: CFG.get('voice', False),
-            'voice_state': lambda: _voice_state_text(),
-            'trad': lambda: toggle_trad(),
-            'get_trad': lambda: bool(ime.trad),           # 托盘「繁体输出」勾选态 (对齐 C# miTrad.Checked = Trad)
-            'quit': lambda: quit_app(),
-            'is_active': lambda: ime.active,
-            'get_mode': lambda: ime.mode,
-            'apppaste': lambda: toggle_app_paste(),
-            # 托盘「这个程序」两项的勾选态 (对齐 C# RefreshMenuChecks: AppModes[前台] == 1 / EffectiveKeyfix())
-            'get_apppaste': lambda: APPMODES.get(win.foreground_process_name(), 0) == 1,
-            'get_appkeyfix': lambda: bool(effective_keyfix()),
-            'appkeyfix': lambda: toggle_app_keyfix(),
-            'followcaret': lambda: toggle_followcaret(),
-            'get_followcaret': lambda: CFG.get('followcaret', True),
-            'toggleshowcode': lambda: toggle_showcode(),
-            'get_showcode': lambda: CFG.get('showcode', False),
-            'toggletrans': lambda: toggle_trans(),                    # 「译文」(原译模式, 第四十四轮)
-            'get_trans': lambda: CFG.get('trans', True),
-            'togglesentence': lambda: toggle_sentence(),
-            'get_sentence': lambda: CFG.get('sentence', True),
-            'toggleassoc': lambda: toggle_assoc(),
-            'get_assoc': lambda: CFG.get('assoc', True),
-            'togglecnpunct': lambda: toggle_cnpunct(),
-            'get_cnpunct': lambda: CFG.get('cnpunct', True),
-            'togglehideidle': lambda: toggle_hideidle(),
-            'get_hideidle': lambda: CFG.get('hideidle', True),
-            'set_theme': lambda name: set_theme(name),
-            'get_theme': lambda: CFG.get('theme', 'dark'),
-            'import_table': lambda: tools.show_import(engine, DICT_DIR),
-            'makeword': lambda: makeword_clipboard(),
-            'batchmakeword': lambda: tools.show_batch_makeword(engine, DATA_DIR),
-            'userwords': lambda: tools.show_user_words(engine),
-            'reload': lambda: reload_config(),
-            'open_config': lambda: open_config_file(),
-            'open_datadir': lambda: open_data_dir(),
-            # --- 运行模式 (ime/tray 双模式, 对齐 wgtray 合并方案) ---
-            'get_runmode': lambda: CFG.get('mode', 'ime'),
-            'switch_runmode': lambda m: switch_mode(m),
-            # --- tray 模式工具入口 (等价 wgtray 托盘菜单; ime 模式亦可用) ---
-            'toolbox': lambda: tools.show_toolbox(TOOLS, APP_DIR),
-            'nettools': lambda: tools.show_nettools(),
-            'clipboard': lambda: tools.show_clipboard(),
-            'notes': lambda: tools.show_notes(DATA_DIR),
-            'color': lambda: tools.show_color(),
-            'pluginmgr': lambda: tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
-                                                       run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
-                                                       plugin_dir_fn=_plugin_dir),
-            'run_app': lambda code: _run_app_by_code(code),
-            'apps': lambda: list(sorted((CFG.get('apps') or {}).items())),
-            # --- 插件 (托盘菜单列出 + 运行; 插件管理器复用) ---
-            'list_plugins': lambda: _list_plugin_files(),
-            'run_plugin_file': lambda path: _run_plugin_file(path),
-            'plugin_dir': lambda: _plugin_dir(),
-        })
+        TRAY = _tray_mod.Tray(root, _tray_api())
     except Exception as e:
         _dfn('tray create err %r' % e)
         TRAY = None
@@ -2326,14 +2367,28 @@ _tray_hint_shown = [False]
 
 
 def _deferred_tray():
-    """托盘对象 + 图标线程 (`import tray` = pystray+PIL ≈300ms)."""
-    _create_tray()
-    ok = False
-    try:
-        if TRAY:
-            ok = bool(TRAY.start())
-    except Exception as e:
-        _dfn('tray start err %r' % e)
+    """托盘对象 + 图标线程 (`import tray` = pystray+PIL ≈300ms).
+
+    第五十三轮: 如果启动早期已经 `_boot_tray()` 挂过图标了 (`_TRAY_BOOT`), 这里**不重复建**,
+    只把完整 api/菜单补上并刷新一次图标 (真实模式可能不是启动时那个"混合")。
+    """
+    global TRAY
+    if _TRAY_BOOT[0] and TRAY is not None:
+        try:
+            TRAY.api = _tray_api()
+            TRAY.rebuild()
+            TRAY._refresh()
+        except Exception as e:
+            _dfn('tray late init err %r' % e)
+        ok = True
+    else:
+        _create_tray()
+        ok = False
+        try:
+            if TRAY:
+                ok = bool(TRAY.start())
+        except Exception as e:
+            _dfn('tray start err %r' % e)
     _dfn_always('tray start ok=%s has_tray=%s exe=%s err=%s'
          % (ok, _tray_has(), sys.executable, (getattr(TRAY, 'last_error', '') or '')[-300:]))
     if not ok:

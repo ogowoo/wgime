@@ -172,6 +172,14 @@ class Tray:
         self.api = api
         self.icon = None
         self.last_error = ''      # start() 失败原因 (第四十一轮) —— 由 main 弹框/写日志
+        self._cur_key = None      # 当前已注入的图标 key ('0a'/'0i'/…/'tool'), 同 key 不重复换图
+        self._retry_pending = [False]   # 图标还没登记上时只登记一次"稍后重试换图"
+
+    def _key_for(self, mode, active=True):
+        """托盘图标的 key (内嵌 ICO 的名字): tray 模式是 'tool', 否则 `<模式索引><a|i>`。"""
+        if self._runmode() == 'tray':
+            return 'tool'
+        return '%d%s' % (int(mode) % len(MODE_CHARS), 'a' if active else 'i')
 
     def _hicon(self, mode, active=True):
         """用内嵌 ICO 造 HICON (不需要 Pillow). 没有内嵌图标时返回 None (回退到 PIL 路径)。"""
@@ -209,47 +217,70 @@ class Tray:
                 return
             mode, active = self.api['get_mode'](), self.api['is_active']()
             if _embedded_icons():
+                try:
+                    vis = bool(getattr(self.icon, 'visible', False))
+                except Exception:
+                    vis = False
+                if not vis:
+                    # 第五十三轮: **图标还没登记上时绝不换图**。run_detached() 的 setup 线程稍后才发
+                    # NIM_ADD, 这期间换图既不会发 NIM_MODIFY(shell 还不知道我们), 又会把 start() 刚注入、
+                    # setup 线程马上要用的那个句柄 DestroyIcon 掉 -> shell 记住的是**已销毁的句柄**,
+                    # 表现就是"刚启动时托盘图标空白/乱, 过一会儿或点一下才正常"(第五十一轮那次"无条件
+                    # 释放旧句柄"引入的回归)。这里只安排一次重试, 等 setup 完成后由重试去正确换图。
+                    if not self._retry_pending[0]:
+                        self._retry_pending[0] = True
+                        try:
+                            self.root.after(150, self._retry_refresh)
+                        except Exception:
+                            pass
+                    self.icon.update_menu()
+                    return
+                self._retry_pending[0] = False
+                key = self._key_for(mode, active)
+                if key == self._cur_key and getattr(self.icon, '_icon_handle', None):
+                    self.icon.update_menu()      # 已经是这张图 -> 只刷勾选态, 不重建 HICON、不惊动 shell
+                    return
                 h = self._hicon(mode, active)
-                was = False
-                try:
-                    was = bool(getattr(self.icon, 'visible', False))
-                except Exception:
-                    was = False
-                try:
-                    import win as _w
-                    _w._dlog('tray _refresh embedded mode=%s active=%s hicon=%s visible=%s'
-                             % (mode, active, bool(h), was))
-                except Exception:
-                    pass
                 if h:
-                    # 第五十一轮: 旧句柄**无条件**先释放。以前只在 was(已可见) 时释放, 而 start() 注入 h0 后
-                    # 立刻 _refresh() 与 pystray 的 setup 线程竞态(visible 是 setup 线程置的) -> was=False,
-                    # h0 被覆盖且永不 DestroyIcon (每次启动漏一个 GDI 句柄)。
+                    old = getattr(self.icon, '_icon_handle', None)
+                    self._inject_hicon(h)
+                    ok = False
                     try:
-                        self.icon._release_icon()
+                        ok = bool(self.icon._message(1, 0x2, hIcon=h))   # NIM_MODIFY | NIF_ICON
+                    except Exception:
+                        ok = False
+                    if ok:
+                        self._cur_key = key
+                        # 只有 shell 真的改用新句柄之后才销毁旧的 —— 反过来(先销毁再换)会让 shell
+                        # 在 NIM_MODIFY 之前引用一个已销毁的句柄, 正是上面那个"空白图标"的成因。
+                        if old and old != h:
+                            try:
+                                import win as _w
+                                _w.destroy_icon(old)
+                            except Exception:
+                                pass
+                    try:
+                        import win as _w
+                        # 第五十一轮: 换图失败要有 **always-on** 记录 (§36 把 modify_ok 当唯一信号,
+                        # 而 _dlog 是 debug-only -> "图标换了但没生效"现场没有任何证据)
+                        if NIM.get('modify_ok') is False:
+                            _w.dfn_always('tray icon swap FAILED -> %s (Shell_NotifyIcon modify 返回失败)' % key)
+                        else:
+                            _w._dlog('tray icon swap -> %s modified=%s ok=%s' % (key, NIM.get('modify_ok'), ok))
                     except Exception:
                         pass
-                    self._inject_hicon(h)
-                    if was:                         # 已经显示着 -> 通知 shell 换图 (NIM_MODIFY | NIF_ICON)
-                        try:
-                            self.icon._message(1, 0x2, hIcon=h)
-                        except Exception:
-                            pass
-                        try:
-                            import win as _w
-                            # 第五十一轮: 换图失败要有 **always-on** 记录 (§36 把 modify_ok 当唯一信号,
-                            # 而 _dlog 是 debug-only -> "图标换了但没生效"现场没有任何证据)
-                            _k = '%d%s' % (int(mode) % len(MODE_CHARS), 'a' if active else 'i')
-                            if NIM.get('modify_ok') is False:
-                                _w.dfn_always('tray icon swap FAILED -> %s (Shell_NotifyIcon modify 返回失败)' % _k)
-                            else:
-                                _w._dlog('tray icon swap -> %s modified=%s' % (_k, NIM.get('modify_ok')))
-                        except Exception:
-                            pass
             elif HAS_PIL:
                 self.icon.icon = (_tool_icon_img() if self._runmode() == 'tray'
                                   else _icon_img(mode, active))
             self.icon.update_menu()   # 刷新菜单勾选态(checked 重求值), 否则切换后勾选不变、看起来"没反应"
+        except Exception:
+            pass
+
+    def _retry_refresh(self):
+        """图标登记完成后的一次补刷 (见 _refresh 里"不可见时不换图"那一段)。"""
+        self._retry_pending[0] = False
+        try:
+            self._refresh()
         except Exception:
             pass
 
@@ -469,16 +500,30 @@ class Tray:
         except Exception:
             pass
 
-    def start(self):
+    def _boot_items(self):
+        """启动早期的**最小**菜单: 这时 main 的完整 api(CFG/工具/插件…)还没建好, 只用
+        最保险的两项 —— 开关与退出 (回调都是延迟求值的 lambda, 点的时候早就准备好了)。"""
+        return (pystray.MenuItem(L('开关', 'Toggle'), self._on(self.api['toggle'])),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(L('退出', 'Exit'), self._on(self.api['quit'])))
+
+    def start(self, boot=False):
         """建图标 + 起 pystray 线程. 返回 True/False (False 时 self.last_error 有原因).
         第四十一/四十二轮: 每个可能失败的步骤都留痕; 图标优先用内嵌 ICO (**不需要宿主装 Pillow**),
-        没有内嵌图标(源码布局)时才回退到 PIL。"""
+        没有内嵌图标(源码布局)时才回退到 PIL。
+        `boot=True`: 启动早期的"先挂个图标"模式 —— 用最小菜单 + 默认图标(混合模式),
+        不做 `_refresh()` (那时 main 的 CFG/ime 可能还没建), 等 `_deferred_tray` 再补完整菜单。
+        """
         self.last_error = ''
         if not HAS_TRAY:
             self.last_error = 'pystray 导入失败:\n' + (IMPORT_ERR or '(未知)')
             return False
         try:
-            if self._runmode() == 'tray':
+            if boot:
+                items = self._boot_items()
+                mode_for_icon = 0
+                pil_icon = None
+            elif self._runmode() == 'tray':
                 items = self._tray_items()
                 pil_icon = (_tool_icon_img() if HAS_PIL else None)
                 mode_for_icon = 0
@@ -497,13 +542,15 @@ class Tray:
                 h = self._hicon(mode_for_icon, True)
                 if h:
                     self._inject_hicon(h)
+                    self._cur_key = self._key_for(mode_for_icon, True)
                 else:
                     self.last_error = '内嵌托盘图标加载失败 (LoadImage 返回空)'
                     return False
             else:
                 self.icon.icon = pil_icon
             self.icon.run_detached()
-            self._refresh()
+            if not boot:
+                self._refresh()          # boot 模式: 此刻 CFG/ime 可能还没建, 等 _deferred_tray 补
             return True
         except Exception:
             self.last_error = _traceback.format_exc()

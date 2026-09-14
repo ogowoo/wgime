@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-09-14 (第五十六轮: 修"刚启动时托盘图标显示奇怪/加载不及时" —— 两个真因)
+
+> 轮次号说明: 远端并行会话已用过第五十三~五十五轮（工具箱磁贴/滚动条/窗口高度），
+> 本轮托盘图标的修复接在其后，故记为第五十六轮；`15b8513` 的提交信息里写的是旧号。
+
+用户反馈："现在的托盘图标显示很奇怪，icon 加载不及时，特别是刚启动后。"
+
+**真因 ①（第五十一轮我自己引入的回归）：启动瞬间销毁了 shell 正在用的句柄。**
+`Tray.start()` 先把 HICON `h0` 注入 pystray、再 `run_detached()`（**setup 线程**稍后才发 `NIM_ADD`），
+紧接着主线程就调 `_refresh()` —— 第五十一轮为了让"不可见时也回收旧句柄"改成了**无条件 `_release_icon()`**：
+此时 `visible` 往往还是 False（setup 线程没跑完），于是 `h0` 被 `DestroyIcon`、`h1` 被注入却**不发 NIM_MODIFY**
+（没登记上也没法发）。结果 shell 记住的是**已销毁的句柄** → 刚启动那一下托盘图标空白/乱，过一会儿或点一下才正常。
+
+修法（`tray.py`）:① **图标还没登记上时绝不换图**（只安排一次 `after(150)` 的补刷），既不销毁也没白建句柄；
+② 换图**先注入新句柄 → 发 NIM_MODIFY → shell 接受之后才 `DestroyIcon` 旧句柄**（新增 `win.destroy_icon()`，
+因为 pystray 的 `_release_icon()` 销毁的是"当前"句柄，不是被换下来的那个）；
+③ 同一张图（key 相同）重复刷新只更新菜单勾选态，不再每次重建 HICON、惊动 shell。
+
+**真因 ②：托盘图标排在"词库加载"之后才创建。**
+词库加载是**主线程 join** 的（热启动 ~1.5-1.9s，冷启动从码表重建 **7.8s**，见下面的实测），而
+`root.after(150, _deferred_tray)` 是在 join **之后**才注册的 —— 于是这段时间托盘里**根本没有图标**。
+修法:新增 `_boot_tray()`，在等词库**之前**先把图标挂出来（最小菜单：开关/退出），词库读完后再由
+`_deferred_tray` 换成完整菜单 + 真实状态（`Tray.api = _tray_api(); rebuild(); _refresh()`，不重复建、不换进程）。
+配套:`tray.start(boot=True)`（最小菜单、默认图标、不做 `_refresh`）+ `_boot_items()`；把托盘 api 字典抽成
+`_tray_api()` 供两处复用。`import tray` 的 ~130ms 花在等词库期间，词库线程本来就在跑，不额外拖慢上屏。
+
+**实测（跑的是**真成品**单文件，冷启动、空数据目录，`WGIME_DEBUG=1`）**：
+
+```
+1789383218.761 tray: boot icon shown BEFORE dict join (dict thread still running)
+1789383223.188 startup: engine load=7792ms        <- 托盘图标比词库读完早了 4.43s
+1789383223.198 startup: mainloop start (poll every 8ms; …)
+1789383223.398 tray start ok=True has_tray=True … <- 完整菜单/真实状态补齐
+```
+即"托盘图标出现时间"从 **≈8.2s（词库读完 + 150ms）** 提前到 **≈0.3s**。
+
+**验证**：`%TEMP%\wg-r53-trayicon-probe.py` **30/30**：A 启动瞬间不销毁 h0/不发 modify/不白建句柄且安排了补刷；
+B 登记后同 key 补刷只刷菜单；B2 若启动期间切了模式则补刷换图且**销毁发生在 NIM_MODIFY 之后**；
+C 同 key 重复刷新零动作；D 切模式换图顺序正确；E 模式表 5 项（语音 `4a`/`4i` 不再退化成 `0`）；
+F 真 ICO `LoadImage` + `DestroyIcon` 可用；G `_boot_tray()` 调用点确实在 `_engine_th.join()` 之前；
+H `start(boot=True)` 建最小菜单（开关/分隔线/退出）、注入默认句柄、设好 `_cur_key`、**不调 `_refresh`**。
+回归：harness **23 项全过**（前缀现在包含 `_boot_tray()`，源码布局无内嵌图标时它静默失败、留给 `_deferred_tray`）、
+`undefined-globals` **0**、dist/package 逐字节同步（853916 B）。
+---
+
 ## 2026-09-14 (发布 v1.2.12)
 
 **release id 388497981** → https://github.com/ogowoo/wgime/releases/tag/v1.2.12 ，tag `v1.2.12` 指向 `e1934bb`（= 本地 HEAD）。

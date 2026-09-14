@@ -363,6 +363,23 @@ def tray_promoted(exe_path=None):
         return None
 
 
+def destroy_icon(h):
+    """销毁一个 HICON (第五十三轮: tray 换图时"旧句柄只能在新句柄被 shell 接受之后再销毁")。
+
+    为什么需要它: pystray 的 `_release_icon()` 销毁的是**当前** `_icon_handle`, 而我们要销毁的是刚刚
+    被换下来的那一个; 而且顺序错了(先销毁再 NIM_MODIFY)会让 shell 在换图完成前引用一个已销毁的句柄
+    -> 托盘图标空白/乱。
+    """
+    if not h:
+        return
+    try:
+        user32.DestroyIcon.argtypes = [ctypes.c_void_p]
+        user32.DestroyIcon.restype = w.BOOL
+        user32.DestroyIcon(ctypes.c_void_p(h))
+    except Exception:
+        pass
+
+
 def icon_from_ico_bytes(data, key):
     """把 ICO 字节落到 runtime 目录并 LoadImage 成 HICON —— **不依赖 Pillow**（第四十二轮）.
 

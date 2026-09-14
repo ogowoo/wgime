@@ -229,6 +229,20 @@ python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态
     **便签滚动条改成按需**：Text 的 `yscrollcommand` 里判断 `yview() == (0.0, 1.0)`（装得下）就 `place_forget`，
     溢出才 `place`；**正文宽度保持不变**，免得滚动条出现/消失时文字左右重排。
 
+43. **托盘图标的句柄时序（第五十六轮，两条都是真踩过的坑）**：
+    ① **图标还没登记上（`icon.visible` 为假）时绝不换图** —— `Tray.start()` 注入 h0 后由 `run_detached()` 的
+    **setup 线程**发 `NIM_ADD`，主线程紧接着的 `_refresh()` 若此时销毁 h0，shell 记住的就是**已销毁的句柄**
+    （表现：刚启动那一下托盘图标空白/乱）。第五十一轮那版"无条件 `_release_icon()`"就是这个回归。
+    ② **换图顺序:先注入新句柄 → `NIM_MODIFY` → shell 接受之后才 `DestroyIcon` 旧句柄**。pystray 的
+    `_release_icon()` 销毁的是**当前** `_icon_handle`（不是刚换下来的那个），要销毁旧句柄用 `win.destroy_icon()`；
+    同一张图（key 相同）重复刷新只 `update_menu()`，不重建 HICON、不惊动 shell。
+    ③ **图标要"早挂"**：词库加载是**主线程 join**（热 1.5-1.9s、冷建 7.8s），托盘原排在 join 之后的
+    `after(150)` 里 → 那段时间托盘里什么都没有。现在 `_boot_tray()` 在 join **之前**先挂最小菜单图标，
+    词库读完由 `_deferred_tray` 补完整菜单（`TRAY.api = _tray_api(); rebuild(); _refresh()`）。
+    **改启动顺序时别把 `_boot_tray()` 挪到 join 之后**；`tray.start(boot=True)` 用的是最小 api
+    （只有 toggle/is_active/get_mode/quit），**不要在 boot 分支里加需要 CFG/工具/插件的调用**。
+    实测（真成品冷启动）：boot icon @+0.76s，engine load @+5.19s（差 4.43s），完整菜单 @+5.40s。
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 > **细节在 `AGENTS-DETAIL.md`**：正文只留"要照着做的规则"，实测数字/探针清单/历史轮次来龙去脉
