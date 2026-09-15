@@ -133,6 +133,24 @@ def _rms(pcm):
     return int((s / n) ** 0.5)
 
 
+def peak(pcm):
+    """一段 16bit PCM 的峰值 (0 = 设备给的是**纯数字静音**, 第五十八轮诊断用).
+
+    RMS 会被"整体偏小但确实有波形"和"整段全 0"两种情况混在一起; 峰值能一眼分开:
+    全 0 -> 输入设备被静音/选错设备 (不是用户说话太轻)。
+    """
+    n = len(pcm) // 2
+    if n <= 0:
+        return 0
+    import array
+    a = array.array('h')
+    a.frombytes(pcm[:n * 2])
+    try:
+        return max(max(a), -min(a))
+    except ValueError:
+        return 0
+
+
 class Recorder(object):
     """一次录音会话. 用法: r = Recorder(...); r.start(); ...; pcm = r.stop()"""
 
@@ -154,6 +172,7 @@ class Recorder(object):
         self._spoke = False
         self._quiet_ms = 0
         self._noise = []
+        self._floor = None                                  # 自适应底噪 (第五十八轮, 见 _on_data)
         self._thr = 0
 
     # -- 内部: 音频回调 (winmm 自己的线程) --
@@ -170,12 +189,16 @@ class Recorder(object):
                 self.pcm += data
                 elapsed = (time.time() - self.t0) * 1000.0
                 r = _rms(data)
-                if elapsed < 500:                   # 头 500ms 当环境噪声, 之后定阈值
-                    self._noise.append(r)
-                    if not self._thr and len(self._noise) >= 2:
-                        base = sorted(self._noise)[len(self._noise) // 2]
-                        self._thr = max(180, int(base * 3.5))
-                thr = self._thr or 300
+                # 第五十八轮: **自适应底噪** —— 只让"比当前底噪更安静"的块把底噪压下去 (min 跟踪),
+                # 阈值 = 底噪 × 3.5, 钳在 [180, 1200]。以前是"头 500ms 取中位数, 凑不够 2 块就退回
+                # 写死的 300": 块本身是 200ms, 再叠上 waveInOpen/waveInStart 的启动延迟(实测常
+                # 100~300ms), 那个窗口里经常只落进 1 块 -> 阈值永远是兜底的 300, 底噪偏大或麦克风
+                # 偏轻的机器就"怎么喊都听不到说话声"。min 跟踪没有窗口问题: 第一块就能定阈值,
+                # 之后遇到更安静的块只会把阈值往下修 (自然停顿处即可修正), 上限 1200 防噪声环境顶天。
+                if self._floor is None or r < self._floor:
+                    self._floor = r
+                self._thr = min(1200, max(180, int(self._floor * 3.5)))
+                thr = self._thr
                 if r >= thr:
                     self.spoke = True
                     self._spoke = True

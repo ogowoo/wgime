@@ -866,6 +866,27 @@ def reset():
 # 这里只负责: 热键、状态显示、结果进候选条(空格确认)或直接上屏。**识别走后台线程**, 主线程不卡。
 _VOICE = {'rec': None, 't0': 0.0, 'toggle': False, 'busy': False, 'text': None, 'mod': None}
 VOICE_Q = queue.Queue()
+_VOICE_TICK = [0.0]        # 上次给"正在听…(Ns)"续秒的时间 (见 _voice_tick)
+
+
+def _voice_tick(now=None):
+    """录音中给候选条的秒数续命 (poll 里 ~4Hz 调用)。
+
+    第五十八轮: 以前录音期间**没有任何东西重画候选条** —— 条上那句 "正在听… (0s) 松开结束" 是
+    按下那一刻的字符串, 秒数永远不动。用户看到"一直是 0s"就以为没在收音(其实录着), 也没法判断
+    到底该什么时候松手。这里让秒数真的走起来 (show_page 是幂等的纯界面重画)。
+    """
+    if _VOICE['rec'] is None:
+        return False
+    now = time.time() if now is None else now
+    if now - _VOICE_TICK[0] < 0.25:
+        return False
+    _VOICE_TICK[0] = now
+    try:
+        show_page()
+    except Exception:
+        pass
+    return True
 
 
 def _voicemod():
@@ -925,6 +946,7 @@ def voice_down():
         return
     _VOICE['rec'] = rec
     _VOICE['t0'] = time.time()
+    _VOICE_TICK[0] = 0.0                    # 立刻画一次 "正在听… (0s)" (见 _voice_tick)
     _VOICE['toggle'] = False
     _VOICE['text'] = None
     hook.COMPOSING[0] = False
@@ -955,13 +977,33 @@ def voice_finish():
     ms = rec.elapsed_ms()
     spoke = bool(getattr(rec, 'spoke', True))
     pcm = rec.stop()
-    if ms < 400 or not pcm:
+    if not pcm:
+        # 第五十八轮: 设备在、也打开成功, 却**一个字节都没回调** —— 以前只写 debug 日志后静默丢弃,
+        # 用户只看到"按了没反应"。现在明确报出来 (静音/被独占/选错设备)。
+        _dfn_always('voice: NO AUDIO DATA (%dms) - device busy/muted?' % ms)
+        _notify('语音输入', '没收到任何音频数据 (麦克风被静音、被别的程序独占, 或选错了输入设备)')
+        show_page()
+        return
+    if ms < 400:
         _dfn('voice: too short (%dms) - dropped' % ms)
         show_page()
         return
     if not spoke:
-        _dfn('voice: no speech detected (%dms) - dropped' % ms)
-        _notify('语音输入', '没听到说话声 (按住热键说话, 松开结束)')
+        # 有数据但音量一直压着阈值: 报一个能判断的数值, 而不是干巴巴一句"没听到说话声"。
+        # 峰值 == 0 说明设备给的是**纯数字静音** -> 是"麦克风被静音/选错设备", 不是"说话太轻"。
+        try:
+            pk = _voicemod().peak(pcm)
+            lvl = _voicemod()._rms(pcm)
+        except Exception:
+            pk = lvl = -1
+        _dfn('voice: no speech detected (%dms, peak=%s rms=%s) - dropped' % (ms, pk, lvl))
+        if pk == 0:
+            _dfn_always('voice: MIC IS DIGITALLY SILENT (%dms, all-zero pcm)' % ms)
+            _notify('语音输入', '麦克风给的是纯静音 (%.1fs 全 0): 输入设备被静音或者选错了设备 '
+                                '(右键任务栏音量 → 声音设置 → 输入)' % (ms / 1000.0,))
+        else:
+            _notify('语音输入', '没听到说话声 (录了 %.1fs, 峰值≈%s 音量≈%s；一直这样就把麦克风音量调大, '
+                                '或换个输入设备)' % (ms / 1000.0, pk, lvl))
         show_page()
         return
     v = _voicemod()
@@ -2450,6 +2492,10 @@ def poll():
         # 语音: VAD 自动停 / 识别结果 (后台线程入队, 此处主线程执行) —— 第四十七轮
         try:
             _voice_drain()
+        except Exception:
+            pass
+        try:
+            _voice_tick()          # 录音中的 "(Ns)" 秒数要走 (第五十八轮; 见 _voice_tick)
         except Exception:
             pass
         # 先排空托盘动作 (pystray 线程入队, 此处主线程执行)

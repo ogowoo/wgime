@@ -238,8 +238,22 @@ def _proc(nCode, wParam, lParam):
                         if _act == 'voice' and not VOICE_ON[0]:
                             continue        # 语音没开: Ctrl+Alt+V 照常给应用 (不吞、也不弹"没打开")
                         _mods, _hk = HOTKEYS.get(_act, (0, 0))
+                        if _act == 'voice' and _hk and _hk == vk and not _match_mods(_mods):
+                            # 第五十八轮: 修饰键已经松了的 V 按下 = 这次"按住"结束。清掉标志防止
+                            # **松键事件丢失**(切窗口/钩子重装)之后语音热键永远被 VOICE_DOWN 卡死。
+                            VOICE_DOWN[0] = False
+                            continue
                         if _hk and _hk == vk and _mods != SHIFT_TAP and _match_mods(_mods):
                             if _act == 'voice':
+                                # 第五十八轮: **按住热键时的自动重复要丢掉**。Windows 对按住的键会
+                                # 每 ~33ms 补发一次 WM_KEYDOWN(钩子无法从 KBDLLHOOKSTRUCT 分辨),
+                                # 以前每次重复都入队一个 VK_VOICE -> main.voice_down() 见到"已经在录"
+                                # 就当成"第二次点"立刻 voice_finish(), 紧接着下一次重复又开一段**新**
+                                # 录音(t0 归零) -> 说话被切成一地碎片、界面永远停在 "(0s)"、松开时
+                                # 已经没有 rec 可收尾 = 用户报的"没办法完成收音"。用 VOICE_DOWN[0]
+                                # (已在按下时置真、只在真正松键时清) 挡住重复即可。
+                                if VOICE_DOWN[0]:
+                                    return 1
                                 VOICE_DOWN[0] = True     # 记下"这次按下真被我们吞了" (见 WM_KEYUP)
                             EVENTS.put(_code)
                             return 1
