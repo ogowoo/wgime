@@ -22,6 +22,8 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.error            # 识别后端 2 用 (模块级导入: except 子句里要能直接引用 urllib.error)
+import urllib.request
 import wave
 from ctypes import wintypes
 
@@ -414,6 +416,70 @@ def _system_recognize(wav, cfg):
 
 
 # ---------------- 识别后端 2: HTTP (云端/自建, OpenAI Whisper 兼容) ----------------
+HTTP_TIMEOUT = 30          # 单次尝试的超时(秒). 录音只有几十~几百 KB, 识别几秒就好;
+                           # 走代理时若代理是"不拒绝也不响应"的黑洞, 这个值就是回退直连的等待上限
+
+
+def _vlog(msg):
+    """always-on 诊断 (与 tray.py 同一套: pythonw 下没有 stderr, 只能写 debug.log)."""
+    try:
+        import win as _w
+        _w.dfn_always(msg)
+    except Exception:
+        pass
+
+
+def _http_post(url, body, headers, cfg):
+    """发 POST 并返回响应文本; **代理连不上时回退直连** (第五十九轮).
+
+    本机常见坑: 注册表 Internet 设置里留着**已经关掉的本地代理** (Clash/v2ray 的
+    `http://127.0.0.1:10808`, 程序关了但设置没清)。`urllib` 默认会读它 -> 每次都
+    `ConnectionRefusedError`, 云端识别**永远**失败, 而目标站点其实直连就通
+    (实测同一台机器: 直连 -> HTTP 401 "Token is invalid."; 走默认代理 -> 10061 拒绝连接)。
+    所以 `auto`(默认) 会先按系统/环境代理试一次, **连不上就换直连重试一次**; 服务端只要
+    回过话(401/429/500…)就不再重发, 免得白花一次额度。config `stt_proxy` 可强制:
+    `direct`=只用直连 / `http://host:port`=只用这个代理 / 空或 `auto`=先代理后直连。
+    全部失败时把**每一条路的原因**一起报出来 (用户一眼能看出是代理挂了还是直连不通)。
+    不在这里循环重试: 语音是交互操作, 再按一次热键就是最自然的重试。
+
+    **每换一条路都要重建 `Request`** (参数里只收 url/body/headers 的原因): 走代理时
+    `OpenerDirector` 会调 `req.set_proxy()` **就地改写 req.host** —— 拿同一个 req 去试直连,
+    它会照样连到那个死代理上(实测: 回退那次的错误还是 10061), 等于白回退。
+    """
+    import urllib.request
+    mode = (cfg.get('stt_proxy') or '').strip()
+    low = mode.lower()
+    if low in ('direct', 'none', 'off'):
+        plans = [('直连', False)]
+    elif mode and low not in ('auto', 'system'):
+        plans = [('指定代理 %s' % mode, {'http': mode, 'https': mode})]
+    else:
+        plans = [('系统代理', None), ('直连', False)]
+    fails = []
+    for label, proxies in plans:
+        if proxies is None:
+            opener = urllib.request.build_opener()                 # 环境/注册表里那套
+        elif proxies is False:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        else:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+        req = urllib.request.Request(url, data=body, method='POST')   # 每条路一个干净请求
+        for k, v in headers:
+            req.add_header(k, v)
+        try:
+            with opener.open(req, timeout=HTTP_TIMEOUT) as resp:
+                if fails:                          # 上一次失败过 -> 留一条现场证据
+                    _vlog('voice: STT ok via %s (earlier path failed: %s)' % (label, fails[-1]))
+                return resp.read().decode('utf-8', 'replace')
+        except urllib.error.HTTPError:
+            raise                                  # 服务端回话了 -> 换路也没意义
+        except Exception as e:
+            fails.append('%s: %s' % (label, e))
+            continue
+    _vlog('voice: STT all paths failed -> %s' % '; '.join(fails))
+    raise RuntimeError('；'.join(fails) or 'STT 请求失败')
+
+
 def _http_recognize(wav, cfg):
     url = (cfg.get('stt_url') or '').strip()
     if not url:
@@ -440,16 +506,21 @@ def _http_recognize(wav, cfg):
         if val:
             field(key, val)
     body = b''.join(parts) + ('--%s--\r\n' % boundary).encode('ascii')
+    headers = [('Content-Type', 'multipart/form-data; boundary=%s' % boundary)]
+    if cfg.get('stt_key'):
+        headers.append(('Authorization', 'Bearer ' + cfg['stt_key']))
     try:
-        import urllib.request
-        req = urllib.request.Request(url, data=body, method='POST')
-        req.add_header('Content-Type', 'multipart/form-data; boundary=%s' % boundary)
-        if cfg.get('stt_key'):
-            req.add_header('Authorization', 'Bearer ' + cfg['stt_key'])
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode('utf-8', 'replace')
+        raw = _http_post(url, body, headers, cfg)
+    except urllib.error.HTTPError as e:
+        # 服务端回话了: 把状态码和响应体一起报出来 (配错 key 时是 "Token is invalid.",
+        # 额度用完是 429 ...) —— 以前这里只 `%r` 一下, 用户看到一坨 <HTTPError 401> 没法判断
+        try:
+            detail = e.read().decode('utf-8', 'replace').strip()[:200]
+        except Exception:
+            detail = ''
+        return None, 'STT 接口返回 HTTP %s: %s' % (e.code, detail or e.reason)
     except Exception as e:
-        return None, 'STT 请求失败: %r' % (e,)
+        return None, 'STT 请求失败: %s' % (e,)
     try:
         js = json.loads(raw)
     except Exception:

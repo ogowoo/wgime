@@ -216,6 +216,7 @@ def load_config(path):
                voice_silence=1.2,              # 连续静音多少秒自动停 (0=不自动停)
                voice_max=20,                   # 单次录音上限(秒)
                stt_url='', stt_key='', stt_model='', stt_lang='', stt_cmd='',   # 后两条后端的配置
+        stt_proxy='',                                 # 空/auto=先代理后直连, direct=直连, 或指定代理 URL
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
         text = read_text(path)                     # 宽松解码: ANSI/GBK 另存的 config.txt 也能读, 不崩
@@ -263,7 +264,7 @@ def load_config(path):
                     cfg[k] = float(v)                       # 秒; 非法值保持缺省
                 except ValueError:
                     pass
-            elif k in ('stt_url', 'stt_key', 'stt_model', 'stt_lang', 'stt_cmd'):
+            elif k in ('stt_url', 'stt_key', 'stt_model', 'stt_lang', 'stt_cmd', 'stt_proxy'):
                 cfg[k] = v.strip()                          # 后两条后端 (http/cmd) 的配置
             elif k == 'sentence':
                 cfg['sentence'] = v not in ('0', 'off', 'false')

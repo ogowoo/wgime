@@ -185,6 +185,18 @@ python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回
     诊断提示也要能判断：全 0 PCM（`voice.peak() == 0`）报"**麦克风给的是纯静音**(输入设备被静音/
     选错设备)"，否则报峰值/音量数值。探针 `%TEMP%\wg-r58-voice-hold-probe.py`（18 项：假造自动重复
     喂真 `hook._proc`、真 `handle()` 的 start/finish 序列、真 `_on_data` 的 VAD 单元测试、静音提示）。
+    **第五十九轮（云端 STT 的代理坑）**：`voice_engine = http` 的请求统一走 `voice._http_post(url, body,
+    headers, cfg)`，按 `stt_proxy` 决定顺序：空/`auto` = 先系统/环境代理、**连不上就回退直连**；`direct` =
+    只直连；`http://host:port` = 只用它。两个必须守住的点：① **每条路都要重建 `Request`** —— 走代理时
+    `OpenerDispatcher` 会 `req.set_proxy()` **就地改 `req.host`**，复用同一个 req 去"直连"其实还是连那个死
+    代理（回退白做）；② 服务端**回过话**（HTTPError）就不换路/不重发，只在**连接层**失败时换路，并把
+    **每条路的原因**一起报出来。本机真实故障：注册表里留着已关闭的 `http://127.0.0.1:10808` ->
+    `getproxies()` 每次都去连它 -> 10061，云端识别永远失败；硅基流动端点直连实测能拿到 `HTTP 401
+    {"code":30014,"message":"Token is invalid."}`（端点/鉴权/multipart 形状都对）。
+    探针 `%TEMP%\wg-r59-stt-proxy-probe.py`（18 项，全打**本地假服务器**，不依赖外网 —— 本机外网时通时断，
+    真端点做断言不可复现）。硅基流动接入（`config.txt`）：`voice_engine=http`、
+    `stt_url=https://api.siliconflow.cn/v1/audio/transcriptions`、`stt_key=sk-…`、
+    `stt_model=FunAudioLLM/SenseVoiceSmall`、`stt_lang` 留空（该接口只认 `file`/`model`，SenseVoice 自判语种）。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。

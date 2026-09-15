@@ -23,11 +23,21 @@ voice_max = 20
 ; stt_key: 该接口的 API key (Authorization: Bearer ...)
 ; stt_model / stt_lang: 传给接口的 model / language 参数 (缺省 whisper-1 / 不传)
 ; stt_cmd: 本地识别命令, 用 {wav} 占位, 取 stdout 第一行, 如: whisper-cli -m model.bin -f {wav} -otxt -nt
+; stt_proxy: 云端接口走不走代理 (留空/auto=先按系统代理、连不上就直连; direct=直连;
+;            也可写 http://127.0.0.1:10808 只用指定代理)。本机若留着已关闭的本地代理设置,
+;            auto 会自动回退直连, 不用手改系统设置。
 ; stt_url = 
 ; stt_key = 
 ; stt_model = whisper-1
 ; stt_lang = zh
 ; stt_cmd = 
+; stt_proxy = 
+; 例: 硅基流动 (中文识别不错, 有免费额度/免费模型; 模型名 FunAudioLLM/SenseVoiceSmall):
+;   voice_engine = http
+;   stt_url   = https://api.siliconflow.cn/v1/audio/transcriptions
+;   stt_key   = sk-你的key
+;   stt_model = FunAudioLLM/SenseVoiceSmall
+;   (stt_lang 留空: 该接口只认 file/model, SenseVoice 自己判语种)
 ; paste: 上屏方式 key/on/auto/off (key=逐字符Unicode注入, 默认, 不走剪贴板; on=剪贴板粘贴; auto=管理员窗口用剪贴板其余key; off=纯SendKeys按键)
 paste = key
 ; keyfix: 标点吞字修复 (1/0, 默认1; Qt应用如微信4.x全角标点后吞下一字符的修复; 正常程序无感知)
