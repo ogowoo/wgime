@@ -174,8 +174,55 @@ class Recorder(object):
         self._spoke = False
         self._quiet_ms = 0
         self._noise = []
-        self._floor = None                                  # 自适应底噪 (第五十八轮, 见 _on_data)
+        self._floor = None                                  # 自适应底噪 (第五十八轮, 见 _vad_block)
+        self._peak = 0                                      # 最近听过的最响块 (慢衰减, 第六十一轮修)
         self._thr = 0
+        self._blocks = 0
+
+    # -- 内部: 单块 VAD 判决 (第六十一轮拆出来, 便于 headless 回归) --
+    def _vad_block(self, r, elapsed):
+        """吃一个块的 RMS, 更新阈值/静音计数; 返回 True = "该收尾了".
+
+        阈值取**两者较小**:
+          thr_abs = clamp(floor * 3.5, 180, 1200)     floor = 见过的最小 RMS (min 跟踪)
+          thr_rel = clamp(peak  * 0.25, 180, 600)     peak  = 最近听过的最响块 (每块 ×0.9 慢衰减)
+          thr     = min(thr_abs, thr_rel)
+
+        **为什么必须取 min（第六十一轮修的真 bug）**: 第五十八轮只留了 thr_abs, 于是
+          - "按住热键就说话"(开头压根没有一个静音块) -> floor 是从**说话声**里取的
+            (比如 400) -> thr_abs 被顶到上限 **1200**;
+          - 麦克风增益偏热时同理。
+        而正常说话只有几百~一千出头, 于是**说话声自己**被判成"静音", 攒够 silence_ms
+        (默认 1.2s) 就自动收尾 —— 用户实测"按了 Ctrl+Alt+V, 说不到 2 秒就自动停"
+        (MIN_MS 400 + 1200 ≈ 1.2~1.6s, 与现象吻合)。
+        相对项**只会把阈值往下拉**(取 min, 且上限 600), 所以:
+          - 句子内部的换气/弱音节不会再被当成"说完了";
+          - 真静音(接近 0)仍远低于两者 -> 该停还是停;
+          - 反过来"噪声大的房间"里噪声会被当成说话 -> **不会**自动停(宁可不停:
+            用户本来就是松开热键结束, 而 voice_silence=0 可以彻底关掉自动停)。
+        峰值用"×0.9 慢衰减"是为了让麦克风开启那一下的爆音(峰值可能上万)不会长期抬高阈值;
+        再叠上 600 的上限, 爆音也压不垮说话声。
+
+        别改回"只留 thr_abs": 那是第五十八轮那版, 会把说话判成静音。
+        """
+        self._blocks += 1
+        if self._floor is None or r < self._floor:
+            self._floor = r
+        self._peak = r if r > self._peak else int(self._peak * 0.9)
+        thr_abs = min(1200, max(180, int(self._floor * 3.5)))
+        thr_rel = min(600, max(180, int(self._peak * 0.25)))
+        thr = min(thr_abs, thr_rel)
+        self._thr = thr
+        if r >= thr:
+            self.spoke = True
+            self._spoke = True
+            self._quiet_ms = 0
+        else:
+            self._quiet_ms += BUF_MS
+        if elapsed >= self.max_ms:
+            return True
+        return bool(self.silence_ms and self._spoke and elapsed >= MIN_MS
+                    and self._quiet_ms >= self.silence_ms)
 
     # -- 内部: 音频回调 (winmm 自己的线程) --
     def _on_data(self, hwi, msg, inst, hdr_p, reserved):
@@ -190,29 +237,7 @@ class Recorder(object):
             with self._lock:
                 self.pcm += data
                 elapsed = (time.time() - self.t0) * 1000.0
-                r = _rms(data)
-                # 第五十八轮: **自适应底噪** —— 只让"比当前底噪更安静"的块把底噪压下去 (min 跟踪),
-                # 阈值 = 底噪 × 3.5, 钳在 [180, 1200]。以前是"头 500ms 取中位数, 凑不够 2 块就退回
-                # 写死的 300": 块本身是 200ms, 再叠上 waveInOpen/waveInStart 的启动延迟(实测常
-                # 100~300ms), 那个窗口里经常只落进 1 块 -> 阈值永远是兜底的 300, 底噪偏大或麦克风
-                # 偏轻的机器就"怎么喊都听不到说话声"。min 跟踪没有窗口问题: 第一块就能定阈值,
-                # 之后遇到更安静的块只会把阈值往下修 (自然停顿处即可修正), 上限 1200 防噪声环境顶天。
-                if self._floor is None or r < self._floor:
-                    self._floor = r
-                self._thr = min(1200, max(180, int(self._floor * 3.5)))
-                thr = self._thr
-                if r >= thr:
-                    self.spoke = True
-                    self._spoke = True
-                    self._quiet_ms = 0
-                else:
-                    self._quiet_ms += BUF_MS
-                want = False
-                if elapsed >= self.max_ms:
-                    want = True
-                elif (self.silence_ms and self._spoke and elapsed >= MIN_MS
-                        and self._quiet_ms >= self.silence_ms):
-                    want = True
+                want = self._vad_block(_rms(data), elapsed)
                 if want and not self.auto_stopped:
                     self.auto_stopped = True
                     if self.on_auto_stop:
@@ -291,6 +316,17 @@ class Recorder(object):
                 pass
         self._running = False
         pcm = self.pcm
+        # 第六十一轮: 每次录音留一行 **always-on** 诊断 —— 音量/阈值/静音计数是"说不到两秒就自动停"
+        # 这类问题的唯一线索(用户机器上没法复现, 只能靠现场的数字)。**不含任何音频内容**。
+        try:
+            import win as _w
+            _w.dfn_always('voice: rec %dms blocks=%d spoke=%s auto_stop=%s floor=%s thr=%s '
+                          'peak=%s quiet=%dms silence=%dms'
+                          % (int(len(pcm) / float(RATE * CHANNELS * BITS // 8) * 1000), self._blocks,
+                             self.spoke, self.auto_stopped, self._floor, self._thr,
+                             self._peak, self._quiet_ms, self.silence_ms))
+        except Exception:
+            pass
         self.close()
         self.pcm = pcm
         return pcm
