@@ -391,8 +391,24 @@ try {
   $rec.BabbleTimeout = [TimeSpan]::FromSeconds(4)
   $rec.EndSilenceTimeout = [TimeSpan]::FromSeconds(0.6)
   $rec.SetInputToWaveFile('__WAV__')
-  $r = $rec.Recognize()
-  if ($r) { Out-B64 'OKB64' $r.Text } else { Out-B64 'ERRB64' 'no-speech' }
+  # 第六十二轮: **必须循环取到 null 为止**。`Recognize()` 一次只返回**一段** —— 引擎会按停顿把
+  # 一段话切成多段, 以前只取第一段, 于是长句只出来前半截(实测 33 字的话只回 16 字、覆盖率 18%),
+  # 用户感受就是"识别率太低"。上限 50 只是防呆(流读完 Recognize 会回 null, 本来就该退出)。
+  $parts = New-Object System.Collections.Generic.List[string]
+  # 注意: 流读完之后再调 Recognize() **不是返回 $null, 而是抛 "No audio input is supplied"**
+  # (实测), 所以循环内必须自己 try 住并 break —— 否则异常冒到外层 catch, 前面收到的几段全丢。
+  # 只有**第一次**就抛才是真错误, 留着报出去; 后面抛就是正常的"读完了"。
+  $firstErr = $null
+  for ($i = 0; $i -lt 50; $i++) {
+    try { $r = $rec.Recognize() } catch { if ($i -eq 0) { $firstErr = $_.Exception.Message }; break }
+    if (-not $r) { break }
+    if ($r.Text) { $parts.Add($r.Text) }
+  }
+  $sep = if ($culture -like 'zh*' -or $culture -like 'ja*' -or $culture -like 'ko*') { '' } else { ' ' }
+  if ($parts.Count -gt 0) {
+    Out-B64 'NSEG' ([string]$parts.Count)                 # 段数: 只在 debug 日志里用
+    Out-B64 'OKB64' ([string]::Join($sep, $parts))
+  } elseif ($firstErr) { Out-B64 'ERRB64' $firstErr } else { Out-B64 'ERRB64' 'no-speech' }
 } catch {
   Out-B64 'ERRB64' $_.Exception.Message
   exit 4
@@ -427,13 +443,26 @@ def _system_recognize(wav, cfg):
         return None, '系统引擎调用失败: %r' % (e,)
     out = (p.stdout or b'').decode('utf-8', 'replace')
     errs = (p.stderr or b'').decode('utf-8', 'replace').strip()
+    nseg = None
     for line in out.splitlines():
         line = line.strip()
+        if line.startswith('NSEG:'):                       # 第六十二轮: 段数(只为日志)
+            try:
+                nseg = int(base64.b64decode(line[5:]).decode('utf-8', 'replace').strip())
+            except Exception:
+                nseg = None
+            continue
         if line.startswith('OKB64:'):
             try:
-                return base64.b64decode(line[6:]).decode('utf-8', 'replace').strip(), None
+                txt = base64.b64decode(line[6:]).decode('utf-8', 'replace').strip()
             except Exception:
                 return None, '系统引擎返回无法解码'
+            try:
+                import win as _w
+                _w.dfn_always('voice: sys-rec segs=%s chars=%d' % (nseg, len(txt)))
+            except Exception:
+                pass
+            return txt, None
         if line.startswith('ERRB64:'):
             try:
                 msg = base64.b64decode(line[7:]).decode('utf-8', 'replace').strip()

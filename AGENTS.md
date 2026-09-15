@@ -225,6 +225,20 @@ python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归�
     不含音频内容）—— 这类问题只能靠现场数字定位。判据拆在 `Recorder._vad_block(r, elapsed)` 里就是为了能
     headless 测：**改 VAD 必须跑 `python wgime-py-pure\tests\voice-vad-test.py`**（31 项，纯桩不碰麦克风；
     把阈值改回旧写法会 **10 条失败**，其中 A1 直接复现"停在块 6" = 1.2 秒）。
+    **第六十二轮（"中文识别率太低"）**：先分清事实 —— 系统引擎走的是 `System.Speech`
+    （`Microsoft Speech Recognizer **8.0** for Windows`，SAPI5 老桌面引擎），跟 Win+H「语音输入」用的
+    神经引擎**不是同一套**，天花板本来就低。但这里确实还有我们自己的一个真 bug：
+    **`Recognize()` 一次只返回一段**（引擎按停顿把一句话切成多段），原来只取第一段 → 长句只出来前半截。
+    实测（用系统 TTS `Microsoft Huihui Desktop` 合成中文再喂我们自己的路径；探针 `%TEMP%\wg-r62-sysrec-probe.py`）：
+    33 字那句修前只回 **16 字 / LCS 覆盖 18%**（后半句整段消失），修后 **27 字 / 39%**（`segs=2`）。
+    修法：循环 `Recognize()` 收齐所有段再拼接（CJK 用 `''` 拼、其它语言用 `' '`）。
+    **坑**：WAV 流读完后**再调 `Recognize()` 不是返回 `$null`，而是抛 "No audio input is supplied"**（实测），
+    所以循环内必须自己 try 住并 break —— 否则异常冒到外层 catch，已经收到的段全丢
+    （只有**第一次**就抛才算真错误，留给外层报）。每次识别另记一行 always-on：
+    `voice: sys-rec segs=<段数> chars=<字数>`。
+    **要真正提升中文识别率只能换后端**（都不用改代码，只改 config.txt）：`voice_engine = http`
+    + 硅基流动**国内站** `SenseVoiceSmall`（中文强），或 `voice_engine = cmd` + 本地 whisper.cpp；
+    `system` 只适合"完全不想配置、且能接受老引擎准确率"的场景。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。
