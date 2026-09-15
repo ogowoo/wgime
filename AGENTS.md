@@ -51,7 +51,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（23 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
-python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（26 项，假桩照抄真 pystray 语义，见 §43 ④）
+python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -290,9 +290,11 @@ python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回
     现在换图统一走 `Tray._notify_icon(h, key, old)`，状态拆两个：`_cur_key` = **pystray 当前句柄**对应的 key
     （注入后立刻推进），`_shown_key`/`_shown_handle` = **shell 确认接受**过的 key/句柄（只有 `modify_ok is True`
     才销毁旧的 `_shown_handle`；**shell 拒收时不谎报**，下次用**同一个句柄**补发 `NIM_MODIFY`，不重建、不漏）。
-    改这块**必须**跑 `python wgime-py-pure\tests\tray-swap-test.py`（26 项，假 icon 照抄真 pystray 的
+    改这块**必须**跑 `python wgime-py-pure\tests\tray-swap-test.py`（42 项，假 icon 照抄真 pystray 的
     "`_message` 无返回值"语义）—— 第五十三轮那个探针的假 icon `return True`，比现实宽松，因此漏掉了本回归：
-    **桩不能比真的更宽容**。
+    **桩不能比真的更宽容**。该文件第五十七轮写完文档却**忘了提交**（2026-09-15 补齐），补时做了"守卫有效性"
+    自检：把 `_notify_icon` 临时改回第五十六轮那种 `bool(icon._message(...))` 写法 → 测试 **11 条失败**
+    （含 B7「返回 None 而状态仍推进」），还原后 **42/42** —— 记住：**一个不会失败的测试等于没写**。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
