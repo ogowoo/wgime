@@ -286,8 +286,23 @@ WgIme 以普通权限运行时，系统安全机制（UIPI）会拦截它向管�
 | 值 | 说明 |
 |---|---|
 | `system`（默认） | **系统自带离线引擎**（System.Speech）：零依赖、不联网、不占体积；识别语言由 `voice_lang` 指定（默认 `zh-CN`）。识别率一般，短句够用。 |
+| `whisper` | **本地 faster-whisper（推荐）**：模型只载一次、进程常驻，之后**每句 3~5 秒**；离线、不要 key、中文准确率高（实测 88~100%）。需要宿主装了 `faster-whisper`，配 `stt_model`（默认 `small`）/ `stt_lang` / `stt_prompt` / `stt_device` / `stt_compute` / `stt_beam` / `stt_python` / `stt_prewarm`。首次要载模型（十几秒），启动时会在后台先热好。 |
 | `http` | 云端或自建 STT（OpenAI Whisper 兼容的 POST）：配 `stt_url` / `stt_key` / `stt_model` / `stt_lang`，识别率最好但要网络和 key。 |
-| `cmd` | 外部命令（如本地 whisper.cpp）：`stt_cmd` 里用 `{wav}` 占位，取 stdout 第一行。离线、中文好，但要自备程序与模型。 |
+| `cmd` | 外部命令（如本地 whisper.cpp）：`stt_cmd` 里用 `{wav}` 占位，取 stdout 第一行。离线、中文好，但要自备程序与模型；**每句都新起一个进程**（本地 whisper 走这条路每句要 20 秒上下），所以本机装了 faster-whisper 就用上面的 `whisper`。 |
+
+**本地 whisper 怎么配**（`voice_engine = whisper`）：宿主先 `pip install faster-whisper`（模型会从 HuggingFace
+缓存里取，本机已有 `small`/`medium` 等就不必再下），然后
+
+```ini
+voice = 1
+voice_engine = whisper
+stt_model = small
+stt_lang = zh
+stt_prompt = 以下是普通话的句子。
+```
+
+`stt_python` 只在"装了 faster-whisper 的解释器 ≠ WgIme 用的解释器"时才要填（写那个 `python.exe` 的完整路径）。
+识别在后台线程里跑，**不会卡住打字**；`识别中…` 期间你可以照常输入，结果回来再按空格上屏。
 
 **用中文必须装语音包**（离线引擎按语言包分）：管理员 PowerShell 跑
 `Add-WindowsCapability -Online -Name Language.Speech~~~zh-CN~0.0.1.0`，或 设置→时间和语言→语言和区域→
@@ -296,7 +311,8 @@ WgIme 以普通权限运行时，系统安全机制（UIPI）会拦截它向管�
 **打不开麦克风**？多半是隐私开关：设置→隐私和安全性→麦克风→**允许桌面应用访问麦克风**（气泡里也会这么说）。
 
 **相关配置键**：`voice`、`hotkey_voice`、`voice_engine`、`voice_lang`、`voice_auto`、`voice_silence`（静音自动停秒数，0=手动）、
-`voice_max`（单次上限秒）、`stt_url`/`stt_key`/`stt_model`/`stt_lang`/`stt_cmd`。
+`voice_max`（单次上限秒）、`stt_url`/`stt_key`/`stt_model`/`stt_lang`/`stt_cmd`/`stt_proxy`、
+`stt_device`/`stt_compute`/`stt_beam`/`stt_prompt`/`stt_python`/`stt_prewarm`（后 6 个是 `whisper` 后端用的）。
 
 ## 附录：第三方数据与许可
 

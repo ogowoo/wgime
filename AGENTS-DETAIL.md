@@ -261,3 +261,102 @@
   在这条路径上永远不生效（要么承认"常驻固定右下角"并停止写 pos.txt，要么改 `fixed=None` 让固定分支接管）；
   ㉓ hook 的 Shift 轻拍有"Ctrl/Alt/Win 按住不武装 + 0.4s 时限"（C# 两者都没有）、字母判定排在空格/翻页之后
   （C# 在前，`key_first=a` 时行为不同）——两条都更像 python 的有意保守化，建议写进 §27 而不是改代码。
+
+---
+
+## §D6 第六十三轮：`voice_engine = whisper`（常驻本地 faster-whisper）
+
+### 为什么必须常驻（实测数字）
+
+`voice_engine = cmd` + `stt_cmd = python -c "...faster_whisper..."` 这条路**准确率没问题、延迟不能用**。
+同一批真实中文语音（`%TEMP%\wgcmd-*/*.wav`），逐项计时（`%TEMP%\wg-r63-timing.py`）：
+
+| 环节 | 耗时 |
+|---|---|
+| 只启动解释器 | 58 ms |
+| `import faster_whisper` | **6.5 s** |
+| 载模型 `small`/`int8`（热文件缓存） | 2.2 s（冷缓存 ~9 s） |
+| 真转写（17~33 字中文） | 2.2 ~ 4.6 s |
+| **`cmd` 现状 = 每句一个新进程** | **21.4 / 22.1 s** |
+| **常驻进程（模型只载一次）** | **3.0 / 4.6 s** |
+
+冷/热对照探针：`%TEMP%\wg-r63-warm-probe.py`。结论：20 秒里 **16 秒是每句重付的导入+载模型**，
+所以"常驻"不是优化项而是**能不能用**的分界线。准确率（同一批 WAV、`small`/int8、带简体提示词）：
+"你好" 100%、17 字 100%、33 字 88%（`五笔→舞笔`、`语音→预音`，无繁体字）。
+
+### 实现要点（照 §17 光标跟随 helper 的同一套）
+
+- **源码走环境变量** `WGIME_WHISPER_SRC`（+ 选项 JSON `WGIME_WHISPER_OPTS`），命令行只留 ~230 字符引导；
+  既不在磁盘上落 `.py`，也不把几 KB 源码塞进"进程创建命令行"。
+- **JSONL over stdin/stdout**：请求 `{id,wav,lang,prompt,beam}` → 回包 `{id,ok,text,ms,segs}`，
+  另有 `{ready:true,boot_ms,model}` 与 `{ready:false,error}`。
+- **文本用 `json.dumps(ensure_ascii=True)` 回传**：子进程 stdout 的代码页在中文机是 936，
+  直接写裸 UTF-8 汉字会变 `?`（system 后端当年走 base64 就是为了这个）。JSON 转义成 `\uXXXX` 最省事。
+  实测 `%TEMP%\wg-r63-warm-engine-probe.py` C3：请求行里全是 ASCII。
+- **父进程退出 → stdin EOF → 子进程 `for line in sys.stdin` 结束 → 自己退出**。`quit_app()` 用的是
+  `os._exit(0)`（不跑 atexit、不 join 子进程），靠的就是这条 EOF 语义；`voice.shutdown()` 只是显式收一次
+  （`quit_app` 里已调用）。**别改成"落盘脚本 + Popen([..., path])"**（§17 的老坑）。
+- **两个锁**：`lock` 只管起/杀进程（`ensure()` 不等待 READY，实测 75~100 ms 返回 —— 预热要在 Tk 主线程调），
+  `rlock` 只管一问一答（识别线程会持着它等 3~5 s，首句还要等十几秒的载模型）。合成一个锁 = 预热会把主线程
+  卡在识别期间 = **打字停摆**。
+- **预热两处**：① 启动后 4 s 起后台线程 `prewarm_bg()`（`stt_prewarm=0` 关；只在 `voice=1` 且
+  `voice_engine=whisper` 时才 import voice.py）；② `voice_down()` 里 `warm()` 一次 —— 载模型与"用户正在说话"
+  这段时间**重叠**。
+- **子进程 stderr 收进 30 行环形缓冲**，出错时报最后 3 行（`stderr: …`），DEVNULL 会丢掉真原因。
+
+### 同轮修掉的两个真 bug（都是顺序相关、偶发、极难查）
+
+1. **录音文件名固定 `voice-last.wav` → 改成 `voice-<pid>-<序号>.wav`**：常驻助手是**过几秒**才去读这个
+   wav 的，固定名会让"上一句还在识别、这一句又录完"把文件覆盖掉 → 上一句识别出**这一句**的内容（张冠李戴）。
+   现在识别完各自删各自的（`VOICE_Q` 里带 wav 路径），顺带 best-effort 清掉旧版遗留的固定名文件。
+2. **`ensure()` 里"换了参数(key 变了)"必须清 `last_err`**：实测先试坏的 `stt_python`（FileNotFoundError）、
+   1 秒内再换 `stt_device=cuda` 试 —— 报出来的**还是** FileNotFoundError，用户会以为自己的修改没生效。
+   现在 `key != key` 就清；真连续 3 次起不来时报"已停止重试(重启 WgIme 才重新试)"**并附上上次真实原因**
+   （只说"连续起不来"等于没说）。
+
+### 配置键与语义
+
+`stt_model`（默认 `small`；决定助手是否重启）/ `stt_device`（`cpu`）/ `stt_compute`（`int8`）—— 这三个进
+`key`，改了会重启助手；`stt_lang` / `stt_prompt` / `stt_beam` 是**每次请求**带的，改了不用重启（探针 C7/A11）；
+`stt_python`（缺省=宿主解释器，另装了 faster-whisper 的解释器就指过去；进 `key`）；`stt_prewarm`（默认 1）。
+1 秒内不重复 spawn（防"助手秒退时每次按键起一个 python"的启动风暴）；失败计数到 `WSRV_MAX_FAIL=3` 后本进程
+不再重试。这几个键在 `engine.load_config` 里：字符串键进那个元组，`stt_prewarm` 走白名单布尔，
+`stt_beam` 是 `max(1,min(10,int(v)))`。
+
+### 回归与探针
+
+- **永久回归** `wgime-py-pure/tests/whisper-warm-test.py`（**67 项**，毫秒级、不需要 faster-whisper/模型）：
+  把 `voice.subprocess.Popen` 换成**照抄真管道语义**的假进程 —— 没数据时 `for line in proc.stdout` 会**阻塞**、
+  进程死了写 stdin 会**抛 ValueError**、只有 `kill()`/`end()` 之后才 EOF；开头还有一组"桩自检"（0a~0d）
+  证明桩真的像管道，否则后面全是空转。覆盖 A 起进程/预热不阻塞、B READY 与初始化失败、C 串包丢弃/中途崩溃/
+  请求字段、D 超时、E 连续 3 次停手、F 陈旧错误、G 重启时旧读取线程的 EOF 不得落进新队列、H shutdown 与限流、
+  I `prewarm_bg`、J 9 个引擎别名的分派表、J5 取值边界。
+- **守卫有效性自检** `%TEMP%\wg-r63-guard-check.py`：把两处守卫**改回旧写法**各跑一遍 —— 去掉
+  `last_err` 清除 → `I2` 失败；`_reader(p, q)` 改用 `self.q` → `H3`/`H4` 失败；基线 0 失败。
+  （"一个不会失败的测试等于没写"。）
+- **真进程端到端** `%TEMP%\wg-r63-warm-engine-probe.py`（24 项，真子进程 + 真模型）：
+  冷 20.0 s（含 `boot_ms=2821` 的载模型）/ 热 **4.0 s**；并发两句 9.1 s 且各拿各的结果；
+  `shutdown()` 后 `GetExitCodeProcess` 确认进程真没了；坏 `stt_python`/坏 `stt_device` 都报真原因；
+  1 秒内换参数不报陈旧错误。
+- 配置模板 `config.txt`（root + release）加了"本机离线识别"整段注释；`docs\WGIME_使用说明.md` 引擎表加了
+  `whisper` 一行 + "本地 whisper 怎么配"。
+
+---
+
+## §D7 第六十轮：硅基流动两站的区别（实测记录）
+
+**国内站 `cloud.siliconflow.cn` 与国际站 `siliconflow.com` 是两套账号/密钥，互不通用；而且国际站没有可用的
+语音识别模型。** 实测（同一把国际站 key + 真实中文语音 WAV，走我们自己的 `voice.recognize`）：
+
+| 请求 | 结果 |
+|---|---|
+| `api.siliconflow.com/v1/models` | **200**（key 有效）；79 个模型里音频类**只有合成**：`FunAudioLLM/CosyVoice2-0.5B`、`IndexTeam/IndexTTS-2`、`fishaudio/fish-speech-1.5` |
+| `.com` + `FunAudioLLM/SenseVoiceSmall` | **403** `{"code":30003,"message":"Model disabled."}` |
+| `.com` + `TeleAI/TeleSpeechASR` | **400** `{"code":20012,"message":"Model does not exist."}` |
+| 同一把 key 打 `.cn` 的任意接口 | **401** `{"code":30014,"message":"Token is invalid."}` |
+
+**这个 401 是"站点用错了"，不是 key 错** —— 排查先对站点，再怀疑 key。
+`CosyVoice2` 是 **TTS（合成）**，不是识别，`/v1/audio/transcriptions` 用不了它。
+要中文识别只有三条路：① 国内站 key + `SenseVoiceSmall`；② 本地离线（`voice_engine = whisper`，见 §D6）；
+③ 换任何 OpenAI 兼容的识别服务（只改 `stt_url`/`stt_key`/`stt_model`）。
+代理相关的坑（本机注册表里留着已关闭的 `127.0.0.1:10808` → 云端识别永远失败）见 AGENTS.md §38 第五十九轮。

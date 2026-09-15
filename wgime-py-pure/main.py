@@ -867,6 +867,7 @@ def reset():
 _VOICE = {'rec': None, 't0': 0.0, 'toggle': False, 'busy': False, 'text': None, 'mod': None}
 VOICE_Q = queue.Queue()
 _VOICE_TICK = [0.0]        # 上次给"正在听…(Ns)"续秒的时间 (见 _voice_tick)
+_VOICE_SEQ = [0]           # 录音文件序号 (每次一把独立文件名, 见 voice_finish; 第六十三轮)
 
 
 def _voice_tick(now=None):
@@ -937,6 +938,10 @@ def voice_down():
     if not _voice_ok():
         return
     v = _voicemod()
+    try:
+        v.warm(CFG)                         # 本地 whisper: 按下就开始载模型, 与"说话"这段时间重叠
+    except Exception as e:                  # (第六十三轮; 非 whisper 引擎是空操作)
+        _dfn('voice: warm failed: %r' % (e,))
     rec = v.Recorder(silence=float(CFG.get('voice_silence', 1.2) or 0),
                      max_ms=int(float(CFG.get('voice_max', 20) or 20) * 1000),
                      on_auto_stop=lambda: VOICE_Q.put(('auto',)))
@@ -1007,7 +1012,11 @@ def voice_finish():
         show_page()
         return
     v = _voicemod()
-    path = os.path.join(DATA_DIR, 'runtime', 'voice-last.wav')
+    # 每次一个独立文件名 (第六十三轮): 常驻 whisper 助手是**过几秒**才去读这个 wav 的, 用固定名会让
+    # "上一句还在识别、这一句又录完"把文件覆盖掉 —— 结果是上一句识别出**这一句**的内容(张冠李戴,
+    # 而且只会偶尔发生, 很难查)。所以按 序号 命名, 识别完各自删各自的。
+    _VOICE_SEQ[0] += 1
+    path = os.path.join(DATA_DIR, 'runtime', 'voice-%d-%d.wav' % (os.getpid(), _VOICE_SEQ[0]))
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         v.write_wav(path, pcm)
@@ -1024,7 +1033,7 @@ def voice_finish():
             text, err = v.recognize(path, CFG)
         except Exception as e:
             text, err = None, '识别异常: %r' % (e,)
-        VOICE_Q.put(('done', text, err))
+        VOICE_Q.put(('done', text, err, path))
 
     threading.Thread(target=_work, name='wgime-voice-recog', daemon=True).start()
 
@@ -1065,12 +1074,16 @@ def _voice_drain():
                 _dfn('voice: auto-stop (silence or max duration)')
                 voice_finish()
             continue
-        _kind, text, err = (list(item) + [None, None])[:3]
+        _kind, text, err, wav = (list(item) + [None, None, None])[:4]
         _VOICE['busy'] = False
-        try:
-            os.remove(os.path.join(DATA_DIR, 'runtime', 'voice-last.wav'))
-        except OSError:
-            pass
+        # 删这一次的 wav; 顺带清掉旧版本遗留的固定名 voice-last.wav (升级后第一次用语音时清掉)
+        for _p in (wav, os.path.join(DATA_DIR, 'runtime', 'voice-last.wav')):
+            if not _p:
+                continue
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
         if err:
             _dfn_always('voice: recognize failed: %s' % err)
             _notify('语音输入', err)
@@ -1458,6 +1471,11 @@ def quit_app():
         pass
     try:
         engine.save_freq()                              # 同步落盘词频/LastPick/联想 (等价 C# SaveFreqSync)
+    except Exception:
+        pass
+    try:
+        if _VOICE.get('mod') is not None:
+            _VOICE['mod'].shutdown()                     # 常驻 whisper 助手: 立刻收掉 (别留下占内存的子进程)
     except Exception:
         pass
     try:
@@ -2550,6 +2568,15 @@ else:
         win.ensure_caret_bg()
     except Exception:
         pass
+    if CFG.get('voice'):
+        try:
+            # 本地 whisper (voice_engine=whisper) 的常驻助手: 启动后台把模型载进来, 免得
+            # 第一次说话要先白等十几秒 (第六十三轮)。非 whisper 引擎 / stt_prewarm=0 时是空操作。
+            # 拖到 mainloop 之前这一段才 import voice: 只给"真的开了语音"的用户付这个代价。
+            import voice as _vmod
+            _vmod.prewarm_bg(CFG)
+        except Exception as e:
+            _dfn('voice: prewarm setup failed: %r' % (e,))
 _dfn('startup: mainloop start (poll every 8ms; 从这里开始排队按键上屏)')
 _dfn_always('startup: WgIme-Pure %s; showcode=%s trans=%s cn=%s shuangpin=%s starton=%s dict=%s'
             % (VERSION, CFG.get('showcode'), CFG.get('trans'), CFG.get('cnpunct'),

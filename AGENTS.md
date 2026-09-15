@@ -53,6 +53,7 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
+python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -159,8 +160,9 @@ python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归�
     旧行为（stderr 说明）。`EN_HINT_MAX_RANK=50000` 可调；`en-freq.txt` 在 `CACHE_FILES` 里（换表 → 老缓存失效一次）。
 
 38. **语音输入（第四十七轮，python 独有）**：`voice.py` = waveIn 录音（纯 ctypes，VAD 静音自停，别用已移除的 `audioop`）
-    + 三条后端（`voice_engine`：`system` 系统离线引擎 System.Speech，走 `powershell -EncodedCommand` 内联脚本
-    **不落盘**、结果 base64 回传 / `http` Whisper 兼容 / `cmd` 外部命令带 `{wav}`）。热键 `hotkey_voice`（Ctrl+Alt+V）
+    + 四条后端（`voice_engine`：`system` 系统离线引擎 System.Speech，走 `powershell -EncodedCommand` 内联脚本
+    **不落盘**、结果 base64 回传 / `http` Whisper 兼容 / `whisper` **常驻本地 faster-whisper 子进程**（第六十三轮，
+    见本条第末）/ `cmd` 外部命令带 `{wav}`）。热键 `hotkey_voice`（Ctrl+Alt+V）
     按住说话，hook 的 `WM_KEYUP` 报 `VK_VOICE_UP`，**只在 `VOICE_ON` 为真时吞键**；「语音」模式（`MODE_VOICE=4`）
     里 `VOICE_MODE` 让钩子把按键**全部透传**（不组字），轻点热键 = 常录。结果默认进候选条等空格确认
     （`voice_auto=1` 直接上屏），上屏走 `inject()` 但**不进词频学习**。麦克风隐私开关 Deny 时 `waveInOpen` 会 rc=1 →
@@ -199,17 +201,8 @@ python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归�
     `stt_url=https://api.siliconflow.cn/v1/audio/transcriptions`、`stt_key=sk-…`、
     `stt_model=FunAudioLLM/SenseVoiceSmall`、`stt_lang` 留空（该接口只认 `file`/`model`，SenseVoice 自判语种）。
     **第六十轮（硅基流动两站的区别，实测）**：**国内站 `cloud.siliconflow.cn` 与国际站 `siliconflow.com`
-    是两套账号/密钥，互不通用**，而且**国际站没有可用的语音识别模型**。实测（同一把国际站 key + 真实
-    中文语音 WAV、走我们自己的 `voice.recognize`）：
-    `api.siliconflow.com/v1/models` → **200**（key 有效）且列出的 79 个模型里音频类**只有合成**：
-    `FunAudioLLM/CosyVoice2-0.5B`、`IndexTeam/IndexTTS-2`、`fishaudio/fish-speech-1.5`；
-    `.com` + `SenseVoiceSmall` → **403 `{"code":30003,"message":"Model disabled."}`**；
-    `.com` + `TeleAI/TeleSpeechASR` → **400 `{"code":20012,"message":"Model does not exist."}`**；
-    同样的 key 打 `.cn` 的任意接口 → **401 `{"code":30014,"message":"Token is invalid."}`**
-    （**这个 401 是"站点用错了"，不是 key 错** —— 排查先对站点，再怀疑 key）。
-    另：CosyVoice2 是 **TTS（合成）**，不是识别，`/v1/audio/transcriptions` 用不了它；
-    要中文识别只能用 ①国内站 key + `SenseVoiceSmall`，②本地离线（`voice_engine=cmd`），
-    ③换其它 OpenAI 兼容识别服务（只改 `stt_url/stt_key/stt_model`）。
+    是两套账号/密钥、互不通用，而且国际站没有可用的识别模型**（音频类只有 TTS 合成）。用错站点的症状是
+    **401 `Token is invalid`** —— **先对站点，再怀疑 key**。实测代码/模型清单见 `AGENTS-DETAIL.md` §D7。
     **第六十一轮（"按了 Ctrl+Alt+V，说不到 2 秒就自动停"的真因）**：VAD 阈值**不能只看绝对底噪**。
     第五十八轮写成 `thr = clamp(floor*3.5, 180, 1200)`（`floor` = 见过的**最小** RMS），于是
     **"按住热键就说话"**（开头压根没有一个静音块）或**麦克风增益偏热**时，`floor` 是从**说话声**里取的
@@ -236,9 +229,17 @@ python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归�
     所以循环内必须自己 try 住并 break —— 否则异常冒到外层 catch，已经收到的段全丢
     （只有**第一次**就抛才算真错误，留给外层报）。每次识别另记一行 always-on：
     `voice: sys-rec segs=<段数> chars=<字数>`。
-    **要真正提升中文识别率只能换后端**（都不用改代码，只改 config.txt）：`voice_engine = http`
-    + 硅基流动**国内站** `SenseVoiceSmall`（中文强），或 `voice_engine = cmd` + 本地 whisper.cpp；
-    `system` 只适合"完全不想配置、且能接受老引擎准确率"的场景。
+    **要真正提升中文识别率只能换后端**（都不用改代码，只改 config.txt）：`voice_engine = whisper`
+    （**本地常驻 faster-whisper，离线、中文 88~100%、每句 3~5s —— 推荐**）、`voice_engine = http` +
+    硅基流动**国内站** `SenseVoiceSmall`（每句 ~1s，要国内站 key）、或 `voice_engine = cmd` + 本地 whisper.cpp
+    （**每句都新起进程，实测 20s+，别拿它跑本地 whisper**）；`system` 只适合"完全不想配置"的场景。
+    **第六十三轮（`voice_engine = whisper`）**：**别再让本地 whisper 每句新起进程** —— 实测每句 20s 里有 16s
+    是重付的 `import faster_whisper`(6.5s)+载模型(2~9s)，常驻后每句 3~5s。做法照 §17 helper（源码走环境变量 /
+    JSONL 走 stdio / **回包用 `ensure_ascii` JSON**，裸 UTF-8 在中文机会变 `?` / **父进程退出=stdin EOF=子进程自退**）。
+    **两个锁别合并**：`lock` 只管起杀（预热在主线程调它，绝不能等识别，否则打字停摆）、`rlock` 管一问一答。
+    预热两处：启动 +4s 后台（`stt_prewarm=0` 关）+ **按下热键那一刻**（与说话重叠）。键：`stt_model`/`stt_lang`/
+    `stt_prompt`/`stt_device`/`stt_compute`/`stt_beam`/`stt_python`。改这块**必须**跑
+    `python wgime-py-pure\tests\whisper-warm-test.py`（67 项，假 Popen 照抄真管道语义）。实测数字/两处真 bug/探针见 `AGENTS-DETAIL.md` §D6。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。

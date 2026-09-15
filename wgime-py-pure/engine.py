@@ -210,13 +210,15 @@ def load_config(path):
                mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
                voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开
-               voice_engine='system',          # system(系统自带离线引擎) / http(云端 STT) / cmd(本地 whisper)
+               voice_engine='system',          # system(系统离线) / http(云端) / whisper(本地常驻) / cmd(外部命令)
                voice_auto=False,               # True: 识别完直接上屏; False: 进候选条等空格确认
                voice_lang='',                  # 系统引擎的识别语言 (如 zh-CN); 空=系统默认
                voice_silence=1.2,              # 连续静音多少秒自动停 (0=不自动停)
                voice_max=20,                   # 单次录音上限(秒)
                stt_url='', stt_key='', stt_model='', stt_lang='', stt_cmd='',   # 后两条后端的配置
         stt_proxy='',                                 # 空/auto=先代理后直连, direct=直连, 或指定代理 URL
+               stt_device='', stt_compute='', stt_python='', stt_prompt='',     # 本地 whisper 后端 (第六十三轮)
+               stt_prewarm=True, stt_beam=5,   # 启动后台预热 / beam size (1=贪心最快, 5=默认)
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
         text = read_text(path)                     # 宽松解码: ANSI/GBK 另存的 config.txt 也能读, 不崩
@@ -256,7 +258,7 @@ def load_config(path):
             elif k == 'voice_auto':
                 cfg['voice_auto'] = v in ('1', 'on', 'true')    # 识别完直接上屏 (白名单)
             elif k == 'voice_engine':
-                cfg['voice_engine'] = (v.strip().lower() or 'system')   # system/http/cmd
+                cfg['voice_engine'] = (v.strip().lower() or 'system')   # system/http/whisper/cmd
             elif k == 'voice_lang':
                 cfg['voice_lang'] = v.strip()               # 系统引擎语言, 如 zh-CN
             elif k in ('voice_silence', 'voice_max'):
@@ -264,8 +266,16 @@ def load_config(path):
                     cfg[k] = float(v)                       # 秒; 非法值保持缺省
                 except ValueError:
                     pass
-            elif k in ('stt_url', 'stt_key', 'stt_model', 'stt_lang', 'stt_cmd', 'stt_proxy'):
-                cfg[k] = v.strip()                          # 后两条后端 (http/cmd) 的配置
+            elif k in ('stt_url', 'stt_key', 'stt_model', 'stt_lang', 'stt_cmd', 'stt_proxy',
+                       'stt_device', 'stt_compute', 'stt_python', 'stt_prompt'):
+                cfg[k] = v.strip()                          # http / whisper / cmd 三个后端的配置
+            elif k == 'stt_prewarm':
+                cfg[k] = v in ('1', 'on', 'true')           # 白名单语义 (同 voice/showcode): 非法值判"关"
+            elif k == 'stt_beam':
+                try:
+                    cfg[k] = max(1, min(10, int(v)))        # faster-whisper beam size; 非法值保持缺省
+                except ValueError:
+                    pass
             elif k == 'sentence':
                 cfg['sentence'] = v not in ('0', 'off', 'false')
             elif k == 'assoc':

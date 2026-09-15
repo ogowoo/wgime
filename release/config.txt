@@ -8,7 +8,7 @@ showcode = 1
 trans = 1
 ; voice: 语音输入总开关 (1/0, 默认0=关; 打开后 Ctrl+Alt+V 按住说话, 松开出候选, 空格上屏)
 voice = 0
-; voice_engine: 识别后端 system=系统自带离线引擎 / http=云端或自建 STT / cmd=外部命令(本地 whisper)
+; voice_engine: 识别后端 system=系统自带离线引擎 / http=云端或自建 STT / whisper=本地 faster-whisper(离线,中文准) / cmd=外部命令
 voice_engine = system
 ; voice_lang: 系统引擎的识别语言, 如 zh-CN (留空=系统默认; 没装对应语言包会弹气泡提示怎么装)
 voice_lang = zh-CN
@@ -18,10 +18,11 @@ voice_auto = 0
 voice_silence = 1.2
 ; voice_max: 单次录音上限 (秒, 默认20)
 voice_max = 20
-; 下面是 voice_engine = http / cmd 时用的:
+; 下面是 voice_engine = http / whisper / cmd 时用的:
 ; stt_url: OpenAI Whisper 兼容的接口, 如 https://api.openai.com/v1/audio/transcriptions (或自建)
 ; stt_key: 该接口的 API key (Authorization: Bearer ...)
-; stt_model / stt_lang: 传给接口的 model / language 参数 (缺省 whisper-1 / 不传)
+; stt_model: http 时是接口的 model 参数 (缺省 whisper-1); whisper 时是本地模型名 (见下面那段)
+; stt_lang: 识别语言 (http 传给接口 / whisper 交给模型; 留空=接口/模型自己判)
 ; stt_cmd: 本地识别命令, 用 {wav} 占位, 取 stdout 第一行, 如: whisper-cli -m model.bin -f {wav} -otxt -nt
 ; stt_proxy: 云端接口走不走代理 (留空/auto=先按系统代理、连不上就直连; direct=直连;
 ;            也可写 http://127.0.0.1:10808 只用指定代理)。本机若留着已关闭的本地代理设置,
@@ -32,6 +33,21 @@ voice_max = 20
 ; stt_lang = zh
 ; stt_cmd = 
 ; stt_proxy = 
+; ---- 本机离线识别: voice_engine = whisper (第六十三轮, 推荐) ----
+; 用宿主的 faster-whisper (`pip install faster-whisper`)。模型只载一次、进程常驻,
+; 之后每句 3~5 秒; 冷启动那次要先载模型 (~15s), 启动时会在后台先热好 (见 stt_prewarm)。
+; 实测中文准确率 88~100% (系统引擎那句 33 字只出来 27 字); 不像 http 那样要 key/联网。
+;   voice_engine = whisper
+;   stt_model    = small        ; tiny/base/small/medium/large-v3-turbo, 或本地模型目录
+;   stt_lang     = zh           ; 留空 = 让模型自己判
+;   stt_prompt   = 以下是普通话的句子。   ; 可选提示词: 能明显减少繁体字 (留空也行)
+;   stt_device   = cpu          ; cpu / cuda (没有 N 卡就 cpu)
+;   stt_compute  = int8         ; int8 最快; float16/float32 更准但慢/吃内存
+;   stt_beam     = 5            ; 1=贪心(最快) 5=默认(略准)
+;   stt_python   =              ; 留空=用 WgIme 自己的解释器; faster-whisper 装在别的
+;                               ;   解释器上就写那个 python.exe 的完整路径 (没有它才需要)
+;   stt_prewarm  = 1            ; 启动时后台把模型载进来 (0=第一次说话时才载, 省内存)
+; (以后换回别的后端, 只改 voice_engine 一个键; 这几行留着不影响。)
 ; 例: 硅基流动 (中文识别不错, 有免费额度/免费模型):
 ;   voice_engine = http
 ;   stt_url   = https://api.siliconflow.cn/v1/audio/transcriptions
@@ -43,7 +59,7 @@ voice_max = 20
 ;   - **国际站没有可用的识别模型**: SenseVoiceSmall -> 403 "Model disabled", TeleSpeechASR -> 400
 ;     "Model does not exist"; 国际站音频类只有**合成**(TTS)模型: FunAudioLLM/CosyVoice2-0.5B、
 ;     IndexTeam/IndexTTS-2、fishaudio/fish-speech-1.5 —— 合成 ≠ 识别, 接不到 voice_engine=http 上。
-;   - 只要识别: 要么用国内站 key + SenseVoiceSmall, 要么走本地离线 (voice_engine = cmd, 见 stt_cmd),
+;   - 只要识别: 要么用国内站 key + SenseVoiceSmall, 要么走本地离线 (voice_engine = whisper, 见上),
 ;     或任何 OpenAI 兼容的识别服务 (换 stt_url/stt_key/stt_model 即可)。
 ; paste: 上屏方式 key/on/auto/off (key=逐字符Unicode注入, 默认, 不走剪贴板; on=剪贴板粘贴; auto=管理员窗口用剪贴板其余key; off=纯SendKeys按键)
 paste = key

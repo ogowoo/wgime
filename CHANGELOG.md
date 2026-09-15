@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-09-15 (第六十三轮: 本地 whisper 后端 `voice_engine = whisper` —— 常驻子进程, 每句 20s → 4s)
+
+用户："方案B试一下。"（第六十二轮的结论里建议换后端：`http` 要国内站 key、`cmd` + 本地 whisper 太慢）
+
+- **先把 `cmd` 这条路测出来**（`faster-whisper` 1.2.1 + `small`/`int8`，本机已有模型与缓存，**不用下载**）：
+  **准确率确实好**（TTS 合成中文喂真识别路径：17 字 100%、33 字 88%，无繁体字），**但延迟不可用**：
+
+  | | 每句耗时 |
+  |---|---|
+  | 真转写本身 | 2.2 ~ 4.6 s |
+  | `import faster_whisper` | 6.5 s |
+  | 载模型 (`small`/int8) | 2.2 s（冷文件缓存时 ~9 s） |
+  | **`cmd` 现状：每句都新起一个 python** | **21 ~ 22 s** |
+  | 常驻进程（模型只载一次） | **3.0 ~ 5.3 s** |
+
+  即 20 秒里有 **16 秒是"每句话都在重付的导入 + 载模型"**。探针 `%TEMP%\wg-r63-timing.py`、
+  `%TEMP%\wg-r63-warm-probe.py`（冷/热对照，同一批 WAV）。
+- **新增后端 `voice_engine = whisper`**（第六十三条后端；`local`/`faster-whisper`/`warm` 是别名）：
+  照 §17 光标跟随 helper 的**同一套**做法 —— 源码经**环境变量**交给子进程（不落盘 `.py`、不进进程命令行），
+  `stdin/stdout` 走 **JSONL**，文本用 `ensure_ascii=True` 回传（绕开子进程 stdout 代码页 —— 中文机
+  直接写裸 UTF-8 会变 `?`）；**父进程退出 → stdin EOF → 子进程自己结束**（`quit_app()` 是 `os._exit(0)`，
+  不会跑 atexit，靠的就是这条，不留孤儿进程）。
+- **配置键**（都只影响这个后端）：`stt_model`（默认 `small`）/ `stt_lang` / `stt_prompt`（给"以下是普通话的
+  句子。"能明显减少繁体字）/ `stt_device` / `stt_compute`（默认 `int8`）/ `stt_beam`（1=贪心最快, 5=默认）/
+  `stt_python`（faster-whisper 装在别的解释器上时指过去）/ `stt_prewarm`（启动后台预热，默认 1）。
+- **两处预热**：① 启动后 4s 起一个后台线程把模型载进来（`prewarm_bg`，`stt_prewarm=0` 可关）；
+  ② 按下语音热键的**那一刻**再 ensure 一次（载模型与"用户正在说话"这段时间重叠）。`warm()` 本身
+  只 spawn、**不等 READY**（实测 75~100ms，绝不卡 Tk 主线程）。
+- **两个锁别合成一个**：`lock` 只管起/杀进程（预热路径只碰它），`rlock` 只管一问一答（识别线程会持着它
+  等 3~5s、首句还要等载模型）。合成一个锁的话，预热调用就会把主线程卡在识别期间 = 打字停摆。
+- **同轮修掉的两个真 bug**（都是"只在特定顺序下才复现"的那种）：
+  1. **录音文件固定名 `voice-last.wav` → 每次一个独立文件名**。常驻助手是**过几秒**才去读这个 wav 的，
+     固定名会让"上一句还在识别、这一句又录完"把文件覆盖掉 —— 上一句识别出**这一句**的内容（张冠李戴，
+     偶发、极难查）。现在按 `voice-<pid>-<序号>.wav` 命名，识别完各自删各自的（顺带清掉旧版遗留的固定名文件）。
+  2. **`ensure()` 里"换了参数"必须清掉上一条错误**。实测：先试了坏的 `stt_python`（FileNotFoundError），
+     1 秒内再换 `stt_device=cuda` 试 —— 报出来的还是 FileNotFoundError，用户会以为自己的修改**没生效**。
+     现在 `key` 变了就清 `last_err`；真的连续 3 次起不来时，报"已停止重试(重启 WgIme 才重新试)"**并且**
+     附上上次的真实原因（只说"起不来"等于没说）。
+- **回归**：新增 `wgime-py-pure\tests\whisper-warm-test.py`（**67 项**，纯桩：把 `subprocess.Popen` 换成
+  照抄真管道语义的假进程 —— 没数据时 stdout 迭代会**阻塞**、进程死了写 stdin 会**抛异常**、只有 kill 后才 EOF；
+  先有一组"桩自检"证明桩真的像管道，否则后面全是空转）。覆盖：预热不阻塞 / `env` 是复制过的 /
+  源码不进命令行 / READY 与初始化失败 / 串包丢弃 / 中途崩溃 / 超时 / 连续 3 次停手 / 陈旧错误 /
+  重启时旧读取线程的 EOF 不得落进新队列 / shutdown / `prewarm_bg` / 9 个引擎别名的分派表。
+- **守卫有效性自检**（`%TEMP%\wg-r63-guard-check.py`）：把两处守卫**改回旧写法**各跑一遍 ——
+  `last_err` 那条 → `I2` 失败；`_reader(p, q)` 改用 `self.q` → `H3`/`H4` 失败。基线 0 失败。
+- **真进程端到端**（`%TEMP%\wg-r63-warm-engine-probe.py`，24 项，真子进程真模型）：冷 20.0s（含载模型
+  2.8s + 导入）/ 热 **4.0s**、并发两句不串包（9.1s / 各 3~5s）、`shutdown()` 后进程真的退出、
+  坏 `stt_python`/坏 `stt_device` 都报真原因、1 秒内换参数不报陈旧错误。
+- 回归：`pure-state-harness` 23/23、`undefined-globals` 0、`tray-swap-test` 42/42、`voice-vad-test` 31/31、
+  `whisper-warm-test` 67/67；dist 重建。文档：`config.txt` 模板加 `whisper` 段落，
+  `docs\WGIME_使用说明.md` 引擎表加一行 + "本地 whisper 怎么配"，AGENTS §38 补第六十三轮。
+
+---
+
 ## 2026-09-15 (第六十二轮: 系统引擎中文识别率低 —— `Recognize()` 只取了第一段, 长句后半截被丢)
 
 用户："这个中文识别率太低了，感觉不如直接用系统自带的功能。"
