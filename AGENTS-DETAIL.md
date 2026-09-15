@@ -360,3 +360,36 @@
 要中文识别只有三条路：① 国内站 key + `SenseVoiceSmall`；② 本地离线（`voice_engine = whisper`，见 §D6）；
 ③ 换任何 OpenAI 兼容的识别服务（只改 `stt_url`/`stt_key`/`stt_model`）。
 代理相关的坑（本机注册表里留着已关闭的 `127.0.0.1:10808` → 云端识别永远失败）见 AGENTS.md §38 第五十九轮。
+
+## §D8 第六十四轮：本地离线识别（`voice_engine = cmd` + sherpa-onnx / SenseVoice-Small int8）
+
+**装在哪（都在仓库外，`C:\Tools\wgime-local-asr\`，附 `README.md`）**
+
+| 路径 | 说明 |
+|---|---|
+| `wgime-stt.py` | 识别入口 wrapper。**stdout 只打印识别文本**，其余一律 stderr（`_cmd_recognize` 取"第一行非空输出"）；出错时 stdout 空、stderr 一行原因、退出码非 0 |
+| `wg-dl.py` | 带断点续传/重试的下载器（本机外网时通时断；**服务端不给 Content-Length 时读干净一轮就算完成**，否则下一轮 Range 换来 60 次 HTTP 416） |
+| `models\sense-voice\model.int8.onnx` | SenseVoice-Small int8，**228 MB**（`239233841` B） |
+| `models\sense-voice\tokens.txt` | 词表（315894 B） |
+| 运行时 | `pip install sherpa-onnx` → **1.13.8**（core 16.9 MB + 轮子 2.2 MB，装在 Store Python 的用户 site-packages，**与双击运行 wgime 的解释器同一个**） |
+
+**模型来源**：`hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`
+（HF 的国内镜像；**必须带浏览器 UA**，否则 403。HF 直连不通；GitHub 上那份 `...tar.bz2` 是 **999 MB** 的
+fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`）。许可：SenseVoice 系 Apache-2.0。
+
+**接法**（`package\config.txt`，未入库；`build-package.ps1` 会用模板覆盖它，重建后要重填）：
+`voice = 1` / `voice_engine = cmd` / `stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}`
+
+**实测**（CosyVoice2 合成音频当"人声"；本机麦克风是纯数字静音，只能这样验）：
+中文"今天天气不错，我们下午三点开会。" → `今天天气不错，我们下午3点开会。`（`use_itn=True` 转阿拉伯数字，
+`--itn=0` 可保留"三点"、但没有标点）；英文全对。
+耗时 **建会话 1.5s + 解码 0.24s**（`--threads=4`；2 线程 2.4s + 0.41s）—— 比第六十三轮的 whisper 常驻
+（3~5s/句）更快，比 `cmd` 每句新起 faster-whisper（20s+）快一个数量级。
+
+**顺带查清的两件事**：① ModelScope 的 `iic/SenseVoiceSmall-onnx`（`model_quant.onnx` 230 MB）是
+**FunASR 格式**，配 `funasr-onnx`，而那个包**只支持 Paraformer、不含 SenseVoice** → 与 sherpa-onnx 不通用；
+② 想要**常驻**（每句 ~0.25s）得自己加进程，当前 wrapper 是每句新起（1.5s 是建会话的钱）。
+
+**和第六十一~六十三轮的关系**：这轮与并行的语音工作（VAD 相对阈值 / 系统引擎分段 / whisper 常驻）**不冲突**，
+四种后端各管一段：`whisper`（离线、3~5s、中文 88~100%）/ `cmd`+SenseVoice（离线、1.7s）/
+`http`（云端、~1s、要国内站 key）/ `system`（零配置、最弱）。

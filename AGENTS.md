@@ -240,6 +240,7 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     预热两处：启动 +4s 后台（`stt_prewarm=0` 关）+ **按下热键那一刻**（与说话重叠）。键：`stt_model`/`stt_lang`/
     `stt_prompt`/`stt_device`/`stt_compute`/`stt_beam`/`stt_python`。改这块**必须**跑
     `python wgime-py-pure\tests\whisper-warm-test.py`（67 项，假 Popen 照抄真管道语义）。实测数字/两处真 bug/探针见 `AGENTS-DETAIL.md` §D6。
+    **第六十四轮（本地离线识别已落地，实测可用）**：`voice_engine = cmd` + `stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}`（本机已装 sherpa-onnx 1.13.8 + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本**，`_cmd_recognize` 取第一行非空）。实测中文 TTS：`今天天气不错，我们下午3点开会。`，**建会话 1.5s + 解码 0.24s**（比 whisper 常驻 3~5s 更快）。细节/模型源/坑见 `AGENTS-DETAIL.md` §D8。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。

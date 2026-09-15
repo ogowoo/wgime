@@ -143,6 +143,43 @@
   `bool(icon._message(...))` 写法 → 测试 **11 条失败**（含 B7「返回 None 而状态仍推进」）；
   还原后 **42/42 通过**，且 `tray.py` 与提交版本**逐字节一致**（自检没留下任何改动）。
 - 文档：AGENTS §4 与 §43④ 的项数 **26 → 42**，并记下这次"守卫有效性"自检。
+## 2026-09-14 (第六十四轮: 落地本地离线语音识别 —— sherpa-onnx + SenseVoice-Small int8, 实测可用)
+> 轮次号说明: 这轮原文记的是"第六十一轮", 但合并时远端并行会话已占用第六十一~六十三轮
+> （VAD 阈值/系统引擎分段/本地 whisper 常驻），故改号为第六十四轮；内容未变。
+
+用户选了这个方案，本轮把它在这台机器上装好、接通、验证。**仓库内只改文档/配置模板，代码零改动**
+（用的是 `voice_engine = cmd` 这个既有后端）。
+
+**装了什么（都在仓库外，见 `C:\Tools\wgime-local-asr\README.md`）**
+- 运行时：`pip install sherpa-onnx` → **1.13.8**（core 16.9 MB + 轮子 2.2 MB，装在 Store Python 的
+  用户 site-packages，跟双击运行 wgime 的解释器是同一个）。
+- 模型：**SenseVoice-Small int8** —— `model.int8.onnx` **228 MB**（`239233841` B）+ `tokens.txt`（315894 B），
+  放 `C:\Tools\wgime-local-asr\models\sense-voice\`。
+- 下载源：**`hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`**（**必须带浏览器 UA**，
+  否则 403；HuggingFace 直连不通、GitHub 上那份 tar.bz2 是 **999 MB** 的 fp32+int8 合集，没必要下）。
+- 入口：`C:\Tools\wgime-local-asr\wgime-stt.py`（wrapper）+ `wg-dl.py`（带断点续传的下载器）。
+
+**接法（`package\config.txt`，未入库）**
+```
+voice = 1
+voice_engine = cmd
+stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}
+```
+注意 `_cmd_recognize` 取 **stdout 第一行非空输出**当结果 —— 所以 wrapper **只往 stdout 打印识别文本**，
+其它日志（含 sherpa-onnx 自己的）一律 stderr；出错时 stdout 不输出、stderr 说明原因并返回非 0。
+
+**验证（用 CosyVoice2 合成的音频当"人声"测的，本机麦克风是纯数字静音）**
+- 中文：期望"今天天气不错，我们下午三点开会。" → 识别 **`今天天气不错，我们下午3点开会。`**
+  （`use_itn=True` 会把中文数字转成阿拉伯数字；wrapper 支持 `--itn=0` 保留"三点"）。
+- 英文：`The weather is nice today; Let us have a meeting at three in the afternoon.` 全对。
+- 端到端（`engine.load_config` 读真配置 → `voice.recognize`，等价于按热键那条路）：
+  中文 **2.83s**、英文 **2.90s**。
+- 耗时构成：**建会话 1.5s + 解码 0.24s**（`--threads=4`；2 线程是 2.4s + 0.41s）。
+  每句重建会话是唯一慢点，要更快得做常驻进程（模型只加载一次，之后 ~0.25s/句），按需再加。
+
+**顺带查清的坑（省得下次再踩）**：ModelScope 的 `iic/SenseVoiceSmall-onnx`（`model_quant.onnx` 230 MB）
+是 **FunASR 格式**，配 `funasr-onnx`；但那个包 **只支持 Paraformer、不含 SenseVoice**，所以它跟 sherpa-onnx
+不通用 —— 用 sherpa-onnx 就得拿 sherpa-onnx 转换过的模型（hf-mirror 那份）。
 
 ---
 

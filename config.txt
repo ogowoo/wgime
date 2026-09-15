@@ -61,6 +61,14 @@ voice_max = 20
 ;     IndexTeam/IndexTTS-2、fishaudio/fish-speech-1.5 —— 合成 ≠ 识别, 接不到 voice_engine=http 上。
 ;   - 只要识别: 要么用国内站 key + SenseVoiceSmall, 要么走本地离线 (voice_engine = whisper, 见上),
 ;     或任何 OpenAI 兼容的识别服务 (换 stt_url/stt_key/stt_model 即可)。
+;  2) 本地离线 (免费、不联网、不需要 key; 中文效果好, 实测 ~1.7s/句):
+;     一次性准备: `pip install sherpa-onnx`, 再把 SenseVoice-Small 的 int8 ONNX 模型
+;     (model.int8.onnx ~228MB + tokens.txt, 取自 hf-mirror.com/csukuangfj/
+;      sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17, **别下 GitHub 那个 999MB 合集**)
+;     放到 <脚本同级>\models\sense-voice\ 下。
+;   voice_engine = cmd
+;   stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}
+;   (wrapper 只往 stdout 打印识别文本; _cmd_recognize 取第一行非空输出, 其余日志必须走 stderr)
 ; paste: 上屏方式 key/on/auto/off (key=逐字符Unicode注入, 默认, 不走剪贴板; on=剪贴板粘贴; auto=管理员窗口用剪贴板其余key; off=纯SendKeys按键)
 paste = key
 ; keyfix: 标点吞字修复 (1/0, 默认1; Qt应用如微信4.x全角标点后吞下一字符的修复; 正常程序无感知)
