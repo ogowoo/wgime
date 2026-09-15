@@ -172,7 +172,9 @@ class Tray:
         self.api = api
         self.icon = None
         self.last_error = ''      # start() 失败原因 (第四十一轮) —— 由 main 弹框/写日志
-        self._cur_key = None      # 当前已注入的图标 key ('0a'/'0i'/…/'tool'), 同 key 不重复换图
+        self._cur_key = None      # pystray **当前句柄**对应的图标 key ('0a'/'0i'/…/'tool')
+        self._shown_key = None    # shell **确认接受**的图标 key (NIM_MODIFY 返回真) —— 见 _notify_icon
+        self._shown_handle = None # shell **确认接受**的句柄: 它才是"可以安全销毁的那个旧句柄"
         self._retry_pending = [False]   # 图标还没登记上时只登记一次"稍后重试换图"
 
     def _key_for(self, mode, active=True):
@@ -237,42 +239,64 @@ class Tray:
                     return
                 self._retry_pending[0] = False
                 key = self._key_for(mode, active)
-                if key == self._cur_key and getattr(self.icon, '_icon_handle', None):
-                    self.icon.update_menu()      # 已经是这张图 -> 只刷勾选态, 不重建 HICON、不惊动 shell
+                h_cur = getattr(self.icon, '_icon_handle', None)
+                if key == self._cur_key and h_cur:
+                    # 已经是这张图 -> 只刷勾选态, 不重建 HICON、不惊动 shell。
+                    # 例外: 上一次 NIM_MODIFY 没被 shell 接受 (`_shown_key` 没跟上) 时, 用**现有句柄**
+                    # 补发一次 —— 第五十六轮在这里踩过坑: `bool(icon._message(...))` 恒为 False (pystray
+                    # 的 `_message()` 没有 return), 于是 `_cur_key` 永不推进, 这个"同 key 就跳过"的分支
+                    # 会拿**旧状态**当"已经显示对了" -> 切回混合/开关打开时图标纹丝不动。
+                    if self._shown_key != key:
+                        self._notify_icon(h_cur, key, self._shown_handle)
+                    self.icon.update_menu()
                     return
                 h = self._hicon(mode, active)
                 if h:
-                    old = getattr(self.icon, '_icon_handle', None)
+                    # 旧句柄 = **shell 还在显示的那个** (没确认过就退回 pystray 当前句柄)
+                    old = self._shown_handle or h_cur
                     self._inject_hicon(h)
-                    ok = False
-                    try:
-                        ok = bool(self.icon._message(1, 0x2, hIcon=h))   # NIM_MODIFY | NIF_ICON
-                    except Exception:
-                        ok = False
-                    if ok:
-                        self._cur_key = key
-                        # 只有 shell 真的改用新句柄之后才销毁旧的 —— 反过来(先销毁再换)会让 shell
-                        # 在 NIM_MODIFY 之前引用一个已销毁的句柄, 正是上面那个"空白图标"的成因。
-                        if old and old != h:
-                            try:
-                                import win as _w
-                                _w.destroy_icon(old)
-                            except Exception:
-                                pass
-                    try:
-                        import win as _w
-                        # 第五十一轮: 换图失败要有 **always-on** 记录 (§36 把 modify_ok 当唯一信号,
-                        # 而 _dlog 是 debug-only -> "图标换了但没生效"现场没有任何证据)
-                        if NIM.get('modify_ok') is False:
-                            _w.dfn_always('tray icon swap FAILED -> %s (Shell_NotifyIcon modify 返回失败)' % key)
-                        else:
-                            _w._dlog('tray icon swap -> %s modified=%s ok=%s' % (key, NIM.get('modify_ok'), ok))
-                    except Exception:
-                        pass
+                    self._cur_key = key          # pystray 侧现在的句柄就是 h (shell 收没收都如此)
+                    self._notify_icon(h, key, old)
             elif HAS_PIL:
                 self.icon.icon = (_tool_icon_img() if self._runmode() == 'tray'
                                   else _icon_img(mode, active))
             self.icon.update_menu()   # 刷新菜单勾选态(checked 重求值), 否则切换后勾选不变、看起来"没反应"
+        except Exception:
+            pass
+
+    def _notify_icon(self, h, key, old):
+        """把新句柄告诉 shell (NIM_MODIFY|NIF_ICON), 并只在 **shell 确认接受** 之后销毁旧句柄。
+
+        **别用 `icon._message()` 的返回值当判据** (第五十七轮的真 bug): pystray `_win32._message()` 内部
+        调 `Shell_NotifyIcon` 却不 return, 所以 `bool(...)` 恒为 False —— 第五十六轮据此推断"换图失败",
+        后果有两个: ① `_cur_key` 永不推进, 于是"同 key 只刷菜单"的分支会以为图标已经是新的 ->
+        切回混合模式/打开输入法时**图标不再变化** (用户报的"现在托盘图标都不会变了");
+        ② 旧句柄永不销毁 -> 每刷一次漏一个 HICON (GDI 句柄泄漏)。
+        "成没成"只能看 tray.py 顶层那个 spy 记的 `NIM['modify_ok']` (它只看 NIM_MODIFY|NIF_ICON)。
+        """
+        NIM['modify_ok'] = None                 # 只看**这一次**调用的结果
+        try:
+            self.icon._message(1, 0x2, hIcon=h)  # NIM_MODIFY | NIF_ICON
+        except Exception:
+            NIM['modify_ok'] = False
+        res = NIM.get('modify_ok')
+        if res is not False:
+            self._shown_key = key               # shell 接受了 (或压根没观测到) -> 记下"已显示的是这张"
+            self._shown_handle = h
+        if res is True and old and old != h:
+            # 只有 shell 真改用新句柄之后才销毁旧的 —— 反过来(先销毁再换)会让 shell 引用一个已销毁的
+            # 句柄, 正是"刚启动/换图时图标空白"的成因。
+            try:
+                import win as _w
+                _w.destroy_icon(old)
+            except Exception:
+                pass
+        try:
+            import win as _w
+            if res is False:
+                _w.dfn_always('tray icon swap FAILED -> %s (Shell_NotifyIcon modify 返回失败)' % key)
+            else:
+                _w._dlog('tray icon swap -> %s modified=%s' % (key, res))
         except Exception:
             pass
 
@@ -543,6 +567,8 @@ class Tray:
                 if h:
                     self._inject_hicon(h)
                     self._cur_key = self._key_for(mode_for_icon, True)
+                    self._shown_key = self._cur_key   # NIM_ADD 会带上这个句柄 -> shell 显示的就是它
+                    self._shown_handle = h
                 else:
                     self.last_error = '内嵌托盘图标加载失败 (LoadImage 返回空)'
                     return False

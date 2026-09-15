@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-09-14 (第五十七轮: 修"托盘图标都不会变了"/"混合的模式切换不过去" —— 第五十六轮自己引入的回归)
+
+用户反馈（合并 v1.2.12 后的新成品）："现在托盘图标都不会变了。。。。" +
+"mixed 的模式切换不过去（ctrl+` 的快捷键）"。
+
+**真因：把 `icon._message()` 的返回值当判据 —— 而它根本没有返回值。**
+第五十六轮换图时写的是 `ok = bool(self.icon._message(1, 0x2, hIcon=h))`，可 pystray 的
+`_win32._message()` 内部只是调 `Shell_NotifyIcon(...)`，**没有 return**，所以 `bool(None)` 恒为 False。
+后果有两个：
+① `_cur_key`（第五十六轮新加的"当前这张图"状态）**永不推进** → 新加的"同 key 就只刷菜单勾选态、
+   不惊动 shell"这条分支会拿**旧状态**当"图标已经是新的" → 从「语音/词典…」切回**混合**、或按开关把
+   输入法打开时（key 回到 `0a`）**图标纹丝不动**；
+② 旧句柄永不销毁 → 每刷一次漏一个 **HICON（GDI 句柄泄漏）**。
+**"模式切换不过去"是同一个 bug 的另一面**：日常 空闲隐藏 打开时没有候选条，切模式**唯一**的反馈就是托盘
+图标；图标冻住 → 看起来"模式没切过去"（模式循环本身没问题，见下面探针）。
+
+修法（`tray.py`）：把换图抽成 `_notify_icon(h, key, old)`，**只信 tray.py 顶层那个 spy 记的
+`NIM['modify_ok']`**（它只看 `NIM_MODIFY|NIF_ICON`），并把状态拆成两个："pystray 当前句柄对应的 key"
+（`_cur_key`）与"shell **确认接受**过的 key/句柄"（`_shown_key`/`_shown_handle`）：
+- 注入新句柄后 `_cur_key` 立刻推进（pystray 侧事实），**只有 shell 确认**（`modify_ok is True`）才
+  `DestroyIcon` 掉 `_shown_handle`（先销毁再换会让 shell 引用已销毁句柄 → 空白图标，见第五十六轮）；
+- shell **拒收**时不谎报（`_shown_key` 不推进、旧句柄留着给 shell 用），下次刷新用**同一个句柄**补发
+  `NIM_MODIFY`，不再重建 HICON（既不漏句柄也不重复分配）；
+- `start()` 注入启动图标时同步设好 `_shown_key`/`_shown_handle`（`NIM_ADD` 带的就是那个句柄）。
+
+**验证**：
+- **真环境**（真 pystray + 真 shell + 真内嵌 ICO，`%TEMP%\wg-r57-tray-live.py`）：`_cur_key` 轨迹
+  `0a → 0i → 0a → 1a → 3a → 0i`（每一步都真的换图），每次 `NIM_MODIFY` 都被 shell 接受（True），
+  且**每次换图恰好销毁上一个句柄**（启动的 `h0` 在第一次成功换图后被销毁）—— 之前这里是
+  `destroyed=[]`（既没换成功判定、也从不回收）。
+- **回归测试**（新，进仓库）：`python wgime-py-pure\tests\tray-swap-test.py` **26/26** —— 它的假 icon
+  **照抄真 pystray 的 `_message` 返回值 (None)**；第五十三轮那个探针的假 icon `return True`，
+  比现实宽松，所以没抓到这个回归（这正是教训：**假的桩不能比真的更宽容**）。
+- `%TEMP%\wg-r57-tray-swap-probe.py` **28/28**（含 A~G：启动不换图 / 补刷 / 开关来回 / 模式往返 /
+  拒收后补发不重建不漏）、`wg-r53-trayicon-probe.py` **30/30**、`wg-r52-hookwin-probe.py` **24/24**。
+- **模式循环本身没问题**（`%TEMP%\wg-r57-mode-cycle-probe.py` **21/21**，跑真 `main.py` 前缀 + 真 `handle()`）：
+  `Ctrl+`` 依次 `混合→拼音→五笔→词典→语音→混合`（第 5 次回到混合），从任意模式出发 ≤5 次必到混合；
+  5 个模式的开态图标 key 互不相同（`0a/1a/2a/3a/4a`）；托盘菜单「模式」5 项从任何模式都能切。
+- harness **23 项全过**、`undefined-globals` **0**、dist/package 逐字节同步（**861283 B**）。
+
+---
+
 ## 2026-09-14 (第五十六轮: 修"刚启动时托盘图标显示奇怪/加载不及时" —— 两个真因)
 
 > 轮次号说明: 远端并行会话已用过第五十三~五十五轮（工具箱磁贴/滚动条/窗口高度），
