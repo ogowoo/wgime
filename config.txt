@@ -32,12 +32,19 @@ voice_max = 20
 ; stt_lang = zh
 ; stt_cmd = 
 ; stt_proxy = 
-; 例: 硅基流动 (中文识别不错, 有免费额度/免费模型; 模型名 FunAudioLLM/SenseVoiceSmall):
+; 例: 硅基流动 (中文识别不错, 有免费额度/免费模型):
 ;   voice_engine = http
 ;   stt_url   = https://api.siliconflow.cn/v1/audio/transcriptions
 ;   stt_key   = sk-你的key
 ;   stt_model = FunAudioLLM/SenseVoiceSmall
 ;   (stt_lang 留空: 该接口只认 file/model, SenseVoice 自己判语种)
+;   **注意国内站(cloud.siliconflow.cn)与国际站(siliconflow.com)是两套账号/密钥, 互不通用**:
+;   - 用错站点 -> HTTP 401 {"code":30014,"message":"Token is invalid."} (看起来像 key 错, 其实是站点错);
+;   - **国际站没有可用的识别模型**: SenseVoiceSmall -> 403 "Model disabled", TeleSpeechASR -> 400
+;     "Model does not exist"; 国际站音频类只有**合成**(TTS)模型: FunAudioLLM/CosyVoice2-0.5B、
+;     IndexTeam/IndexTTS-2、fishaudio/fish-speech-1.5 —— 合成 ≠ 识别, 接不到 voice_engine=http 上。
+;   - 只要识别: 要么用国内站 key + SenseVoiceSmall, 要么走本地离线 (voice_engine = cmd, 见 stt_cmd),
+;     或任何 OpenAI 兼容的识别服务 (换 stt_url/stt_key/stt_model 即可)。
 ; paste: 上屏方式 key/on/auto/off (key=逐字符Unicode注入, 默认, 不走剪贴板; on=剪贴板粘贴; auto=管理员窗口用剪贴板其余key; off=纯SendKeys按键)
 paste = key
 ; keyfix: 标点吞字修复 (1/0, 默认1; Qt应用如微信4.x全角标点后吞下一字符的修复; 正常程序无感知)

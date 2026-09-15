@@ -197,6 +197,18 @@ python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回
     真端点做断言不可复现）。硅基流动接入（`config.txt`）：`voice_engine=http`、
     `stt_url=https://api.siliconflow.cn/v1/audio/transcriptions`、`stt_key=sk-…`、
     `stt_model=FunAudioLLM/SenseVoiceSmall`、`stt_lang` 留空（该接口只认 `file`/`model`，SenseVoice 自判语种）。
+    **第六十轮（硅基流动两站的区别，实测）**：**国内站 `cloud.siliconflow.cn` 与国际站 `siliconflow.com`
+    是两套账号/密钥，互不通用**，而且**国际站没有可用的语音识别模型**。实测（同一把国际站 key + 真实
+    中文语音 WAV、走我们自己的 `voice.recognize`）：
+    `api.siliconflow.com/v1/models` → **200**（key 有效）且列出的 79 个模型里音频类**只有合成**：
+    `FunAudioLLM/CosyVoice2-0.5B`、`IndexTeam/IndexTTS-2`、`fishaudio/fish-speech-1.5`；
+    `.com` + `SenseVoiceSmall` → **403 `{"code":30003,"message":"Model disabled."}`**；
+    `.com` + `TeleAI/TeleSpeechASR` → **400 `{"code":20012,"message":"Model does not exist."}`**；
+    同样的 key 打 `.cn` 的任意接口 → **401 `{"code":30014,"message":"Token is invalid."}`**
+    （**这个 401 是"站点用错了"，不是 key 错** —— 排查先对站点，再怀疑 key）。
+    另：CosyVoice2 是 **TTS（合成）**，不是识别，`/v1/audio/transcriptions` 用不了它；
+    要中文识别只能用 ①国内站 key + `SenseVoiceSmall`，②本地离线（`voice_engine=cmd`），
+    ③换其它 OpenAI 兼容识别服务（只改 `stt_url/stt_key/stt_model`）。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。

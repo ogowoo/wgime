@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-09-14 (第六十轮: 硅基流动"国际站 vs 国内站"两套账号 —— 排查云端识别必须先对站点)
+
+无代码改动，纯**实测结论 + 配置模板说明**（避免以后又把"站点选错"当成"key 错"来回折腾）。
+
+用户在国际站（`siliconflow.com`）注册，我一开始给的 `stt_url` 写的是国内站 `api.siliconflow.cn`，
+于是一直回 `HTTP 401 {"code":30014,"message":"Token is invalid."}` —— **看起来像 key 错，其实是站点错**。
+用**同一把 key + 真实中文语音 WAV**（用 CosyVoice2 现场合成的"今天天气不错，我们下午三点开会。"，
+149934 B）走我们自己的 `voice.recognize`，四组结果：
+
+| 端点 | 模型 | 结果 |
+|---|---|---|
+| `api.siliconflow.com/v1/models` | — | **200**（key 有效；共 79 个模型） |
+| `api.siliconflow.com/v1/audio/transcriptions` | `FunAudioLLM/SenseVoiceSmall` | **403** `{"code":30003,"message":"Model disabled."}` |
+| `api.siliconflow.com/v1/audio/transcriptions` | `TeleAI/TeleSpeechASR` | **400** `{"code":20012,"message":"Model does not exist."}` |
+| `api.siliconflow.cn/v1/...`（任意） | 任意 | **401** `{"code":30014,"message":"Token is invalid."}` |
+
+结论：**两站是两套账号/密钥，互不通用；而且国际站的模型表里没有任何可用的语音识别模型** ——
+音频类只有**合成（TTS）**：`FunAudioLLM/CosyVoice2-0.5B`、`IndexTeam/IndexTTS-2`、`fishaudio/fish-speech-1.5`
+（实测 CosyVoice2 TTS 可用，合成出中文 WAV；但**TTS ≠ 识别**，接不到 `/v1/audio/transcriptions` 上）。
+要中文识别只有三条路：①国内站账号（`cloud.siliconflow.cn`，需国内手机号 + 实名）用 `SenseVoiceSmall`；
+②本地离线 `voice_engine = cmd`（sherpa-onnx/SenseVoice 或 whisper.cpp）；③任何 OpenAI 兼容的识别服务。
+已把这段写进 `config.txt` 模板注释（含两种错误码的判别），运行配置里的 `stt_url` 也已指到用户账号所在的
+**国际站**。附带确认：上一轮的代理回退在真实请求里生效（`.log` 里是 `STT ok via 直连 (earlier path failed: 系统代理: …)`）。
+
+---
+
 ## 2026-09-14 (第五十九轮: 云端语音识别的"死代理"坑 —— 加了代理回退 + 能看懂的报错)
 
 背景: 用户问"哪个语音 API 免费且中文还行", 选定**硅基流动**（`FunAudioLLM/SenseVoiceSmall`，OpenAI 兼容
