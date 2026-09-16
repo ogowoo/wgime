@@ -200,8 +200,9 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     `stt_prompt`/`stt_device`/`stt_compute`/`stt_beam`/`stt_python`。改这块**必须**跑
     `python wgime-py-pure\tests\whisper-warm-test.py`（67 项，假 Popen 照抄真管道语义）。实测数字/两处真 bug/探针见 `AGENTS-DETAIL.md` §D6。
     **第六十四轮（本地离线识别, 推荐）**：`voice_engine = cmd` + `stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}`
-    （sherpa-onnx + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本**）。实测 建会话 1.5s + 解码 0.24s，
-    比 whisper 常驻 3~5s 更快。细节/模型源/坑见 `AGENTS-DETAIL.md` §D8。
+    （sherpa-onnx + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本**）。实测 建会话 1.31s + 解码 0.2s/句，
+    比 whisper 常驻(冷 8.7s 才到 2.3s)更快、且**不常驻内存**。**这套东西在仓库外、按机器各装一份** ——
+    换机器要重装（本机 Store Python 3.13 从头装一遍的步骤与实测见 `AGENTS-DETAIL.md` §D8.2）。
     **第六十五轮（国内站 + 坏网络三件套）**：国内站 key 必须配 `api.siliconflow.cn`（同一把 key 在 `.com` 回 401、`.cn` 回 200）。
     新增 `stt_retry`（连接层同路重试，默认 3；**HTTPError 不重试**，免得白花额度）、`stt_timeout`（默认 15s，取代写死的 30s）、
     **记住可用路径**（哪条通下次优先；本机那个本地代理是黑洞，不记住每句白等 3×timeout）。

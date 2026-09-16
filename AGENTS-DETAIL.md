@@ -421,6 +421,60 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
 跑 `setup-asr.py` 后 `stt_cmd` 写成该机的绝对路径，再用 `engine.load_config` + `voice.recognize`
 跑通 → `今天天气不错，我们下午3点开会。`；③ wrapper 在**另一个路径**（`portable\`）下按自身找模型正常。
 
+### §D8.2 第二台机器（Store Python 3.13）从头装一遍（本轮）
+
+**先说结论：上面那套东西（`C:\Tools\wgime-local-asr\`、`portable\`、`wgime-asr-portable.zip`）
+只在第一台机器上有。第二台机器（本机：PATH 上的 `python` = Microsoft Store 版 3.13.14）
+当时**一样都没有**（目录不存在、`import sherpa_onnx` 为 False、找不到 `model.int8.onnx`）。
+所以"第六十四轮本机已装"这句话必须按机器看 —— 换机器要重装。**
+
+本机实际执行的步骤（可照抄）：
+
+```powershell
+python -m pip install --no-input sherpa-onnx          # -> 1.13.8 (cp313 win_amd64 + core)
+New-Item -ItemType Directory -Force C:\Tools\wgime-local-asr\models\sense-voice
+$base = 'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main'
+curl.exe -L --retry 5 -C - -o C:\Tools\wgime-local-asr\models\sense-voice\tokens.txt     "$base/tokens.txt"
+curl.exe -L --retry 5 -C - -o C:\Tools\wgime-local-asr\models\sense-voice\model.int8.onnx "$base/model.int8.onnx"
+# 然后用 verify 脚本核对 model.int8.onnx == 239233841 B
+```
+
+- 实测下载速度 hf-mirror **13.4 MB/s**（17 秒下完 228MB），反倒 pip 只有 123 kB/s。
+- `tokens.txt` **315894 B**、`model.int8.onnx` **239233841 B**（与第一台机器逐字节同尺寸）。
+  `resolve/main` 会 302 到 `cas-bridge.xethub.hf.co` 的签名 URL，`curl -L` 能跟。
+- wrapper 用 §D8 那份的**同款接口**：`--itn=0|1` / `--lang=zh|auto` / `--threads=N`
+  （`--itn=0` 与 `--itn 0` 都认），另有 `WGIME_STT_ITN` / `WGIME_STT_LANG` 环境变量回退。
+  顺手修掉一个真缺陷：docstring 里的 `\models\` 会触发
+  `SyntaxWarning: invalid escape sequence '\m'`（改 raw docstring）—— 它虽只进 stderr，
+  但把警告留在干净输出旁边没有好处。
+- 出错一律 **stdout 空 + stderr 一行原因 + 退出码非 0**（`_cmd_recognize` 取"第一行非空输出"，
+  用法提示混进 stdout 就会被当成识别结果上屏）。
+
+**本机实测（4 句中文，系统 TTS `Microsoft Huihui Desktop` 合成 16k/单声道/16bit）**
+
+| 环节 | 耗时 |
+|---|---|
+| 空解释器启动 | 0.09s |
+| `import sherpa_onnx` | **0.03s** |
+| 建识别器（载模型，**每句重付**） | **1.31s** |
+| 解码 | 0.20 ~ 0.24s |
+| **每句合计** | **1.48 ~ 1.57s** |
+
+三引擎对比与 ITN 的 A/B（数字、探针名）见 `CHANGELOG.md` 同日那条。
+**要点：`--itn=1`（缺省）95.0% 且有标点，`--itn=0` 99.2%、3/4 逐字全对但没有标点**；
+`--itn=1` 的"错"大半是它有意做的数字规范化（`三点`→`3点`），不是识别错。
+
+**接法（本机）**：`package\config.txt` 里 `voice = 1` / `voice_engine = cmd` /
+`stt_cmd = "<装了 sherpa 的 python.exe 绝对路径>" "C:\Tools\wgime-local-asr\wgime-stt.py" --itn=1 {wav}`，
+并把 whisper 那几行（`stt_model`/`stt_lang`/`stt_prompt`/`stt_device`/`stt_compute`/`stt_prewarm`）
+**注释掉**（`cmd` 引擎不看它们，留着会让"哪个键在生效"说不清 —— 同 §D8 的安装脚本做法）。
+解释器必须写绝对路径：`_cmd_recognize` 是 `shell=True` 跑一条命令行，没有便携相对路径可用。
+**回验**：`engine.load_config` + `voice.recognize` 走真实配置，4 句 1.48~1.57s 全通。
+
+**下一步的空间（还没做）**：1.5s 里 1.31s 是每句重付的模型加载 —— 照第六十三轮 whisper 那套
+"常驻助手 + JSONL"做一遍（`_WSRV` 的父进程侧本来就是通用的"起一次、一问一答"），
+每句能压到 **~0.25s**（只剩解码）。这是当前唯一还没吃到的性能红利。
+
 **没做的事（有意）**：**不打包 Python 运行时**。Windows 版 embeddable Python **不含 tkinter**，
 而 wgime 的候选条/托盘全是 Tk —— 打进去也跑不起来，目标机还是得装标准 Python。
 

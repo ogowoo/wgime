@@ -1,5 +1,74 @@
 ---
 
+## 2026-09-16 (维护: 本机落地 sherpa 离线识别 —— 1.5s/句, 顺带把三种离线引擎实测对比)
+
+**背景**：上一轮拉取后发现一件必须说清的事 —— 第六十四轮文档里的 `C:\Tools\wgime-local-asr\` +
+`sherpa-onnx 1.13.8` + 228MB 模型是**跑那一轮那台机器**上的环境；**本机（Store Python 3.13 这台）
+一样都没有**（目录不存在、`import sherpa_onnx` 为 False、`model.int8.onnx` 找不到，
+`C:\Tools\wgime-asr-portable.zip` 也没有）。用户说"要"，于是本机从头装一遍。
+
+**装了什么（都在仓库外，可整包搬走）**
+
+| 项 | 值 |
+|---|---|
+| 运行时 | `pip install sherpa-onnx` → **1.13.8**（cp313 win_amd64 轮子 2.3 MB + core 16.9 MB，装在 Store Python 3.13 的用户 site-packages） |
+| 模型 | `hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` 的 `model.int8.onnx`（**239233841 B**，与文档一致）+ `tokens.txt`（315894 B）→ `C:\Tools\wgime-local-asr\models\sense-voice\` |
+| wrapper | `C:\Tools\wgime-local-asr\wgime-stt.py`（按**自身位置**找模型；stdout 只打印文本，日志全走 stderr） |
+
+下载本身很快（hf-mirror 实测 **13.4 MB/s**，17 秒下完 228MB；反倒是 pip 只有 123 kB/s）。
+
+**wrapper 对齐了 §D8 那个接口**：`--itn=0|1` / `--lang=zh|auto` / `--threads=N`（两种写法
+`--itn=0` 与 `--itn 0` 都认），也可用 `WGIME_STT_ITN` 等环境变量；**顺手修掉一个真缺陷**：
+docstring 里的 `\models\` 触发 `SyntaxWarning: invalid escape sequence '\m'`（改成 raw docstring）。
+坏输入一律"退出码非 0 + stderr 一行原因 + stdout 空"（`_cmd_recognize` 才不会把用法提示当识别结果）。
+
+**耗时拆解**（4 句中文，系统 TTS `Microsoft Huihui Desktop` 合成 16k/单声道/16bit）：
+空解释器 0.09s + **导入 sherpa_onnx 0.03s** + **建识别器(载模型) 1.31s** + 解码 0.20~0.24s
+→ **每句 1.48~1.57s**。所以 1.5 秒几乎全是"每句重付的模型加载"，解码本身只要 0.2s。
+
+**三种离线引擎同批音频实测**（字符级 LCS 覆盖，忽略标点；`%TEMP%\wg-asr-compare.py`）：
+
+| 引擎 | 平均 | 最慢 | 平均覆盖 | 逐字全对 |
+|---|---|---|---|---|
+| **sherpa SenseVoice（`cmd`）** | **1.77s** | 1.86s | 95.0% | 1/4 |
+| 常驻 faster-whisper（`whisper`） | 13.39s¹ | 46.48s¹ | 97.3% | 2/4 |
+| 系统引擎（`system`） | 0.86s | 0.96s | **59.6%** | 0/4 |
+
+¹ 这一列被"载模型那一次"拉高了，**重测过**（清掉磁盘缓存影响后的同一批音频）：
+冷 **8.73s**（`boot_ms=1927`，说明载模型只要 1.9s，其余是 `import faster_whisper`）、
+热 **2.34~2.42s**；那次 46.48s 是紧接在下载 228MB 之后（磁盘缓存被冲掉）+ 当轮第一次调用。
+
+系统引擎 0.86s 但只有 59.6%（"这个输入法是我自己写的"→"这代收收发室我自己现在这些"），
+与第六十二轮的结论一致：**它是老 SAPI5 引擎，不适合中文**。
+
+**ITN 的 A/B**（同一批音频，`%TEMP%\wg-sherpa-itn-ab.py`）——**开不开差 4 个百分点，值得让用户知道**：
+
+| 选项 | 覆盖 | 逐字全对 | 表现 |
+|---|---|---|---|
+| `--itn=1`（缺省） | 95.0% | 1/4 | 补标点（`，` `。`），但把 `三点`→`3点`、`三十七`→`37` |
+| **`--itn=0`** | **99.2%** | **3/4** | **没有标点**，汉字原样保留 |
+| `--lang=auto` | 96.0% | 1/4 | 更差（`三十七`→`第三7`）|
+
+结论：**`--itn=1` 的"错"大半是它有意做的数字规范化，不是识别错**；真正两版都错的是
+`五笔`→`无笔`/`舞笔`（TTS 读音歧义）。所以缺省保持 `--itn=1`（有标点更好用），
+要"汉字最准、标点自己打"就把 config 里加 `--itn=0`。
+
+**接法**（`package\config.txt`，未入库；`build-package.ps1` 会覆盖，重建后要重填）：
+`voice = 1` / `voice_engine = cmd` /
+`stt_cmd = "<装了 sherpa 的 python.exe 绝对路径>" "C:\Tools\wgime-local-asr\wgime-stt.py" --itn=1 {wav}`
+（解释器写绝对路径 —— §D8 的老坑：`_cmd_recognize` 是 shell 跑一条命令行，没有便携相对路径可用）。
+同时把 whisper 那几行（`stt_model/stt_lang/stt_prompt/stt_device/stt_compute/stt_prewarm`）**注释掉**，
+避免"哪个键在生效"说不清。回验：`engine.load_config` + `voice.recognize` 走真实配置链路，
+4 句 **1.48~1.57s** 全部无错。
+
+**whisper 那次 46.48s 的冷启动值得记一笔**：重测（`%TEMP%\wg-whisper-cold-retest.py`）是
+**冷 8.73s / 热 2.34~2.42s**，`boot_ms=1927` —— 也就是载模型只要 1.9s，冷启动那几秒几乎全是
+`import faster_whisper`；46s 那次是紧接在下载 228MB 之后（磁盘缓存被冲掉）。**但真正的分水岭是**：
+sherpa 每句固定 1.5s（其中 1.31s 是载模型，每句重付），whisper 要付一次十几秒的导入+载模型
+才能到 2.3s，且常驻占几百 MB 内存。日常用 sherpa 更省心。
+
+---
+
 ## 2026-09-16 (维护: 拉取第六十四~七十一轮 + 修 AGENTS.md 超预算被截断)
 
 **拉取**：本地第六十三轮（`6b2cde7`）之后远端又推进了 13 个提交（第六十四~七十一轮），
