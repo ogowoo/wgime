@@ -630,3 +630,61 @@ GetAncestor(GA_ROOT)cls=TkTopLevel  ex=0x80088
 除了进程内读回, 还要**从进程外**验证一次(枚举窗口/类名/样式), 这一层才代表窗口管理器看到的东西。
 同样地, **颜色不要在进程外查**: 分层(`-transparentcolor`)窗口用 `GetPixel` 读到的是它自己的像素
 (微探针里 `#6B6B6B` 的圆点读回来是 `#000000`/`#FFFFFF`), 颜色只能进程内读 canvas 的 item fill。
+
+## §D12 第七十轮：内嵌「漏依赖」这一类 bug（pystray → six）
+
+### 现象（用户机截图，Python 3.14 + pythonw）
+```
+托盘图标没能创建。  NIM_ADD: None
+原因: site\thirdparty.zip\pystray\__init__.py line 64, in <module> -> backend().Icon
+      ImportError: this platform is not supported: No module named 'six'
+```
+输入法本身在跑，**只是托盘菜单整个没有**（工具箱/插件管理/所有托盘开关都进不去）。
+
+### 根因
+- `pystray` 的 `_base.py:24` / `_win32.py:22` 有 `from six.moves import queue`；METADATA 也写着
+  `Requires-Dist: six`。而构建脚本只 `collect_thirdparty(['comtypes','uiautomation','pystray'])`
+  —— **没嵌 six**（内嵌 zip 里 `six` 条目 0 个）。
+- 单文件运行时的第三方 import 会**回退到宿主 site-packages**：构建机（本机）碰巧装了 six
+  （`...\local-packages\Python312\site-packages\six.py`），于是本地怎么测都正常。
+- 干净机器上 `import pystray` 直接 ImportError → pystray 的 `backend()` 把它包成
+  "this platform is not supported: No module named 'six'"。
+- **和第四十二轮 Pillow 那个坑同一类**（宿主恰好装了 X，于是内嵌缺口测不出来）。区别是 Pillow
+  那次我们改成构建期预渲染 ICO，这次必须真把依赖嵌进去。
+
+### 复现（判据，修前修后都用它）
+```
+python -S -E -c "import sys; sys.path.insert(0, r'%LOCALAPPDATA%\wgime-py\site\thirdparty.zip'); import pystray"
+```
+`-S` 不加载 site-packages（= 干净机器）、`-E` 忽略 `PYTHON*` 环境变量。
+修前: 上面那条命令原样吐出用户的错误；修后: 通过。
+
+### 修法（要点，防这一类而不是只补 six）
+1. `collect_thirdparty` **自动收声明依赖**: 读 `importlib.metadata.metadata(name)` 的
+   `Requires-Dist`，**只收无条件项**（带 `;` marker 的平台/extra 依赖不收 —— 我们只跑 Windows，
+   extra 是插件的可选能力）；排除表 `_THIRD_EXCLUDE = {'Pillow'}`（C 扩展 ABI 绑定，图标已在
+   构建期渲染成 ICO）。构建日志会打印：
+   `third-party to embed: comtypes, uiautomation, pystray, six`。
+2. 顶层入口按 `ispkg` 写 —— `six` 是**单模块**，写 `six.py`（老代码一律写 `name/__init__.py`，
+   对模块而言是「能 import 但形态错」）。
+3. **构建期干净环境自检** `verify_thirdparty_isolation(zip_bytes, top_names)`: 把 zip 写临时文件，
+   `python -S -E` + 只挂该 zip 的 `sys.path`，逐个 import 顶层名字；失败打印 stderr 并
+   **`sys.exit(1)` 中止构建**。日志: `third-party isolation check: THIRD-ISOLATION-OK ...`。
+4. **永久回归** `wgime-py-pure\tests\embedded-isolation-test.py`（9 项）: 从 `dist\wgime-py.py`
+   解出 `THIRD_ZIP_B64`，同样用 `-S -E` 干净解释器逐个 import，并专门断言「真 bug 的形状」
+   （`import pystray` + `from six.moves import queue`）。**修复前的 dist 上它会报 3 项失败**
+   （内嵌无 six / import pystray 失败 / 组合失败）—— 守卫有效性已自证。
+5. **干净环境实机探针** `%TEMP%\wg-r70-clean-live.py`（5 项）: 用 `python -S -E` 跑真
+   `dist\wgime-py.py`（隔离 LOCALAPPDATA + `dicts` 目录联接 + 复制一份 dict 缓存热启动），
+   断言 pystray 的托盘消息窗口 `WgIme-Pure<pid>SystemTrayIcon` 出现、`tray start ok=True`、
+   `tray selfcheck: nim_add=True(count=1)`、日志里没有 `six`/ImportError（顺带确认状态提示点也在）。
+6. 构建脚本自身的坑: 被 `powershell -File` 调用时 stdout 是 **cp1252** —— 本轮我加的中文提示直接
+   `UnicodeEncodeError` 把构建打死，而 `build-package.ps1` 会**沿用旧产物**还报成功（`build=0`）。
+   现在构建脚本开头 `sys.stdout/stderr.reconfigure(encoding='utf-8', errors='replace')`。
+   **判据**: 构建日志里必须有 `third-party to embed:` / `third-party isolation check:` 两行，
+   且 `built ... dist\wgime-py.py` 的字节数变了 —— 只有这行、字节数没变 = 构建其实没跑成。
+
+### 影响面与用户绕过
+- **已发布版本都受影响**（v1.2.x 内嵌方式相同）: 干净环境（没装 six）的用户没有托盘菜单。
+- 临时绕过: 用启动它的解释器装一次 —— `"C:\Program Files\Python314\python.exe" -m pip install --user six`。
+- 第六十九轮的状态提示点**不依赖托盘**（`dot.py` 自带窗口），托盘挂了也还能看出输入法开/关。

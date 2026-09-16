@@ -1,5 +1,63 @@
 ---
 
+## 2026-09-16 (第七十轮: 修「托盘图标没能创建 (No module named 'six')」 —— 内嵌漏了依赖)
+
+**用户机截图**（Python 3.14 + `pythonw.exe`，干净环境）:
+
+```
+托盘图标没能创建。      NIM_ADD: None
+原因: File "site\thirdparty.zip\pystray\__init__.py", line 64, in <module>
+        icon = backend().Icon
+      ... ImportError: this platform is not supported: No module named 'six'
+```
+
+**这是个 shipped bug，而且我们本机永远复现不了**: `pystray/_base.py:24` 与 `_win32.py:22` 都有
+`from six.moves import queue`（它的 METADATA 也写着 `Requires-Dist: six`），而
+`collect_thirdparty(['comtypes','uiautomation','pystray'])` **只嵌了 pystray 自己，没嵌 six**
+（内嵌 zip 里 `six` 条目 = 0）。单文件运行时的第三方 import 会**回退到宿主 site-packages**，于是
+"构建机恰好装了 six"就把这个缺口盖住了 —— 干净机器上 `import pystray` 直接 ImportError，
+**整个托盘菜单消失**（工具箱/插件管理/所有托盘开关都进不去），主程序本身还在跑。
+和第四十二轮那个 Pillow 的坑是**同一类**（"宿主恰好装了 X，于是内嵌缺口测不出来"）。
+
+**复现（关键）**: `python -S -E`（不加载 site-packages）跑一遍即现形:
+```
+python -S -E -c "import sys; sys.path.insert(0, r'%LOCALAPPDATA%\wgime-py\site\thirdparty.zip'); import pystray"
+-> ImportError: this platform is not supported: No module named 'six'
+```
+修前/修后都用它当判据（修前 3/8 项失败，修后 9/9）。
+
+**修法（不只补 six，而是堵住这一类）**:
+1. `collect_thirdparty` 现在**自动把声明依赖一起收进来**（读 `importlib.metadata` 的
+   `Requires-Dist`，只收**无条件**项；带 marker 的平台/extra 依赖不收），并打印
+   `third-party to embed: comtypes, uiautomation, pystray, six`；`Pillow` 在**排除表**里
+   （C 扩展 `_imaging.pyd` ABI 绑定，图标已在构建期渲染成 ICO 内嵌）；
+2. 顶层条目按 `ispkg` 区分 —— `six` 是**单模块**（`six.py`），以前那行代码一律写
+   `name/__init__.py`（对模块是"能 import 但形态错"）；
+3. **构建期干净环境自检** `verify_thirdparty_isolation()`: 把刚打好的 zip 写到临时文件，用
+   `python -S -E` + 只挂这个 zip 的 `sys.path` 把每个顶层名字 import 一遍，失败就
+   `sys.exit(1)` **中止构建**（绝不产出坏单文件）。构建日志现在有
+   `third-party isolation check: THIRD-ISOLATION-OK comtypes,pystray,six,uiautomation`；
+4. **永久回归** `wgime-py-pure\tests\embedded-isolation-test.py`（9 项）: 从 dist 里解出
+   `THIRD_ZIP_B64`，用同样的 `-S -E` 干净解释器逐个 import，并专门断言"真 bug 的形状"
+   （`import pystray` + `from six.moves import queue`）。**它在修复前的 dist 上如实报 3 项失败**。
+5. 顺带修构建脚本自身的坑: 被 `powershell -File` 调用时 stdout 是 **cp1252**，我新加的中文提示
+   直接把构建 `UnicodeEncodeError` 打死（而且 `build-package.ps1` 会**沿用旧产物**还报 build=0）——
+   现在构建脚本开头把 stdout/stderr 切成 `utf-8+replace`。
+
+**验证**:
+- 构建期自检 `THIRD-ISOLATION-OK`（内嵌 85 个第三方模块，zip 289.5 KB，dist 909.9 KB）；
+- `embedded-isolation-test.py` **9/9**（修复前 3 项失败）；
+- **干净环境实机** `%TEMP%\wg-r70-clean-live.py` **5/5**: 用 `python -S -E` 跑真 `dist\wgime-py.py`，
+  托盘消息窗口（`WgIme-Pure<pid>SystemTrayIcon`）与状态提示点都出现，日志
+  `tray start ok=True` / `tray selfcheck: nim_add=True(count=1)`，且没有 `six`/ImportError；
+- 其余全绿: `undefined-globals` 0、harness 33、tray-swap 42、dot 探针 70、`wgime-dist-sync-check` OK。
+
+**已发布版本都受影响**（v1.2.x 的内嵌方式相同）—— 干净环境（没装 six）的用户会没有托盘菜单。
+**临时绕过（给用户的）**: 用启动它的那个解释器装一次 six 即可，例如
+`"C:\Program Files\Python314\python.exe" -m pip install --user six`；或换本轮之后重新构建的分发文件。
+另注: 第六十九轮新加的状态提示点**不依赖托盘**（`dot.py` 自带窗口），所以即便托盘挂了，
+"输入法是开还是关"仍然看得见。
+
 ## 2026-09-16 (第六十九轮: 鼠标旁的状态提示点 —— 一眼看出输入法是开还是关)
 
 **来由**: `hideidle = 1`(默认) 时空闲不显示候选条, 用户**看不出输入法是开还是关** ——
