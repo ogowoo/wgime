@@ -1,3 +1,45 @@
+---
+
+## 2026-09-15 (第六十五轮: 接上硅基流动国内站 + 给 http 后端加坏网络三件套)
+
+用户: "先给我用 siliconflow 的吧" + 一把新 key。
+
+**先判站点 (两站 key 不通用, 见第六十轮)**: 同一把 key, pi.siliconflow.com -> **401
+Token is invalid**; pi.siliconflow.cn 的 GET /v1/models -> **200**(列出模型) —— 所以这是
+**国内站**的 key, stt_url 必须用 .cn。(用户之前那把国际站的 key 在 .cn 回 30014, 这次反过来。)
+
+**新发现: 这台机器到 pi.siliconflow.cn 的连接层极不稳定** (与 key 无关):
+GET /v1/models 十次只有 **3 次**成功, 6 次 SSLV3_ALERT_BAD_RECORD_MAC、1 次 RemoteDisconnected;
+语音请求一段时间 3/5 成功 (**成功时只要 0.6~0.85s**), 过一会儿又 1/6 (大量
+The read/write operation timed out)。同一份配置、同一个 key, 波动完全来自网络路径 (中间设备在改 TLS 记录),
+这也解释了本机 git push 老失败、curl 回 000。
+
+**代码改动 (oice.py / engine.py, 都是给 http 后端兜底)**
+1. **stt_retry (默认 3, 1~8)**: 连接层失败**同一条路重试**, 间隔 0.4s; 判据是只有连接层异常才重试
+   —— 服务端回过话的 HTTPError(401/429)**绝不重试**, 免得白花额度; 每次重试写 always-on 日志,
+   最终报错带"共试 N 次"。
+2. **stt_timeout (默认 15s, 5~60)**: 取代写死的 30s。录音才几十~几百 KB, 15s 足够;
+   代理是黑洞时这个值决定回退直连前白等多久。
+3. **记住可用路径** (_prefer_direct): 自动模式下哪条路通了就**下次优先**它。本机注册表里那个本地代理
+   现在是**黑洞**(连上但不响应), auto 每句要白等 3×timeout(实测第一句 100s); 记住直连后回到 0.6s 级。
+4. 本机运行配置: oice_engine = http + .cn + FunAudioLLM/SenseVoiceSmall +
+   **stt_proxy = direct**(直接绕开那个黑洞代理) + stt_retry = 3 + stt_timeout = 10。
+
+**验证**
+- %TEMP%\wg-r59-stt-proxy-probe.py **23/23**, 其中新增 G2: 假服务器**先把连接掐掉一次** ->
+  重试后成功且服务端**确实收到 2 次请求**; stt_retry = 1 时不重试、只发 1 次、错误里写"共试 1 次"。
+- stt_retry/stt_timeout 解析: 越界钳位(8 / 60)、非法值保持缺省(3 / 15)—— 各 3 组用例。
+- 其余全绿: oice-vad-test 31、whisper-warm-test、	ray-swap-test 42、harness 23 项、
+  undefined-globals 0、r58 18/18、r52 24/24、r53 30/30、r57 28/28 + 21/21;
+  dist/package 重建同步 (**897754 B**)。
+- 真实 API: 成功时返回 今天天气不错，我们下午3点开会。(**0.6~0.85s**)。
+
+**结论**: 配置本身是对的、可用; **本机网络太烂时**建议用离线 cmd+SenseVoice(1.7s, 100% 本地,
+见第六十四轮/§D8) 或 whisper; 换到网络正常的设备上, http 是最省事的方案(零安装, 每句 0.5~1s),
+正好适合"拿去其它设备"。
+
+---
+
 # 更新记录 (Changelog)
 
 > 本文件记录 WgIme 的每次代码更新。以后任何更新都追加到本文件顶部(新版本在最上)。

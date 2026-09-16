@@ -217,6 +217,8 @@ def load_config(path):
                voice_max=20,                   # 单次录音上限(秒)
                stt_url='', stt_key='', stt_model='', stt_lang='', stt_cmd='',   # 后两条后端的配置
         stt_proxy='',                                 # 空/auto=先代理后直连, direct=直连, 或指定代理 URL
+        stt_retry=3,                                  # 连接层失败时同一条路重试几次 (1~8; 第六十五轮, 坏网络用)
+        stt_timeout=15,                               # 单次尝试超时秒数 (5~60; 代理是黑洞时的等待上限)
                stt_device='', stt_compute='', stt_python='', stt_prompt='',     # 本地 whisper 后端 (第六十三轮)
                stt_prewarm=True, stt_beam=5,   # 启动后台预热 / beam size (1=贪心最快, 5=默认)
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
@@ -274,6 +276,16 @@ def load_config(path):
             elif k == 'stt_beam':
                 try:
                     cfg[k] = max(1, min(10, int(v)))        # faster-whisper beam size; 非法值保持缺省
+                except ValueError:
+                    pass
+            elif k == 'stt_retry':
+                try:
+                    cfg[k] = max(1, min(8, int(v)))         # 连接层重试次数; 非法值保持缺省
+                except ValueError:
+                    pass
+            elif k == 'stt_timeout':
+                try:
+                    cfg[k] = max(5, min(60, int(v)))        # 单次请求超时(秒)
                 except ValueError:
                     pass
             elif k == 'sentence':

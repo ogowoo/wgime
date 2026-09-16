@@ -487,8 +487,11 @@ def _system_recognize(wav, cfg):
 
 
 # ---------------- 识别后端 2: HTTP (云端/自建, OpenAI Whisper 兼容) ----------------
-HTTP_TIMEOUT = 30          # 单次尝试的超时(秒). 录音只有几十~几百 KB, 识别几秒就好;
-                           # 走代理时若代理是"不拒绝也不响应"的黑洞, 这个值就是回退直连的等待上限
+HTTP_TIMEOUT = 30          # 单次尝试超时(秒)的**兜底值**; 实际用 config `stt_timeout` (默认 15)。
+                           # 录音只有几十~几百 KB, 识别几秒就好; 这个值就是"代理是黑洞时"回退直连的等待上限
+_prefer_direct = [None]    # 自动模式下**记住哪条路是通的** (True=直连 / False=系统代理)
+                           # 第六十五轮实测: 本机注册表里那个死代理会**每次都白等 3×timeout**,
+                           # 记住之后第二次起直接走通的那条 (第1次 100s -> 之后 2s 级)
 
 
 def _vlog(msg):
@@ -511,7 +514,13 @@ def _http_post(url, body, headers, cfg):
     回过话(401/429/500…)就不再重发, 免得白花一次额度。config `stt_proxy` 可强制:
     `direct`=只用直连 / `http://host:port`=只用这个代理 / 空或 `auto`=先代理后直连。
     全部失败时把**每一条路的原因**一起报出来 (用户一眼能看出是代理挂了还是直连不通)。
-    不在这里循环重试: 语音是交互操作, 再按一次热键就是最自然的重试。
+
+    **连接层失败要在同一条路上重试** (第六十五轮; config `stt_retry`, 默认 3 次, 1~8):
+    本机到 `api.siliconflow.cn` 实测 **10 次里只有 3 次握手成功** —— 其余是
+    `SSLV3_ALERT_BAD_RECORD_MAC` / `EOF occurred in violation of protocol` (中间设备在改 TLS 记录),
+    这种**同一秒再试一次就可能成功**, 而"服务端回话"的错误(401/429)重试毫无意义还会白花额度。
+    所以判据是: **只重试连接层异常**(URLError/SSLError/OSError/RemoteDisconnected…),
+    每次间隔 0.4s; 重试过程写 always-on 日志, 最后报错带上"共试 N 次"。
 
     **每换一条路都要重建 `Request`** (参数里只收 url/body/headers 的原因): 走代理时
     `OpenerDirector` 会调 `req.set_proxy()` **就地改写 req.host** —— 拿同一个 req 去试直连,
@@ -526,6 +535,18 @@ def _http_post(url, body, headers, cfg):
         plans = [('指定代理 %s' % mode, {'http': mode, 'https': mode})]
     else:
         plans = [('系统代理', None), ('直连', False)]
+        if _prefer_direct[0] is True:                    # 上次直连通了 -> 这次先直连 (省掉代理那段的等待)
+            plans.reverse()
+        elif _prefer_direct[0] is False:                 # 上次只有代理通 -> 先代理
+            pass
+    try:
+        tries = max(1, min(8, int(cfg.get('stt_retry') or 3)))
+    except Exception:
+        tries = 3
+    try:
+        timeout = max(5, min(60, int(cfg.get('stt_timeout') or 15)))
+    except Exception:
+        timeout = 15
     fails = []
     for label, proxies in plans:
         if proxies is None:
@@ -534,19 +555,31 @@ def _http_post(url, body, headers, cfg):
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         else:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
-        req = urllib.request.Request(url, data=body, method='POST')   # 每条路一个干净请求
-        for k, v in headers:
-            req.add_header(k, v)
-        try:
-            with opener.open(req, timeout=HTTP_TIMEOUT) as resp:
-                if fails:                          # 上一次失败过 -> 留一条现场证据
-                    _vlog('voice: STT ok via %s (earlier path failed: %s)' % (label, fails[-1]))
-                return resp.read().decode('utf-8', 'replace')
-        except urllib.error.HTTPError:
-            raise                                  # 服务端回话了 -> 换路也没意义
-        except Exception as e:
-            fails.append('%s: %s' % (label, e))
-            continue
+        for attempt in range(1, tries + 1):
+            req = urllib.request.Request(url, data=body, method='POST')   # 每次一个干净请求
+            for k, v in headers:
+                req.add_header(k, v)
+            try:
+                with opener.open(req, timeout=timeout) as resp:
+                    if fails or attempt > 1:               # 之前失败过 -> 留一条现场证据
+                        _vlog('voice: STT ok via %s (第 %d 次尝试; 之前: %s)'
+                              % (label, attempt, '; '.join(fails) or '同路重试'))
+                    if len(plans) > 1:                     # 自动模式: 记住通的那条, 下次别再白等另一条
+                        want = (label == '直连')
+                        if _prefer_direct[0] is not want:
+                            _prefer_direct[0] = want
+                            _vlog('voice: STT 记住可用路径 = %s (下次优先)' % label)
+                    return resp.read().decode('utf-8', 'replace')
+            except urllib.error.HTTPError:
+                raise                                  # 服务端回话了 -> 换路/重试都没意义
+            except Exception as e:
+                if attempt < tries:
+                    _vlog('voice: STT %s 第 %d/%d 次连接失败 (%s), 0.4s 后重试'
+                          % (label, attempt, tries, type(e).__name__))
+                    time.sleep(0.4)
+                    continue
+                fails.append('%s (共试 %d 次): %s' % (label, tries, e))
+                break
     _vlog('voice: STT all paths failed -> %s' % '; '.join(fails))
     raise RuntimeError('；'.join(fails) or 'STT 请求失败')
 

@@ -431,3 +431,21 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
 | 能装 pip、想离线又要准 | 本便携包 `cmd` + SenseVoice（1.7s/句） |
 | 能联网、不想放模型 | `http` + 硅基流动**国内站** key（~1s/句；国际站没有 ASR 模型，见 §D7） |
 | 已装 faster-whisper | `voice_engine = whisper`（第六十三轮，常驻，3~5s/句，中文 88~100%） |
+### §D7.1 第六十五轮补充：国内站 key + 坏网络下的 http 后端
+
+- **判站点**：`GET https://api.siliconflow.cn/v1/models` 带 `Authorization: Bearer <key>` ——
+  200 = 国内站 key；401 `{"code":30014}` = 不是这个站的 key。国际站的 key 在 `.cn` 回 30014，
+  国内站的 key 在 `.com` 也回 30014，**两者长得一模一样，只能两边都试一次**。
+- **本机连接层实测（与 key 无关）**：`GET /v1/models` 10 次成功 3 次（6× `SSLV3_ALERT_BAD_RECORD_MAC`、
+  1× `RemoteDisconnected`）；语音请求一段时间 3/5（**成功时 0.6~0.85s**）、过一会儿 1/6
+  （`The read/write operation timed out`）。同一份配置、同一个 key，波动全在网络路径。
+- **`stt_retry`（默认 3，1~8）**：只对**连接层**异常重试（URLError/SSLError/OSError/RemoteDisconnected…），
+  间隔 0.4s；`urllib.error.HTTPError`（服务端回过话：401/429/500）**直接抛，不重试**。
+  最终错误文本带"共试 N 次"，重试过程写 always-on 日志。
+- **`stt_timeout`（默认 15s，5~60）**：单次尝试超时；代理是黑洞时它决定回退直连前等多久。
+- **记住可用路径**（`voice._prefer_direct`）：只在自动模式（`stt_proxy` 空/auto）生效 ——
+  哪条路成功就把它排到下次第一位，并写一行 always-on。本机那个 `127.0.0.1:10808` 现在是**黑洞**
+  （连上但不响应，不再是 10061 秒拒），auto 每句白等 `3×timeout`（实测第一句 100s），
+  记住直连后回到 0.6s 级。显式 `stt_proxy = direct` / 指定代理时不会改顺序（探针 D 段依赖这一点）。
+- **探针**：`%TEMP%\wg-r59-stt-proxy-probe.py` G2 段用"先把连接掐掉一次"的假服务器证明重试
+  （服务端收到 2 次请求），并用 `stt_retry = 1` 证明不重试时只发 1 次、错误写"共试 1 次"。

@@ -26,13 +26,20 @@ voice_max = 20
 ; stt_cmd: 本地识别命令, 用 {wav} 占位, 取 stdout 第一行, 如: whisper-cli -m model.bin -f {wav} -otxt -nt
 ; stt_proxy: 云端接口走不走代理 (留空/auto=先按系统代理、连不上就直连; direct=直连;
 ;            也可写 http://127.0.0.1:10808 只用指定代理)。本机若留着已关闭的本地代理设置,
-;            auto 会自动回退直连, 不用手改系统设置。
+;            auto 会自动回退直连, 不用手改系统设置; 通的那条会被记住, 之后优先走它。
+; stt_retry: 连接层失败(超时/TLS 被中间设备打断/连接被断)时, 同一条路重试几次 (1~8, 默认 3)。
+;            实测某些网络到 api.siliconflow.cn 十次里只有三次握手成功, 不重试基本没法用;
+;            服务端回过话(401/429)的错误**不重试**(免得白花额度)。
+; stt_timeout: 单次尝试超时秒数 (5~60, 默认 15)。代理是"黑洞"(连上但不响应)时, 这个值决定
+;            回退直连前白等多久。
 ; stt_url = 
 ; stt_key = 
 ; stt_model = whisper-1
 ; stt_lang = zh
 ; stt_cmd = 
 ; stt_proxy = 
+; stt_retry = 3
+; stt_timeout = 15
 ; ---- 本机离线识别: voice_engine = whisper (第六十三轮, 推荐) ----
 ; 用宿主的 faster-whisper (`pip install faster-whisper`)。模型只载一次、进程常驻,
 ; 之后每句 3~5 秒; 冷启动那次要先载模型 (~15s), 启动时会在后台先热好 (见 stt_prewarm)。
