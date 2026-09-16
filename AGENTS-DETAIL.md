@@ -449,3 +449,15 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
   记住直连后回到 0.6s 级。显式 `stt_proxy = direct` / 指定代理时不会改顺序（探针 D 段依赖这一点）。
 - **探针**：`%TEMP%\wg-r59-stt-proxy-probe.py` G2 段用"先把连接掐掉一次"的假服务器证明重试
   （服务端收到 2 次请求），并用 `stt_retry = 1` 证明不重试时只发 1 次、错误写"共试 1 次"。
+
+### §D7.2 第六十六轮：双引擎赛跑（`voice_fallback`）
+
+- **语义**：主引擎（`voice_engine`）+ 第二引擎（`voice_fallback`）**同时开跑**，谁先返回**成功**（`err is None`，含 `text == ""` 的"没听清"）就用谁；另一个结果丢弃（daemon 线程）。
+  两个都失败 -> 返回 `"<A> 失败: …；<B> 失败: …"`。
+- **为什么不用串行回退**：本机实测云端要 10~20s 才报错，串行版每句 24~38s（虽然 4/4 都对，但没法用）；
+  赛跑版平均 **2.80s / 4 全对**（三次本地 ~3.5s 赢、一次云端 0.73s 赢）。
+- **收紧后台线程**：`http` 主引擎配了第二引擎时，`_http_post` 把 `stt_retry`/`stt_timeout` 收到
+  `min(2)` / `min(10s)` —— 反正本地兜底，别让被丢弃的云端线程占几十秒。
+- **同名防自环**：`voice_fallback == voice_engine` 时按"没有第二引擎"处理。
+- **代价**：每句都跑一次本地引擎（SenseVoice 建会话 ~1.5s 的 CPU）；不想白跑就别配 `voice_fallback`。
+- **探针**：`%TEMP%\wg-r59-stt-proxy-probe.py` H 段（6 项）+ 解析 3 组。

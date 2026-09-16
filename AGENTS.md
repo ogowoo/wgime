@@ -248,6 +248,11 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     本机那个本地代理已是"黑洞"，不记住的话每句白等 3×timeout）。本机实测成功时 **0.6~0.85s**，
     但网络窗口坏时 1/6~3/5 成功、失败一次 ~30s —— 那是环境（中间设备改 TLS 记录），不是配置问题；
     要稳就用离线 `cmd`+SenseVoice。数字见 `CHANGELOG.md` 第六十五轮与 `AGENTS-DETAIL.md` §D7.1。
+    **第六十六轮（双引擎赛跑 `voice_fallback`）**：第二个引擎与主引擎**同时开跑、谁先成功用谁**
+    （`voice._race_engines`），不是"失败再回退" —— 坏网络下云端要十几秒才报错，串行回退每句要 24~38s，
+    赛跑后平均 **2.80s / 4全对**（本地 ~3.5s 赢或云端 0.73s 赢）。两个都失败才报错(带两边原因)；
+    `http` 主引擎配了它时重试/超时收紧成 2×10s。命中第二个引擎写 always-on 日志，不弹气泡。
+    代价：每句都会跑一次本地引擎。探针 `%TEMP%\wg-r59-stt-proxy-probe.py` H 段 6 项覆盖。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。

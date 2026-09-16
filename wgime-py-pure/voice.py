@@ -547,6 +547,11 @@ def _http_post(url, body, headers, cfg):
         timeout = max(5, min(60, int(cfg.get('stt_timeout') or 15)))
     except Exception:
         timeout = 15
+    if (cfg.get('voice_fallback') or '').strip():
+        # 第六十六轮: 有本地兜底时**快速失败** —— 坏网络上死磕 3×15s 不如早点交给本地引擎
+        # (云端成功只要 0.6s; 收紧到 2×10s 后最坏 ~20s + 本地 1.7s)
+        tries = min(tries, 2)
+        timeout = min(timeout, 10)
     fails = []
     for label, proxies in plans:
         if proxies is None:
@@ -1084,9 +1089,8 @@ def shutdown():
         pass
 
 
-def recognize(wav, cfg):
-    """(text, err). text='' 表示"听到了但没识别出内容"(不是错误); err 非空表示出错."""
-    eng = (cfg.get('voice_engine') or 'system').strip().lower()
+def _dispatch(eng, wav, cfg):
+    """按引擎名分派到具体后端 (不含回退逻辑)."""
     if eng in ('http', 'cloud', 'api'):
         return _http_recognize(wav, cfg)
     if eng in WSRV_ENGINES:                    # 常驻本地 whisper (第六十三轮)
@@ -1094,3 +1098,65 @@ def recognize(wav, cfg):
     if eng in ('cmd', 'command'):
         return _cmd_recognize(wav, cfg)
     return _system_recognize(wav, cfg)
+
+
+def _race_engines(eng, fb, wav, cfg):
+    """两个引擎**同时开跑, 谁先成功用谁** (第六十六轮).
+
+    为什么要赛跑而不是"失败再回退": 坏网络下云端要**十几秒**才报错 (连接超时/重试),
+    串行回退 = 每句白等十几秒才轮到本地 (实测 24~38s); 赛跑后本地 ~2s 出结果,
+    而云端健康时 0.6s 就能先到 —— 两头都不吃亏, 用户完全无感。
+    另一个引擎的结果直接丢弃 (daemon 线程, 不阻塞退出); 两个都失败时两边原因一起报出来。
+    """
+    import threading
+    res, order = {}, []
+    lock = threading.Lock()
+    got_one = threading.Event()
+
+    def run(name):
+        try:
+            r = _dispatch(name, wav, cfg)
+        except Exception as e:                     # 后台线程异常必须兜住 (pythonw 下无声)
+            r = (None, '内部异常: %r' % (e,))
+        with lock:
+            res[name] = r
+            order.append(name)
+            if r[1] is None:
+                got_one.set()
+
+    ts = [threading.Thread(target=run, args=(n,), name='wgime-stt-' + n, daemon=True)
+          for n in (eng, fb)]
+    for t in ts:
+        t.start()
+    while True:                                    # 等"有一个成功", 或两个都跑完(都失败)
+        if got_one.wait(0.05):
+            break
+        if not any(t.is_alive() for t in ts):
+            break
+    with lock:
+        for n in order:
+            if res[n][1] is None:
+                if n != eng:
+                    _vlog('voice: 赛跑 %s vs %s -> %s 先成功 (text=%d 字)'
+                          % (eng, fb, n, len(res[n][0] or '')))
+                return res[n][0], None
+        fails = ['%s 失败: %s' % (n, str(res[n][1])[:160]) for n in order if n in res]
+        _vlog('voice: 赛跑两个引擎都失败 -> %s' % '；'.join(fails))
+        return None, '；'.join(fails) or '两个引擎都没出结果'
+
+
+def recognize(wav, cfg):
+    """(text, err). text='' 表示"听到了但没识别出内容"(不是错误); err 非空表示出错.
+
+    **双引擎赛跑** (第六十六轮): config `voice_fallback` 指定第二引擎 (如 `cmd`=本地 SenseVoice),
+    两者**同时开跑、谁先成功用谁**; 两边都失败才报错 (错误里带两边原因)。
+    要点: ① 主引擎"听到了但没听清"(`text=''`, `err=None`)算成功, 不会傻等另一个;
+    ② 回退名与主引擎相同则忽略 (防自环); ③ http 主引擎配了第二引擎时会把重试/超时**收紧**
+    (2 次 × 10s) —— 反正本地能兜底, 没必要在坏网络上把后台线程占几十秒。
+    命中第二引擎时写一行 always-on 日志(现场证据), 但**不改文本、不弹气泡**。
+    """
+    eng = (cfg.get('voice_engine') or 'system').strip().lower()
+    fb = (cfg.get('voice_fallback') or '').strip().lower()
+    if not fb or fb == eng:
+        return _dispatch(eng, wav, cfg)
+    return _race_engines(eng, fb, wav, cfg)

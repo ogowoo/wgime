@@ -10,6 +10,14 @@ trans = 1
 voice = 0
 ; voice_engine: 识别后端 system=系统自带离线引擎 / http=云端或自建 STT / whisper=本地 faster-whisper(离线,中文准) / cmd=外部命令
 voice_engine = system
+; voice_fallback: 第二个识别引擎 (如 cmd=本地 SenseVoice; 留空=只用一个, 默认)。
+;                 与主引擎**同时开跑, 谁先成功用谁** (赛跑) —— 云端健康时 0.6s 就赢, 云端卡住时
+;                 本地 ~2s 出结果, 用户完全无感; 两个都失败才报错(错误里带两边原因)。
+;                 命中第二个引擎会写一行 always-on 日志, 不弹气泡、不改文本。
+;                 http 主引擎配了它时重试/超时**收紧**成 2 次×10s (反正本地兜底)。
+;                 代价: 每句都会跑一次本地引擎 (桌面机上可接受; 不想白跑就别配它)。
+;   voice_fallback = cmd
+voice_fallback = 
 ; voice_lang: 系统引擎的识别语言, 如 zh-CN (留空=系统默认; 没装对应语言包会弹气泡提示怎么装)
 voice_lang = zh-CN
 ; voice_auto: 识别完直接上屏 (1) 还是先进候选条等你按空格确认 (0, 默认)

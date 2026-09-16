@@ -211,6 +211,7 @@ def load_config(path):
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
                voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开
                voice_engine='system',          # system(系统离线) / http(云端) / whisper(本地常驻) / cmd(外部命令)
+        voice_fallback='',              # 主引擎**报错**时的第二引擎 (如 cmd=本地 SenseVoice); 空=不回退 (第六十六轮)
                voice_auto=False,               # True: 识别完直接上屏; False: 进候选条等空格确认
                voice_lang='',                  # 系统引擎的识别语言 (如 zh-CN); 空=系统默认
                voice_silence=1.2,              # 连续静音多少秒自动停 (0=不自动停)
@@ -259,6 +260,8 @@ def load_config(path):
                 cfg['voice'] = v in ('1', 'on', 'true')     # 语音输入总开关 (白名单, 非法值判"关")
             elif k == 'voice_auto':
                 cfg['voice_auto'] = v in ('1', 'on', 'true')    # 识别完直接上屏 (白名单)
+            elif k == 'voice_fallback':
+                cfg['voice_fallback'] = v.strip().lower()   # 第二引擎名; 空=回退关闭
             elif k == 'voice_engine':
                 cfg['voice_engine'] = (v.strip().lower() or 'system')   # system/http/whisper/cmd
             elif k == 'voice_lang':
