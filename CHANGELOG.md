@@ -42,6 +42,23 @@ F 文件卫生(dot 进 MODULES、三份 config.txt、全部 LF)。
 `tests\pure-state-harness.py` 加 5 项永久回归(28 → **33 项**, 含"真 tick 能把圆点显示出来");
 `undefined-globals` 0、tray-swap 42、voice-vad 31、whisper-warm 67、`wgime-dist-sync-check` OK。
 
+**实机复核抓出一个真 bug(只有跑真成品才会暴露)**: 源码探针 70/70 全绿, 但拿真 `dist\wgime-py.py`
+启动、用 `EnumWindows` dump 该进程的窗口时发现: 圆点窗口确实出现、位置**逐像素等于** `dot_pos()` 期望值,
+可它的扩展样式只有 `0x80088`(Tk 自己设的 `LAYERED|TOOLWINDOW|TOPMOST`), 我写的
+`NOACTIVATE|TRANSPARENT` **不见了**, 圆心也不是灰的(采样是白)。
+**根因: Tk 的 Toplevel 有"两层" HWND** —— `winfo_id()` 返回的是 **`TkChild`**(Tk 的画布子窗口),
+真正的顶层外框是它的父窗口(`TkTopLevel` = `GetParent` = `GetAncestor(GA_ROOT)`); **窗口管理器只看外框**。
+`SetWindowLong` 写到 `TkChild` 上, `GetWindowLong` 读得回来(所以源码探针假通过), 但
+"不抢焦点/鼠标穿透/透明"**全都等于没设** —— 用户看到的是"圆点跟着鼠标跑, 但它会抢焦点、挡住点击、渲染成一块白"。
+**修法**: 新增 `win.top_level_hwnd(hwnd)`(GA_ROOT + 回退), `Dot.hwnd()` 改为返回外框,
+`_apply_styles` 加**外框守卫**(外框还没建出来时**不写**、也不置 `_styles_done`, 免得把样式写到子窗口上还宣布完成;
+`deiconify()` 之后补一次 `update_idletasks()` 让外框当场就位, 否则用户会看见白块闪一下)。
+**bar.py 的两处 `win.set_topmost(self.top.winfo_id())` 同一个 bug** —— 也改成写外框(那两处原来等于没生效,
+候选条其实一直是靠 Tk 的 `-topmost` 在扛)。
+探针跟着修: 源码探针新增 3 条(**`hwnd()` 是 `TkTopLevel`** / **`hwnd() != winfo_id()`** /
+**`TkChild` 上确实没有 `NOACTIVATE`**), 实机探针去掉 `GetPixel` 取色(分层窗口读到的是它自己的像素,
+微探针里 `#6B6B6B` 的圆点读回来是 `#000000`/`#FFFFFF`, 判不了颜色 —— 颜色改由源码探针读 canvas 的 item fill)。
+
 **顺手记下一条环境事实(踩了一次)**: `WS_EX_TOPMOST`(0x8) 在本机**读不回来** —— 微探针
 `%TEMP%\wg-r69-topmost-micro.py` 实测: 显式 `SetWindowPos(hwnd, HWND_TOPMOST, …)` 之后
 `GetWindowLongPtrW(hwnd, GWL_EXSTYLE)` 依然没有 0x8(Tk 层 `attributes('-topmost')` 才是 1)。

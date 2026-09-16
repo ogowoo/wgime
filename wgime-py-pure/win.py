@@ -831,6 +831,30 @@ def _exstyle_api():
     return get, setf
 
 
+def top_level_hwnd(hwnd):
+    """把 tk 的 `winfo_id()` 换成**真正的顶层外框** HWND (GA_ROOT); 换不到就原样返回.
+
+    **第六十九轮实测的关键坑(真成品 dump 出来的)**: Tk 的 Toplevel 有**两层** HWND ——
+    `winfo_id()` 返回的是 `TkChild`(Tk 的画布子窗口), 真正的顶层外框是它的**父窗口**
+    (`TkTopLevel` = `GetParent` = `GetAncestor(GA_ROOT)`)。扩展样式只有写到**外框**上才起作用:
+
+        winfo_id()  cls=TkChild     ex 里能看到我写的位(GetWindowLong 读得到) -> 没用!
+        GA_ROOT     cls=TkTopLevel  ex=0x80088(只有 Tk 自己设的)              -> WM 看的是这个
+
+    写到 TkChild 上的后果很隐蔽: `GetWindowLong` 读得回来(探针会假通过), 但窗口管理器不认 ——
+    表现是"圆点老老实实跟着鼠标跑, 可它就是会抢焦点 / 挡住底下的点击 / 渲染成一块白"。
+    凡是要设 NOACTIVATE / TRANSPARENT / 透明 / TOPMOST 的地方(状态提示点、候选条)都必须过这一层。
+    """
+    try:
+        u32 = ctypes.windll.user32
+        u32.GetAncestor.restype = ctypes.c_void_p
+        u32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        h = u32.GetAncestor(ctypes.c_void_p(int(hwnd)), 2)          # GA_ROOT
+        return int(h) if h else int(hwnd)
+    except Exception:
+        return int(hwnd)
+
+
 def set_overlay_styles(hwnd, click_through=True):
     """把一个 tk 窗口变成"纯浮层": 不激活 + 不进任务栏 + 置顶 + (可选)**鼠标穿透**.
 

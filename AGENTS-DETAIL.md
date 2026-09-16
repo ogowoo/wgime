@@ -591,3 +591,42 @@ Windows 收进 `^`（§36 `tray_promoted`）。所以要的是一个**常驻、�
 C2 `WS_EX_TOPMOST` 环境事实 / D 配置 6 组 / E 接线 AST 真跑 / F 文件卫生）；
 `tests\pure-state-harness.py` **33 项**（+5：默认开 / 关掉不建窗 / tray 不建窗 / 真 tick 显示 / 开关反映）；
 `undefined-globals` 0；tray-swap 42；voice-vad 31；whisper-warm 67；`wgime-dist-sync-check` OK。
+
+### §D11.1 第六十九轮补充：Tk 的 Toplevel 是**两层** HWND（样式必须写外框）
+
+**发现方式（值得照抄的流程）**：源码探针 70/70 全绿 ≠ 真的对。拿**真成品单文件**启动, 用
+`EnumWindows` 枚举该进程的顶层窗口, 打印"类名 / 矩形 / 扩展样式 / 是否可见" —— 一眼就看出问题:
+
+```
+t=12s  TkTopLevel  vis=1  12x12  @919,980  ex=0x80088     <- 圆点窗口, 位置**正好**等于 dot_pos() 期望值
+t=12s  TkTopLevel  vis=0  378x265 @0,0     ex=0x80088     <- 候选条(隐藏)
+```
+
+位置对、样式不对: `0x80088` 里只有 Tk 自己设的 `LAYERED|TOOLWINDOW|TOPMOST`,
+我写的 `WS_EX_NOACTIVATE`(0x08000000) 与 `WS_EX_TRANSPARENT`(0x20) **不见了**。微探针
+(`%TEMP%\wg-r69-wrapper-micro.py`) 立刻给出答案:
+
+```
+winfo_id()          cls=TkChild     ex=0x4        <- 我一直在写这个
+GetParent(winfo_id) cls=TkTopLevel  ex=0x80088    <- 真正的外框
+GetAncestor(GA_ROOT)cls=TkTopLevel  ex=0x80088
+把样式写到 winfo_id()  -> TkChild 变 0x80800a4, 外框**纹丝不动**
+把样式写到 GA_ROOT     -> 外框变 0x80800a8 (NOACTIVATE|LAYERED|TRANSPARENT|TOOLWINDOW|TOPMOST)
+```
+
+**结论(照做)**: 凡是要给 tk 窗口设**不激活 / 鼠标穿透 / 透明 / 置顶**的地方, 目标 HWND 必须是
+`win.top_level_hwnd(<winfo_id()>)`(= `GetAncestor(GA_ROOT)`, 带"拿不到就原样返回"的回退)。
+现有调用点: `dot.Dot.hwnd()`、`bar.py` 的两处 `set_topmost`。
+
+**两个连带的坑**:
+1. **外框守卫**: 外框要等 Tk 真的映射过窗口才存在。`_apply_styles` 里若发现
+   `top_level_hwnd(wid) == wid`(还没有外框), 要**直接 return 且不要置 `_styles_done`** ——
+   否则样式写到子窗口上、还被标记成"已完成", 之后永远不补(圆点会抢焦点/挡点击/渲染成白块)。
+2. **deiconify 只是"请求映射"**: 之后要补一次 `update_idletasks()` 外框才真的建出来, 否则第一次显示
+   会闪过一个没样式的白块(下一拍 ~32ms 才补上)。
+
+**探针为什么第一次没抓到**: 源码探针读的是 `d.hwnd()`, 而 `hwnd()` 当时也指向 `TkChild` ——
+**"自己写给自己的窗口、再自己读回来"永远自洽**。教训: 涉及 Win32 窗口样式/时序的改动,
+除了进程内读回, 还要**从进程外**验证一次(枚举窗口/类名/样式), 这一层才代表窗口管理器看到的东西。
+同样地, **颜色不要在进程外查**: 分层(`-transparentcolor`)窗口用 `GetPixel` 读到的是它自己的像素
+(微探针里 `#6B6B6B` 的圆点读回来是 `#000000`/`#FFFFFF`), 颜色只能进程内读 canvas 的 item fill。

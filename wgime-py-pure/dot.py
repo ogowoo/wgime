@@ -92,19 +92,30 @@ class Dot:
 
     # ------------------------------------------------------------------
     def hwnd(self):
-        return self.top.winfo_id()
+        """**顶层外框** HWND (不是 `winfo_id()` 那个 TkChild 子窗口 —— 见 win.top_level_hwnd).
+
+        Tk 的 Toplevel 是两层窗口, 样式写到子窗口上等于没写(会抢焦点/挡点击/渲染成白块)。
+        """
+        self.top.update_idletasks()              # 外框要 Tk 真建出来之后才存在
+        return win.top_level_hwnd(self.top.winfo_id())
 
     def _apply_styles(self):
         """改 Win32 扩展样式 (noactivate/toolwindow/穿透) + 置顶. 失败只记日志, 不影响输入法."""
         if self._styles_done:
             return
         try:
-            self.top.update_idletasks()          # 先让 Tk 真把窗口建出来, 再拿 hwnd 改样式
-            if win.set_overlay_styles(self.hwnd()):
+            wid = self.top.winfo_id()
+            hwnd = win.top_level_hwnd(wid)
+            if hwnd == wid:
+                # 外框还没建出来(窗口还没映射) -> **先别写**: 写到 TkChild 上等于没写, 而且会把
+                # _styles_done 置上, 之后再也不会补 -> 圆点会抢焦点/挡点击/渲染成白块(实机踩过)。
+                # update() 在 deiconify 之后会再调一次本函数, 那时外框就在了。
+                return
+            if win.set_overlay_styles(hwnd):
                 self._styles_done = True
             # 置顶必须用 SetWindowPos —— WS_EX_TOPMOST 是只读位, SetWindowLong 设不上(探针实测)。
-            # 同一招 bar.py 用来压 Win11 开始菜单那类 Shell 层。
-            win.set_topmost(self.hwnd())
+            # 同一招 bar.py 用来压 Win11 开始菜单那类 Shell 层; 同样**必须写外框**。
+            win.set_topmost(hwnd)
         except Exception:
             pass
 
@@ -121,6 +132,13 @@ class Dot:
         if not self._shown:
             self.top.deiconify()
             self._shown = True
+            try:
+                # deiconify 只是"请求映射", Tk 的**外框窗口**要等一次 idle 处理才真的建出来;
+                # 不 update_idletasks 的话, 下面那次 _apply_styles 会因为"外框还不存在"而跳过,
+                # 样式要等到 ~32ms 后的下一拍才补上(用户能看见白块闪一下)。第六十九轮实测。
+                self.top.update_idletasks()
+            except Exception:
+                pass
             self._apply_styles()                 # deiconify 后再保险一次 (见 §17 托盘句柄时序那类坑)
 
     def hide(self):

@@ -312,6 +312,9 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     探针 `%TEMP%\wg-window-audit2.py`（覆盖 10 个内置工具窗口）、`wg-window-audit3.py`（造词/用户词表用假 engine）。
     **便签滚动条改成按需**：Text 的 `yscrollcommand` 里判断 `yview() == (0.0, 1.0)`（装得下）就 `place_forget`，
     溢出才 `place`；**正文宽度保持不变**，免得滚动条出现/消失时文字左右重排。
+    **给 tk 窗口设 Win32 样式（不激活/穿透/透明/置顶）必须写"顶层外框"**：`winfo_id()` 给的是 **`TkChild` 子窗口**，
+    真正的外框是 `GetAncestor(GA_ROOT)`（`TkTopLevel`）—— 写到子窗口上 `GetWindowLong` 读得回来、但窗口管理器不看，
+    等于没生效（第六十九轮实机 dump 抓出来的真 bug，一行改动：`win.top_level_hwnd()`；细节见 `AGENTS-DETAIL.md` §D11）。
 
 43. **托盘图标的句柄时序（第五十六轮，两条都是真踩过的坑）**：
     ① **图标还没登记上（`icon.visible` 为假）时绝不换图** —— `Tray.start()` 注入 h0 后由 `run_detached()` 的

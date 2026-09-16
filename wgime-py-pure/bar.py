@@ -114,7 +114,7 @@ class CandBar:
             self.top.geometry('%dx%d+%d+%d'%(w,h,x,y))
             fg=win.user32.GetForegroundWindow()
             self._anchor=(x,y,fg);self._window_anchor[fg]=(x,y)
-            win.set_topmost(self.top.winfo_id())
+            win.set_topmost(win.top_level_hwnd(self.top.winfo_id()))   # 第六十九轮: 必须写外框, 见 win.top_level_hwnd
         except Exception:
             pass
 
@@ -297,7 +297,8 @@ class CandBar:
         except Exception:
             pass
         self.top.deiconify()
-        win.set_topmost(self.top.winfo_id())   # 强制提到 topmost z-order 最顶(Win11 开始菜单不压住候选框)
+        # 第六十九轮: 必须写**顶层外框**(GA_ROOT) —— winfo_id() 是 TkChild 子窗口, 写它等于没生效
+        win.set_topmost(win.top_level_hwnd(self.top.winfo_id()))   # 强制 topmost 最顶(Win11 开始菜单不压候选框)
 
     def _load_pos(self):
         """读上次拖到/粘到的位置 (C# `LoadPos`: DataDir\\pos.txt = "x,y"). 读不出就返回 None."""
