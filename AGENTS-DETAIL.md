@@ -688,3 +688,48 @@ python -S -E -c "import sys; sys.path.insert(0, r'%LOCALAPPDATA%\wgime-py\site\t
 - **已发布版本都受影响**（v1.2.x 内嵌方式相同）: 干净环境（没装 six）的用户没有托盘菜单。
 - 临时绕过: 用启动它的解释器装一次 —— `"C:\Program Files\Python314\python.exe" -m pip install --user six`。
 - 第六十九轮的状态提示点**不依赖托盘**（`dot.py` 自带窗口），托盘挂了也还能看出输入法开/关。
+
+## §D13 第七十一轮：依赖内嵌的边界（纯 Python 全嵌 / C 扩展只降级）
+
+### 一句话契约
+**纯 Python 依赖 100% 内嵌（含传递依赖）；C 扩展依赖不可能内嵌，必须"可用则用、不可用则明确降级"。**
+
+### 为什么 C 扩展内嵌不了（不是偷懒）
+`.pyd`/`.so` 是**编译产物，与解释器版本 + ABI 绑死**。构建机是 Microsoft Store 的 **cp312**，
+而用户机实测是 `C:\Program Files\Python314`（cp314）—— 把 cp312 的 `_imaging.pyd` 塞进单文件，
+在那台机器上导入必然失败。我们单文件的价值恰恰是"同一个文件在任何已装 Python 上跑"，
+所以**只有纯 Python 源码可以内嵌**。（当年 Pillow 那次就是这个原因改成"构建期渲染 ICO"。）
+
+### 现在的内嵌清单（正好两项，测试会断言）
+| 顶层 | 为什么在 | 体积 |
+|---|---|---|
+| `pystray` | `tray.py` 真 import（托盘） | 26.9 KB |
+| `six` | pystray 的**声明依赖**（`from six.moves import queue`） | ~10 KB |
+
+`thirdparty.zip` 281.2 KB → **36.8 KB**，内嵌模块 85 → 14，单文件 898.8 → **573.0 KB（-36%）**。
+`comtypes`/`uiautomation` 已删：第四十四轮起光标跟随 helper 是 `win.py` 里纯 ctypes 的源码字符串，
+全项目 0 处 import（有 `A/B` 实机验证：`followcaret=1` 时 helper 仍起、175ms ready）。
+
+### `_THIRD_SKIP`（构建脚本里的显式跳过表，每条必须有原因）
+`Pillow`（C 扩展；托盘图标构建期渲染成 ICO，运行时不需要）、`psutil`（C 扩展；`plugins.py` 里可选，
+缺了回退 wmic）、`cryptography`（C 扩展；chat 插件加密的可选能力）、`faster-whisper`（C 扩展 + 模型；
+只有 `voice_engine=whisper` 要）、`argostranslate`（含语言模型；wgtranslate 的离线翻译可选）、
+`comtypes`/`uiautomation`（已无人 import）。
+**判据**: 构建日志里每个 `skip third-party <名字>` 后面都跟着原因；新加依赖时若不在闭包里、
+又不在跳过表里，`isolation check` 会在构建期报错（缺模块）——不会溜到用户机上。
+
+### 本轮修的一个"静默崩溃"
+`plugins/chat.py` 原来在 `Crypto.enc/dec` 里**用到时才** `from cryptography...`。缺包时这会在 Tk
+回调里抛 `ImportError`，而 pythonw 下 stderr 是 None → 用户看到的是"回车没反应、输入框还留着字"。
+现在: 模块级 `HAS_CRYPTO` 探测 → `enc` 返回 `None` → 调用处 `set_status('加密不可用 (需 cryptography):
+pip install cryptography —— 未发送')` 且**保留输入内容**；**绝不退回明文**（设了房间密钥却发明文是安全问题）。
+`dec` 返回 None 时走已有的 `[encrypted]` 兜底。
+
+### 验证（这一轮新增/沿用的东西）
+- `wgime-py-pure\tests\embedded-isolation-test.py`（**10 项**，tracked）: 从 dist 解出 `THIRD_ZIP_B64`，
+  `python -S -E` 干净解释器逐个 import；断言内嵌顶层**正好** `{pystray, six}`、
+  `comtypes/uiautomation` 不在、`PIL` 不在、以及"真 bug 形状" `import pystray` + `from six.moves import queue`。
+- `%TEMP%\wg-r71-optdep-probe.py`: 干净环境里逐项验证"不可用则降级"（PIL→`tray.HAS_PIL=False` 仍能起托盘、
+  cryptography→`enc/dec` 返回 None、psutil→`[]`、voice 提示、核心模块 import、comtypes 不在）。
+- `%TEMP%\wg-r70-clean-live.py`: 真成品 + `python -S -E` 实机（托盘消息窗口/状态点/`nim_add=True`）。
+- `%TEMP%\wg-r68-live-ab4.py`: `followcaret` 0/1 的 helper A/B（删 uiautomation 后的回归）。

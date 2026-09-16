@@ -1,5 +1,47 @@
 ---
 
+## 2026-09-16 (第七十一轮: 纯 Python 依赖全部内嵌 + 删掉死重 comtypes/uiautomation)
+
+**目标（用户定）**: 依赖能封进单文件的就都封进去; `comtypes`/`uiautomation` 已经没人用了, 删掉。
+
+**结论先说清"能封到哪一步"**:
+- **纯 Python 的依赖 100% 内嵌**(含**传递依赖**): 现在只剩 `pystray` 与它的硬依赖 `six`（14 个模块, 36.8 KB）;
+- **C 扩展依赖内嵌不了** —— `.pyd` 与解释器 **ABI 绑定**。构建机是 cp312, 用户那台是
+  `C:\Program Files\Python314`, 二进制塞进 zipimport 也加载不了。这类依赖一律走
+  **"可用则用、不可用则明确降级"**: `Pillow`(托盘图标已构建期渲染成 ICO, 运行时根本不需要它)、
+  `psutil`(回退 wmic)、`cryptography`(chat 插件加密, 缺了给提示)、`faster-whisper`/`argostranslate`
+  (语音/翻译的可选后端, 由用户自己装)。
+
+**改动**:
+1. **删掉 comtypes + uiautomation**: 第四十四轮起光标跟随 helper 已是 `win.py` 里纯 ctypes 的源码字符串,
+   全项目 0 处 import —— 单文件 **898.8 KB → 573.0 KB（-36%）**, 内嵌第三方模块 **85 → 14 个**
+   （`thirdparty.zip` 281.2 KB → 36.8 KB）; 换机器构建时 pip 清单也能只剩 `pystray` + `pillow`。
+2. **依赖收集改成传递闭包**（BFS）: 不再只收一层 —— 第六十九轮那个 bug 恰好只有一层（pystray→six）,
+   多一层就会再漏; 并新增 `_THIRD_SKIP` **显式跳过表（每条写原因）**, 构建日志同时打印
+   `third-party roots:` / `third-party to embed:` / 每个 `skip third-party <名字> <原因>` ——
+   "哪些没内嵌、为什么"一眼可见, 不会再有"以为漏了"或"以为嵌了"。
+3. **`plugins/chat.py` 的 cryptography 缺了不再静默崩**: 原来是"用到时才 import", 缺包会在 Tk 回调里抛
+   ImportError（pythonw 下**完全无声**, 用户看到的就是"回车没反应、输入框还留着字"）。现在模块级探测
+   `HAS_CRYPTO`, `Crypto.enc` 返回 `None`, 调用处提示
+   `加密不可用 (需 cryptography): pip install cryptography —— 未发送` 并**保留输入内容**;
+   **绝不退回明文发送**（房间里设了密钥却发明文是安全问题）。`dec` 返回 None 时走已有的 `[encrypted]` 兜底。
+4. 构建期自检跟着收紧: `third-party isolation check: THIRD-ISOLATION-OK pystray,six`。
+
+**验证**:
+- `embedded-isolation-test.py` **10/10**（新增: 内嵌清单**正好** `{pystray, six}`、
+  `comtypes/uiautomation` 已不在、`PIL` 不在; 老的"真 bug 形状" `pystray + six.moves.queue` 保留）;
+- 新探针 `%TEMP%\wg-r71-optdep-probe.py`（干净环境 `-S -E`）: `PIL` 缺失 → `tray.HAS_PIL=False`
+  但 `HAS_TRAY=True`; `cryptography` 缺失 → `HAS_CRYPTO=False` 且 `enc/dec` 返回 None;
+  `psutil` 缺失 → `_list_procs_by_name` 返回 `[]` 不抛; `voice` 的 whisper 提示写清要装什么;
+  `win/dot/engine/hook` 在无 comtypes/uiautomation 的干净环境照样 import —— **6 项全符合预期**;
+- **干净环境实机**（`python -S -E` 跑真 dist）**5/5**: 托盘消息窗口出现、`tray start ok=True`、
+  `tray selfcheck: nim_add=True(count=1)`、状态提示点也在;
+- **`followcaret` A/B（删掉 uiautomation 之后）**: `0` → 四个采样点都是 0 个 helper 子进程;
+  `1` → 稳定 1 个, 日志 `IPC helper started pid=… (167-char cmdline)` → **175ms 后 ready** ——
+  纯 ctypes helper 与 comtypes/uiautomation 无关, 删得掉;
+- 其余全绿: `undefined-globals` 0、harness 33、tray-swap 42、voice-vad 31、whisper-warm 67、dot 探针 70、
+  `wgime-dist-sync-check` OK（dist 573.0 KB, package 56.9 MB）。
+
 ## 2026-09-16 (第七十轮: 修「托盘图标没能创建 (No module named 'six')」 —— 内嵌漏了依赖)
 
 **用户机截图**（Python 3.14 + `pythonw.exe`，干净环境）:
