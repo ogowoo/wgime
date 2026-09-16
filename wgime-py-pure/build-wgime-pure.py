@@ -3,18 +3,28 @@
 原理:
   - 项目模块(win/hook/engine/...) 按依赖序 exec 进 sys.modules (真实 import 仍可用)
   - 插件源注册为 plug_*
-  - 第三方库(comtypes + uiautomation, 纯 Python) 打包成 zip, 运行时解压到
+  - 第三方库(我们用的包 + 它们的**声明依赖**, 纯 Python) 打包成 zip, 运行时解压到
     %LOCALAPPDATA%\\wgime-py\\site 并 zipimport —— 标准 import 机制, 包结构/相对导入天然正确
   - 最后把 main.py 源 exec 进 __main__
 """
 import os
 import io
+import shutil
 import sys
 import base64
 import zipfile
 import importlib
 import pkgutil
 import importlib.util
+import importlib.metadata
+
+# stdout/stderr 一律 utf-8+replace: 被 PS 调用时默认是 cp1252, 脚本里任何中文提示都会
+# UnicodeEncodeError 把**构建**打死(而且 build-package.ps1 还会"沿用旧产物"报成功) —— 第六十九轮踩到。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 MODULES = ['win', 'hook', 'bar', 'dot', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray', 'voice']
@@ -35,26 +45,69 @@ plugsrc = {}
 main_src = read(os.path.join(BASE, 'main.py'))
 
 
-# ---- 第三方库收集: comtypes + uiautomation (纯 Python; 排除 test 子包) ----
+# ---- 第三方库收集: 包 + 它们的**声明依赖** (纯 Python; 排除 test 子包) ----
+# 第六十九轮(用户机实测的真 bug): 光收我们 import 的那几个包**不够** —— pystray 的
+# `_base.py`/`_win32.py` 里有 `from six.moves import queue`, METADATA 也写着 `Requires-Dist: six`,
+# 但原来只嵌 pystray 自己。于是"构建机恰好装了 six"就一直没暴露: 单文件的 import 会**回退到宿主
+# site-packages**, 干净机器(官方 Python 3.14, 没有 six)上 `import pystray` 直接 ImportError ->
+# **托盘整个消失**(还弹一个"托盘图标没能创建", NIM_ADD=None)。同一类坑第四十二轮已经踩过一次
+# (Pillow), 所以这次不只补 six: 依赖从 METADATA 自动收, 并加**构建期干净环境自检**(见下面
+# verify_thirdparty_isolation) —— 漏嵌会在构建时就报错, 而不是等用户在干净机器上撞见。
+_THIRD_EXCLUDE = {'Pillow'}                  # 只按分发名比较
+_THIRD_EXCLUDE_REASON = {'Pillow': 'C 扩展(_imaging.pyd, ABI 绑定), 图标已在构建期渲染成 ICO 内嵌'}
+
+
+def _declared_deps(names):
+    """从 METADATA 取**无条件**声明依赖 (带 marker 的平台/可选依赖一律不收: 我们只跑 Windows,
+    且 extra 依赖属于插件的可选能力, 由用户自己 pip 装)。"""
+    deps = []
+    for nm in names:
+        try:
+            md = importlib.metadata.metadata(nm)
+        except Exception:
+            continue
+        for req in (md.get_all('Requires-Dist') or []):
+            if ';' in req:                    # `; extra == 'x'` / `; sys_platform == 'darwin'` ...
+                continue
+            name = req.split('[')[0].split('(')[0].split('>')[0].split('<')[0].split('=')[0].strip()
+            if name and name not in deps:
+                deps.append(name)
+    return deps
+
+
 def collect_thirdparty(pkgnames):
+    want = []
+    for nm in list(pkgnames) + _declared_deps(pkgnames):
+        if nm in _THIRD_EXCLUDE:
+            print('skip third-party %s (%s)' % (nm, _THIRD_EXCLUDE_REASON.get(nm, '排除')))
+            continue
+        if nm not in want:
+            want.append(nm)
+    print('third-party to embed: %s' % ', '.join(want))
     files = {}
-    for pkgname in pkgnames:
+    for pkgname in want:
         try:
             pkg = importlib.import_module(pkgname)
-        except Exception:
-            print('WARN: import %s failed, skipping' % pkgname)
+        except Exception as e:
+            print('WARN: import %s failed, skipping (%r)' % (pkgname, e))
             continue
-        files[pkgname + '/__init__.py'] = read(pkg.__file__)
-        for m in pkgutil.walk_packages(pkg.__path__, pkgname + '.'):
-            if '.test' in m.name or m.name.endswith('.test'):
-                continue
-            try:
-                spec = importlib.util.find_spec(m.name)
-            except Exception:
-                continue
-            if spec and spec.origin and spec.origin.endswith('.py'):
-                rel = m.name.replace('.', '/') + ('/__init__.py' if m.ispkg else '.py')
-                files[rel] = read(spec.origin)
+        origin = getattr(pkg, '__file__', None)
+        if not origin:
+            continue
+        if getattr(pkg, '__path__', None):                     # 包
+            files[pkgname + '/__init__.py'] = read(origin)
+            for m in pkgutil.walk_packages(pkg.__path__, pkgname + '.'):
+                if '.test' in m.name or m.name.endswith('.test'):
+                    continue
+                try:
+                    spec = importlib.util.find_spec(m.name)
+                except Exception:
+                    continue
+                if spec and spec.origin and spec.origin.endswith('.py'):
+                    rel = m.name.replace('.', '/') + ('/__init__.py' if m.ispkg else '.py')
+                    files[rel] = read(spec.origin)
+        else:                                                  # 单模块 (six 就是 six.py)
+            files[pkgname + '.py'] = read(origin)
     return files
 
 
@@ -64,6 +117,39 @@ with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
     for rel, src in sorted(third_files.items()):
         z.writestr(rel, src)
 THIRD_ZIP_B64 = base64.b64encode(buf.getvalue()).decode('ascii')
+
+
+# ---- 构建期自检: 内嵌的第三方必须能在"没有 site-packages"的干净解释器里 import 成功 ----
+# 第六十九轮: 本机装了 six, 单文件却漏嵌 pystray 的依赖 -> 干净机器上托盘整个消失。用
+# `python -S -E`(不加载 site-packages / 不读 PYTHON* 环境变量) + 只把这个 zip 挂到 sys.path
+# 上 import 一遍, 就能在**构建时**复现"干净机器"的处境; 失败直接中止构建(绝不产出坏单文件)。
+def verify_thirdparty_isolation(zip_bytes, top_names):
+    import subprocess
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix='wgime-third-')
+    zp = os.path.join(tmp, 'thirdparty.zip')
+    try:
+        with open(zp, 'wb') as f:
+            f.write(zip_bytes)
+        tops = sorted({n.split('/')[0].replace('.py', '') for n in top_names})
+        code = ('import sys; sys.path.insert(0, %r)\n' % zp
+                + 'import ' + ', '.join(tops) + '\n'
+                + 'print("THIRD-ISOLATION-OK " + ",".join(%r))' % tops)
+        r = subprocess.run([sys.executable, '-S', '-E', '-c', code],
+                           capture_output=True, encoding='utf-8', errors='replace')
+        if r.returncode != 0:
+            print('!! 内嵌第三方在干净环境里 import 失败 (缺依赖?):')
+            print((r.stderr or r.stdout or '').strip()[-1200:])
+            return False
+        print('third-party isolation check: %s' % (r.stdout or '').strip())
+        return True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if not verify_thirdparty_isolation(buf.getvalue(), third_files.keys()):
+    print('构建中止: 内嵌第三方不自足 (干净机器上会 ImportError)')
+    sys.exit(1)
 
 # ---- 托盘图标预渲染成 ICO 内嵌 (第四十二轮) ----
 # python 版的托盘以前要在**运行时**用 Pillow 画图标, 而宿主机不一定装了 Pillow (用户机器实测:
@@ -91,7 +177,7 @@ except Exception as e:
 
 out = []
 out.append('# -*- coding: utf-8 -*-')
-out.append('# WgIme-Pure 单文件版 (项目模块 + 插件 + comtypes/uiautomation 内嵌). 免安装, 零 .NET, 零 pip.')
+out.append('# WgIme-Pure 单文件版 (项目模块 + 第三方库[含声明依赖] 内嵌). 免安装, 零 .NET, 零 pip.')
 out.append('import sys, types, os, base64')
 out.append('MODULES = ' + repr(modsrc))
 out.append('PLUGIN_SRC = ' + repr(plugsrc))
