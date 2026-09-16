@@ -733,3 +733,73 @@ pip install cryptography —— 未发送')` 且**保留输入内容**；**绝�
   cryptography→`enc/dec` 返回 None、psutil→`[]`、voice 提示、核心模块 import、comtypes 不在）。
 - `%TEMP%\wg-r70-clean-live.py`: 真成品 + `python -S -E` 实机（托盘消息窗口/状态点/`nim_add=True`）。
 - `%TEMP%\wg-r68-live-ab4.py`: `followcaret` 0/1 的 helper A/B（删 uiautomation 后的回归）。
+
+---
+
+## §D12 第五十八~六十二轮：语音的一串真因（AGENTS.md §38 的叙事原文）
+
+> AGENTS.md 有 64K 注入预算，这里放**原文**（含实测数字）；正文只留"要照做的规则"。
+
+**第五十八轮（"感觉收不了音/一直 0s"的三个真因）**：① **按住热键的自动重复必须丢掉**——Windows
+对按住的键每 ~33ms 补发一次 `WM_KEYDOWN`（`KBDLLHOOKSTRUCT` 里**没有**重复标志，只能靠自己的
+"键还按着"状态挡），以前每次重复都入队一个 `VK_VOICE`，而 `voice_down()` 见"已经在录"就当成
+**第二次点** -> `voice_finish()`，下一次重复又开一段**新**录音（`t0` 归零、界面永远 "(0s)"、
+说话被切碎、松开时已经没有 rec 可收尾）；现在 `hook` 里 `if VOICE_DOWN[0]: return 1`，并在
+**修饰键已松开**的 V 按下处清 `VOICE_DOWN[0]`（防松键丢失后热键被永久卡死）。② **录音期间要重画
+候选条**（`main._voice_tick()`，poll 里 ~4Hz；`voice_down` 把 `_VOICE_TICK[0]` 归零）——以前
+全程不重画，条上那句 "(0s)" 是按下瞬间的**死字符串**，用户根本看不出在不在录。③ **VAD 阈值 =
+自适应底噪**：`_floor` 取**最小**（`if r < floor: floor = r`）、`thr = clamp(floor*3.5, 180, 1200)`。
+别改回"头 500ms 取中位数、凑不够 2 块就兜底 300"——块是 200ms，再叠上 `waveInOpen/Start` 的
+启动延迟（实测 100~300ms），那个窗口经常只落进 1 块，于是阈值永远是写死的 300。
+诊断提示也要能判断：全 0 PCM（`voice.peak() == 0`）报"**麦克风给的是纯静音**(输入设备被静音/
+选错设备)"，否则报峰值/音量数值。探针 `%TEMP%\wg-r58-voice-hold-probe.py`（18 项：假造自动重复
+喂真 `hook._proc`、真 `handle()` 的 start/finish 序列、真 `_on_data` 的 VAD 单元测试、静音提示）。
+
+**第五十九轮（云端 STT 的代理坑）**：`voice_engine = http` 的请求统一走 `voice._http_post(url, body,
+headers, cfg)`，按 `stt_proxy` 决定顺序：空/`auto` = 先系统/环境代理、**连不上就回退直连**；`direct` =
+只直连；`http://host:port` = 只用它。两个必须守住的点：① **每条路都要重建 `Request`** —— 走代理时
+`OpenerDispatcher` 会 `req.set_proxy()` **就地改 `req.host`**，复用同一个 req 去"直连"其实还是连那个死
+代理（回退白做）；② 服务端**回过话**（HTTPError）就不换路/不重发，只在**连接层**失败时换路，并把
+**每条路的原因**一起报出来。本机真实故障：注册表里留着已关闭的 `http://127.0.0.1:10808` ->
+`getproxies()` 每次都去连它 -> 10061，云端识别永远失败；硅基流动端点直连实测能拿到 `HTTP 401
+{"code":30014,"message":"Token is invalid."}`（端点/鉴权/multipart 形状都对）。
+探针 `%TEMP%\wg-r59-stt-proxy-probe.py`（18 项，全打**本地假服务器**，不依赖外网 —— 本机外网时通时断，
+真端点做断言不可复现）。硅基流动接入（`config.txt`）：`voice_engine=http`、
+`stt_url=https://api.siliconflow.cn/v1/audio/transcriptions`、`stt_key=sk-…`、
+`stt_model=FunAudioLLM/SenseVoiceSmall`、`stt_lang` 留空（该接口只认 `file`/`model`，SenseVoice 自判语种）。
+
+**第六十轮（硅基流动两站的区别，实测）**：见 §D7。
+
+**第六十一轮（"按了 Ctrl+Alt+V，说不到 2 秒就自动停"的真因）**：VAD 阈值**不能只看绝对底噪**。
+第五十八轮写成 `thr = clamp(floor*3.5, 180, 1200)`（`floor` = 见过的**最小** RMS），于是
+**"按住热键就说话"**（开头压根没有一个静音块）或**麦克风增益偏热**时，`floor` 是从**说话声**里取的
+（比如 600）→ `thr` 被顶到上限 **1200**；而正常说话只有几百~一千出头 → **说话声自己**被判成"静音"
+→ 攒够 `voice_silence`（默认 1.2s）就收尾。停止时刻 = `MIN_MS(400) + 1200 ≈ 1.2~1.6s`，与"说不到 2 秒"吻合。
+**现在阈值取两者较小**：`thr = min(clamp(floor*3.5,180,1200), clamp(peak*0.25,180,600))`，
+`peak` = 最近听过的最响块（每块 ×0.9 慢衰减，防麦克风开启那一下的爆音长期抬高阈值；再叠 600 上限）。
+相对项**只会把阈值往下拉**，所以句内换气/弱音节不再被当成"说完了"；真静音（接近 0）仍远低于两者，
+该停还是停。**别改回"只留 thr_abs"** —— 那就是第五十八轮那版，会把说话判成静音。
+代价：噪声大的房间里噪声会被当成说话 → 不会自动停（宁可不停：用户本来就是松开热键结束，
+要彻底关掉自动停就 `voice_silence = 0`）。**每次录音都留一行 always-on 诊断**
+（`voice: rec <ms> blocks=… spoke=… auto_stop=… floor=… thr=… peak=… quiet=…ms silence=…ms`，
+不含音频内容）—— 这类问题只能靠现场数字定位。判据拆在 `Recorder._vad_block(r, elapsed)` 里就是为了能
+headless 测：**改 VAD 必须跑 `python wgime-py-pure\tests\voice-vad-test.py`**（31 项，纯桩不碰麦克风；
+把阈值改回旧写法会 **10 条失败**，其中 A1 直接复现"停在块 6" = 1.2 秒）。
+
+**第六十二轮（"中文识别率太低"）**：先分清事实 —— 系统引擎走的是 `System.Speech`
+（`Microsoft Speech Recognizer **8.0** for Windows`，SAPI5 老桌面引擎），跟 Win+H「语音输入」用的
+神经引擎**不是同一套**，天花板本来就低。但这里确实还有我们自己的一个真 bug：
+**`Recognize()` 一次只返回一段**（引擎按停顿把一句话切成多段），原来只取第一段 → 长句只出来前半截。
+实测（用系统 TTS `Microsoft Huihui Desktop` 合成中文再喂我们自己的路径；探针 `%TEMP%\wg-r62-sysrec-probe.py`）：
+33 字那句修前只回 **16 字 / LCS 覆盖 18%**（后半句整段消失），修后 **27 字 / 39%**（`segs=2`）。
+修法：循环 `Recognize()` 收齐所有段再拼接（CJK 用 `''` 拼、其它语言用 `' '`）。
+**坑**：WAV 流读完后**再调 `Recognize()` 不是返回 `$null`，而是抛 "No audio input is supplied"**（实测），
+所以循环内必须自己 try 住并 break —— 否则异常冒到外层 catch，已经收到的段全丢
+（只有**第一次**就抛才算真错误，留给外层报）。每次识别另记一行 always-on：
+`voice: sys-rec segs=<段数> chars=<字数>`。
+
+**当时的后端选型结论**（后来被第六十四轮取代）：`voice_engine = whisper`（本地常驻 faster-whisper，
+离线、中文 88~100%、每句 3~5s）、`voice_engine = http` + 硅基流动**国内站** `SenseVoiceSmall`（每句 ~1s，
+要国内站 key）、或 `voice_engine = cmd` + 本地 whisper.cpp（**每句都新起进程，实测 20s+，别拿它跑本地
+whisper**）；`system` 只适合"完全不想配置"的场景。第六十四轮之后 **`cmd` + sherpa-onnx/SenseVoice 才是
+本机首选**（1.5s 建会话 + 0.24s 解码）。

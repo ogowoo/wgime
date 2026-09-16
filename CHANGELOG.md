@@ -1,5 +1,42 @@
 ---
 
+## 2026-09-16 (维护: 拉取第六十四~七十一轮 + 修 AGENTS.md 超预算被截断)
+
+**拉取**：本地第六十三轮（`6b2cde7`）之后远端又推进了 13 个提交（第六十四~七十一轮），
+本地是干净的 fast-forward，已 `git pull --ff-only` 到 `869cbca`。拉进来的东西里有三条与语音直接相关：
+第六十四轮（`cmd` + sherpa-onnx/SenseVoice 本地离线识别）、第六十五轮（硅基流动**国内站** +
+`stt_retry`/`stt_timeout`/记住可用路径）、第六十六轮（`voice_fallback` 双引擎赛跑，谁先成功用谁）。
+**第六十三轮的常驻 whisper 后端完好**（`WSRV_ENGINES` 分派、预热、两个锁都在），
+`whisper-warm-test.py` **67/67** 在合并后的代码上仍然全绿 —— 两轮工作没有互相破坏。
+
+**修的真问题：`AGENTS.md` 超出 64KB 注入预算，被**静默截断**。**
+拉下来时它是 **69134 B**（超 3598 B），harness 把它截到 65244 B —— 后果是每个会话读到的
+`AGENTS.md` 都**缺了 §7 的尾部与整个 §8**（发布流程后两步、当前状态速览），而这两节正是"接手时要看的"。
+这不是远端某一轮的错，是长期"只往里加、不往外挪"的累积。
+
+- **修法**（按文件自己的契约：正文只留规则、细节进 `AGENTS-DETAIL.md`）：
+  1. §38 里**第五十八~六十二轮的叙事原文**（VAD 三轮排查、代理坑、系统引擎分段）整体搬到
+     **`AGENTS-DETAIL.md` §D12**，正文压成 6 条"要照做的规则" + 探针/测试名；
+  2. 第六十四~六十六轮的实测数字压成规则（数字指向 CHANGELOG 与 §D7.1/§D8）；
+  3. 顺手修一处文档与实际不符：`embedded-isolation-test.py` 写的是 9 项，**实际 10 项**（实测输出 `全部通过 (10 项)`）。
+- **结果**：`AGENTS.md` 69134 → **63205 B**（余量 2331 B），`AGENTS-DETAIL.md` 85269 B（不受注入预算限制）。
+
+**本机复核**（拉下来的代码，逐项真跑）：
+`pure-state-harness` 33/33、`undefined-globals` 0、`embedded-isolation-test` 10/10、`tray-swap` 42/42、
+`voice-vad` 31/31、`whisper-warm` 67/67；`dist` 与磁盘**逐字节一致**（11 个内嵌模块 + `main.py` 全部 match）。
+
+**一处必须说清的事实**：第六十四轮文档里的 `C:\Tools\wgime-local-asr\wgime-stt.py` +
+`sherpa-onnx 1.13.8` 是**跑那一轮的那台机器**上的环境；**本机现在没有它**
+（目录不存在、`import sherpa_onnx` 为 False、也找不到 `model.int8.onnx`）。
+所以本机可用的离线路径仍是第六十三轮的 `voice_engine = whisper`（实测冷 20s / 热 3.8~5.3s）。
+`wgime-py-pure\package\config.txt` 已按本机实际改好（`voice=1` + `voice_engine=whisper` + 那几个键），
+sherpa 那两行以注释形式留在旁边，装上 `sherpa-onnx` + 那份 228MB int8 模型后去掉注释即可（实测 ~1.7s/句）。
+
+**顺带重建**：`package\` 已重建（单文件 **573.0 KB** —— 第七十一轮删掉 comtypes/uiautomation 的成果，
+我这轮构建时是 586705 B，与远端发布的一致）；`dist` 的第三方 zip 保持 HEAD 基线不动（构建噪声已回退）。
+
+---
+
 ## 2026-09-16 (第七十一轮: 纯 Python 依赖全部内嵌 + 删掉死重 comtypes/uiautomation)
 
 **目标（用户定）**: 依赖能封进单文件的就都封进去; `comtypes`/`uiautomation` 已经没人用了, 删掉。

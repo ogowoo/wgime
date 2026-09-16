@@ -51,7 +51,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-intero
 python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（33 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
-python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性（-S -E 干净环境逐个 import，9 项，见 §12）
+python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性（-S -E 干净环境逐个 import，10 项，见 §12）
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
 python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
@@ -176,65 +176,22 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     **第四十九轮**：**切到「语音」模式 = 顺手打开语音功能**（`_voice_set_on`，幂等；否则模式菜单点了"没作用"）；
     离开模式不关功能（热键随处可用）；**选项里关掉语音时若在语音模式则自动切回混合**；模式子菜单显示名
     「语音模式」（`tray.MODE_MENU`），选项叫「语音输入 (总开关)」——别再两个都叫"语音"。
-    **第五十八轮（"感觉收不了音/一直 0s"的三个真因）**：① **按住热键的自动重复必须丢掉**——Windows
-    对按住的键每 ~33ms 补发一次 `WM_KEYDOWN`（`KBDLLHOOKSTRUCT` 里**没有**重复标志，只能靠自己的
-    "键还按着"状态挡），以前每次重复都入队一个 `VK_VOICE`，而 `voice_down()` 见"已经在录"就当成
-    **第二次点** -> `voice_finish()`，下一次重复又开一段**新**录音（`t0` 归零、界面永远 "(0s)"、
-    说话被切碎、松开时已经没有 rec 可收尾）；现在 `hook` 里 `if VOICE_DOWN[0]: return 1`，并在
-    **修饰键已松开**的 V 按下处清 `VOICE_DOWN[0]`（防松键丢失后热键被永久卡死）。② **录音期间要重画
-    候选条**（`main._voice_tick()`，poll 里 ~4Hz；`voice_down` 把 `_VOICE_TICK[0]` 归零）——以前
-    全程不重画，条上那句 "(0s)" 是按下瞬间的**死字符串**，用户根本看不出在不在录。③ **VAD 阈值 =
-    自适应底噪**：`_floor` 取**最小**（`if r < floor: floor = r`）、`thr = clamp(floor*3.5, 180, 1200)`。
-    别改回"头 500ms 取中位数、凑不够 2 块就兜底 300"——块是 200ms，再叠上 `waveInOpen/Start` 的
-    启动延迟（实测 100~300ms），那个窗口经常只落进 1 块，于是阈值永远是写死的 300。
-    诊断提示也要能判断：全 0 PCM（`voice.peak() == 0`）报"**麦克风给的是纯静音**(输入设备被静音/
-    选错设备)"，否则报峰值/音量数值。探针 `%TEMP%\wg-r58-voice-hold-probe.py`（18 项：假造自动重复
-    喂真 `hook._proc`、真 `handle()` 的 start/finish 序列、真 `_on_data` 的 VAD 单元测试、静音提示）。
-    **第五十九轮（云端 STT 的代理坑）**：`voice_engine = http` 的请求统一走 `voice._http_post(url, body,
-    headers, cfg)`，按 `stt_proxy` 决定顺序：空/`auto` = 先系统/环境代理、**连不上就回退直连**；`direct` =
-    只直连；`http://host:port` = 只用它。两个必须守住的点：① **每条路都要重建 `Request`** —— 走代理时
-    `OpenerDispatcher` 会 `req.set_proxy()` **就地改 `req.host`**，复用同一个 req 去"直连"其实还是连那个死
-    代理（回退白做）；② 服务端**回过话**（HTTPError）就不换路/不重发，只在**连接层**失败时换路，并把
-    **每条路的原因**一起报出来。本机真实故障：注册表里留着已关闭的 `http://127.0.0.1:10808` ->
-    `getproxies()` 每次都去连它 -> 10061，云端识别永远失败；硅基流动端点直连实测能拿到 `HTTP 401
-    {"code":30014,"message":"Token is invalid."}`（端点/鉴权/multipart 形状都对）。
-    探针 `%TEMP%\wg-r59-stt-proxy-probe.py`（18 项，全打**本地假服务器**，不依赖外网 —— 本机外网时通时断，
-    真端点做断言不可复现）。硅基流动接入（`config.txt`）：`voice_engine=http`、
-    `stt_url=https://api.siliconflow.cn/v1/audio/transcriptions`、`stt_key=sk-…`、
-    `stt_model=FunAudioLLM/SenseVoiceSmall`、`stt_lang` 留空（该接口只认 `file`/`model`，SenseVoice 自判语种）。
-    **第六十轮（硅基流动两站的区别，实测）**：**国内站 `cloud.siliconflow.cn` 与国际站 `siliconflow.com`
-    是两套账号/密钥、互不通用，而且国际站没有可用的识别模型**（音频类只有 TTS 合成）。用错站点的症状是
-    **401 `Token is invalid`** —— **先对站点，再怀疑 key**。实测代码/模型清单见 `AGENTS-DETAIL.md` §D7。
-    **第六十一轮（"按了 Ctrl+Alt+V，说不到 2 秒就自动停"的真因）**：VAD 阈值**不能只看绝对底噪**。
-    第五十八轮写成 `thr = clamp(floor*3.5, 180, 1200)`（`floor` = 见过的**最小** RMS），于是
-    **"按住热键就说话"**（开头压根没有一个静音块）或**麦克风增益偏热**时，`floor` 是从**说话声**里取的
-    （比如 600）→ `thr` 被顶到上限 **1200**；而正常说话只有几百~一千出头 → **说话声自己**被判成"静音"
-    → 攒够 `voice_silence`（默认 1.2s）就收尾。停止时刻 = `MIN_MS(400) + 1200 ≈ 1.2~1.6s`，与"说不到 2 秒"吻合。
-    **现在阈值取两者较小**：`thr = min(clamp(floor*3.5,180,1200), clamp(peak*0.25,180,600))`，
-    `peak` = 最近听过的最响块（每块 ×0.9 慢衰减，防麦克风开启那一下的爆音长期抬高阈值；再叠 600 上限）。
-    相对项**只会把阈值往下拉**，所以句内换气/弱音节不再被当成"说完了"；真静音（接近 0）仍远低于两者，
-    该停还是停。**别改回"只留 thr_abs"** —— 那就是第五十八轮那版，会把说话判成静音。
-    代价：噪声大的房间里噪声会被当成说话 → 不会自动停（宁可不停：用户本来就是松开热键结束，
-    要彻底关掉自动停就 `voice_silence = 0`）。**每次录音都留一行 always-on 诊断**
-    （`voice: rec <ms> blocks=… spoke=… auto_stop=… floor=… thr=… peak=… quiet=…ms silence=…ms`，
-    不含音频内容）—— 这类问题只能靠现场数字定位。判据拆在 `Recorder._vad_block(r, elapsed)` 里就是为了能
-    headless 测：**改 VAD 必须跑 `python wgime-py-pure\tests\voice-vad-test.py`**（31 项，纯桩不碰麦克风；
-    把阈值改回旧写法会 **10 条失败**，其中 A1 直接复现"停在块 6" = 1.2 秒）。
-    **第六十二轮（"中文识别率太低"）**：先分清事实 —— 系统引擎走的是 `System.Speech`
-    （`Microsoft Speech Recognizer **8.0** for Windows`，SAPI5 老桌面引擎），跟 Win+H「语音输入」用的
-    神经引擎**不是同一套**，天花板本来就低。但这里确实还有我们自己的一个真 bug：
-    **`Recognize()` 一次只返回一段**（引擎按停顿把一句话切成多段），原来只取第一段 → 长句只出来前半截。
-    实测（用系统 TTS `Microsoft Huihui Desktop` 合成中文再喂我们自己的路径；探针 `%TEMP%\wg-r62-sysrec-probe.py`）：
-    33 字那句修前只回 **16 字 / LCS 覆盖 18%**（后半句整段消失），修后 **27 字 / 39%**（`segs=2`）。
-    修法：循环 `Recognize()` 收齐所有段再拼接（CJK 用 `''` 拼、其它语言用 `' '`）。
-    **坑**：WAV 流读完后**再调 `Recognize()` 不是返回 `$null`，而是抛 "No audio input is supplied"**（实测），
-    所以循环内必须自己 try 住并 break —— 否则异常冒到外层 catch，已经收到的段全丢
-    （只有**第一次**就抛才算真错误，留给外层报）。每次识别另记一行 always-on：
-    `voice: sys-rec segs=<段数> chars=<字数>`。
-    **要真正提升中文识别率只能换后端**（都不用改代码，只改 config.txt）：`voice_engine = whisper`
-    （**本地常驻 faster-whisper，离线、中文 88~100%、每句 3~5s —— 推荐**）、`voice_engine = http` +
-    硅基流动**国内站** `SenseVoiceSmall`（每句 ~1s，要国内站 key）、或 `voice_engine = cmd` + 本地 whisper.cpp
-    （**每句都新起进程，实测 20s+，别拿它跑本地 whisper**）；`system` 只适合"完全不想配置"的场景。
+    **第五十八~六十二轮（语音的一串真因；叙事/实测数字见 `AGENTS-DETAIL.md` §D12）—— 只留要照做的规则**：
+    ① **按住热键的自动重复必须丢掉**（Windows 每 ~33ms 补发 `WM_KEYDOWN`，`KBDLLHOOKSTRUCT` 里**没有**重复标志）：
+    `hook` 里 `if VOICE_DOWN[0]: return 1`，并在**修饰键已松开**的 V 按下处清 `VOICE_DOWN[0]`（防松键丢失后热键卡死）。
+    ② **录音期间要重画候选条**（`main._voice_tick()`，poll 里 ~4Hz；`voice_down` 把 `_VOICE_TICK[0]` 归零）——
+    否则条上那句 "(0s)" 是按下瞬间的**死字符串**。③ **VAD 阈值 `thr = min(clamp(floor*3.5,180,1200),
+    clamp(peak*0.25,180,600))`**（`floor` 取**最小** RMS，`peak` 每块 ×0.9 慢衰减）—— **别改回"只留 thr_abs"
+    或"头 500ms 取中位数/凑不够就兜底 300"**：说话声会被判成静音，1.2s 就自动停。代价是噪声大的房间不停
+    （要彻底关掉自动停就 `voice_silence = 0`）；全 0 PCM（`voice.peak() == 0`）报"麦克风给的是纯静音"。
+    ④ 每次录音/系统识别各留一行 **always-on** 诊断（`voice: rec … floor/thr/peak`、`voice: sys-rec segs/chars`）
+    —— 这类问题只能靠现场数字定位。⑤ `http` 统一走 `voice._http_post`（`stt_proxy`：auto=先代理后直连 /
+    `direct` / 指定代理 URL）：**每条路都要重建 `Request`**（`set_proxy()` 会**就地改 `req.host`**）、
+    **服务端回过话(HTTPError)就不换路/不重发**、把**每条路的原因**一起报出来。⑥ 系统引擎 `Recognize()`
+    **一次只返回一段**，必须循环收齐再拼（CJK 用 `''`、其它 `' '`）；流读完后**再调会抛 "No audio input is
+    supplied"**，循环内必须自己 try 住 break（否则已收到的段全丢）。**改 VAD 必须跑**
+    `python wgime-py-pure\tests\voice-vad-test.py`（31 项；改回旧写法会 10 条失败）；探针
+    `%TEMP%\wg-r58-voice-hold-probe.py`、`wg-r59-stt-proxy-probe.py`、`wg-r62-sysrec-probe.py`。
     **第六十三轮（`voice_engine = whisper`）**：**别再让本地 whisper 每句新起进程** —— 实测每句 20s 里有 16s
     是重付的 `import faster_whisper`(6.5s)+载模型(2~9s)，常驻后每句 3~5s。做法照 §17 helper（源码走环境变量 /
     JSONL 走 stdio / **回包用 `ensure_ascii` JSON**，裸 UTF-8 在中文机会变 `?` / **父进程退出=stdin EOF=子进程自退**）。
@@ -242,19 +199,15 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     预热两处：启动 +4s 后台（`stt_prewarm=0` 关）+ **按下热键那一刻**（与说话重叠）。键：`stt_model`/`stt_lang`/
     `stt_prompt`/`stt_device`/`stt_compute`/`stt_beam`/`stt_python`。改这块**必须**跑
     `python wgime-py-pure\tests\whisper-warm-test.py`（67 项，假 Popen 照抄真管道语义）。实测数字/两处真 bug/探针见 `AGENTS-DETAIL.md` §D6。
-    **第六十四轮（本地离线识别已落地，实测可用）**：`voice_engine = cmd` + `stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}`（本机已装 sherpa-onnx 1.13.8 + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本**，`_cmd_recognize` 取第一行非空）。实测中文 TTS：`今天天气不错，我们下午3点开会。`，**建会话 1.5s + 解码 0.24s**（比 whisper 常驻 3~5s 更快）。细节/模型源/坑见 `AGENTS-DETAIL.md` §D8。
-    **第六十五轮（硅基流动国内站 + 坏网络三件套）**：同一把 key 在 `.com` 回 **401**、在 `.cn` 的
-    `/v1/models` 回 **200** -> 国内站 key 必须配 `api.siliconflow.cn`（与第六十轮正好相反）。
-    新增 `stt_retry`（连接层失败同路重试，默认 3，1~8；**HTTPError 不重试**，免得白花额度）、
-    `stt_timeout`（默认 15s，5~60，取代写死的 30s）、**记住可用路径**（自动模式哪条通就下次优先；
-    本机那个本地代理已是"黑洞"，不记住的话每句白等 3×timeout）。本机实测成功时 **0.6~0.85s**，
-    但网络窗口坏时 1/6~3/5 成功、失败一次 ~30s —— 那是环境（中间设备改 TLS 记录），不是配置问题；
-    要稳就用离线 `cmd`+SenseVoice。数字见 `CHANGELOG.md` 第六十五轮与 `AGENTS-DETAIL.md` §D7.1。
-    **第六十六轮（双引擎赛跑 `voice_fallback`）**：第二个引擎与主引擎**同时开跑、谁先成功用谁**
-    （`voice._race_engines`），不是"失败再回退" —— 坏网络下云端要十几秒才报错，串行回退每句要 24~38s，
-    赛跑后平均 **2.80s / 4全对**（本地 ~3.5s 赢或云端 0.73s 赢）。两个都失败才报错(带两边原因)；
-    `http` 主引擎配了它时重试/超时收紧成 2×10s。命中第二个引擎写 always-on 日志，不弹气泡。
-    代价：每句都会跑一次本地引擎。探针 `%TEMP%\wg-r59-stt-proxy-probe.py` H 段 6 项覆盖。
+    **第六十四轮（本地离线识别, 推荐）**：`voice_engine = cmd` + `stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}`
+    （sherpa-onnx + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本**）。实测 建会话 1.5s + 解码 0.24s，
+    比 whisper 常驻 3~5s 更快。细节/模型源/坑见 `AGENTS-DETAIL.md` §D8。
+    **第六十五轮（国内站 + 坏网络三件套）**：国内站 key 必须配 `api.siliconflow.cn`（同一把 key 在 `.com` 回 401、`.cn` 回 200）。
+    新增 `stt_retry`（连接层同路重试，默认 3；**HTTPError 不重试**，免得白花额度）、`stt_timeout`（默认 15s，取代写死的 30s）、
+    **记住可用路径**（哪条通下次优先；本机那个本地代理是黑洞，不记住每句白等 3×timeout）。
+    **第六十六轮（`voice_fallback` 双引擎赛跑）**：第二引擎与主引擎**同时开跑、谁先成功用谁**（`voice._race_engines`），
+    不是"失败再回退"（坏网络下串行回退每句 24~38s，赛跑后平均 2.80s）。两个都失败才报错(带两边原因)；`http` 配了它时
+    重试/超时收紧成 2×10s。代价：每句都多跑一次本地引擎。数字见 CHANGELOG 第六十四~六十六轮与 `AGENTS-DETAIL.md` §D7.1/§D8。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。
