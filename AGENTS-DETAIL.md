@@ -393,3 +393,41 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
 **和第六十一~六十三轮的关系**：这轮与并行的语音工作（VAD 相对阈值 / 系统引擎分段 / whisper 常驻）**不冲突**，
 四种后端各管一段：`whisper`（离线、3~5s、中文 88~100%）/ `cmd`+SenseVoice（离线、1.7s）/
 `http`（云端、~1s、要国内站 key）/ `system`（零配置、最弱）。
+### §D8.1 拿去其它设备（便携包）
+
+**结论：语音输入只有 python 版有**（bat/ps1 版没有这个功能），所以目标机必须是
+「python 版 wgime + Python 3.8~3.14(x64)」。在这个前提下，本机已经打好了便携包：
+
+- 目录：`C:\Tools\wgime-local-asr\portable\`，压缩包：`C:\Tools\wgime-asr-portable.zip`（**184 MB**，17 项）
+- 内容：`wgime-stt.py`（wrapper）+ `models\sense-voice\{model.int8.onnx(228MB), tokens.txt}` +
+  `wheels\`（sherpa-onnx 的 **cp38~cp314 win_amd64** 轮子 + core 轮子）+ `setup-asr.py` +
+  `安装-语音识别.cmd` / `卸载-语音识别.cmd` + `test-zh.wav`（自检用）+ `README.txt`
+- 三步用法：拷过去 → `安装-语音识别.cmd "<wgime目录>"`（离线 pip + 写 config.txt + 自检）→
+  启动 wgime、托盘「配置→重载配置」、按住 `Ctrl+Alt+V` 说话
+
+**三个设计要点（换设备时必须守住）**
+1. **wrapper 按自身位置找模型**（`DEFAULT_MODEL_DIR = <脚本目录>\models\sense-voice`），所以模型目录
+   整包一起搬就行，不用改代码；
+2. **`stt_cmd` 里的路径必须按机器写死** —— `_cmd_recognize` 是 `shell=True` 跑一条命令行，
+   没有便携的相对路径可用。所以由 `setup-asr.py` 在本机取 `sys.executable`（`pythonw` 就换同目录
+   `python.exe`）并把两个绝对路径**带引号**写进 `stt_cmd`；**每台设备各跑一次安装脚本**。
+   安装脚本同时会清掉旧的 `voice_engine/stt_*` 生效行，避免重复键"谁生效说不清"。
+3. **离线可装**：`wheels\` 里带全了 cp38~cp314 的 win_amd64 轮子（`sherpa_onnx` 那个轮子是
+   **cp3xx 专用**，只带当前版本会装不上别的 Python），安装脚本用
+   `pip install --user --no-index --find-links wheels sherpa-onnx`，失败才回退联网。
+
+**验证过**（都在本机、不依赖外网）：① `--no-index --find-links wheels --target <tmp>` 装出来的副本
+**真的能识别**（同一批轮子自足）；② 造了个"假设备"目录（只有 config.txt，路径与安装位置无关），
+跑 `setup-asr.py` 后 `stt_cmd` 写成该机的绝对路径，再用 `engine.load_config` + `voice.recognize`
+跑通 → `今天天气不错，我们下午3点开会。`；③ wrapper 在**另一个路径**（`portable\`）下按自身找模型正常。
+
+**没做的事（有意）**：**不打包 Python 运行时**。Windows 版 embeddable Python **不含 tkinter**，
+而 wgime 的候选条/托盘全是 Tk —— 打进去也跑不起来，目标机还是得装标准 Python。
+
+**按目标机情况选后端**（都在 `config.txt` 里改一行，代码不用动）：
+| 目标机情况 | 选哪个 |
+|---|---|
+| 中文 Windows、只想要能出声就行 | `system` + `voice_lang = zh-CN`（零文件，需系统装了中文语音包；第六十二轮修好了长句截断） |
+| 能装 pip、想离线又要准 | 本便携包 `cmd` + SenseVoice（1.7s/句） |
+| 能联网、不想放模型 | `http` + 硅基流动**国内站** key（~1s/句；国际站没有 ASR 模型，见 §D7） |
+| 已装 faster-whisper | `voice_engine = whisper`（第六十三轮，常驻，3~5s/句，中文 88~100%） |
