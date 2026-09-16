@@ -1,5 +1,54 @@
 ---
 
+## 2026-09-16 (第六十九轮: 鼠标旁的状态提示点 —— 一眼看出输入法是开还是关)
+
+**来由**: `hideidle = 1`(默认) 时空闲不显示候选条, 用户**看不出输入法是开还是关** ——
+第五十七轮那次真实抱怨("托盘图标都不会变了 / 混合的模式切换不过去") 就是这么来的: 空闲隐藏下
+候选条不显示, 而托盘图标还可能被 Windows 收进 `^`(见 §36 的 `tray_promoted`), 于是"切模式"
+**没有任何可见反馈**。托盘菜单里我们能给的所有开关都齐了, 缺的是"状态本身"的显示。
+
+**做法**(形态取自 [harold-lu-bit/IMEDot](https://github.com/harold-lu-bit/IMEDot), Ubuntu/PyQt6 的
+"置顶小圆点"): 新模块 `dot.py` = 一个 **12px 的置顶圆点**, 跟在鼠标右上方, 颜色 = 当前状态:
+
+| 颜色 | 含义 | | 颜色 | 含义 |
+|---|---|---|---|---|
+| `#6B6B6B` 灰 | 输入法**未激活** | | `#40C8E0` 青 | 词典模式 |
+| `#FF9F0A` 橙 | 混合模式 | | `#30D158` 绿 | 语音模式 |
+| `#0A84FF` 蓝 | 拼音模式 | | `#FF3B30` 红 | **正在录音**(优先于模式色) |
+| `#BF5AF2` 紫 | 五笔模式 | | | |
+
+- **未激活时显灰点**(而不是隐藏): 用户要的就是"看得出开没开" —— 有灰点才能区分"关着" vs
+  "程序没跑 / 提示点被关了";
+- **不抢焦点 / 鼠标穿透 / 不进任务栏**: `win.set_overlay_styles()` 新加的 Win32 原语
+  (`WS_EX_NOACTIVATE` + `WS_EX_LAYERED|WS_EX_TRANSPARENT` + `WS_EX_TOOLWINDOW`)。只有
+  `overrideredirect`+`-topmost` 是不够的: 不设 NOACTIVATE 会把输入框的焦点夺走, 不设穿透会挡住
+  光标附近的点击(12px 也一样挡);
+- **跟鼠标、不跟文本光标**: 候选条的"跟随光标"仍按用户决定**冻结在默认 0**(§17/§D10)。状态点跟鼠标
+  不冲突 —— 它不承载内容, 只是状态灯, 没有"离正文太远"的问题。参考实现 IMEDot 跟的其实也是鼠标
+  (Linux 上没有统一可查的 caret API), 这条"免注册路线"在桌面上真正能落地的形态就是"跟鼠标"。
+- 位置由 `main.poll` 每 4 拍驱动 (~32ms 一次), 一次 tick 只有一次 `GetCursorPos`; 颜色/位置没变时
+  不碰窗口; `dot_pos()` 会贴边翻转 + 钳进**光标所在显示器**的工作区(多屏正确); tray 模式不建窗口
+  (没有"输入法开关状态"可言)；配置 `statedot = 0` 时**一个窗口都不建**。
+
+**接线**: 新配置键 `statedot`(白名单, 默认**开**) + 托盘「选项 → 状态提示点」开关(勾选态读
+`get_statedot`, 切换立即生效并落盘) + `dist` 内嵌模块 10 → **11 个**(`MODULES` 加 `dot`)。
+
+**验证**: `%TEMP%\wg-r69-dot-probe.py` **67/67** ——
+A 颜色映射(含录音优先/模式取模); B 位置数学 10 例(四边翻转 + 多屏 + 极小工作区);
+C **真 Tk 窗口**: 读回 Win32 扩展样式断言 `NOACTIVATE|TRANSPARENT|LAYERED|TOOLWINDOW` 都在、
+显隐/移动/上色/销毁(`IsWindow` 归零)全对; D `load_config` 的 6 组取值;
+E 接线(AST 抽 `_statedot_on`/`toggle_statedot` 真跑: 开→关→开 + 落盘 + 立即 tick; api/菜单项/poll tick);
+F 文件卫生(dot 进 MODULES、三份 config.txt、全部 LF)。
+`tests\pure-state-harness.py` 加 5 项永久回归(28 → **33 项**, 含"真 tick 能把圆点显示出来");
+`undefined-globals` 0、tray-swap 42、voice-vad 31、whisper-warm 67、`wgime-dist-sync-check` OK。
+
+**顺手记下一条环境事实(踩了一次)**: `WS_EX_TOPMOST`(0x8) 在本机**读不回来** —— 微探针
+`%TEMP%\wg-r69-topmost-micro.py` 实测: 显式 `SetWindowPos(hwnd, HWND_TOPMOST, …)` 之后
+`GetWindowLongPtrW(hwnd, GWL_EXSTYLE)` 依然没有 0x8(Tk 层 `attributes('-topmost')` 才是 1)。
+所以 `set_overlay_styles` **不再 OR 这个位**(设了也没用), 置顶一律走 `win.set_topmost()`
+(= `SetWindowPos`, 与 bar.py 同款); 探针也不再拿它当"置顶证据"。
+这条已写成**可执行断言**(哪天 Windows 改了会失败, 提醒更新文档)。
+
 ## 2026-09-15 (第六十八轮: 光标跟随默认 0 并**冻结功能** —— 代码全留, 随时能开回)
 
 用户: "我做个决定, 把光标跟随的功能去掉了，但是屏幕边缘粘贴的保留。…改成默认0吧，先改成这个并冻结功能，代码不删。"

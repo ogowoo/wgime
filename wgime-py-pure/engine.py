@@ -210,6 +210,9 @@ def load_config(path):
                # followcaret 第六十八轮**默认 0 并冻结**: 用户决定"候选窗固定贴屏幕边缘, 不再跟随光标"。
                # **代码全保留**(helper 子进程/IPC/托盘开关/bar 定位链), `followcaret = 1` 仍可开回。见 AGENTS §17。
                mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
+               # statedot 第六十九轮: 鼠标旁的 12px 状态提示点 (python 独有, 默认开)。
+               # 为什么需要: hideidle 时空闲不显示候选条 -> 用户看不出输入法是开还是关。
+               statedot=True,
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
                voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开
                voice_engine='system',          # system(系统离线) / http(云端) / whisper(本地常驻) / cmd(外部命令)
@@ -315,6 +318,8 @@ def load_config(path):
                     pass
             elif k == 'followcaret':
                 cfg['followcaret'] = v in ('1', 'on', 'true')      # 白名单, 对齐 C# LoadConfig(FollowCaret = 1/on/true)
+            elif k == 'statedot':
+                cfg['statedot'] = v in ('1', 'on', 'true')         # 白名单 (第六十九轮, 默认开)
             elif k == 'cnpunct':
                 cfg['cnpunct'] = v not in ('0', 'off', 'false')
             elif k == 'theme':

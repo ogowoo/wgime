@@ -439,6 +439,10 @@ class Tray:
                                  pystray.MenuItem(L('空闲隐藏', 'Hide when idle'),
                                                   self._on(self.api['togglehideidle']),
                                                   checked=lambda _it: self.api['get_hideidle']()),
+                                 # 第六十九轮: 鼠标旁的状态提示点 (取消勾选 = 不建窗口)
+                                 pystray.MenuItem(L('状态提示点', 'Status dot'),
+                                                  self._on(self.api['toggledot']),
+                                                  checked=lambda _it: self.api['get_statedot']()),
                                  pystray.MenuItem(L('候选窗跟随光标', 'Candidate board follows caret'),
                                                   self._on(self.api['followcaret']),
                                                   checked=lambda _it: self.api['get_followcaret']()),

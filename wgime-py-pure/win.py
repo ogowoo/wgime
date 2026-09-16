@@ -811,6 +811,64 @@ def set_topmost(hwnd):
         pass
 
 
+# ---- 浮层样式 (第六十九轮, 状态提示点) ----
+_GWL_EXSTYLE = -20
+_WS_EX_LAYERED = 0x00080000
+_WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_TOPMOST = 0x00000008
+_WS_EX_NOACTIVATE = 0x08000000
+
+
+def _exstyle_api():
+    """取 Get/SetWindowLongPtrW (32 位 Python 上没有 Ptr 版, 退回 Long 版)."""
+    get = getattr(user32, 'GetWindowLongPtrW', None) or user32.GetWindowLongW
+    setf = getattr(user32, 'SetWindowLongPtrW', None) or user32.SetWindowLongW
+    get.restype = ctypes.c_ssize_t
+    get.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    setf.restype = ctypes.c_ssize_t
+    setf.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+    return get, setf
+
+
+def set_overlay_styles(hwnd, click_through=True):
+    """把一个 tk 窗口变成"纯浮层": 不激活 + 不进任务栏 + 置顶 + (可选)**鼠标穿透**.
+
+    第六十九轮(状态提示点)需要它 —— 12px 的小圆点跟着鼠标跑, 必须是:
+      ① `WS_EX_NOACTIVATE`: **永不抢焦点**。否则它会从输入框里把焦点夺走(比"看不见状态"糟得多);
+      ② `WS_EX_LAYERED|WS_EX_TRANSPARENT`: **鼠标穿透**, 否则它虽然只有 12px, 也会挡住光标附近的点击;
+      ③ `WS_EX_TOOLWINDOW`: 不进任务栏、不进 Alt-Tab。
+    这些是**进程级 Win32 样式**, 光靠 tk 的 `overrideredirect`/`attributes('-topmost')` 拿不到
+    (bar.py 不需要穿透, 所以以前没有这层)。返回是否成功; 失败只记日志、不抛 —— 提示点不该拖垮输入法。
+
+    **置顶不在这里做**: `WS_EX_TOPMOST`(0x8) 是**只读**位 —— 用它当 SetWindowLong 的入参
+    Windows 会直接忽略(第六十九轮探针实测: OR 上 0x8 之后 `GetWindowLongPtrW` 读回来还是没有)。
+    置顶必须走 `SetWindowPos(HWND_TOPMOST)` = 本模块的 `set_topmost()`(调用方自己调, bar.py 同款)。
+    """
+    try:
+        get, setf = _exstyle_api()
+        h = ctypes.c_void_p(int(hwnd))
+        cur = int(get(h, _GWL_EXSTYLE))
+        new = cur | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE
+        if click_through:
+            new |= _WS_EX_LAYERED | _WS_EX_TRANSPARENT
+        if new != cur:
+            setf(h, _GWL_EXSTYLE, new)
+        return True
+    except Exception as e:
+        _dlog('overlay styles failed %r' % (e,))
+        return False
+
+
+def get_expanded_style(hwnd):
+    """读窗口扩展样式 (探针用: 断言提示点真的 noactivate + 穿透 + toolwindow)."""
+    try:
+        get, _setf = _exstyle_api()
+        return int(get(ctypes.c_void_p(int(hwnd)), _GWL_EXSTYLE))
+    except Exception:
+        return 0
+
+
 def shell_execute(path, args='', cwd=None):
     """ShellExecuteW 'open' (对齐 C# `ProcessStartInfo { UseShellExecute = true }` + `Arguments`):
     exe / 相对或绝对路径 / 文件夹 / URL 都能启动, 且参数**不经过 cmd.exe**(避免 & ^ % 被 shell 解释)。

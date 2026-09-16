@@ -537,3 +537,57 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
 `io.open(p, encoding='utf-8', newline='')` 读、按原行尾写回，改完用
 `git diff --numstat` 核对增删行数（本轮: 根/release config.txt `4 2`、使用说明 `3 1`、技术文档 `1 1`）。
 `sync-dist.ps1` 之后照例 `git checkout -- release\plugins\wgtranslate.txt` 消掉那个已知的行尾噪声。
+
+## §D11 第六十九轮：状态提示点（`dot.py`）+ 三个参考项目的调研结论
+
+### 需求来源
+`hideidle = 1`（默认）时空闲不显示候选条 → 用户**看不出输入法是开还是关**。第五十七轮的真实抱怨
+（"托盘图标都不会变了 / 混合的模式切换不过去"）根因是**没有可见反馈**：候选条不显示、托盘图标还可能被
+Windows 收进 `^`（§36 `tray_promoted`）。所以要的是一个**常驻、极小、不打扰**的状态显示。
+
+### 三个参考项目（2026-09-16 逐文件读过，浅克隆在 `%TEMP%\wg-refs\`）
+| 项目 | 它怎么落地"免注册" | 我们拿什么 |
+|---|---|---|
+| [franj/PhoneMic](https://github.com/franj/PhoneMic/)（局域网手机当麦，PySide6+pywin32+PyAutoGUI） | **完全不跟踪光标**，只认"谁有焦点"；剪贴板/模拟键盘两档注入；无焦点悬浮窗预览 | 印证"不跟随"是好设计；语音链路可借（流式、逐字注入、终端回退） |
+| [xiuleitan/MouthWrite](https://github.com/xiuleitan/MouthWrite/)（Windows AI 语音输入，PySide6+pynput+sounddevice+httpx） | **最终撤掉了自动粘贴**：`controller._finish_with_paste` 注释写明"不再自动粘贴到输入框"，改成**只写剪贴板 + 等用户点鼠标左键**，关自己的窗 → `QTimer.singleShot(150)` → `pynput` 发 Ctrl+V | ①"点击落点"这个交互（我们还没做，见下面"未做"）；②ASR 走 `chat/completions` 多模态 + SSE 流式（`input_audio`/`audio_url`，`asr_options.enable_itn=False`，剥 `<\|zh\|>` 标记）—— 我们的 `http` 后端只有一次性 multipart；③热键 `_is_pressed` 去重复 = 我们第五十八轮那个修法；④`duration < 0.3s` 丢弃 |
+| [harold-lu-bit/IMEDot](https://github.com/harold-lu-bit/IMEDot/)（Ubuntu+PyQt6 光标边状态点，~350 行） | 独立**进程**跑 GLib 主循环 + D-Bus 监听 IBus `GlobalEngine`（rime/xkb）= 状态；GUI 进程画一个 12px 圆点 | **本轮照它做的**（形态）；另外两点印证/提醒见下 |
+
+**IMEDot 的两个关键事实（别误读）**：
+1. **它跟的是鼠标，不是文本光标**：`indicator.py` 里 `pynput.mouse.Controller().position` →
+   `move(x+8, y-16)`，`QTimer` 16ms 刷新。Linux 上没有统一可查的 caret API（要 AT-SPI，多数应用不实现），
+   所以"轮询 + 置顶小窗"这条路线在桌面上的可落地形态就是"跟鼠标"。我们**有意**照做：候选条跟随已冻结
+   （§17/§D10），而状态点跟鼠标没有"离正文太远"的问题。
+2. **状态检测放独立进程 + `mp.Queue`**（`monitor.py`：D-Bus 信号驱动、GUI 进程零轮询）—— 和我们
+   caret helper（§17）**同构**，是对"把易挂的系统 API 隔离到子进程"的又一次外部印证。差异是它**事件驱动**、
+   我们**每键请求 + 35/80ms 精修**；Windows 侧 UIA 有 `TextSelectionChangedEvent`，理论上也能事件驱动
+   （真要做先探针验证跨进程回调的稳定性，别直接改）。
+3. 它的窗口属性组合 `FramelessWindowHint|WindowStaysOnTopHint|Tool` + `WA_TranslucentBackground` +
+   **`WA_TransparentForMouseEvents`**（鼠标穿透）。注意：Qt 的 `Tool` 在 X11 下天然不抢焦点，
+   **Windows 没有这个等价性** —— 所以我们的 `WS_EX_NOACTIVATE` 不能省（别照抄着删掉）。
+
+### `dot.py` 的实现要点（改这块先读）
+- 颜色/位置是**纯函数**（`dot_color` / `dot_pos`），所以能 headless 断言四边翻转、多屏工作区、模式取模；
+- `win.set_overlay_styles(hwnd, click_through=True)` 是本轮新加的 Win32 原语：
+  `WS_EX_NOACTIVATE`（永不抢焦点，否则会把输入框焦点夺走）+ `WS_EX_LAYERED|WS_EX_TRANSPARENT`
+  （鼠标穿透，否则 12px 也会挡住点击）+ `WS_EX_TOOLWINDOW`（不进任务栏/Alt-Tab）；
+- **`WS_EX_TOPMOST`(0x8) 不能通过 `SetWindowLong` 设、本机也读不回来**（实测：显式
+  `SetWindowPos(HWND_TOPMOST)` 之后 `GetWindowLongPtrW(GWL_EXSTYLE)` 仍无 0x8；Tk 层
+  `attributes('-topmost')` = 1）。所以置顶一律 `win.set_topmost()`（= `SetWindowPos`，bar.py 同款），
+  探针也不拿这个位当证据 —— 这条已写成可执行断言（`wg-r69-dot-probe.py` C2 段）；
+- 32ms 一拍（`main.poll` 每 4 拍）+ 颜色/位置没变不碰窗口；`statedot = 0` 时**一个窗口都不建**；
+  tray 模式隐藏（没有"输入法开关状态"）。
+- 坑：`-transparentcolor` 的键色（`dot.KEY = '#010203'`）**不能**与任何状态色相同；`deiconify` 之后再补一次
+  `set_overlay_styles`/`set_topmost`（§43 托盘句柄时序那类"窗口重建后样式丢失"的教训）。
+
+### 本轮**没做**、但已论证过成本的三件事（用户要的时候直接接着做）
+1. **点击落点模式**（MouthWrite 的结论，成本最低）：待确认文本只放剪贴板 + 候选条提示 → 一次性
+   `WH_MOUSE_LL` 捕获左键 → 关提示 → 短延迟 Ctrl+V。我们有取色器的鼠标钩子先例，也要照它的教训做**清理断言**。
+2. **流式 ASR**（成本中，需换服务商）：`chat/completions` + SSE delta；硅基流动没有 chat 形态 ASR，
+   可选 DashScope `qwen3-asr-flash` 或自建 vLLM Qwen3-ASR。
+3. **表盘点名但不是"光标跟随"**：IMEDot 的鼠标跟随**只适合状态灯**，不要拿它去改候选条定位。
+
+### 验证
+`%TEMP%\wg-r69-dot-probe.py` **67/67**（A 颜色 / B 位置数学 10 例 / C 真窗口样式与显隐销毁 /
+C2 `WS_EX_TOPMOST` 环境事实 / D 配置 6 组 / E 接线 AST 真跑 / F 文件卫生）；
+`tests\pure-state-harness.py` **33 项**（+5：默认开 / 关掉不建窗 / tray 不建窗 / 真 tick 显示 / 开关反映）；
+`undefined-globals` 0；tray-swap 42；voice-vad 31；whisper-warm 67；`wgime-dist-sync-check` OK。

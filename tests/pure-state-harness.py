@@ -258,6 +258,23 @@ def main():
     ns['APP_DIR'] = real_app_dir
     ns['CFG']['followcaret'] = False
 
+    print('--- 状态提示点 (第六十九轮: 默认开 / 托盘模式不建窗 / 真 tick 能显出来) ---')
+    check('CFG 默认 statedot 开', ns['CFG'].get('statedot') is True, repr(ns['CFG'].get('statedot')))
+    check('_statedot_on() 反映开关', ns['_statedot_on']() is True)
+    ns['CFG']['statedot'] = False
+    ns['_dot_tick']()
+    check('关掉时不建窗口', ns['_DOT'][0] is None)
+    ns['CFG']['statedot'] = True
+    ns['CFG']['mode'] = 'tray'
+    ns['_dot_tick']()
+    check('tray 模式不建窗口 (没有输入法开关状态)', ns['_DOT'][0] is None, repr(ns['_DOT'][0]))
+    ns['CFG']['mode'] = 'ime'
+    ns['_dot_tick']()
+    check('ime 模式 tick 后圆点已显示', ns['_DOT'][0] is not None and ns['_DOT'][0].is_shown(),
+          repr(ns['_DOT'][0]))
+    ns['_DOT'][0].destroy()
+    ns['_DOT'][0] = None
+
     print('--- [csharp] 插件 txt 用宽松解码读 (第五十一轮: ANSI/GBK 另存不能崩线程) ---')
     gbk_plugin = os.path.join(tmp, 'gbk-plugin.txt')
     with open(gbk_plugin, 'wb') as f:

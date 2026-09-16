@@ -508,6 +508,49 @@ apply_config()
 bar = CandBar(root, DATA_DIR)             # data_dir 用于位置持久化 (C# 同款 DataDir\pos.txt)
 bar.set_theme(CFG.get('theme', 'dark'))
 
+# ---- 状态提示点 (第六十九轮): 鼠标旁的 12px 圆点, 一眼看出输入法是开还是关 ----
+# 来由: hideidle=1 时空闲不显示候选条 -> 没有可见反馈(第五十七轮的抱怨); 托盘图标还可能被 Windows
+# 收进 ^。设计取 harold-lu-bit/IMEDot 的"置顶小圆点"形态, 但**有意跟鼠标** —— 候选条跟随已按用户
+# 决定冻结(§17/§D10), 状态点跟鼠标不冲突(它不承载内容, 只是状态灯)。详见 dot.py 头部。
+_DOT = [None]
+_DOT_TICK = [0]
+
+
+def _statedot_on():
+    """「状态提示点」是否启用 (config `statedot`, 默认开)."""
+    return bool(CFG.get('statedot', True))
+
+
+def _dot():
+    """懒创建 (配置关掉时一个窗口都不建)."""
+    if _DOT[0] is None:
+        import dot as _dotmod
+        _DOT[0] = _dotmod.Dot(root)
+    return _DOT[0]
+
+
+def _dot_tick():
+    """把圆点摆到鼠标旁并按当前状态上色 (poll 里每 ~32ms 调一次; 关掉/托盘模式则隐藏)."""
+    if is_tray_mode():
+        if _DOT[0] is not None:
+            _DOT[0].hide()          # tray 模式没有"输入法开关状态", 提示点无意义
+        return
+    if not _statedot_on():
+        if _DOT[0] is not None:
+            _DOT[0].hide()
+        return
+    import dot as _dotmod
+    p = win.cursor_pos()
+    d = _dot()
+    if p is None:
+        d.hide()
+        return
+    r = win.workarea_at(p[0], p[1])          # 光标所在显示器的工作区 (多屏正确)
+    x, y = _dotmod.dot_pos(p[0], p[1], (r.left, r.top, r.right, r.bottom))
+    d.update(x, y, _dotmod.dot_color(ime.active, ime.mode, _VOICE.get('rec') is not None))
+
+
+
 
 def _set_mode_from_tray(m):
     """托盘「模式」子菜单: 切模式 (钳一下防越界) —— 且切到「语音」时**顺手打开语音功能**.
@@ -556,6 +599,8 @@ def _tray_api():
         'get_cnpunct': lambda: CFG.get('cnpunct', True),
         'togglehideidle': lambda: toggle_hideidle(),
         'get_hideidle': lambda: CFG.get('hideidle', True),
+        'toggledot': lambda: toggle_statedot(),          # 「状态提示点」(第六十九轮)
+        'get_statedot': lambda: _statedot_on(),
         'set_theme': lambda name: set_theme(name),
         'get_theme': lambda: CFG.get('theme', 'dark'),
         'import_table': lambda: tools.show_import(engine, DICT_DIR),
@@ -1445,6 +1490,14 @@ def toggle_hideidle():
     _dfn('hideidle=%s' % CFG['hideidle'])
     _save_cfg('hideidle', '1' if CFG['hideidle'] else '0', '空闲隐藏')
     show_page()
+
+
+def toggle_statedot():
+    """托盘「状态提示点」开关 (第六十九轮): 立即显/隐 + 写回 config.txt."""
+    CFG['statedot'] = not _statedot_on()
+    _dfn('statedot=%s' % CFG['statedot'])
+    _save_cfg('statedot', '1' if CFG['statedot'] else '0', '状态提示点')
+    _dot_tick()          # 立即生效(别等下一次 tick), 关掉时也会把窗口隐掉
 
 
 def toggle_sentence():
@@ -2536,6 +2589,14 @@ def poll():
             pass
         try:
             _voice_tick()          # 录音中的 "(Ns)" 秒数要走 (第五十八轮; 见 _voice_tick)
+        except Exception:
+            pass
+        # 状态提示点: 跟鼠标 + 按状态上色 (第六十九轮)。8ms poll 里每 4 拍做一次 (~32ms),
+        # 一次 tick 只有一次 GetCursorPos; 颜色/位置没变时不碰窗口。
+        try:
+            _DOT_TICK[0] += 1
+            if _DOT_TICK[0] % 4 == 0:
+                _dot_tick()
         except Exception:
             pass
         # 先排空托盘动作 (pystray 线程入队, 此处主线程执行)

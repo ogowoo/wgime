@@ -17,7 +17,8 @@ import pkgutil
 import importlib.util
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ['win', 'hook', 'bar', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray', 'voice']
+MODULES = ['win', 'hook', 'bar', 'dot', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray', 'voice']
+# 第六十九轮: 加了 dot (状态提示点) —— 项目模块 10 -> 11 个。
 OUT = os.path.join(BASE, 'dist', 'wgime-py.py')
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
