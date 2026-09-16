@@ -31,6 +31,18 @@ TOPIC = 'itools/chat/'
 HEALTHY_SEC = 20          # 一次会话稳稳跑过这么久 = 这次真连上了 -> 重连预算清零 (见 _net_loop)
 IDLE_DEAD_SEC = 90        # 既没收到数据、保活也没成功过这么久才判"真断开" (见 _recv_loop; 保活 15s 一次)
 
+# cryptography 是 **C 扩展**(_rust.pyd), 与解释器 ABI 绑定 —— 内嵌进单文件在别的 Python 版本上
+# 根本加载不了(用户机实测 Program Files\Python314, 构建机是 cp312), 所以它只能是"可选依赖"。
+# 但"可选"不等于"可以崩": 缺了要说清楚缺什么、并且**不发明文**(第六十九轮那类"静默失败"的教训)。
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes      # noqa: F401
+    from cryptography.hazmat.primitives import padding                               # noqa: F401
+    HAS_CRYPTO = True
+    CRYPTO_ERR = ''
+except Exception as _e:                                                              # noqa: BLE001
+    HAS_CRYPTO = False
+    CRYPTO_ERR = repr(_e)
+
 
 # ---------- AES-256-CBC + HMAC-SHA256 (与 itools-chat 字节兼容) ----------
 class Crypto:
@@ -39,6 +51,8 @@ class Crypto:
         self.k = hashlib.sha256(raw.encode('utf-8')).digest()
 
     def enc(self, plain):
+        if not HAS_CRYPTO:
+            return None                      # 缺 cryptography: 调用方会提示并**不发送**(绝不发明文)
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding
         iv = os.urandom(16)
@@ -51,6 +65,8 @@ class Crypto:
         return ivh + ':' + cth + ':' + mac
 
     def dec(self, data):
+        if not HAS_CRYPTO:
+            return None                      # 调用方已有 None -> '[encrypted]' 的兜底
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding
         try:
@@ -451,6 +467,12 @@ class ChatUI:
         # 房间/密钥用 join 时的快照 (连接期间输入框已禁用, 这里再兜一层)
         crypto = Crypto(self.state.get('room') or '', self.state.get('key') or '')
         enc = crypto.enc(text)
+        if enc is None:
+            # 第七十一轮: 缺 cryptography(C 扩展, 内嵌不了)时**明确告诉用户**, 而不是在 Tk 回调里
+            # 抛 ImportError(pythonw 下完全无声, 用户看到的是"回车没反应、输入框还留着字")。
+            # 也**不发明文** —— 房间里设了密钥却明文发出去是安全问题。
+            self.set_status('加密不可用 (需 cryptography): pip install cryptography —— 未发送')
+            return
         if not self._send_json(self.state['ws'], {'type': 'chat', 'nick': nick, 'text': enc, 'enc': True,
                                                   'ts': int(time.time() * 1000), 'id': self.docid}):
             return

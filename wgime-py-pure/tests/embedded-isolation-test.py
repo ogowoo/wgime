@@ -60,6 +60,12 @@ def main():
     print('  内嵌顶层条目: %s (%.1f KB)' % (tops, len(blob) / 1024.0))
     check("内嵌里有 'six' (pystray 的硬依赖, 第六十九轮那个 bug)", 'six' in tops, repr(tops))
     check("内嵌里有 'pystray'", 'pystray' in tops, repr(tops))
+    # 第七十一轮收紧: 内嵌清单**正好**这两项 —— 多了(死重)少了(用户机 ImportError)都要如实报出来。
+    check("内嵌清单正好 = {pystray, six}", set(tops) == {'pystray', 'six'}, repr(tops))
+    check("comtypes/uiautomation 已不再内嵌 (第四十四轮起全项目 0 处 import)",
+          'comtypes' not in tops and 'uiautomation' not in tops, repr(tops))
+    check("PIL/Pillow 不在内嵌里 (C 扩展爬不进 zipimport; 托盘图标构建期已渲染成 ICO)",
+          'PIL' not in tops and 'Pillow' not in tops, repr(tops))
 
     # 干净环境: -S 不加载 site-packages, -E 忽略 PYTHON* 环境变量
     import tempfile
