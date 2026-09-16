@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""voice.py — 语音输入 (第四十七轮): 录音 + 识别, 四条后端共用一个入口。
+"""voice.py — 语音输入 (第四十七轮): 录音 + 识别, 五种后端共用一个入口。
 
 分工:
   * **录音**: Windows `winmm` 的 waveIn (纯 ctypes, 零依赖), 16kHz/单声道/16bit;
@@ -8,13 +8,16 @@
       - `system`: **系统自带离线引擎** (System.Speech, 走 powershell -EncodedCommand 内联脚本,
         不落任何文件; 按 `voice_lang` 选识别引擎, 没装对应语言包会明确报错);
       - `http`:   云端/自建 STT (OpenAI Whisper 兼容的 multipart POST, 配 `stt_url`/`stt_key`);
-      - `whisper`: **常驻本地 faster-whisper 助手** (第六十三轮): 模型只载一次, 之后每句
-        3~5s; 源码经环境变量交给子进程, JSONL 走 stdin/stdout (见本文件"识别后端 4");
+      - `whisper`: **常驻本地 faster-whisper 助手** (第六十三轮): 模型只载一次, 之后每句 2~5s;
+        源码经环境变量交给子进程, JSONL 走 stdin/stdout;
+      - `sherpa`: **常驻本地 sherpa-onnx/SenseVoice 助手** (第六十四轮的模型 + 第六十三轮的机制):
+        起 `stt_script --serve`, 之后每句 **0.12~0.16s** (一次性模式 1.5s);
       - `cmd`:    外部命令 (如 whisper.cpp 的 whisper-cli): `stt_cmd` 里用 `{wav}` 占位, 取 stdout。
-  * 四条后端共用录音/上屏, 以后换引擎只改 recognize() 里那一个分支 (接口预留)。
+  * 五种后端共用录音/上屏, 换引擎只改 `recognize()` 里那一个分支 (接口预留)。
+  * `voice_fallback` 还能让第二个引擎与主引擎**同时开跑、谁先成功用谁** (第六十六轮, `_race_engines`)。
 
 不依赖第三方库: 只用 stdlib (ctypes/wave/subprocess/urllib/base64/json/threading/queue)。
-`whisper` 后端是唯一例外 —— 它**在子进程里**用宿主的 `faster_whisper`, 本模块自己不 import 它。
+`whisper`/`sherpa` 后端是例外 —— 它们在**子进程里**用宿主的库, 本模块自己不 import 它们。
 """
 import base64
 import collections
@@ -708,23 +711,23 @@ def _cmd_recognize(wav, cfg):
     return '', None
 
 
-# ---------------- 识别后端 4: 常驻 faster-whisper 助手 (本地离线, 第六十三轮) ----------------
-# 为什么必须"常驻": 每句新起一个进程跑 whisper, 每次都要重付 **导入 faster_whisper(实测 6.5s)
-# + 载模型(实测 9s)** —— 单句 21~22s (见第六十三轮实测); 模型载进一个常驻子进程后, 每句只剩
-# 转写本身 (small/int8: 3.0~4.6s), 快 5~7 倍。
+# ---------------- 识别后端 4/5: 常驻助手 (本地离线, 第六十三轮 whisper / 第六十四轮补充 sherpa) ----------------
+# 为什么要"常驻": 每句新起一个进程,**载模型的钱每句都要重付一次** ——
+#   * faster-whisper: 导入 6.5s + 载模型 2~9s, 单句 21~22s (第六十三轮实测) -> 常驻后每句 2.3~5s;
+#   * sherpa-onnx/SenseVoice: 载模型 1.31s/句 (一次性模式 1.48~1.57s) -> **常驻后每句 0.12~0.16s**。
+# 所以两个后端共用同一套父进程侧机制, 只是"怎么起子进程 / 发什么请求"不同。
 #
 # 做法完全照 §17 光标跟随 helper 的那套 (别再发明第二种):
-#   * 子进程源码经**环境变量** `WGIME_WHISPER_SRC` 传递 —— 不落盘 .py, 也不进进程命令行
-#     (命令行只留 ~230 字符的引导), 免得 EDR/任务管理器里挂一条几 KB 的怪异 `-c`;
-#   * 引导脚本同样先剥掉 `sys.path` 里的 `''`/`.`/cwd (标准库不被历史残留目录抢占);
-#   * stdio 走 **JSONL**: 请求 `{id,wav,lang,prompt,beam}`, 回包 `{id,ok,text,ms}`;
-#     文本一律 `ensure_ascii=True` 的 JSON —— 子进程 stdout 的代码页在中文机上会把汉字写成 `?`,
-#     JSON 转义成 `\uXXXX` 就完全绕开了代码页 (比 base64 好读, 也比裸 UTF-8 稳);
+#   * whisper: 子进程源码经**环境变量** `WGIME_WHISPER_SRC` 传递 —— 不落盘 .py, 也不进进程命令行;
+#     sherpa: 直接起**用户那份 wrapper** (`stt_script --serve`) —— 一份实现两处用 (cmd/serve),
+#     避免把 wrapper 的逻辑复制进 voice.py (它是"语音包"的一部分, 会随模型一起搬)。
+#   * stdio 都走 **JSONL**; 文本一律 `ensure_ascii=True` 的 JSON —— 子进程 stdout 的代码页在中文机上
+#     会把汉字写成 `?`, JSON 转义成 `\uXXXX` 就完全绕开了代码页 (比 base64 好读, 也比裸 UTF-8 稳);
 #   * **父进程一退出(stdin 关闭)子进程自己就结束** —— `quit_app()` 用的是 `os._exit(0)`,
 #     不会跑 atexit, 靠的就是这条 EOF 语义, 所以不会留下一个占着几百 MB 的孤儿 python。
 #
 # 两个锁 (别合成一个): `lock` 只管"起/杀进程"(主线程预热时只碰它, 纳秒级), `rlock` 管一问一答
-# (识别线程会持着它等 3~5s, 甚至首句等十几秒的载模型)。合成一个锁的话, 预热调用就会把 Tk 主线程
+# (识别线程会持着它等 0.1~5s, 首句还要等载模型)。合成一个锁的话, 预热调用就会把 Tk 主线程
 # 卡在识别期间 —— 打字停摆。
 _WSRV_SRC_ENV = 'WGIME_WHISPER_SRC'
 _WSRV_OPTS_ENV = 'WGIME_WHISPER_OPTS'
@@ -735,10 +738,18 @@ _WSRV_BOOTSTRAP = ("import os,sys\n"
 WSRV_TIMEOUT = 120.0            # 已就绪: 单句识别的等待上限(秒)
 WSRV_TIMEOUT_COLD = 300.0       # 还没就绪: 要把"载模型"一起等进来
 WSRV_MAX_FAIL = 3               # 连续起不来 3 次就不再 spawn (同 §17 helper)
-# 认这几个值 = 本地常驻 whisper (与 main._LOCAL_WHISPER_ENGINES 保持一致)
+SSRV_TIMEOUT = 60.0             # 常驻 sherpa 更快, 但别卡太死 (机器忙时留余量)
+SSRV_TIMEOUT_COLD = 120.0
+SSRV_MAX_FAIL = 3
+# 认这几个值 = 常驻本地 whisper / 常驻本地 sherpa
 WSRV_ENGINES = ('whisper', 'local', 'faster-whisper', 'faster_whisper', 'warm')
+SSRV_ENGINES = ('sherpa', 'sensevoice', 'sense-voice', 'sherpa-onnx')
+WARM_ENGINES = WSRV_ENGINES + SSRV_ENGINES
 _WSRV_HINT = ('\n本地 whisper 后端需要宿主装了 faster-whisper: `pip install faster-whisper`; '
               '装在了别的解释器上就把 config.txt 的 stt_python 指向它')
+_SSRV_HINT = ('\n本地 sherpa 后端需要一个 wrapper 脚本 + 模型: 在 config.txt 里用 stt_script 指向它 '
+              '(如 C:\\Tools\\wgime-local-asr\\wgime-stt.py), 该脚本要支持 `--serve`; '
+              'python 用 stt_python 指定 (缺省 = WgIme 自己的解释器)')
 
 # 子进程源码 (经环境变量传; 只 import 标准库 + 宿主的 faster_whisper)
 _WSRV_SRC = r'''
@@ -847,16 +858,57 @@ def _wsrv_beam(cfg):
         return 5
 
 
-class _WhisperSrv(object):
-    """常驻 whisper 助手的父进程侧: 起进程 / 收 READY / 一问一答 / 连续失败计数。"""
+class _WarmSrv(object):
+    """常驻助手的父进程侧 (whisper / sherpa 共用): 起进程 / 收 READY / 一问一答 / 连续失败计数。
 
+    差异全在三个钩子里 (子类实现): `key()` 决定"要不要重启", `spawn()` 决定"怎么起",
+    `request_obj()` 决定"发什么"。别把差异散回这套机制里 —— 超时/限流/EOF/串包/失败计数
+    是两边**共同**踩过的坑, 复制一份就等着两处不一致。
+    """
+
+    NAME = 'whisper'          # 错误信息里对用户说的名字
+    TAG = 'whisper'           # 日志里的标记
+    HINT = _WSRV_HINT
+
+    # ---- 子类必须实现 ----
+    def key(self, cfg):
+        raise NotImplementedError
+
+    def spawn(self, cfg):
+        """-> (argv, env)。env 必须是**复制过**的 (真 Popen 收到 env 就是整份替换)。"""
+        raise NotImplementedError
+
+    def request_obj(self, cfg, rid, wav):
+        raise NotImplementedError
+
+    # ---- 可由子类覆盖的策略 (用 property 每次读模块全局: 测试会就地改 voice.WSRV_TIMEOUT) ----
+    @property
+    def t_timeout(self):
+        return WSRV_TIMEOUT
+
+    @property
+    def t_cold(self):
+        return WSRV_TIMEOUT_COLD
+
+    @property
+    def max_fail(self):
+        return WSRV_MAX_FAIL
+
+    def describe(self, cfg):
+        """日志里那句"用什么参数起的" (子类覆盖)。"""
+        return ''
+
+    def python_of(self, cfg):
+        return _wsrv_python(cfg)
+
+    # ---- 状态 ----
     def __init__(self):
         self.lock = threading.Lock()        # 只管起/杀
         self.rlock = threading.Lock()       # 只管一问一答 (串行化并发请求)
         self.proc = None
         self.q = None
         self.errbuf = None
-        self.key = None
+        self.key_cur = None
         self.ready = False
         self.boot_ms = 0
         self.fail = 0
@@ -894,13 +946,13 @@ class _WhisperSrv(object):
 
     def ensure(self, cfg):
         """起进程 (或复用)。**不等待 READY** —— 预热路径要能在主线程上调。"""
-        key = (_wsrv_python(cfg),) + tuple(sorted(_wsrv_opts(cfg).items()))
+        key = self.key(cfg)
         with self.lock:
-            if self.proc is not None and self.proc.poll() is None and self.key == key:
+            if self.proc is not None and self.proc.poll() is None and self.key_cur == key:
                 return True
-            if self.fail >= WSRV_MAX_FAIL:
+            if self.fail >= self.max_fail:
                 return False
-            if self.key != key:
+            if self.key_cur != key:
                 # 参数变了 = 这是**新的一次**尝试: 必须把上一次的错清掉, 否则用户改完配置再试,
                 # 报的还是改动前那条错误 (实测: 先试了坏 stt_python, 1 秒内再试 cuda, 报出来的
                 # 还是 FileNotFoundError —— 用户会以为自己的修改没用)。
@@ -910,7 +962,7 @@ class _WhisperSrv(object):
                 return False
             self._kill_locked()
             self.started = now
-            self.key = key
+            self.key_cur = key
             self.ready = False
             self.boot_ms = 0
             self.last_err = ''
@@ -918,27 +970,23 @@ class _WhisperSrv(object):
             errbuf = collections.deque(maxlen=30)
             self.q = q
             self.errbuf = errbuf
-            env = dict(os.environ)
-            env[_WSRV_SRC_ENV] = _WSRV_SRC
-            env[_WSRV_OPTS_ENV] = json.dumps(_wsrv_opts(cfg), ensure_ascii=True)
             try:
-                p = subprocess.Popen([_wsrv_python(cfg), '-u', '-c', _WSRV_BOOTSTRAP],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                argv, env = self.spawn(cfg)
+                p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, encoding='utf-8',
                                      errors='replace', bufsize=1,
                                      creationflags=CREATE_NO_WINDOW, env=env)
             except Exception as e:
-                self.last_err = '启动本地 whisper 助手失败: %r' % (e,)
+                self.last_err = '启动本地 %s 助手失败: %r' % (self.NAME, e)
                 self.fail += 1
                 return False
             self.proc = p
-            threading.Thread(target=self._reader, args=(p, q), name='wgime-whisper-out',
+            threading.Thread(target=self._reader, args=(p, q), name='wgime-%s-out' % self.TAG,
                              daemon=True).start()
-            threading.Thread(target=self._err_reader, args=(p, errbuf), name='wgime-whisper-err',
-                             daemon=True).start()
-            _vlog('voice: whisper helper started pid=%d (env-passed source, %d-char cmdline, '
-                  'py=%s, model=%s)' % (p.pid, len(_WSRV_BOOTSTRAP), _wsrv_python(cfg),
-                                        _wsrv_opts(cfg)['model']))
+            threading.Thread(target=self._err_reader, args=(p, errbuf),
+                             name='wgime-%s-err' % self.TAG, daemon=True).start()
+            _vlog('voice: %s helper started pid=%d (cmdline %d chars, py=%s%s)'
+                  % (self.TAG, p.pid, len(' '.join(argv)), self.python_of(cfg), self.describe(cfg)))
             return True
 
     def _reader(self, p, q):
@@ -979,101 +1027,217 @@ class _WhisperSrv(object):
         """识一句。返回 (text, err)。**只能在识别后台线程里调** (会阻塞数秒)。"""
         cold = not self.ready
         if not self.ensure(cfg):
-            if self.fail >= WSRV_MAX_FAIL:
+            if self.fail >= self.max_fail:
                 # 已经不再重试了, 但**真实原因**比"起不来"有用得多, 两条都要给 (别只报"连续失败")
-                return None, ('本地 whisper 助手连续 %d 次起不来, 已停止重试'
+                return None, ('本地 %s 助手连续 %d 次起不来, 已停止重试'
                               '(改完 config.txt 要重启 WgIme 才重新试)%s%s'
-                              % (self.fail,
+                              % (self.NAME, self.fail,
                                  ('; 上次的错误: ' + self.last_err) if self.last_err else '',
-                                 _WSRV_HINT))
+                                 self.HINT))
             if self.last_err:
-                return None, self.last_err + _WSRV_HINT
-            return None, '本地 whisper 助手还没就绪, 请再说一次'
+                return None, self.last_err + self.HINT
+            return None, '本地 %s 助手还没就绪, 请再说一次' % self.NAME
         with self.rlock:
             p = self.proc
             q = self.q
             if p is None or p.poll() is not None:
-                return self._died('本地 whisper 助手已退出', p.poll() if p else None)
+                return self._died('本地 %s 助手已退出' % self.NAME, p.poll() if p else None)
             self.rid += 1
             rid = self.rid
-            req = {'id': rid, 'wav': wav,
-                   'lang': (cfg.get('stt_lang') or '').strip(),
-                   'prompt': (cfg.get('stt_prompt') or '').strip(),
-                   'beam': _wsrv_beam(cfg)}
+            req = self.request_obj(cfg, rid, wav)
             try:
                 p.stdin.write(json.dumps(req, ensure_ascii=True) + '\n')
                 p.stdin.flush()
             except Exception as e:
-                return self._died('给本地 whisper 助手发请求失败: %r' % (e,))
-            limit = WSRV_TIMEOUT_COLD if cold else WSRV_TIMEOUT
+                return self._died('给本地 %s 助手发请求失败: %r' % (self.NAME, e))
+            limit = self.t_cold if cold else self.t_timeout
             deadline = time.monotonic() + limit
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0:
-                    return None, ('本地 whisper 识别超时 (%.0fs%s)'
-                                  % (limit, ', 首次要把模型载进来' if cold else ''))
+                    return None, ('本地 %s 识别超时 (%.0fs%s)'
+                                  % (self.NAME, limit, ', 首次要把模型载进来' if cold else ''))
                 try:
                     o = q.get(timeout=min(left, 0.5))
                 except queue.Empty:
                     if p.poll() is not None:
-                        return self._died('本地 whisper 助手退出', p.poll())
+                        return self._died('本地 %s 助手退出' % self.NAME, p.poll())
                     continue
                 if o.get('eof'):
-                    return self._died('本地 whisper 助手退出', p.poll())
+                    return self._died('本地 %s 助手退出' % self.NAME, p.poll())
                 if o.get('ready') is False:
                     self.fail += 1
                     with self.lock:
                         self._kill_locked()
-                    return None, str(o.get('error') or '本地 whisper 助手初始化失败') + _WSRV_HINT
+                    return None, str(o.get('error') or ('本地 %s 助手初始化失败' % self.NAME)) + self.HINT
                 if o.get('ready'):
                     self.ready = True
                     self.boot_ms = int(o.get('boot_ms') or 0)
                     cold = False
                     self.fail = 0
-                    _vlog('voice: whisper helper ready in %dms (model=%s)'
-                          % (self.boot_ms, o.get('model')))
+                    _vlog('voice: %s helper ready in %dms (%s)'
+                          % (self.TAG, self.boot_ms, o.get('model') or '?'))
                     continue
                 if int(o.get('id') or 0) != rid:
                     continue                     # 串包/过期回包: 丢掉继续等自己那条
                 if not o.get('ok'):
-                    return None, '本地 whisper 识别失败: %s' % (o.get('error') or '?')
+                    return None, '本地 %s 识别失败: %s' % (self.NAME, o.get('error') or '?')
                 self.fail = 0
-                _vlog('voice: whisper %sms segs=%s chars=%d'
-                      % (o.get('ms'), o.get('segs'), len(o.get('text') or '')))
+                _vlog('voice: %s %sms segs=%s chars=%d'
+                      % (self.TAG, o.get('ms'), o.get('segs'), len(o.get('text') or '')))
                 return (o.get('text') or ''), None
 
 
+class _WhisperSrv(_WarmSrv):
+    """常驻 faster-whisper: 源码走环境变量 + `-c` 引导 (不落盘、不进命令行)。"""
+
+    NAME = 'whisper'
+    TAG = 'whisper'
+    HINT = _WSRV_HINT
+
+    def key(self, cfg):
+        return (_wsrv_python(cfg),) + tuple(sorted(_wsrv_opts(cfg).items()))
+
+    def describe(self, cfg):
+        return ', model=%s' % _wsrv_opts(cfg)['model']
+
+    def spawn(self, cfg):
+        env = dict(os.environ)
+        env[_WSRV_SRC_ENV] = _WSRV_SRC
+        env[_WSRV_OPTS_ENV] = json.dumps(_wsrv_opts(cfg), ensure_ascii=True)
+        return [_wsrv_python(cfg), '-u', '-c', _WSRV_BOOTSTRAP], env
+
+    def request_obj(self, cfg, rid, wav):
+        return {'id': rid, 'wav': wav,
+                'lang': (cfg.get('stt_lang') or '').strip(),
+                'prompt': (cfg.get('stt_prompt') or '').strip(),
+                'beam': _wsrv_beam(cfg)}
+
+
+def _ssrv_itn(cfg):
+    """stt_itn -> 0/1。engine.load_config 已归一成 bool, 但手写 cfg (探针/测试) 可能是
+    '0'/'off'/'' 这样的字符串 —— 那时 `if cfg.get(...)` 会把 '0' 当真 (真值非空), 与直觉相反。"""
+    v = cfg.get('stt_itn', True)
+    if isinstance(v, str):
+        return 0 if v.strip().lower() in ('0', 'off', 'false', 'no', '') else 1
+    return 1 if v else 0
+
+
+def _ssrv_opts(cfg):
+    """sherpa 助手的启动参数 —— 这几个**都是建识别器的参数** (改了要重启助手, 不能按句变)."""
+    return {'script': (cfg.get('stt_script') or '').strip() or '',
+            'lang': (cfg.get('stt_lang') or '').strip(),
+            'itn': _ssrv_itn(cfg),
+            'threads': _ssrv_threads(cfg)}
+
+
+def _ssrv_threads(cfg):
+    # engine.load_config 已归一成 int; 手写 cfg (探针/测试) 可能是 str/None
+    try:
+        return max(1, min(16, int(float(cfg.get('stt_threads', 4)))))
+    except (TypeError, ValueError):
+        return 4
+
+
+class _SherpaSrv(_WarmSrv):
+    """常驻 sherpa-onnx (SenseVoice): 直接起用户那份 wrapper 的 `--serve` 模式。
+
+    为什么不像 whisper 那样把源码塞进环境变量: wrapper 是"语音包"的一部分 (和 228MB 模型一起搬),
+    一份实现同时给 `voice_engine = cmd`(一次性) 和 `sherpa`(常驻) 用 —— 复制进 voice.py 就会两处漂移。
+    """
+
+    NAME = 'sherpa'
+    TAG = 'sherpa'
+    HINT = _SSRV_HINT
+
+    @property
+    def t_timeout(self):
+        return SSRV_TIMEOUT
+
+    @property
+    def t_cold(self):
+        return SSRV_TIMEOUT_COLD
+
+    @property
+    def max_fail(self):
+        return SSRV_MAX_FAIL
+
+    def key(self, cfg):
+        return (_wsrv_python(cfg),) + tuple(sorted(_ssrv_opts(cfg).items()))
+
+    def describe(self, cfg):
+        o = _ssrv_opts(cfg)
+        return ', script=%s, itn=%s, lang=%s, threads=%s' % (
+            o['script'] or '(未配置)', o['itn'], o['lang'] or 'auto', o['threads'])
+
+    def spawn(self, cfg):
+        o = _ssrv_opts(cfg)
+        if not o['script']:
+            raise RuntimeError('config.txt 里没配 stt_script (sherpa 的 wrapper 脚本路径)')
+        argv = [_wsrv_python(cfg), '-u', o['script'], '--serve',
+                '--itn=%d' % o['itn'], '--threads=%d' % o['threads']]
+        if o['lang']:
+            argv.append('--lang=%s' % o['lang'])
+        return argv, dict(os.environ)
+
+    def request_obj(self, cfg, rid, wav):
+        # itn/语言是建识别器时就定下的 -> 每次请求只带 wav (改了 itn/lang 会重启助手, 见 key())
+        return {'id': rid, 'wav': wav}
+
+
 _WSRV = _WhisperSrv()
+_SSRV = _SherpaSrv()
+# 引擎名 -> **全局变量名** (不是实例!)。必须调用时再 globals() 取:
+# 测试/探针会 `voice._WSRV = voice._WhisperSrv()` 这样换一个干净实例来做隔离,
+# 导入期就把实例记进表里的话, 那一换就失效了 —— `warm()` 会去操作旧对象,
+# 而 `recognize()` 用的是新对象, 两边的状态对不上 (实测: 现有 whisper 回归 A11/A12 直接失败)。
+_WARM_GLOBAL_BY_ENGINE = {}
+for _e in WSRV_ENGINES:
+    _WARM_GLOBAL_BY_ENGINE[_e] = '_WSRV'
+for _e in SSRV_ENGINES:
+    _WARM_GLOBAL_BY_ENGINE[_e] = '_SSRV'
 
 
 def _whisper_recognize(wav, cfg):
     return _WSRV.request(cfg, wav)
 
 
+def _sherpa_recognize(wav, cfg):
+    return _SSRV.request(cfg, wav)
+
+
+def _warm_srv(eng):
+    """引擎名 -> 常驻助手 (当前那个实例; 不是常驻引擎则 None)。"""
+    name = _WARM_GLOBAL_BY_ENGINE.get((eng or '').strip().lower())
+    return globals().get(name) if name else None
+
+
 def warm(cfg):
-    """预热: 现在就把模型载进来 (异步, 不阻塞调用方)。非本地 whisper 引擎返回 False。"""
-    eng = (cfg.get('voice_engine') or '').strip().lower()
-    if eng not in WSRV_ENGINES:
+    """预热: 现在就把模型载进来 (异步, 不阻塞调用方)。非常驻引擎返回 False。"""
+    srv = _warm_srv(cfg.get('voice_engine'))
+    if srv is None:
         return False
     # 已经起来了/失败太多就什么都不做
-    return _WSRV.ensure(cfg)
+    return srv.ensure(cfg)
 
 
 def prewarm_bg(cfg, delay=4.0):
     """启动时后台预热 (让第一次说话不用先白等载模型)。
 
-    `stt_prewarm = 0` 关掉它: 载 small/int8 要 ~2.3s CPU 与几百 MB 内存, 不是所有机器都想常占。
+    `stt_prewarm = 0` 关掉它: whisper 载 small/int8 要 ~2.3s CPU 与几百 MB 内存;
+    sherpa 只要 ~1.2s 与 ~200MB —— 不是所有机器都想常占。
     `delay` 是为了让启动那几段收尾动作 (插件/托盘/tools) 先跑完再抢 CPU。
     """
     if not cfg.get('stt_prewarm', True):
         return False
-    if (cfg.get('voice_engine') or '').strip().lower() not in WSRV_ENGINES:
+    srv = _warm_srv(cfg.get('voice_engine'))
+    if srv is None:
         return False
 
     def _bg():
         try:
             time.sleep(max(0.0, float(delay)))
-            _WSRV.ensure(cfg)
+            srv.ensure(cfg)
         except Exception as e:
             _vlog('voice: prewarm failed: %r' % (e,))
 
@@ -1083,10 +1247,13 @@ def prewarm_bg(cfg, delay=4.0):
 
 def shutdown():
     """退出收尾 (父进程退出时 stdin 关闭也会让助手自己结束, 这里是显式一点)。"""
-    try:
-        _WSRV.shutdown()
-    except Exception:
-        pass
+    for name in ('_WSRV', '_SSRV'):
+        srv = globals().get(name)
+        try:
+            if srv is not None:
+                srv.shutdown()
+        except Exception:
+            pass
 
 
 def _dispatch(eng, wav, cfg):
@@ -1095,6 +1262,8 @@ def _dispatch(eng, wav, cfg):
         return _http_recognize(wav, cfg)
     if eng in WSRV_ENGINES:                    # 常驻本地 whisper (第六十三轮)
         return _whisper_recognize(wav, cfg)
+    if eng in SSRV_ENGINES:                    # 常驻本地 sherpa-onnx (第六十三轮机制 + 第六十四轮模型)
+        return _sherpa_recognize(wav, cfg)
     if eng in ('cmd', 'command'):
         return _cmd_recognize(wav, cfg)
     return _system_recognize(wav, cfg)

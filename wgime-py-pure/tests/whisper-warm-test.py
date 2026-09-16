@@ -211,7 +211,9 @@ dt = (time.time() - t0) * 1000
 p = last()
 ck('A1 warm() 返回 True', r is True)
 ck('A2 warm() 立刻返回, 不等 READY', dt < 500 and voice._WSRV.ready is False, '(%.0f ms)' % dt)
-ck('A3 真的起了进程', p is not None and p.poll() is None)
+ck('A3 真的起了进程, 而且就是当前这个 _WSRV 上的', p is not None and p.poll() is None
+   and voice._WSRV.proc is p,
+   '(warm 若操作了别的实例, 这里就露馅 —— 见 _warm_srv 的"调用时取全局")')
 ck('A4 命令行只有引导脚本 (源码不进命令行)', p.argv[1:] == ['-u', '-c', voice._WSRV_BOOTSTRAP]
    and len(p.argv[3]) < 400 and 'faster_whisper' not in p.argv[3])
 ck('A5 源码走环境变量, 且与内嵌的一致', p.env.get(voice._WSRV_SRC_ENV) == voice._WSRV_SRC)

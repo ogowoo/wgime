@@ -215,8 +215,8 @@ def load_config(path):
                statedot=True,
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
                voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开
-               voice_engine='system',          # system(系统离线) / http(云端) / whisper(本地常驻) / cmd(外部命令)
-        voice_fallback='',              # 主引擎**报错**时的第二引擎 (如 cmd=本地 SenseVoice); 空=不回退 (第六十六轮)
+               voice_engine='system',          # system / http / whisper / sherpa / cmd  (后两个是本地离线)
+        voice_fallback='',              # 第二引擎: 与主引擎**同时开跑, 谁先成功用谁** (第六十六轮); 空=不用
                voice_auto=False,               # True: 识别完直接上屏; False: 进候选条等空格确认
                voice_lang='',                  # 系统引擎的识别语言 (如 zh-CN); 空=系统默认
                voice_silence=1.2,              # 连续静音多少秒自动停 (0=不自动停)
@@ -226,6 +226,7 @@ def load_config(path):
         stt_retry=3,                                  # 连接层失败时同一条路重试几次 (1~8; 第六十五轮, 坏网络用)
         stt_timeout=15,                               # 单次尝试超时秒数 (5~60; 代理是黑洞时的等待上限)
                stt_device='', stt_compute='', stt_python='', stt_prompt='',     # 本地 whisper 后端 (第六十三轮)
+               stt_script='', stt_itn=True, stt_threads=4,                      # 本地 sherpa 后端 (常驻助手)
                stt_prewarm=True, stt_beam=5,   # 启动后台预热 / beam size (1=贪心最快, 5=默认)
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
@@ -277,10 +278,18 @@ def load_config(path):
                 except ValueError:
                     pass
             elif k in ('stt_url', 'stt_key', 'stt_model', 'stt_lang', 'stt_cmd', 'stt_proxy',
-                       'stt_device', 'stt_compute', 'stt_python', 'stt_prompt'):
-                cfg[k] = v.strip()                          # http / whisper / cmd 三个后端的配置
+                       'stt_device', 'stt_compute', 'stt_python', 'stt_prompt',
+                       'stt_script'):                       # http / whisper / sherpa / cmd 四个后端的配置
+                cfg[k] = v.strip()
             elif k == 'stt_prewarm':
                 cfg[k] = v in ('1', 'on', 'true')           # 白名单语义 (同 voice/showcode): 非法值判"关"
+            elif k == 'stt_itn':
+                cfg[k] = v in ('1', 'on', 'true')           # 白名单语义; sherpa 的数字规范化 (三点->3点)
+            elif k == 'stt_threads':
+                try:
+                    cfg[k] = max(1, min(16, int(v)))        # sherpa 建识别器的线程数; 非法值保持缺省
+                except ValueError:
+                    pass
             elif k == 'stt_beam':
                 try:
                     cfg[k] = max(1, min(10, int(v)))        # faster-whisper beam size; 非法值保持缺省

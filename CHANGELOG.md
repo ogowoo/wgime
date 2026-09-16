@@ -1,5 +1,58 @@
 ---
 
+## 2026-09-16 (第六十三轮补充: 常驻 sherpa —— 每句 1.5s 变 0.1s, 顺手把常驻机制抽成通用的)
+
+用户："做"（上一轮结尾提的"还剩一块红利"：sherpa 的 1.5s/句里 1.31s 是每句重付的模型加载）。
+
+**结果**：新增 `voice_engine = sherpa`（别名 `sensevoice` / `sense-voice` / `sherpa-onnx`），
+**每句 0.08~0.15s**（首句 1.23s，那是在等助手把模型载完 `boot_ms=1003`）。
+
+| 方式 | 每句 | 说明 |
+|---|---|---|
+| `cmd` 一次性（上一轮接的） | 1.48~1.57s | 每句新起进程, 重付 1.31s 载模型 |
+| **`sherpa` 常驻（本轮）** | **0.08~0.15s** | 模型只载一次; 文本与一次性模式 **4/4 完全一致** |
+
+**做法：把第六十三轮 whisper 那套常驻机制抽成通用的 `voice._WarmSrv`**，差异只剩三个钩子
+（`key()` 决定"要不要重启"、`spawn()` 决定"怎么起"、`request_obj()` 决定"发什么"）：
+
+- `_WhisperSrv`：源码走环境变量 + `-c` 引导（原样保留，类名不变 —— 现有 67 项回归直接复用）；
+- `_SherpaSrv`：**直接起用户那份 wrapper 的 `--serve` 模式**。为什么不把 wrapper 的逻辑也塞进
+  环境变量：wrapper 是"语音包"的一部分（和 228MB 模型一起搬），一份实现同时服务
+  `cmd`(一次性) 与 `sherpa`(常驻)，复制进 `voice.py` 必然两处漂移。
+- **`key` 的语义两边不同，这是本轮最容易写错的地方**：whisper 的 `lang/prompt/beam` 是**每次请求**带的
+  （改了不用重启）；sherpa 的 `itn/lang/threads/script` 是**建识别器**的参数（改了必须重启，否则
+  "配置改了却没生效"）。回归里 B 组专门钉这条。
+- 共用机制（超时/限速/连续失败/串包/EOF/重启时的队列隔离）在 sherpa 这一侧**各自又钉了一遍** ——
+  抽出来不等于少测一遍。
+
+**wrapper 加了 `--serve`**（`wgime-stt.py`）：载一次模型 → 打印
+`{"ready":true,"model":"sense-voice","boot_ms":1003,"itn":true,"lang":"zh"}` → 之后
+`{"id":N,"wav":"..."}` → `{"id":N,"ok":true,"text":"...","ms":110,"audio_ms":4610}`；
+`{"cmd":"exit"}` 或 **stdin 关闭（父进程退出）就自己结束**。顺带把一次性/常驻两条路共用的
+`build()/decode()` 抽出来，并修掉 docstring 里的 `SyntaxWarning`（`\models\` → raw docstring）。
+**契约要点**：serve 模式下 stdout **只有 JSON**（日志一律 stderr）。
+
+**这一轮真踩到一个 bug（而且是被现有回归抓出来的）**：我一开始把"引擎名 → 助手实例"的映射
+在**导入时**就固化成 dict，于是测试里 `voice._WSRV = voice._WhisperSrv()` 这种"换个干净实例做隔离"
+就失效了 —— `warm()` 操作旧对象、`recognize()` 用新对象，两边状态对不上，whisper 回归 A11/A12 立刻红。
+改成 `_warm_srv()` **调用时** `globals()[名字]` 取。顺手把两份回归的 A3 都加强为
+"起了进程**而且就是当前这个实例上的**"，让这类"操作错对象"的缺陷有更直接的判据。
+
+**回归**：新增 `wgime-py-pure\tests\sherpa-warm-test.py`（**74 项**，纯桩；与 whisper 那份同一套假
+Popen 语义：没数据会阻塞、进程死了写 stdin 会抛、只有 kill 后才 EOF）。**守卫有效性自检**
+（`%TEMP%\wg-sherpa-guard2.py`）把三处新守卫各改回旧写法跑一遍 —— itn 字符串 → `J3` 失败；
+`_warm_srv` 导入时取全局 → `A3` 失败；去掉"没配 stt_script 要报错" → `C1/C2/C3` 失败；基线 0 失败。
+顺手把测试里"起进程失败"的路径改成**优雅记 FAIL**（原来会崩在 `p.emit` / `p.written[i]` /
+`old_q.queue` 上）—— **挂死或崩溃的测试比失败的测试难查得多**。
+真进程端到端（`%TEMP%\wg-sherpa-warm-e2e.py`）：4 句 0.12~0.15s、坏 wav 只报错不弄死助手、
+改 `stt_itn` 真的重启助手（pid 12812 → 12768、旧进程已退出）、`shutdown()` 后进程消失。
+
+**配置**：`package\config.txt` 已切到 `voice_engine = sherpa` + `stt_script` + `stt_itn/stt_threads`
+（解释器仍写绝对路径，同 §D8 的老坑）；whisper 那几行注释掉。根 `config.txt` 模板重写成
+"**首选 sherpa（常驻，0.1s）/ 备选 cmd（一次性，1.5s，wrapper 不支持 --serve 时用）/ 再备选 whisper**"。
+
+---
+
 ## 2026-09-16 (维护: 本机落地 sherpa 离线识别 —— 1.5s/句, 顺带把三种离线引擎实测对比)
 
 **背景**：上一轮拉取后发现一件必须说清的事 —— 第六十四轮文档里的 `C:\Tools\wgime-local-asr\` +

@@ -55,6 +55,7 @@ python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
 python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
+python wgime-py-pure\tests\sherpa-warm-test.py        # 本地常驻 sherpa 助手回归（74 项，同一套假 Popen 语义，见 §38 第六十四轮）
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -162,9 +163,9 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     旧行为（stderr 说明）。`EN_HINT_MAX_RANK=50000` 可调；`en-freq.txt` 在 `CACHE_FILES` 里（换表 → 老缓存失效一次）。
 
 38. **语音输入（第四十七轮，python 独有）**：`voice.py` = waveIn 录音（纯 ctypes，VAD 静音自停，别用已移除的 `audioop`）
-    + 四条后端（`voice_engine`：`system` 系统离线引擎 System.Speech，走 `powershell -EncodedCommand` 内联脚本
-    **不落盘**、结果 base64 回传 / `http` Whisper 兼容 / `whisper` **常驻本地 faster-whisper 子进程**（第六十三轮，
-    见本条第末）/ `cmd` 外部命令带 `{wav}`）。热键 `hotkey_voice`（Ctrl+Alt+V）
+    + 五种后端（`voice_engine`：`system` 系统离线引擎 System.Speech，走 `powershell -EncodedCommand` 内联脚本
+    **不落盘**、结果 base64 回传 / `http` Whisper 兼容 / `whisper` **常驻本地 faster-whisper 子进程**（第六十三轮）
+    / `sherpa` **常驻本地 sherpa-onnx**（第六十四轮，见本条第末）/ `cmd` 外部命令带 `{wav}`）。热键 `hotkey_voice`（Ctrl+Alt+V）
     按住说话，hook 的 `WM_KEYUP` 报 `VK_VOICE_UP`，**只在 `VOICE_ON` 为真时吞键**；「语音」模式（`MODE_VOICE=4`）
     里 `VOICE_MODE` 让钩子把按键**全部透传**（不组字），轻点热键 = 常录。结果默认进候选条等空格确认
     （`voice_auto=1` 直接上屏），上屏走 `inject()` 但**不进词频学习**。麦克风隐私开关 Deny 时 `waveInOpen` 会 rc=1 →
@@ -199,10 +200,13 @@ python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助
     预热两处：启动 +4s 后台（`stt_prewarm=0` 关）+ **按下热键那一刻**（与说话重叠）。键：`stt_model`/`stt_lang`/
     `stt_prompt`/`stt_device`/`stt_compute`/`stt_beam`/`stt_python`。改这块**必须**跑
     `python wgime-py-pure\tests\whisper-warm-test.py`（67 项，假 Popen 照抄真管道语义）。实测数字/两处真 bug/探针见 `AGENTS-DETAIL.md` §D6。
-    **第六十四轮（本地离线识别, 推荐）**：`voice_engine = cmd` + `stt_cmd = python C:\Tools\wgime-local-asr\wgime-stt.py {wav}`
-    （sherpa-onnx + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本**）。实测 建会话 1.31s + 解码 0.2s/句，
-    比 whisper 常驻(冷 8.7s 才到 2.3s)更快、且**不常驻内存**。**这套东西在仓库外、按机器各装一份** ——
-    换机器要重装（本机 Store Python 3.13 从头装一遍的步骤与实测见 `AGENTS-DETAIL.md` §D8.2）。
+    **第六十四轮（本地离线识别, 首选）**：`voice_engine = sherpa` + `stt_script` 指向 wrapper
+    （sherpa-onnx + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本, 常驻模式只许打印 JSON**）。
+    **常驻**（起 `stt_script --serve`；机制与第六十三轮 whisper **同一套** `_WarmSrv`，只是 `key/spawn/request_obj`
+    三个钩子不同）：每句 **0.08~0.16s**。`cmd` 是一次性（每句重付 1.31s 载模型 ≈1.5s/句），wrapper 不支持
+    `--serve` 时才用它。**key 的语义两边不同, 最容易写错**：sherpa 的 `itn`/`lang`/`threads`/`script` 是**建识别器**
+    的参数（改了要重启助手），whisper 的 `lang`/`prompt`/`beam` 是每次请求带的。**这套东西在仓库外、按机器各装一份**
+    —— 换机器要重装（Store Python 3.13 从头装一遍的步骤/实测/`--serve` 契约见 `AGENTS-DETAIL.md` §D8.2）。
     **第六十五轮（国内站 + 坏网络三件套）**：国内站 key 必须配 `api.siliconflow.cn`（同一把 key 在 `.com` 回 401、`.cn` 回 200）。
     新增 `stt_retry`（连接层同路重试，默认 3；**HTTPError 不重试**，免得白花额度）、`stt_timeout`（默认 15s，取代写死的 30s）、
     **记住可用路径**（哪条通下次优先；本机那个本地代理是黑洞，不记住每句白等 3×timeout）。

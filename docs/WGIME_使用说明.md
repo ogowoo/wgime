@@ -288,10 +288,22 @@ WgIme 以普通权限运行时，系统安全机制（UIPI）会拦截它向管�
 
 | 值 | 说明 |
 |---|---|
-| `system`（默认） | **系统自带离线引擎**（System.Speech）：零依赖、不联网、不占体积；识别语言由 `voice_lang` 指定（默认 `zh-CN`）。识别率一般，短句够用。 |
-| `whisper` | **本地 faster-whisper（推荐）**：模型只载一次、进程常驻，之后**每句 3~5 秒**；离线、不要 key、中文准确率高（实测 88~100%）。需要宿主装了 `faster-whisper`，配 `stt_model`（默认 `small`）/ `stt_lang` / `stt_prompt` / `stt_device` / `stt_compute` / `stt_beam` / `stt_python` / `stt_prewarm`。首次要载模型（十几秒），启动时会在后台先热好。 |
-| `http` | 云端或自建 STT（OpenAI Whisper 兼容的 POST）：配 `stt_url` / `stt_key` / `stt_model` / `stt_lang`，识别率最好但要网络和 key。 |
-| `cmd` | 外部命令（如本地 whisper.cpp）：`stt_cmd` 里用 `{wav}` 占位，取 stdout 第一行。离线、中文好，但要自备程序与模型；**每句都新起一个进程**（本地 whisper 走这条路每句要 20 秒上下），所以本机装了 faster-whisper 就用上面的 `whisper`。 |
+| `system`（默认） | **系统自带离线引擎**（System.Speech）：零依赖、不联网、不占体积；识别语言由 `voice_lang` 指定（默认 `zh-CN`）。识别率一般（实测中文覆盖约 60%），短句够用。 |
+| `sherpa` | **本地 sherpa-onnx / SenseVoice（首选）**：模型只载一次、**助手进程常驻，之后每句 0.1~0.2 秒**；离线、不要 key、中文准。需要一份"语音包"（`sherpa-onnx` + SenseVoice int8 模型 + 一个支持 `--serve` 的 wrapper），配 `stt_script`（wrapper 路径）/ `stt_lang` / `stt_itn` / `stt_threads` / `stt_python` / `stt_prewarm`。 |
+| `whisper` | **本地 faster-whisper**：模型只载一次、进程常驻，之后**每句 2~5 秒**；离线、不要 key。需要宿主装了 `faster-whisper`，配 `stt_model`（默认 `small`）/ `stt_lang` / `stt_prompt` / `stt_device` / `stt_compute` / `stt_beam` / `stt_python` / `stt_prewarm`。首次要载模型（几秒到几十秒），启动时会在后台先热好。 |
+| `http` | 云端或自建 STT（OpenAI Whisper 兼容的 POST）：配 `stt_url` / `stt_key` / `stt_model` / `stt_lang`，识别率最好但要网络和 key。**网络不稳**时可配 `stt_retry`/`stt_timeout`，或用 `voice_fallback` 让本地引擎与它**同时开跑、谁先成功用谁**。 |
+| `cmd` | 外部命令（如本地 whisper.cpp）：`stt_cmd` 里用 `{wav}` 占位，取 stdout 第一行。离线、中文好，但要自备程序与模型；**每句都新起一个进程**（拿它跑本地 SenseVoice 是 ~1.5 秒/句，走 `sherpa` 的常驻模式是 0.1~0.2 秒）。 |
+
+**本地 sherpa 怎么配**（`voice_engine = sherpa`，本机推荐）：先备好"语音包"（`pip install sherpa-onnx`，
+把 `model.int8.onnx` + `tokens.txt` 放到 wrapper 同级 `models\sense-voice\`），然后
+
+```ini
+voice = 1
+voice_engine = sherpa
+stt_script = C:\Tools\wgime-local-asr\wgime-stt.py
+stt_lang = zh
+stt_itn = 1        ; 1=数字规范化+标点(三点→3点，覆盖 95%)；0=汉字原样、无标点(覆盖 99%+)
+```
 
 **本地 whisper 怎么配**（`voice_engine = whisper`）：宿主先 `pip install faster-whisper`（模型会从 HuggingFace
 缓存里取，本机已有 `small`/`medium` 等就不必再下），然后
@@ -304,7 +316,7 @@ stt_lang = zh
 stt_prompt = 以下是普通话的句子。
 ```
 
-`stt_python` 只在"装了 faster-whisper 的解释器 ≠ WgIme 用的解释器"时才要填（写那个 `python.exe` 的完整路径）。
+`stt_python` 只在"装了库的解释器 ≠ WgIme 用的解释器"时才要填（写那个 `python.exe` 的完整路径）。
 识别在后台线程里跑，**不会卡住打字**；`识别中…` 期间你可以照常输入，结果回来再按空格上屏。
 
 **用中文必须装语音包**（离线引擎按语言包分）：管理员 PowerShell 跑
@@ -313,9 +325,11 @@ stt_prompt = 以下是普通话的句子。
 
 **打不开麦克风**？多半是隐私开关：设置→隐私和安全性→麦克风→**允许桌面应用访问麦克风**（气泡里也会这么说）。
 
-**相关配置键**：`voice`、`hotkey_voice`、`voice_engine`、`voice_lang`、`voice_auto`、`voice_silence`（静音自动停秒数，0=手动）、
-`voice_max`（单次上限秒）、`stt_url`/`stt_key`/`stt_model`/`stt_lang`/`stt_cmd`/`stt_proxy`、
-`stt_device`/`stt_compute`/`stt_beam`/`stt_prompt`/`stt_python`/`stt_prewarm`（后 6 个是 `whisper` 后端用的）。
+**相关配置键**：`voice`、`hotkey_voice`、`voice_engine`、`voice_fallback`（第二引擎，双引擎赛跑）、`voice_lang`、
+`voice_auto`、`voice_silence`（静音自动停秒数，0=手动）、`voice_max`（单次上限秒）、
+`stt_url`/`stt_key`/`stt_model`/`stt_lang`/`stt_cmd`/`stt_proxy`/`stt_retry`/`stt_timeout`、
+`stt_device`/`stt_compute`/`stt_beam`/`stt_prompt`/`stt_python`（`whisper` 后端）、
+`stt_script`/`stt_itn`/`stt_threads`（`sherpa` 后端）、`stt_prewarm`（两个常驻后端共用的启动预热开关）。
 
 ## 附录：第三方数据与许可
 

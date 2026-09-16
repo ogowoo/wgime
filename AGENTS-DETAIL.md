@@ -464,16 +464,63 @@ curl.exe -L --retry 5 -C - -o C:\Tools\wgime-local-asr\models\sense-voice\model.
 **要点：`--itn=1`（缺省）95.0% 且有标点，`--itn=0` 99.2%、3/4 逐字全对但没有标点**；
 `--itn=1` 的"错"大半是它有意做的数字规范化（`三点`→`3点`），不是识别错。
 
-**接法（本机）**：`package\config.txt` 里 `voice = 1` / `voice_engine = cmd` /
-`stt_cmd = "<装了 sherpa 的 python.exe 绝对路径>" "C:\Tools\wgime-local-asr\wgime-stt.py" --itn=1 {wav}`，
-并把 whisper 那几行（`stt_model`/`stt_lang`/`stt_prompt`/`stt_device`/`stt_compute`/`stt_prewarm`）
-**注释掉**（`cmd` 引擎不看它们，留着会让"哪个键在生效"说不清 —— 同 §D8 的安装脚本做法）。
-解释器必须写绝对路径：`_cmd_recognize` 是 `shell=True` 跑一条命令行，没有便携相对路径可用。
-**回验**：`engine.load_config` + `voice.recognize` 走真实配置，4 句 1.48~1.57s 全通。
+**接法（本机）**：`package\config.txt` 里 `voice = 1` / `voice_engine = sherpa` /
+`stt_script = C:\Tools\wgime-local-asr\wgime-stt.py` / `stt_itn` / `stt_threads` / `stt_python`（绝对路径），
+whisper 那几行注释掉（`sherpa` 引擎不看它们，留着会让"哪个键在生效"说不清 —— 同 §D8 的安装脚本做法）。
+解释器必须写绝对路径：`_cmd_recognize`/warm 助手都是直接起进程，没有便携相对路径可用。
+**回验**：`engine.load_config` + `voice.recognize` 走真实配置，4 句 1.48~1.57s（一次性）全通。
 
-**下一步的空间（还没做）**：1.5s 里 1.31s 是每句重付的模型加载 —— 照第六十三轮 whisper 那套
-"常驻助手 + JSONL"做一遍（`_WSRV` 的父进程侧本来就是通用的"起一次、一问一答"），
-每句能压到 **~0.25s**（只剩解码）。这是当前唯一还没吃到的性能红利。
+### §D8.3 常驻模式 `--serve`（同一天补做：每句 1.5s → 0.1s）
+
+**起因**：1.5s 里有 **1.31s 是每句重付的模型加载**，解码只要 0.2s。照第六十三轮 whisper 那套"常驻助手"
+做一遍就行 —— 而且父进程侧本来就是通用的（见下）。
+
+**wrapper 的 `--serve` 契约**（`wgime-stt.py`，这是父子进程之间的接口，改它要同时改 `voice.py`）：
+
+```
+python wgime-stt.py --serve [--itn=0|1] [--lang=zh] [--threads=4]
+  父 -> 子  {"id":1,"wav":"C:\\...\\a.wav"}
+  子 -> 父  {"ready":true,"model":"sense-voice","boot_ms":1003,"itn":true,"lang":"zh"}   (启动时一行)
+            {"id":1,"ok":true,"text":"...","ms":110,"audio_ms":4610}
+            {"id":1,"ok":false,"error":"..."}          (坏 wav 只报这一条, 助手不倒)
+            {"id":1,"ok":true,"text":"","ms":0}        (cmd=ping)
+  {"cmd":"exit"} 或 **stdin 关闭(父进程退出)** -> 自己结束
+```
+
+**serve 模式下 stdout 只有 JSON**（日志一律 stderr）—— 父进程把每一行都 `json.loads`。
+**`--itn` / `--lang` / `--threads` 是"建识别器"的参数**，想改必须重启进程；父进程按 `key` 判断，
+所以这几个键改了会**自动重启助手**（whisper 的 `lang/prompt/beam` 相反，是每次请求带的）。
+
+**父进程侧：把第六十三轮那套抽成通用的 `voice._WarmSrv`**，差异只剩三个钩子：
+`key(cfg)`（要不要重启）/ `spawn(cfg)`（怎么起 → `(argv, env)`）/ `request_obj(cfg, rid, wav)`（发什么）。
+`_WhisperSrv`（源码走环境变量 + `-c` 引导）与 `_SherpaSrv`（起 wrapper 的 `--serve`）各实现一遍。
+共用机制（起/杀、READY、两个锁、1 秒限流、连续失败 3 次停手、串包丢弃、EOF、超时）**在两份回归里各钉一遍**。
+
+**一个真踩到的 bug（被现有回归抓出来）**：一开始把"引擎名 → 助手实例"的映射**在导入时**固化进 dict，
+于是 `voice._WSRV = voice._WhisperSrv()` 这种"换干净实例做隔离"就失效 —— `warm()` 操作旧对象、
+`recognize()` 用新对象，whisper 回归 A11/A12 立刻红。改成 `_warm_srv()` **调用时** `globals()[名字]` 取；
+两份回归的 A3 也加强成"起了进程**而且就是当前这个实例上的**"。
+
+**实测**（`%TEMP%\wg-sherpa-warm-e2e.py` / `wg-sherpa-serve-probe.py`，真子进程 + 真模型）：
+
+| 项 | 结果 |
+|---|---|
+| 每句（模型已载） | **0.08~0.15s**；真实配置链路（`wg-sherpa-config-timing.py`）**0.136~0.160s** |
+| 首句 | 1.23s（等 READY；`boot_ms=1003` 是模型加载） |
+| 文本 vs 一次性模式 | **4/4 完全一致** |
+| 坏 wav | 只报 `ok:false`，助手照常服务下一句 |
+| 改 `stt_itn` | 真重启（pid 12812 → 12768，旧进程已退出） |
+| `shutdown()` | 子进程消失、`_SSRV.proc is None` |
+
+**回归**：`wgime-py-pure\tests\sherpa-warm-test.py`（**74 项**，纯桩）。守卫有效性自检
+（`%TEMP%\wg-sherpa-guard2.py`）：itn 字符串 → `J3` 失败；`_warm_srv` 导入时取全局 → `A3` 失败；
+去掉"没配 stt_script 要报错" → `C1/C2/C3` 失败；基线 0 失败。
+**顺手把测试里"起进程失败"的路径改成优雅记 FAIL**（原来会崩在 `p.emit`/`p.written[i]`/`old_q.queue`
+上）—— 挂死或崩溃的测试比失败的测试难查得多。
+
+**注意**：`_SSRV.ready` 的含义是"**已经消费过 READY 消息**"，不是"子进程已经载好模型" ——
+预热（`prewarm_bg`）只 spawn、不消费，所以预热之后 `ready` 仍是 False，而第一句不会慢
+（READY 就在队列里，请求时顺手消费掉）。别把 `ready` 当成"助手活着"的判据，那是 `proc`。
 
 **没做的事（有意）**：**不打包 Python 运行时**。Windows 版 embeddable Python **不含 tkinter**，
 而 wgime 的候选条/托盘全是 Tk —— 打进去也跑不起来，目标机还是得装标准 Python。
