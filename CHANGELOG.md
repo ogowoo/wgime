@@ -29,6 +29,20 @@ E `toggle_followcaret()` 仍能 0→1→0 并落盘; F 三份 config.txt 都是 
 永久回归: `tests\pure-state-harness.py` 加 5 项（23 → **28 项**, 含"托盘开关能开回来并落盘"）。
 其余全绿: `undefined-globals` 0、tray-swap 42、voice-vad 31、whisper-warm 67、`wgime-dist-sync-check` OK
 （dist/package 已重建, 内嵌 main.py 与磁盘逐字节一致）。
+**实机 A/B（跑的是真成品单文件 `dist\wgime-py.py`, 不是源码目录）**: 同一份 dist, 只改 config 的
+`followcaret`, 数"测试实例自己的 python 子进程"(按 ParentProcessId 归属, 只看自己那棵树):
+- `followcaret = 0`（默认）: **1.5 / 3 / 6 / 10s 四个采样点全是 0 个**, 日志里 0 行 caret/helper 记录 ——
+  那个常驻 helper 子进程确实没起来;
+- `followcaret = 1`（开回来）: 1.5s 起就稳定有 **1 个** 子进程, 日志 `IPC helper started pid=… (167-char cmdline)`
+  → 65ms 后 `IPC recv {'type':'ready','mode':'stable-focus-cooldown'}` —— 代码一行没删, 开关一翻就恢复。
+**装置本身踩了两个坑（下次做实机验证别再踩）**: ① 一开始用 `mode = tray` —— 而早期 helper 那段**本来就被
+`if mode != 'tray'` 包着**（main.py:210）, 于是两组都"没 helper", 分不出区别; ② 用 `WGIME_DICT_DIR` 指仓库词库
+—— 而 `APP_DIR = dirname(DICT_DIR)`, 于是程序**读的是 `package\config.txt`**（本轮刚改成 0）, 我写进临时目录的
+config 根本没被读。正确装置: 临时目录里给 `dicts` 建目录联接（`mklink /J`）、**不设** `WGIME_DICT_DIR` ⇒
+`DICT_DIR=<临时>\dicts` ⇒ `APP_DIR=<临时>` ⇒ 读的是自己写的 config; 再配 `mode = ime` + `starton = 0`
+（钩子装了但不激活 ⇒ 按键全部透传, 不抢用户键盘）+ `hotkey_* = none`（测试实例无法被激活）+
+`LOCALAPPDATA` 指到临时目录（不碰用户数据）。另外 `win._dlog` 的开关是 **`WGIME_DEBUG=1`**（不是 `WGIME_DEBUG_CARET`）。
+
 
 ## 2026-09-15 (第六十七轮: 修"联想时打标点显示一个 X" —— keyfix 的牺牲字符改成不可见)
 

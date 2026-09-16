@@ -519,6 +519,19 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
 **永久回归**：`tests\pure-state-harness.py` 新增 5 项（**23 → 28 项**）: `CFG` 缺省关、`_caret_follow()`
 默认 False、打开后为真、托盘开关能关掉并落盘 0、能再开回来并落盘 1 —— 后两项就是"冻结 ≠ 删除"的守卫。
 
+**实机 A/B（跑真成品单文件, 不是源码目录）**: 同一份 `dist\wgime-py.py`, 只改 `followcaret`:
+`0`（默认）→ 1.5/3/6/10s 四个采样点**都是 0 个 python 子进程**（日志 0 行 caret/helper）;
+`1` → 1.5s 起稳定 **1 个**, 日志 `IPC helper started pid=… (167-char cmdline)` → 65ms 后
+`IPC recv {'type':'ready','mode':'stable-focus-cooldown'}`。**装置三坑**（都踩过）:
+① `mode = tray` 时分不出区别 —— 早期 helper 段被 `if mode != 'tray'` 包着（main.py:210）;
+② 设 `WGIME_DICT_DIR` 会让程序读**别的目录的 config.txt** —— 因为 `APP_DIR = dirname(DICT_DIR)`;
+   正确做法: 临时目录里 `mklink /J dicts <仓库 package\dicts>`, **不设** `WGIME_DICT_DIR`;
+③ `win._dlog` 的开关是 **`WGIME_DEBUG=1`**（不是 `WGIME_DEBUG_CARET`）——写错了就"日志一行没有",
+   很容易误判成"代码没走到"。
+安全配置: `mode = ime` + `starton = 0`（钩子装了但不激活 ⇒ 按键透传, 不抢用户的键盘）+
+`hotkey_toggle/mode/makeword/trad/voice = none`（测试实例无法被激活）+ `LOCALAPPDATA` 指向临时目录;
+数子进程一律按 **ParentProcessId** 归属, 别按命令行全局匹配（会误伤用户正在运行的实例）。
+
 **行尾坑（每次改文档都会踩）**：`config.txt`(根/release/package) 与 `AGENTS*.md`/`CHANGELOG.md`
 都是**纯 LF**，而 `docs\WGIME_*.md` 是 **CRLF** —— 改这几份文本一律
 `io.open(p, encoding='utf-8', newline='')` 读、按原行尾写回，改完用
