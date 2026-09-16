@@ -693,6 +693,45 @@ C2 `WS_EX_TOPMOST` 环境事实 / D 配置 6 组 / E 接线 AST 真跑 / F 文�
 `tests\pure-state-harness.py` **33 项**（+5：默认开 / 关掉不建窗 / tray 不建窗 / 真 tick 显示 / 开关反映）；
 `undefined-globals` 0；tray-swap 42；voice-vad 31；whisper-warm 67；`wgime-dist-sync-check` OK。
 
+### §D11.2 第六十九轮补充：默认改成**关**（用户反馈"影响到鼠标移动"）
+
+**用户报**："跟着鼠标跑的那个小圆点可以拿掉吗？好像影响到鼠标移动了。"
+
+**先量清楚到底是什么在影响**（真窗口实测，探针 `%TEMP%\wg-dot-mouse-probe.py`）：
+
+| 查什么 | 结果 |
+|---|---|
+| 外框扩展样式 | `0x080800A8` = `NOACTIVATE / LAYERED / TRANSPARENT / TOOLWINDOW / TOPMOST` **全都在** |
+| `WindowFromPoint(圆点中心)` | 返回**底下的窗口** → 鼠标事件**确实穿透**（点击/悬停都没被它吃掉）|
+| 落点 vs 算出来的位置 | 偏差 **0px**（没有 DPI 错位）；圆点矩形也**不含光标** |
+| 每拍开销 | `Tk.geometry()` **1.95ms/次**；直接 `SetWindowPos` **0.68ms**（快 **2.9 倍**）|
+
+→ 它**不是"抢事件"**，而是"**每 32ms 挪一次置顶窗口**"这份稳定开销：12px 的窗贴着光标每秒挪 30 次、
+DWM 每次重新合成，慢机器/远程桌面上就是"鼠标发涩"。**用户的体感是对的，别用"它是穿透的"去驳回。**
+
+**四件事**（都为了"要么别开、开了也别碍事"）：
+1. **默认关**：`engine.load_config` 缺省 `statedot=False`，`config.txt` 模板 `statedot = 0`。
+   功能一行没删 —— 托盘「选项 → 状态提示点」勾一下、或 config 改成 1 就回来（`statedot = 0` 时**一个窗口都不建**）；
+2. **挪窗走 `win.move_topmost()`**（`SetWindowPos` + `NOSIZE|NOACTIVATE|NOSENDCHANGING|ASYNCWINDOWPOS`，
+   目标 `HWND_TOPMOST` 顺带保住置顶）—— 别再用 `top.geometry()`；
+3. **按住鼠标键期间隐藏**（`win.mouse_buttons_down()`：拖动/框选/调窗口大小正是最碍事的时候，松开下一拍回来）；
+4. **光标没动且状态没变 → 一个 Win32 调用都不做**（`main._DOT_AT` 记上次的光标位置；`Dot.color()` 供比色）。
+
+**顺手抓出的两个真问题**：
+- `dot.py` docstring 里的 `\w`（`%TEMP%\wg-dot-...`）→ `SyntaxWarning`；改 raw docstring。
+- **harness 的两条"默认值"断言其实在读用户那份 `package\config.txt`**：main.py 里
+  `APP_DIR = dirname(DICT_DIR)`（`main.py:107`），而 harness 把 `WGIME_DICT_DIR` 指向 `package\dicts`
+  → `ns['CFG']` 来自**用户可编辑的活文件**（实测那份里 `followcaret`/`statedot` 都是 1）。
+  于是"默认关"这种断言会**随用户配置变红/变绿** —— 测的不是代码默认值。改成
+  `sys.modules['engine'].load_config(<不存在的路径>)` 取代码默认值再断言（注意 main.py 里
+  `engine` 这个名字被 `Engine` 实例占了，所以要用 `sys.modules['engine']`，别用 `ns['engine']`）。
+
+**回归**：`wgime-py-pure\tests\dot-mouse-test.py`（**24 项**）：A 组纯函数 10 项（颜色/录音优先/取模、
+四边翻转、负坐标副屏、离谱坐标钳制 + **遍历 5 种工作区 × 全部光标位置**的不变量"圆点永不盖住光标、
+永不越出工作区"）；B 组真窗口 14 项（样式写在外框上、`WindowFromPoint` 确认穿透、落点无 DPI 偏差、
+`move_topmost` 真挪且样式没被重置、hide/再显示/颜色/destroy）—— **没有交互桌面就整组 SKIP**（退出码仍 0）。
+harness 33 → **39 项**（+代码默认关、+光标没动不重复摆窗、+状态变了才重绘、+按住鼠标键隐藏、+松开回来）。
+
 ### §D11.1 第六十九轮补充：Tk 的 Toplevel 是**两层** HWND（样式必须写外框）
 
 **发现方式（值得照抄的流程）**：源码探针 70/70 全绿 ≠ 真的对。拿**真成品单文件**启动, 用

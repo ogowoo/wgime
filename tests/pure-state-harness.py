@@ -238,9 +238,17 @@ def main():
     check('写失败时通知用户', ('notify', '设置未保存') in log, repr(log))
     ns['APP_DIR'] = real_app_dir
 
+    # ⚠ 注意: 这里断言的是**代码默认值**, 不能拿 `ns['CFG']` 断言 —— harness 的 APP_DIR 其实是
+    # `wgime-py-pure\package`(main.py: `APP_DIR = dirname(DICT_DIR)`, 而 WGIME_DICT_DIR 指向
+    # `package\dicts`), 所以 `ns['CFG']` 读的是 `package\config.txt` —— **那是用户可编辑的活文件**
+    # (实测它里面 followcaret/statedot 都是 1, 于是两条"默认关"断言凭空变红)。第六十九轮补充发现。
+    _engmod = sys.modules['engine']          # 模块本体(main.py 里 `engine` 这个名字被 Engine 实例占了)
+    _defaults = _engmod.load_config(os.path.join(tmp, 'no-such-config.txt'))
     print('--- followcaret 默认 0 + 冻结功能 (第六十八轮: 代码全保留, 只默认关) ---')
-    check('CFG 默认 followcaret 关', ns['CFG'].get('followcaret') is False, repr(ns['CFG'].get('followcaret')))
-    check('_caret_follow() 默认 False', ns['_caret_follow']() is False)
+    check('代码默认 followcaret 关', _defaults.get('followcaret') is False,
+          repr(_defaults.get('followcaret')))
+    ns['CFG']['followcaret'] = False
+    check('_caret_follow() 关着时为假', ns['_caret_follow']() is False)
     ns['CFG']['followcaret'] = True
     check('打开后 _caret_follow() 为真 (能开回来)', ns['_caret_follow']() is True)
     # 冻结 != 删除: 托盘开关/写 config 这条链必须还在 (关着时点一下要能开、并落盘 followcaret = 1)
@@ -258,9 +266,10 @@ def main():
     ns['APP_DIR'] = real_app_dir
     ns['CFG']['followcaret'] = False
 
-    print('--- 状态提示点 (第六十九轮: 默认开 / 托盘模式不建窗 / 真 tick 能显出来) ---')
-    check('CFG 默认 statedot 开', ns['CFG'].get('statedot') is True, repr(ns['CFG'].get('statedot')))
-    check('_statedot_on() 反映开关', ns['_statedot_on']() is True)
+    print('--- 状态提示点 (第六十九轮补充: **代码默认关** / tray 不建窗 / 按住鼠标键时隐藏 / 真 tick 能显出来) ---')
+    check('代码默认 statedot 关', _defaults.get('statedot') is False, repr(_defaults.get('statedot')))
+    ns['CFG']['statedot'] = False
+    check('_statedot_on() 关着时为假', ns['_statedot_on']() is False)
     ns['CFG']['statedot'] = False
     ns['_dot_tick']()
     check('关掉时不建窗口', ns['_DOT'][0] is None)
@@ -272,7 +281,28 @@ def main():
     ns['_dot_tick']()
     check('ime 模式 tick 后圆点已显示', ns['_DOT'][0] is not None and ns['_DOT'][0].is_shown(),
           repr(ns['_DOT'][0]))
-    ns['_DOT'][0].destroy()
+    # 第六十九轮补充: 光标没动就不该再摆窗; 状态变了(颜色)才重画; 按住鼠标键时隐藏
+    dot_obj = ns['_DOT'][0]
+    calls = []
+    real_update = dot_obj.update
+    dot_obj.update = lambda x, y, c: (calls.append((x, y, c)), real_update(x, y, c))[1]
+    ns['_dot_tick']()
+    n1 = len(calls)
+    ns['_dot_tick']()
+    check('光标没动、状态没变 -> 不再摆窗', len(calls) == n1, '%d -> %d' % (n1, len(calls)))
+    ns['ime'].mode = 1
+    ns['_dot_tick']()
+    check('状态变了(模式) -> 重新上色', len(calls) > n1, repr(calls[-1:]))
+    ns['ime'].mode = 0
+    _real_mbd = ns['win'].mouse_buttons_down
+    ns['win'].mouse_buttons_down = lambda: True
+    ns['_dot_tick']()
+    check('按住鼠标键(拖动中) -> 隐藏', dot_obj.is_shown() is False)
+    ns['win'].mouse_buttons_down = _real_mbd
+    ns['_dot_tick']()
+    check('松开之后 -> 自动回来', dot_obj.is_shown() is True)
+    dot_obj.update = real_update
+    dot_obj.destroy()
     ns['_DOT'][0] = None
 
     print('--- [csharp] 插件 txt 用宽松解码读 (第五十一轮: ANSI/GBK 另存不能崩线程) ---')

@@ -512,13 +512,18 @@ bar.set_theme(CFG.get('theme', 'dark'))
 # 来由: hideidle=1 时空闲不显示候选条 -> 没有可见反馈(第五十七轮的抱怨); 托盘图标还可能被 Windows
 # 收进 ^。设计取 harold-lu-bit/IMEDot 的"置顶小圆点"形态, 但**有意跟鼠标** —— 候选条跟随已按用户
 # 决定冻结(§17/§D10), 状态点跟鼠标不冲突(它不承载内容, 只是状态灯)。详见 dot.py 头部。
+#
+# **默认关**(statedot = 0): 第六十九轮默认开, 随后用户反馈"好像影响到鼠标移动"。实测查清(见 dot.py):
+# 它**不抢事件**(WindowFromPoint 确认穿透、不盖光标), 但"每 32ms 挪一个置顶窗口"是真的有代价 ——
+# 用户能感觉到就让默认值是"关", 想要的人一个托盘勾选/一行 config 就能开。
 _DOT = [None]
 _DOT_TICK = [0]
+_DOT_AT = [None]         # 上一次 tick 时的鼠标位置 (没动就不做任何 Win32 调用)
 
 
 def _statedot_on():
-    """「状态提示点」是否启用 (config `statedot`, 默认开)."""
-    return bool(CFG.get('statedot', True))
+    """「状态提示点」是否启用 (config `statedot`, **默认关** —— 见上面那段实测说明)."""
+    return bool(CFG.get('statedot', False))
 
 
 def _dot():
@@ -530,7 +535,14 @@ def _dot():
 
 
 def _dot_tick():
-    """把圆点摆到鼠标旁并按当前状态上色 (poll 里每 ~32ms 调一次; 关掉/托盘模式则隐藏)."""
+    """把圆点摆到鼠标旁并按当前状态上色 (poll 里每 ~32ms 调一次; 关掉/托盘模式则隐藏).
+
+    三处"别让它碍事"的措施(第六十九轮补充, 用户反馈"影响到鼠标移动"):
+      ① **鼠标键按住时隐藏** —— 拖动/框选/调窗口大小正是"光标旁挂个置顶小窗"最碍事的时候,
+         而且那时系统每步都在重算; 松开后下一拍自动回来。
+      ② **光标没动且颜色没变 -> 直接返回**, 一个 Win32 调用都不做(空转只花一次 `cursor_pos`)。
+      ③ 挪窗走 `win.move_topmost`(SetWindowPos), 比 `Tk.geometry()` 便宜约 3 倍 —— 见 dot.py。
+    """
     if is_tray_mode():
         if _DOT[0] is not None:
             _DOT[0].hide()          # tray 模式没有"输入法开关状态", 提示点无意义
@@ -543,11 +555,20 @@ def _dot_tick():
     p = win.cursor_pos()
     d = _dot()
     if p is None:
+        _DOT_AT[0] = None
         d.hide()
         return
+    if win.mouse_buttons_down():
+        _DOT_AT[0] = None
+        d.hide()
+        return
+    color = _dotmod.dot_color(ime.active, ime.mode, _VOICE.get('rec') is not None)
+    if _DOT_AT[0] == p and d.is_shown() and d.color() == color:
+        return                      # 光标没动、状态也没变 -> 什么都不用做
+    _DOT_AT[0] = p
     r = win.workarea_at(p[0], p[1])          # 光标所在显示器的工作区 (多屏正确)
     x, y = _dotmod.dot_pos(p[0], p[1], (r.left, r.top, r.right, r.bottom))
-    d.update(x, y, _dotmod.dot_color(ime.active, ime.mode, _VOICE.get('rec') is not None))
+    d.update(x, y, color)
 
 
 

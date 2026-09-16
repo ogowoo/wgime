@@ -1,5 +1,54 @@
 ---
 
+## 2026-09-16 (第六十九轮补充: 状态提示点默认关 —— 用户反馈"影响到鼠标移动")
+
+用户："跟着鼠标跑的那个小圆点可以拿掉吗？好像影响到鼠标移动了。"
+
+**先查清到底是什么在影响**（真窗口实测，探针 `%TEMP%\wg-dot-mouse-probe.py`）：
+
+| 查什么 | 结果 |
+|---|---|
+| 外框扩展样式 | `0x080800A8` = `NOACTIVATE / LAYERED / TRANSPARENT / TOOLWINDOW / TOPMOST` **全都在** |
+| `WindowFromPoint(圆点中心)` | 返回的是**底下的窗口** → 鼠标事件**确实穿透**，点击/悬停都没被它吃掉 |
+| 落点 vs 算出来的位置 | 偏差 **0px**（没有 DPI 错位）；圆点矩形也**不含光标** |
+| 每拍开销 | `Tk.geometry()` **1.95ms/次**；直接 `SetWindowPos` **0.68ms**（快 **2.9 倍**） |
+
+→ 结论：**它不是"抢事件"，而是"每 32ms 挪一次置顶窗口"这份稳定开销** —— 一个 12px 的窗贴着光标
+每秒挪 30 次、DWM 每次重新合成，在慢机器/远程桌面上就是"鼠标发涩"。用户的感觉是对的。
+
+**改了三件事**（都为了"要么别开，开了也别碍事"）：
+1. **默认关**（`engine.load_config` 缺省 `statedot=False`，`config.txt` 模板 `statedot = 0`）——
+   用户要的就是拿掉。功能一行没删：托盘「选项 → 状态提示点」勾一下、或 config 里改成 1 就回来；
+2. **挪窗改走 `win.move_topmost()`**（`SetWindowPos` + `NOSIZE|NOACTIVATE|NOSENDCHANGING|ASYNCWINDOWPOS`，
+   目标 `HWND_TOPMOST` 顺带保住置顶）→ 每拍便宜约 3 倍，也少惊动别的窗口；
+3. **按住鼠标键期间隐藏**（`win.mouse_buttons_down()`：拖动/框选/调窗口大小正是它最碍事的时候，松开
+   下一拍自己回来），**光标没动且状态没变 → 一个 Win32 调用都不做**。
+
+**顺手抓出两个真问题**：
+- `dot.py` 的 docstring 里有 `\w`（写路径 `%TEMP%\wg-dot-...`）→ `SyntaxWarning`；改 raw docstring。
+- **harness 的两条"默认值"断言其实在读用户那份 `package\config.txt`**：main.py 里
+  `APP_DIR = dirname(DICT_DIR)`，而 harness 把 `WGIME_DICT_DIR` 指向 `package\dicts`，
+  于是 `ns['CFG']` 来自一个**用户可编辑的活文件**（实测那份里 `followcaret`/`statedot` 都是 1）。
+  这类断言会随用户配置变红/变绿 —— **测的不是代码默认值**。已改成用
+  `engine.load_config(<不存在的路径>)` 取代码默认值来断言（并在 harness 里写明这个坑）。
+
+**回归**：新增 `wgime-py-pure\tests\dot-mouse-test.py`（**24 项**）：
+
+- A 组纯函数 10 项：颜色/录音优先/取模不越界、四边翻转、负坐标副屏、离谱坐标钳制，
+  外加一条**遍历 5 种工作区 × 全部光标位置**的不变量 —— "**圆点永不盖住光标、永不越出工作区**"；
+- B 组真窗口 14 项：样式**写在外框**上、`WindowFromPoint` 确认穿透、落点无 DPI 偏差、
+  `move_topmost` 真的挪过去且样式没被重置、hide/再显示/颜色/destroy。**没有交互桌面则整组 SKIP**
+  （退出码仍 0，免得在无桌面环境误报）。
+
+harness 33 → **39 项**（新增：代码默认关、光标没动不重复摆窗、状态变了才重绘、按住鼠标键隐藏、
+松开自动回来）。**本机配置**：`package\config.txt` 的 `statedot` 已改成 0（其余设置 —— 语音 sherpa、
+跟随光标 1 —— 原样保留；构建用的是"先备份用户配置、构建后恢复再改这一行"）。
+
+**全套**：harness 39/39、dot-mouse 24/24、undefined-globals 0、embedded-isolation 10/10、
+tray-swap 42/42、voice-vad 31/31、whisper-warm 67/67、sherpa-warm 74/74；dist 重建（599843 B）。
+
+---
+
 ## 2026-09-16 (第六十三轮补充: 常驻 sherpa —— 每句 1.5s 变 0.1s, 顺手把常驻机制抽成通用的)
 
 用户："做"（上一轮结尾提的"还剩一块红利"：sherpa 的 1.5s/句里 1.31s 是每句重付的模型加载）。

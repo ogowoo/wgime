@@ -811,6 +811,45 @@ def set_topmost(hwnd):
         pass
 
 
+def move_topmost(hwnd, x, y):
+    """把置顶浮层挪到 (x, y) —— **比 `Tk.geometry()` 便宜约 3 倍**(第六十九轮补充: 实测 1.95ms → 0.68ms)。
+
+    为什么要自己写 SetWindowPos 而不是用 `top.geometry('+x+y')`: 后者在 Tk 里是一次完整的
+    "几何请求 → 事件排队 → 真正 SetWindowPos", 每次都要付一遍 Tk 的解释器往返; 而这个小圆点
+    跟着鼠标跑时是 **~30 次/秒** 的稳定开销, 用户能感觉出来(第六十九轮反馈"影响到鼠标移动")。
+    四个标志各有用途:
+      * `SWP_NOSIZE`  —— 只挪不动大小;
+      * `SWP_NOACTIVATE` —— **绝不激活**(否则会把输入框焦点夺走);
+      * `SWP_NOSENDCHANGING` —— 不发 `WM_WINDOWPOSCHANGING`, 免得惊动别的窗口;
+      * `SWP_ASYNCWINDOWPOS` —— 异步排给窗口线程, 调用方立刻返回(实测落点仍然准确)。
+    用 `HWND_TOPMOST` 而不是 `HWND_TOP` 顺带把置顶也保住了(这条路径不额外调 set_topmost)。
+    """
+    try:
+        user32.SetWindowPos.restype = w.BOOL
+        user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, w.UINT]
+        flags = 0x0001 | 0x0010 | 0x0400 | 0x4000     # NOSIZE|NOACTIVATE|NOSENDCHANGING|ASYNCWINDOWPOS
+        return bool(user32.SetWindowPos(ctypes.c_void_p(int(hwnd)), ctypes.c_void_p(-1),
+                                        int(x), int(y), 0, 0, flags))
+    except Exception:
+        return False
+
+
+def mouse_buttons_down():
+    """左/右/中键**此刻**有没有按住 (拖动/框选/调窗口大小期间用, 见 `main._dot_tick`).
+
+    只看 `GetAsyncKeyState` 的**高位**(0x8000 = 当前按下); 低位(自上次调用以来按过)刻意忽略 ——
+    这里问的是"现在是不是在拖", 不是"刚才点过没有"。**不需要钩子、不需要焦点**, 开销可忽略。
+    """
+    try:
+        for vk in (0x01, 0x02, 0x04):            # VK_LBUTTON / RBUTTON / MBUTTON
+            if user32.GetAsyncKeyState(vk) & 0x8000:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 # ---- 浮层样式 (第六十九轮, 状态提示点) ----
 _GWL_EXSTYLE = -20
 _WS_EX_LAYERED = 0x00080000

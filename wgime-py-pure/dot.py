@@ -1,7 +1,23 @@
 # -*- coding: utf-8 -*-
-"""dot.py — 鼠标旁的「输入法状态提示点」(第六十九轮, python 独有).
+r"""dot.py — 鼠标旁的「输入法状态提示点」(第六十九轮, python 独有).
 
-**为什么需要**: `hideidle = 1`(默认) 时空闲不显示候选条, 用户**看不出输入法是开还是关** ——
+**默认关**(`statedot = 0`)。第六十九轮默认开, 随后用户反馈"**好像影响到鼠标移动**", 于是实测查清:
+
+  * **它不是靠抢事件影响的** —— 真窗口实测(探针 `%TEMP%\wg-dot-mouse-probe.py`):
+    外框扩展样式 `NOACTIVATE|LAYERED|TRANSPARENT|TOOLWINDOW|TOPMOST` 全都在,
+    `WindowFromPoint(圆点中心)` **返回的是底下的窗口**(= 鼠标事件确实穿透),
+    落点偏差 0px、也不盖住光标本身。所以**点击/悬停都不会被它吃掉**。
+  * **真正的开销是"每 32ms 挪一次置顶窗口"**: 原来走 `Tk.geometry()` = 每次 **1.95ms**
+    (Tk 几何请求 → 事件排队 → 真 SetWindowPos 的往返); 直接 `SetWindowPos` 只要 **0.68ms**。
+    一个 12px 的窗贴着光标每秒挪 30 次, 加上 DWM 每次重合成, 在慢机器/远程桌面上就是"鼠标发涩"。
+
+所以本文件现在的做法(与默认关配套):
+  1. 挪窗走 `win.move_topmost()`(便宜约 3 倍, 且 ASYNC/NOSENDCHANGING 少惊动别人);
+  2. `main._dot_tick` 在**鼠标键按住期间隐藏**(拖动/框选/调窗口大小正是它最碍事的时候);
+  3. 光标没动且颜色没变 → **一个 Win32 调用都不做**;
+  4. 配置默认关: 想要的人自己开(托盘「选项 → 状态提示点」或 `statedot = 1`)。
+
+**为什么当初要它**: `hideidle = 1`(默认) 时空闲不显示候选条, 用户**看不出输入法是开还是关** ——
 第五十七轮的真实抱怨("托盘图标都不会变了 / 混合的模式切换不过去")就是这么来的: 空闲隐藏下,
 候选条不显示、托盘图标还可能被 Windows 收进 `^`, 于是"切模式"没有任何可见反馈。
 这里在鼠标旁画一个 12px 的小圆点, 颜色 = 当前状态, 一眼可辨。
@@ -89,6 +105,7 @@ class Dot:
         self._styles_done = False
         self._color = None
         self._xy = None
+        self._hwnd = None
 
     # ------------------------------------------------------------------
     def hwnd(self):
@@ -113,11 +130,16 @@ class Dot:
                 return
             if win.set_overlay_styles(hwnd):
                 self._styles_done = True
+                self._hwnd = hwnd            # 缓存: 挪窗时不再走 winfo_id()/update_idletasks 那一趟
             # 置顶必须用 SetWindowPos —— WS_EX_TOPMOST 是只读位, SetWindowLong 设不上(探针实测)。
             # 同一招 bar.py 用来压 Win11 开始菜单那类 Shell 层; 同样**必须写外框**。
             win.set_topmost(hwnd)
         except Exception:
             pass
+
+    def color(self):
+        """当前颜色 (给 `main._dot_tick` 判断"光标没动但状态变了"要不要重画)."""
+        return self._color
 
     def update(self, x, y, color):
         """摆到 (x, y) 并按 color 上色 (颜色变了才重画, 位置变了才 move)."""
@@ -127,7 +149,12 @@ class Dot:
             self.cv.itemconfigure(self._oval, fill=color)
             self._color = color
         if (x, y) != self._xy:
-            self.top.geometry('+%d+%d' % (int(x), int(y)))
+            if self._hwnd:
+                # 便宜路径: 直接 SetWindowPos(实测 0.68ms vs Tk geometry 1.95ms, 快约 3 倍)
+                win.move_topmost(self._hwnd, x, y)
+            else:
+                # 兜底: 样式没写成功(外框拿不到)时退回 Tk —— 慢, 但至少能用
+                self.top.geometry('+%d+%d' % (int(x), int(y)))
             self._xy = (x, y)
         if not self._shown:
             self.top.deiconify()

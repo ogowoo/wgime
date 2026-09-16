@@ -56,6 +56,7 @@ python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
 python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
 python wgime-py-pure\tests\sherpa-warm-test.py        # 本地常驻 sherpa 助手回归（74 项，同一套假 Popen 语义，见 §38 第六十四轮）
+python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（24 项：纯函数 + 真窗口穿透/不遮光标；无桌面则 SKIP，见 §D11.2）
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -92,7 +93,7 @@ python wgime-py-pure\tests\sherpa-warm-test.py        # 本地常驻 sherpa 助�
 24. **五笔唯一四码自动上屏**要排除启动器候选：`refresh()` 里条件含 `cands[0] != ime.app_cand`（对齐 C# `!appSet.Contains(cands[0])`），否则会"自动启动程序"。
 25. **状态反馈 = 托盘气泡（不是弹窗、也不是只写日志）**：C# 所有 `TrayTip`/`ShowBalloonTip` 调用点在 python 都有对应：`msg` 步骤、工具/插件执行结果（`开始执行…`/`完成`/`已取消`/失败）、per-app 上屏与 keyfix 切换结果、启动失败、[csharp] 插件编译/运行错误、造词剪贴板无汉字、钩子安装失败（`hook.start()` 同步返回成功与否 + `last_error()`，main 气泡）。python 侧统一走 `main._notify` → `TRAY.notify`（pystray），无托盘时退回 `tools._msgbox`；tools 层走 `tools._tip`。别再给这类结果提示写回 `_msgbox` 或只写 `_dfn`。
 26. **tools.txt / 插件 txt 的块标签集合要完整**：`plugins.py` 的 `_TOOL_BLOCK_TAGS` 必须含 **8 个开标签**（shell/cmd/powershell/ps/shellx/cmdx/powershellx/psx）**与 8 个闭标签**——原来正则漏了 `cmdx`/`powershellx`/`[/cmd]`/`[/ps]` 等，会把块标签建成假按钮、块内容错位。另外 `load_tools` 要认 `[button 名]` 前缀、`code = xx` 允许写在步骤之后（都对齐 C# `LoadTools`）。块标签在 steps 里保留原文，由 `run_steps` 执行期配对（闭标签必须与开标签对应：`[ps]` 只由 `[/ps]` 收尾，同 C#）。**第二十轮补齐的 tools.txt 结构规则别回退**（详见 CHANGELOG 第二十轮 11 组 fixtures）：① 默认标签 `工具` **按需创建**（只含注释的 tools.txt 必须返回**空列表**）；② **没有按钮的标签页要保留**；③ `[tab ]` 空名用 `"?"`；④ `code` 行判定是 C# 的 `t.StartsWith("code")`（大小写敏感）+ `ToolToks(t)[2]`；⑤ 步骤行尾不带 `\r`。
-27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、**「译文」选项（离线词典译文；与「词典」模式并存：模式管逐条翻看，选项管日常打字的提示/兜底）**、造词对话框（C# 是剪贴板直造）、**鼠标旁的状态提示点（`statedot`，第六十九轮，见 §D11）**。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
+27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、**「译文」选项（离线词典译文；与「词典」模式并存：模式管逐条翻看，选项管日常打字的提示/兜底）**、造词对话框（C# 是剪贴板直造）、**鼠标旁的状态提示点（`statedot`，第六十九轮，**默认关** —— 见 §D11.2）**。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
     **第五十二轮登记的两处 hook 差异（用户已确认"保持现状"，别去"对齐"）**：① **Shift 轻拍更保守**：
     Ctrl/Alt/Win 按住时不武装轻拍、且松键有 0.4s 时限（C# 是 `if (shiftTap) shiftArm = true;` 无修饰键门控、
     `WM_KEYUP` 也无时限）；② **字母键判定排在空格/翻页之后**（C# 的 a-z 分支在前面）—— 于是 `config.txt`
