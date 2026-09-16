@@ -126,10 +126,19 @@ def send_unicode(text, magic=MAGIC):
     return user32.SendInput(n, arr, ctypes.sizeof(INPUT))
 
 
+QT_FIX_SENTINEL = 0x200B     # 零宽空格 U+200B: keyfix 的"牺牲字符"
+# 第六十七轮: 原来这里塞的是可见的 'X'。Qt 类应用(微信 4.x)会把**全角标点后的下一个注入字符**
+# 错认成该标点, 所以要塞一个字符让它吸收, 再发退格擦掉。但**擦除是会失败的** —— 用户报"输入完成、
+# 有联想时打标点会显示一个 X", 就是退格那一下没生效(应用正忙/把退格也当成要吸收的字符),
+# 于是 X 留在文档里。换成零宽空格后: 擦成功一样干净; 擦失败剩下的是**看不见**的字符, 不会再冒 X。
+# (C# 版仍是 'X' —— 见 AGENTS §27 的反向差异清单。)
+_qtfix_seen_apps = set()     # 一次性诊断: 哪些前台程序走过这条修复路径
+
+
 def send_unicode_qtfix(text, magic=MAGIC):
-    """全角标点后注入 X 吸收 + Back 擦除 (Qt 应用吞字规避). 按 UTF-16 码元注入, 标点判断仅对 BMP.
+    """全角标点后注入"牺牲字符"吸收 + Back 擦除 (Qt 应用吞字规避). 按 UTF-16 码元注入, 标点判断仅对 BMP.
     代理对(emoji 等 astral 字符)按 C# UnicodeCommitQtFix **不算 trigger**: 否则每个代理半码都会
-    插一对 X+Back, 上屏 emoji 时会带出多余的擦除动作."""
+    插一对哨兵+Back, 上屏 emoji 时会带出多余的擦除动作."""
     items = []
     units = text.encode('utf-16-le', 'surrogatepass')
     for i in range(len(units) // 2):
@@ -139,8 +148,8 @@ def send_unicode_qtfix(text, magic=MAGIC):
         if 0x3000 <= code <= 0xFFFF and not (0xD800 <= code <= 0xDFFF) \
                 and not (0x4E00 <= code <= 0x9FFF) and not (0x3400 <= code <= 0x4DBF) \
                 and not (0xF900 <= code <= 0xFAFF):
-            items.append(('uk', ord('X')))
-            items.append(('ku', ord('X')))
+            items.append(('uk', QT_FIX_SENTINEL))
+            items.append(('ku', QT_FIX_SENTINEL))
             items.append(('dn', 0x08))
             items.append(('up', 0x08))
     n = len(items)
@@ -162,7 +171,28 @@ def send_unicode_qtfix(text, magic=MAGIC):
             arr[i].u.ki.wVk = val
             arr[i].u.ki.dwFlags = 0x2
             arr[i].u.ki.dwExtraInfo = magic
-    return user32.SendInput(n, arr, ctypes.sizeof(INPUT))
+    n_seen = user32.SendInput(n, arr, ctypes.sizeof(INPUT))
+    if n != (len(units) // 2) * 2:    # 只有真插过牺牲字符才记一笔 (纯汉字/字母不上日志)
+        qtfix_note_app()
+    return n_seen
+
+
+def qtfix_note_app():
+    """一次性诊断: 头一次看到某个前台程序走 keyfix 这条修复路径就写一条 always-on 日志。
+
+    第六十七轮加: 这条路径**依赖目标应用的行为**(要它把牺牲字符吸收掉), 万一哪个程序反而把
+    退格吃掉, 用户就会看到残留字符 —— 有这行日志就能立刻知道是哪个程序, 也就能用
+    托盘「这个程序 → 标点吞字修复」把它单独关掉。
+    """
+    try:
+        name = foreground_process_name()
+    except Exception:
+        return
+    if not name or name in _qtfix_seen_apps:
+        return
+    _qtfix_seen_apps.add(name)
+    dfn_always('keyfix: 标点吞字修复在 %s 上启用 (牺牲字符=U+200B 零宽不可见; '
+               '若该程序里出现多余字符/吞字, 用托盘「这个程序 → 标点吞字修复」关掉它)' % name)
 
 
 def send_key_backspace(magic=MAGIC):

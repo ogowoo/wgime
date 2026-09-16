@@ -461,3 +461,16 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
 - **同名防自环**：`voice_fallback == voice_engine` 时按"没有第二引擎"处理。
 - **代价**：每句都跑一次本地引擎（SenseVoice 建会话 ~1.5s 的 CPU）；不想白跑就别配 `voice_fallback`。
 - **探针**：`%TEMP%\wg-r59-stt-proxy-probe.py` H 段（6 项）+ 解析 3 组。
+
+### §D9 第六十七轮：keyfix 的"牺牲字符"必须不可见
+
+- **机制**（C# `UnicodeCommitQtFix` 同款）：Qt 类应用（微信 4.x）在全角标点后会把**下一个注入字符**
+  错认成该标点，所以 python 在标点后追加 `[牺牲字符 down/up][VK 0x08 down/up]` 把它吸收+擦掉。
+- **真 bug**：牺牲字符原来是可见的 `X`；**退格那一下失效**（应用正忙、或把退格也当成要吸收的字符）
+  时 `X` 就永久留在文档里 —— 用户报"输入完成、有联想时打标点会显示 X"。
+- **修法**：`win.QT_FIX_SENTINEL = 0x200B`（零宽空格）。退格成功一样干净；失败也**看不见**。
+  汉字/ASCII/emoji 判定不变（代理对不算 trigger，与 C# 一致）。C# 仍是 `'X'`（AGENTS §27）。
+- **诊断**：`win.qtfix_note_app()` —— 每个前台程序**第一次**走这条路径时写一条 always-on
+  （`keyfix: 标点吞字修复在 <程序名> 上启用 …`）；出问题就用托盘「这个程序 → 标点吞字修复」关掉它。
+- **探针**：`%TEMP%\wg-r67-qtfix-probe.py`（16 项）—— 拦住 `win.user32.SendInput` 直接验事件序列
+  （标点 → U+200B → 退格，且**没有 0x58**），并用真 `main.py` 前缀构造"联想中打标点"确认只注入一次。
