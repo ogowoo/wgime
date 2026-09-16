@@ -206,7 +206,9 @@ def load_config(path):
     followcaret/theme/learnk/recentk/phrases."""
     cfg = dict(fuzzy=list(FUZZY_PAIRS), showcode=False, hideidle=True, shuangpin=0,
                trad=False, sentence=True, assoc=True, starton=True, apps={},
-               paste=3, keyfix=True, followcaret=True, theme='dark', cnpunct=True,
+               paste=3, keyfix=True, followcaret=False, theme='dark', cnpunct=True,
+               # followcaret 第六十八轮**默认 0 并冻结**: 用户决定"候选窗固定贴屏幕边缘, 不再跟随光标"。
+               # **代码全保留**(helper 子进程/IPC/托盘开关/bar 定位链), `followcaret = 1` 仍可开回。见 AGENTS §17。
                mode='ime', learnk=DEFAULT_LEARN_K, recentk=DEFAULT_RECENT_K,
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
                voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开

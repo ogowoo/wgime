@@ -474,3 +474,53 @@ fp32+int8 合集，没必要下 —— 只要 `model.int8.onnx` + `tokens.txt`�
   （`keyfix: 标点吞字修复在 <程序名> 上启用 …`）；出问题就用托盘「这个程序 → 标点吞字修复」关掉它。
 - **探针**：`%TEMP%\wg-r67-qtfix-probe.py`（16 项）—— 拦住 `win.user32.SendInput` 直接验事件序列
   （标点 → U+200B → 退格，且**没有 0x58**），并用真 `main.py` 前缀构造"联想中打标点"确认只注入一次。
+
+## §D10 第六十八轮：`followcaret` 默认 0 并冻结（代码全保留）
+
+**用户决定**（原话）："我做个决定, 把光标跟随的功能去掉了，但是屏幕边缘粘贴的保留。…
+改成默认0吧，先改成这个并冻结功能，代码不删。"
+
+**"冻结"的准确定义**：改的只有**默认值**和**开关读取点**，跟随的实现一行没删：
+
+| 还在的东西 | 位置 |
+|---|---|
+| 独立 Caret Helper 子进程（纯 ctypes vtable 直调 UIAutomationCore、源码走环境变量、JSONL stdio IPC） | `win.py` `_EMBEDDED_CARET_HELPER` / `_HELPER_BOOTSTRAP` / `ensure_caret_bg()` |
+| helper 的定位兜底链（UIA 缓存 → GUITI rcCaret → 聚焦框 → last → 前台原点；鼠标兜底仍是禁的） | `win.get_caret_pos()` / `win.workarea_at()` |
+| 候选条跟随定位链（`bar.show(..., follow)` + 35/80ms 后的 `_ipc_reposition`） | `bar.py` / `main.show_page()` |
+| 托盘「候选窗跟随光标」开关（勾选状态读 `get_followcaret`） | `tray.py` 选项菜单 |
+| 配置键 `followcaret`（白名单: `1/on/true`=开, 其它=关） | `engine.load_config` |
+
+**唯一的行为差异**：
+1. `engine.py` 缺省 `followcaret=False`（config.txt 不写这一行时按关）;
+2. 默认**不起 helper 子进程** —— 两个 spawn 点都加了门控: 启动早期那条 helper 线程读 `_EARLY_CFG`
+   （那时 `CFG` 还没建），启动收尾那条读 `_caret_follow()`;
+3. `main._caret_follow()` 是**唯一**开关读取点（`show_page` / `get_followcaret` / `toggle_followcaret` 都走它）
+   —— 以前有些地方写 `CFG.get('followcaret', True)`、有些写 `False`，这种不一致就是将来"有的地方跟随、
+   有的地方不跟随"的种子。
+
+**怎么开回来**（用户随时可能要）：`config.txt` 写 `followcaret = 1`，或托盘「选项 → 候选窗跟随光标」点一下
+（`toggle_followcaret` 立即 `show_page()` 重定位，并落盘）。开回来之后行为与第三十八～四十四轮**完全一致**
+（那不是"近似恢复"，是同一份代码）。
+
+**C# 侧没动**：`wgime.bat` / `WgIme.ps1` 的 `LoadConfig` 代码缺省仍是"开"；但**出厂 config.txt 是
+`followcaret = 0`**（本轮的根模板 + release 模板），所以两个版本开箱默认行为一致（都固定贴边）。
+要动 C# 的代码缺省得按 AGENTS §3 走"瘦 DLL + ps1 + 15 项测试"整条链。
+
+**验证**：`%TEMP%\wg-r68-followcaret-probe.py`（**29/29**，不建 Tk / 不碰词库 / 不碰用户数据）:
+- A `engine.load_config`：缺省行 / `1` / `on` / `true` / `0` / `off` / `yes`(非法值→关) 共 7 组;
+- B `_caret_follow()`：`CFG` 空 → False（默认冻结）、显式 False → False、True → True;
+- C **AST 判定**：`main.py` 里 `ensure_caret_bg` 的引用恰好 2 处, 且都在 `if followcaret…` 门控里;
+- D **把两条门控语句从源码 AST 节点编译出来真跑一遍**（`win`/`threading` 打桩）: 关着 0 次调用、开着 1 次
+  —— 这一步是关键: C 段只证明"字面上有 if", D 段证明"那个 if 真的拦住/放行了";
+- E `toggle_followcaret()` 0→1→0 并落盘 `followcaret = 1/0`；`show_page` 用 `_caret_follow()`;
+  源码里没有残留 `CFG.get('followcaret', True)`;
+- F 根模板 / release 模板 / 运行时 `package\config.txt` 三份都是 `followcaret = 0` 且行尾没被翻成 CRLF。
+
+**永久回归**：`tests\pure-state-harness.py` 新增 5 项（**23 → 28 项**）: `CFG` 缺省关、`_caret_follow()`
+默认 False、打开后为真、托盘开关能关掉并落盘 0、能再开回来并落盘 1 —— 后两项就是"冻结 ≠ 删除"的守卫。
+
+**行尾坑（每次改文档都会踩）**：`config.txt`(根/release/package) 与 `AGENTS*.md`/`CHANGELOG.md`
+都是**纯 LF**，而 `docs\WGIME_*.md` 是 **CRLF** —— 改这几份文本一律
+`io.open(p, encoding='utf-8', newline='')` 读、按原行尾写回，改完用
+`git diff --numstat` 核对增删行数（本轮: 根/release config.txt `4 2`、使用说明 `3 1`、技术文档 `1 1`）。
+`sync-dist.ps1` 之后照例 `git checkout -- release\plugins\wgtranslate.txt` 消掉那个已知的行尾噪声。

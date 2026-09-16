@@ -225,7 +225,12 @@ if _EARLY_CFG.get('mode', 'ime') != 'tray':
         # 跟随 helper 的 spawn 实测 ~90-100ms (Popen 一个 python 子进程). 它只是"起个后台进程",
         # 不碰 Tk/不碰主线程状态, 所以丢到自己的线程里去起 (第四十轮) —— 否则这 90ms 会挡在
         # 词库线程启动之前, 直接变成"上屏"又晚 90ms.
-        threading.Thread(target=win.ensure_caret_bg, name='wgime-caret-boot', daemon=True).start()
+        # 第六十八轮: followcaret 默认 0 (冻结) -> 这个**只为跟随服务**的常驻 helper 就不起了
+        # (省一个 python 子进程 + 一份 UIA). 代码全保留, config 里 followcaret = 1 照旧起。
+        # 此刻 CFG 还没建好, 所以读 _EARLY_CFG。
+        if _EARLY_CFG.get('followcaret', False):
+            threading.Thread(target=win.ensure_caret_bg, name='wgime-caret-boot',
+                             daemon=True).start()
     except Exception:
         pass
 
@@ -538,7 +543,7 @@ def _tray_api():
         'get_appkeyfix': lambda: bool(effective_keyfix()),
         'appkeyfix': lambda: toggle_app_keyfix(),
         'followcaret': lambda: toggle_followcaret(),
-        'get_followcaret': lambda: CFG.get('followcaret', True),
+        'get_followcaret': lambda: _caret_follow(),
         'toggleshowcode': lambda: toggle_showcode(),
         'get_showcode': lambda: CFG.get('showcode', False),
         'toggletrans': lambda: toggle_trans(),                    # 「译文」(原译模式, 第四十四轮)
@@ -698,9 +703,20 @@ def find_launcher(code):
     return None
 
 
+def _caret_follow():
+    """光标跟随是否启用 (第六十八轮: **默认 0 = 冻结**).
+
+    用户的决定: 候选窗固定贴屏幕边缘, 不再跟随光标; 但**代码全部保留** —— `followcaret = 1`
+    (config.txt 或托盘「候选窗跟随光标」)可随时开回来。所以这里只是一个**开关读取**, helper
+    子进程/UIA 定位链一行没删。凡是要读这个开关的地方(起 helper、bar 定位、托盘勾选)都走它,
+    免得将来又出现"有的地方默认 True、有的地方默认 False"这种自相矛盾。
+    """
+    return bool(CFG.get('followcaret', False))
+
+
 # ---------- 显示 ----------
 def show_page():
-    follow = CFG.get('followcaret', True)
+    follow = _caret_follow()      # 第六十八轮: 默认 0 (冻结); 打开时照旧跟随
     # 语音 (第四十七轮): ① 待确认结果 -> 占一行候选, 空格上屏 / Esc 丢弃;
     # ② 正在录/识别中/语音模式 -> 候选条当状态指示用 (显示"按住说话/正在听…")
     if _VOICE['text'] is not None and not _VOICE['busy']:
@@ -1363,7 +1379,13 @@ def toggle_trad():
 
 
 def toggle_followcaret():
-    CFG['followcaret'] = not CFG.get('followcaret', True)
+    """托盘「候选窗跟随光标」开关.
+
+    第六十八轮**冻结**: 默认值改成 0(候选窗固定贴屏幕边缘, 不再跟随光标), 但开关本身与整条
+    跟随链(helper 子进程 + UIA + JSONL IPC + bar 定位 + 启动时不再起 helper)**一行没删** ——
+    想开回来点一下托盘即可(config `followcaret = 1`)。
+    """
+    CFG['followcaret'] = not _caret_follow()
     _dfn('followcaret=%s' % CFG['followcaret'])
     _save_cfg('followcaret', '1' if CFG['followcaret'] else '0', '跟随光标')
     show_page()   # 立即用新 followcaret 重定位候选框(组字/常驻), 否则"点了没反应"
@@ -2565,7 +2587,8 @@ else:
     except Exception:
         pass
     try:
-        win.ensure_caret_bg()
+        if _caret_follow():       # 第六十八轮: 默认关(冻结) 就不起 helper; 打开时行为不变
+            win.ensure_caret_bg()
     except Exception:
         pass
     if CFG.get('voice'):

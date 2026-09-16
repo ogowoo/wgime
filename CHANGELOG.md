@@ -1,5 +1,35 @@
 ---
 
+## 2026-09-15 (第六十八轮: 光标跟随默认 0 并**冻结功能** —— 代码全留, 随时能开回)
+
+用户: "我做个决定, 把光标跟随的功能去掉了，但是屏幕边缘粘贴的保留。…改成默认0吧，先改成这个并冻结功能，代码不删。"
+
+**决定**: 候选窗**默认固定贴屏幕边缘**(可鼠标拖动、位置自动记忆), 不再跟随文本光标; 但跟随的
+**整条实现一行不删** —— 独立 Caret Helper 子进程(UIA 定位 + JSONL IPC)、`bar.show(follow=…)` 的定位链、
+托盘「候选窗跟随光标」开关、`followcaret` 配置键全部保留: `followcaret = 1`(或托盘勾一下)立刻恢复
+第三十八～四十四轮那套跟随行为。**冻结 = 默认关, 不是删除。**
+
+**改了什么**（只有"默认值 / 开关读取点", 没有删功能）:
+- `engine.py` 缺省 `followcaret=False`（白名单语义不变: `1/on/true`=开、其它=关, 与 C# `LoadConfig` 一致）;
+- `main.py` 新增 `_caret_follow()` 作为**唯一**开关读取点 —— 以前有的地方默认 True、有的地方默认 False,
+  这种自相矛盾正是将来出 bug 的种子; 默认 False;
+- **默认不再起那个常驻 helper 子进程**: 两个 spawn 调用点都门控（启动早期那条 helper 线程读 `_EARLY_CFG`,
+  启动收尾那条读 `_caret_follow()`）—— 省一个常驻 python 子进程 + 一份 UIA;
+- `show_page()` / `get_followcaret()` / `toggle_followcaret()` 全部走 `_caret_follow()`;
+- `config.txt`（根模板 / release 模板 / 运行时 `package\config.txt`）: `followcaret = 0` + 注释改为
+  "默认 0 并冻结(想用改 1 或点托盘)";
+- 文档跟着改: `WGIME_使用说明.md`（"默认就是固定的"）、`WGIME_技术文档.md`（C# 代码缺省仍是开、
+  Python 版缺省关; 两者出厂 config.txt 都是 0）。
+
+**验证**: `%TEMP%\wg-r68-followcaret-probe.py` **29/29** ——
+A `engine.load_config` 缺省/`1`/`on`/`true`/`0`/`off`/非法值共 7 组;
+B `_caret_follow()` 三分支; C **AST 判定** `ensure_caret_bg` 的 2 处引用都在 followcaret 门控里;
+D 把这两条门控语句**从源码节点编译出来真跑一遍**（关着 0 次调用 / 开着 1 次, 不是看字面）;
+E `toggle_followcaret()` 仍能 0→1→0 并落盘; F 三份 config.txt 都是 `followcaret = 0` 且行尾未被翻成 CRLF。
+永久回归: `tests\pure-state-harness.py` 加 5 项（23 → **28 项**, 含"托盘开关能开回来并落盘"）。
+其余全绿: `undefined-globals` 0、tray-swap 42、voice-vad 31、whisper-warm 67、`wgime-dist-sync-check` OK
+（dist/package 已重建, 内嵌 main.py 与磁盘逐字节一致）。
+
 ## 2026-09-15 (第六十七轮: 修"联想时打标点显示一个 X" —— keyfix 的牺牲字符改成不可见)
 
 用户: "我有时候输入完成在有联想的情况下输入标点符号会显示 X"

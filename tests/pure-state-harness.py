@@ -238,6 +238,26 @@ def main():
     check('写失败时通知用户', ('notify', '设置未保存') in log, repr(log))
     ns['APP_DIR'] = real_app_dir
 
+    print('--- followcaret 默认 0 + 冻结功能 (第六十八轮: 代码全保留, 只默认关) ---')
+    check('CFG 默认 followcaret 关', ns['CFG'].get('followcaret') is False, repr(ns['CFG'].get('followcaret')))
+    check('_caret_follow() 默认 False', ns['_caret_follow']() is False)
+    ns['CFG']['followcaret'] = True
+    check('打开后 _caret_follow() 为真 (能开回来)', ns['_caret_follow']() is True)
+    # 冻结 != 删除: 托盘开关/写 config 这条链必须还在 (关着时点一下要能开、并落盘 followcaret = 1)
+    fc_dir = os.path.join(tmp, 'appdir-fc')
+    os.makedirs(fc_dir, exist_ok=True)
+    ns['APP_DIR'] = fc_dir
+    with open(os.path.join(fc_dir, 'config.txt'), 'wb') as f:
+        f.write(b'followcaret = 1\n')
+    ns['toggle_followcaret']()                       # 1 -> 0
+    raw = open(os.path.join(fc_dir, 'config.txt'), 'rb').read()
+    check('托盘开关能关掉并落盘 0', ns['CFG']['followcaret'] is False and b'followcaret = 0' in raw, repr(raw))
+    ns['toggle_followcaret']()                       # 0 -> 1
+    raw = open(os.path.join(fc_dir, 'config.txt'), 'rb').read()
+    check('托盘开关能再开回来并落盘 1', ns['CFG']['followcaret'] is True and b'followcaret = 1' in raw, repr(raw))
+    ns['APP_DIR'] = real_app_dir
+    ns['CFG']['followcaret'] = False
+
     print('--- [csharp] 插件 txt 用宽松解码读 (第五十一轮: ANSI/GBK 另存不能崩线程) ---')
     gbk_plugin = os.path.join(tmp, 'gbk-plugin.txt')
     with open(gbk_plugin, 'wb') as f:
