@@ -601,9 +601,15 @@ python wgime-stt.py --serve [--itn=0|1] [--lang=zh] [--threads=4]
 `%TEMP%\wg-r72-app-sherpa-probe.py`（14 项，走**应用自己的** `voice.recognize()`：配置认得出 /
 助手是活着的子进程且 ready / 第二句更快 / `shutdown()` 不留孤儿）。
 
-**待办（可选）**: wrapper 在仓库外**没有任何跟踪**，这次"客户端改了、服务端没跟上"就是这么发生的。
-若要根治，可把 wrapper 作为参考副本收进仓库（放在 docs 或 `wgime-py-pure\` 下），
-用一条测试断言"仓库副本与 `stt_script` 指向的文件关键协议一致"。
+**已办（第七十三轮）**: wrapper 作为**参考副本**收进仓库 `wgime-py-pure\voicepack\wgime-stt.py`
+（同一目录还有 `README.txt`: 两种模式、装机步骤、实测数字），并加了守卫
+`wgime-py-pure\tests\voicepack-sync-test.py`（13 项）:
+- A 参考副本存在/可编译/协议要点齐全；
+- B 取 `package\config.txt` 的 `stt_script`（或 `--installed <路径>`）与参考副本比：
+  先比字节，再比**协议字段集合**（源码里所有 `'key':` 的集合 + `emit({...})` 打出去的字段）——
+  **集合不同就 FAIL**（少一个 = 协议丢了；多一个 = 只改了一侧）；文件不存在 = SKIP（没装语音包的机器不算错）；
+- C 有模型时真起一次 `--serve` 只验协议（ready / `ping` 立刻回 / 坏 wav 回 `ok=false` 且不退出 / `exit` rc=0）。
+**守卫有效性自证**: 把在用副本里的 `audio_ms` 字段整个改掉 → **3 条失败、rc=1**；还原后 13/13。
 
 ## §D9 第六十七轮：keyfix 的"牺牲字符"必须不可见
 
