@@ -348,6 +348,12 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
   v1.2.11（第四十轮，release id 386885107，含 bat/ps1/python 三个资产）= body 与本地逐字符一致（1478 字、
   0 个 `?`）、三个 zip 的 SHA256 全部与 `.release-stage-v1211\` 相同、`wgime-v1.2.11-python.zip` 内层
   `wgime-py.py` 744413 B / `6D6A6505…` 与本地 dist 一致、target = 本地 HEAD。
+  v1.2.13（release id 390380254，含 bat/ps1/python 三个资产；第七十～七十五轮：托盘 six 修复 + 瘦身 36% +
+  状态点默认关 + 常驻 sherpa + wrapper `--serve` + 点击落点 + 流式 ASR）= 线上 python zip 与
+  `.release-stage-v1213\` **逐字节一致**（25598416 B）、内层 `wgime-py.py` 619381 B 与本地 dist
+  **逐字节一致**、body 含中文且**无 `?`**、三个资产都在、**远端 tag `refs/tags/v1.2.13` = 本地 HEAD `56f7ffe`**。
+  **坑**: 本机 `git ls-remote`/`git fetch` 到 github:443 常年连不上（21s 超时），**回验 tag 要用 GitHub API**
+  （`/repos/<repo>/git/ref/tags/v1.2.13`，带重试），别把 ls-remote 的空结果当成"tag 没建"。
   （线上资产下载偶尔 `Unable to connect`，重试即可，别当成发布失败。）
 
 ## 8. 当前状态速览
