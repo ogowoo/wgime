@@ -53,6 +53,8 @@ python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性（-S -E 干净环境逐个 import，10 项，见 §12）
 python wgime-py-pure\tests\voicepack-sync-test.py     # 语音包 wrapper 协议一致性（仓库参考副本 vs 机器上在用的那份，13 项，见 §D8.3.1）
+python wgime-py-pure\tests\voice-click-test.py       # 语音"点击落点"的真实 WH_MOUSE_LL 钩子（7 项：装/收/不吞点击；无桌面 SKIP，见 §D14）
+python wgime-py-pure\tests\stream-asr-test.py        # 流式 ASR（本地假 SSE 服务器，22 项：增量/两种 payload/坏行/不重试，见 §D14）
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
 python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
@@ -167,10 +169,13 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
 38. **语音输入（第四十七轮，python 独有）**：`voice.py` = waveIn 录音（纯 ctypes，VAD 静音自停，别用已移除的 `audioop`）
     + 五种后端（`voice_engine`：`system` 系统离线引擎 System.Speech，走 `powershell -EncodedCommand` 内联脚本
     **不落盘**、结果 base64 回传 / `http` Whisper 兼容 / `whisper` **常驻本地 faster-whisper 子进程**（第六十三轮）
-    / `sherpa` **常驻本地 sherpa-onnx**（第六十四轮，见本条第末）/ `cmd` 外部命令带 `{wav}`）。热键 `hotkey_voice`（Ctrl+Alt+V）
+    / `sherpa` **常驻本地 sherpa-onnx**（第六十四轮，见本条第末）/ `cmd` 外部命令带 `{wav}` / `stream` **流式云端**（第七十五轮：OpenAI 兼容
+    `chat/completions` + SSE，文字**边说边出**；地址仍填 `stt_url/stt_key/stt_model`，两种 payload 按 URL
+    关键字自动选：含 `dashscope`/`aliyuncs` → `input_audio`(+`asr_options`)，否则 `audio_url`）。热键 `hotkey_voice`（Ctrl+Alt+V）
     按住说话，hook 的 `WM_KEYUP` 报 `VK_VOICE_UP`，**只在 `VOICE_ON` 为真时吞键**；「语音」模式（`MODE_VOICE=4`）
     里 `VOICE_MODE` 让钩子把按键**全部透传**（不组字），轻点热键 = 常录。结果默认进候选条等空格确认
-    （`voice_auto=1` 直接上屏），上屏走 `inject()` 但**不进词频学习**。麦克风隐私开关 Deny 时 `waveInOpen` 会 rc=1 →
+    （`voice_auto=1` 直接上屏；`voice_click=1` 则是**点击落点**：只进剪贴板 + 候选条提示
+    「点目标输入框粘贴」，用户点哪就往哪粘 —— 见 §D14），上屏走 `inject()` 但**不进词频学习**。麦克风隐私开关 Deny 时 `waveInOpen` 会 rc=1 →
     必须报"去开 设置→隐私和安全性→麦克风→允许桌面应用访问麦克风"（`voice.mic_consent()`）。
     **第四十八轮补的坑**：① `_write_config()` 以前在 `APP_DIR\config.txt` **不存在**时静默失败（`except OSError: pass`），
     而 python 版可以不带 config.txt 跑 → **所有托盘开关都"点了不落盘"**；现在文件不存在就**新建**，返回 `True/False`，

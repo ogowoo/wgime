@@ -684,6 +684,185 @@ def _decode_console(b):
     return b.decode('utf-8', 'replace')
 
 
+def _http_stream(url, body, headers, cfg, on_delta):
+    """流式 POST: 边收边把增量交给 `on_delta(delta, full)`, 返回累计文本.
+
+    与 `_http_post` **同一套网络语义**(第七十五轮): 代理顺序 + 连接层同路重试 + 只重试连接层异常
+    (服务端回过话就不再发) + 每条路都重建 `Request` + 自动模式记住可用路径。差别只有一个:
+    这里 `resp` 是**一行一行读**的 (SSE), 而不是 `read()` 一次拿完。
+    解析: `data: {...}` 行取 `choices[0].delta.content`; `data: [DONE]` 收尾; 坏 JSON 行跳过
+    (服务端偶发的心跳/注释行不该把整句识别弄丢)。若服务端**忽略了 stream** 直接返回整段 JSON,
+    这里也能兜住 (读完按非流式 JSON 再解析一次)。
+    """
+    import urllib.request
+    import urllib.error
+    mode = (cfg.get('stt_proxy') or '').strip()
+    low = mode.lower()
+    if low in ('direct', 'none', 'off'):
+        plans = [('直连', False)]
+    elif mode and low not in ('auto', 'system'):
+        plans = [('指定代理 %s' % mode, {'http': mode, 'https': mode})]
+    else:
+        plans = [('系统代理', None), ('直连', False)]
+        if _prefer_direct[0] is True:
+            plans.reverse()
+    try:
+        tries = max(1, min(8, int(cfg.get('stt_retry') or 3)))
+    except Exception:
+        tries = 3
+    try:
+        timeout = max(5, min(60, int(cfg.get('stt_timeout') or 15)))
+    except Exception:
+        timeout = 15
+    fails = []
+    for label, proxies in plans:
+        if proxies is None:
+            opener = urllib.request.build_opener()
+        elif proxies is False:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        else:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+        for attempt in range(1, tries + 1):
+            req = urllib.request.Request(url, data=body, method='POST')
+            for k, v in headers:
+                req.add_header(k, v)
+            acc, raw_lines, nonstream = [], [], []
+            try:
+                with opener.open(req, timeout=timeout) as resp:
+                    if len(plans) > 1:
+                        want = (label == '直连')
+                        if _prefer_direct[0] is not want:
+                            _prefer_direct[0] = want
+                            _vlog('voice: STT(stream) 记住可用路径 = %s (下次优先)' % label)
+                    for raw in resp:
+                        # `opener.open()` 给的是**二进制**响应: 迭代出来是 bytes, 直接 startswith('data:')
+                        # 会 TypeError (探针抓到过)。统一 decode 成 str 再解析。
+                        line = raw.decode('utf-8', 'replace').strip() if isinstance(raw, bytes) else raw.strip()
+                        if not line:
+                            continue
+                        raw_lines.append(line)
+                        if not line.startswith('data:'):
+                            continue
+                        data = line[5:].strip()
+                        if data == '[DONE]':
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except ValueError:
+                            continue                      # 心跳/注释/半包行: 跳过, 别丢整句
+                        try:
+                            delta = obj['choices'][0].get('delta', {}).get('content') or ''
+                        except (KeyError, IndexError, TypeError):
+                            delta = ''
+                        if delta:
+                            acc.append(delta)
+                            try:
+                                on_delta(''.join(acc))
+                            except Exception:
+                                pass
+                if not acc:
+                    # 服务端没按 SSE 回 (忽略了 stream): 把整段当非流式 JSON 再解析一次
+                    nonstream = raw_lines
+                if not acc and nonstream:
+                    try:
+                        obj = json.loads('\n'.join(nonstream))
+                        txt = obj['choices'][0].get('message', {}).get('content') or ''
+                        if txt:
+                            acc.append(txt)
+                    except Exception:
+                        pass
+                if acc:
+                    if fails or attempt > 1:
+                        _vlog('voice: STT(stream) ok via %s (第 %d 次尝试)' % (label, attempt))
+                    return ''.join(acc)
+                raise RuntimeError('流式响应里没有文本 (前几行: %s)' % (' | '.join(raw_lines[:3])[:200]))
+            except urllib.error.HTTPError:
+                raise                                      # 服务端回话 -> 换路/重试都没意义
+            except Exception as e:
+                if isinstance(e, RuntimeError) and '没有文本' in str(e):
+                    raise                                  # 服务端回话了(只是内容怪), 别重试
+                if attempt < tries:
+                    _vlog('voice: STT(stream) %s 第 %d/%d 次连接失败 (%s), 0.4s 后重试'
+                          % (label, attempt, tries, type(e).__name__))
+                    time.sleep(0.4)
+                    continue
+                fails.append('%s (共试 %d 次): %s' % (label, tries, e))
+                break
+    _vlog('voice: STT(stream) all paths failed -> %s' % '; '.join(fails))
+    raise RuntimeError('；'.join(fails) or 'STT 流式请求失败')
+
+
+def _stream_recognize(wav, cfg, on_delta=None):
+    """流式 ASR (OpenAI 兼容 `chat/completions` + SSE). 返回 (text, err).
+
+    为什么值得加: 我们其它后端都是"整句识别完才出结果", 用户对着候选条只看到"识别中…";
+    这条能让文字**边说边出** (MouthWrite/PhoneMic 就是这个形态, 见 §D13)。
+
+    地址就是 `stt_url`, 两种 payload 按 URL 关键字自动选 (对齐 xiuleitan/MouthWrite 的做法):
+      * 含 `dashscope`/`aliyuncs` -> DashScope 形态: `input_audio` + `asr_options.enable_itn`
+        (阿里云百炼 `qwen3-asr-flash`)
+      * 其它 (自建 vLLM / 其它 OpenAI 兼容) -> `audio_url` 形态 (Qwen3-ASR 等)
+    没有真实 key 也能测: 探针用一个**本地假 SSE 服务器**跑, 不依赖外网 (§D13)。
+    """
+    url = (cfg.get('stt_url') or '').strip()
+    if not url:
+        return None, 'voice_engine=stream 但 config.txt 里没配 stt_url'
+    try:
+        data = open(wav, 'rb').read()
+    except OSError as e:
+        return None, '读不到录音文件: %s' % e
+    if not data:
+        return None, '录音文件是空的'
+    b64 = base64.b64encode(data).decode('ascii')
+    data_uri = 'data:audio/wav;base64,' + b64
+    low = url.lower()
+    dashscope = ('dashscope' in low) or ('aliyuncs' in low)
+    model = (cfg.get('stt_model') or '').strip()
+    if dashscope:
+        payload = {'model': model or 'qwen3-asr-flash', 'stream': True,
+                   'messages': [{'role': 'user', 'content': [
+                       {'type': 'input_audio', 'input_audio': {'data': data_uri}}]}],
+                   'asr_options': {'enable_itn': bool(cfg.get('stt_itn', True))}}
+    else:
+        payload = {'model': model or 'qwen3-asr', 'stream': True, 'temperature': 0.0,
+                   'messages': [{'role': 'user', 'content': [
+                       {'type': 'audio_url', 'audio_url': {'url': data_uri}}]}]}
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    headers = [('Content-Type', 'application/json')]
+    key = (cfg.get('stt_key') or '').strip()
+    if key:
+        headers.append(('Authorization', 'Bearer ' + key))
+    t0 = time.time()
+    deltas = [0]
+
+    def _delta(full):
+        deltas[0] += 1
+        if on_delta is not None:
+            on_delta(clean_asr_text(full))          # 剥掉 <|zh|> 这类标签再给界面
+
+    try:
+        text = _http_stream(url, body, headers, cfg, _delta)
+    except Exception as e:
+        return None, '流式识别失败: %s' % (e,)
+    text = clean_asr_text(text)
+    if not text:
+        return None, '流式识别没返回文本'
+    # always-on 诊断 (§38 的老规矩: 语音这条链只能靠现场数字排障)
+    try:
+        import win as _w                    # 本文件惯例: 函数内 import (见 sys-rec/rec 那两处)
+        _w.dfn_always('voice: stream %dms deltas=%d chars=%d'
+                      % (int((time.time() - t0) * 1000), deltas[0], len(text)))
+    except Exception:
+        pass
+    return text, None
+
+
+def clean_asr_text(text):
+    """剥掉 ASR 模型夹带的标签 (`<|zh|>`/`<|endoftext|>` 等) 并去空白."""
+    import re
+    return re.sub(r'<\|[^|]*\|>', '', text or '').strip()
+
+
 def _cmd_recognize(wav, cfg):
     cmd = (cfg.get('stt_cmd') or '').strip()
     if not cmd:
@@ -1256,8 +1435,10 @@ def shutdown():
             pass
 
 
-def _dispatch(eng, wav, cfg):
-    """按引擎名分派到具体后端 (不含回退逻辑)."""
+def _dispatch(eng, wav, cfg, on_delta=None):
+    """按引擎名分派到具体后端 (不含回退逻辑). `on_delta` 只有流式后端用得上 (第七十五轮)."""
+    if eng in ('stream', 'sse', 'chat'):
+        return _stream_recognize(wav, cfg, on_delta)
     if eng in ('http', 'cloud', 'api'):
         return _http_recognize(wav, cfg)
     if eng in WSRV_ENGINES:                    # 常驻本地 whisper (第六十三轮)
@@ -1269,7 +1450,7 @@ def _dispatch(eng, wav, cfg):
     return _system_recognize(wav, cfg)
 
 
-def _race_engines(eng, fb, wav, cfg):
+def _race_engines(eng, fb, wav, cfg, on_delta=None):
     """两个引擎**同时开跑, 谁先成功用谁** (第六十六轮).
 
     为什么要赛跑而不是"失败再回退": 坏网络下云端要**十几秒**才报错 (连接超时/重试),
@@ -1284,7 +1465,7 @@ def _race_engines(eng, fb, wav, cfg):
 
     def run(name):
         try:
-            r = _dispatch(name, wav, cfg)
+            r = _dispatch(name, wav, cfg, on_delta)
         except Exception as e:                     # 后台线程异常必须兜住 (pythonw 下无声)
             r = (None, '内部异常: %r' % (e,))
         with lock:
@@ -1314,7 +1495,7 @@ def _race_engines(eng, fb, wav, cfg):
         return None, '；'.join(fails) or '两个引擎都没出结果'
 
 
-def recognize(wav, cfg):
+def recognize(wav, cfg, on_delta=None):
     """(text, err). text='' 表示"听到了但没识别出内容"(不是错误); err 非空表示出错.
 
     **双引擎赛跑** (第六十六轮): config `voice_fallback` 指定第二引擎 (如 `cmd`=本地 SenseVoice),
@@ -1327,5 +1508,5 @@ def recognize(wav, cfg):
     eng = (cfg.get('voice_engine') or 'system').strip().lower()
     fb = (cfg.get('voice_fallback') or '').strip().lower()
     if not fb or fb == eng:
-        return _dispatch(eng, wav, cfg)
-    return _race_engines(eng, fb, wav, cfg)
+        return _dispatch(eng, wav, cfg, on_delta)
+    return _race_engines(eng, fb, wav, cfg, on_delta)

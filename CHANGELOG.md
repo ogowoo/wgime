@@ -1,5 +1,64 @@
 ---
 
+## 2026-09-16 (第七十四轮: 语音"点击落点" —— 不猜目标窗口, 让用户点一下)
+
+**来由（读参考实现得到的结论，见 §D13）**: 进程外工具**没法可靠知道**"用户想把文字放进哪个输入框"。
+`xiuleitan/MouthWrite` 最后干脆把"自动粘贴到光标处"**撤掉**了 —— 改成"只进剪贴板 + 浮窗提示, 用户点
+鼠标左键后才 Ctrl+V"(它的 `_finish_with_paste` 注释原话: "不再自动粘贴到输入框")。那条"免注册路线"里,
+**"哪一下点击"本身就是最可靠的目标选择**。
+
+**做法**（新配置键 `voice_click`, 默认 0, 只在 `voice_auto = 0` 时有效）:
+1. 识别完**只把文本放进剪贴板**（`win.clipboard_set`），候选条提示「点目标输入框粘贴 / Esc 放弃」；
+2. `win.click_watch_start()` 装一个**一次性 `WH_MOUSE_LL`**（第七十四轮新增原语）：只等**鼠标左键按下**，
+   命中即**自动收钩**，并把回调 marshal 回 Tk 主线程；
+3. **不吞这次点击**（`CallNextHookEx`）—— 这一下点击正是"聚焦目标输入框"的那一下；
+4. 命中后等 **150ms**（让 mouseup/焦点切换先走完）再 `inject(text)`（走现有上屏链：剪贴板/keyfix/UIPI 全兼容）；
+5. 取消路径全都要收钩：Esc / 新录一句 / 退出 / 切模式（**取色器那次"✕ 关窗没收钩, 之后鼠标左键被吞"
+   的教训**）。
+
+**顺带修掉两个"完全静默"的 Win32 坑**（都是先写探针才发现的）:
+- `kernel32.GetModuleHandleW` 默认 restype 是 `c_int` → 64 位下 HMODULE(`0x7FF6…`) 被**截断成负数**,
+  传给 `SetWindowsHookExW` 必然失败, 而且**返回 0 不报错** → 钩子根本没装上（探针 `wg-r74-hook-diag.py`
+  实测: 截断装不上, NULL/真句柄都能装）;
+- `CallNextHookEx` 没声明 argtypes → 第 4 个参数（LPARAM）按默认 `c_int` 转换 → 64 位大整数
+  `OverflowError: int too long to convert` → 回调抛异常 → **用户那一下点击丢掉**（探针实测: 被点的窗口
+  收不到 `<Button-1>`）。
+  这两个坑在**取色器**（`tools.py` 的 `WH_MOUSE_LL`）里同样存在, 一并修了。
+
+**验证**: `tests\pure-state-harness.py` 加 **10 项**（剪贴板落地 / 等待态 / 装钩 / 候选条提示 / 命中收钩 /
+上屏一次且内容对 / 退出等待态 / 取消收钩 / `voice_click=0` 时完全不装钩）；
+新 tracked 测试 `wgime-py-pure\tests\voice-click-test.py` **7/7**（真 `WH_MOUSE_LL`：装/重复装被拒/
+真点一下回调被调/自动收钩/**那一下没被吞**（探针建了个 scratch 窗口接 `<Button-1>`）/stop 幂等；
+安全做法: 先把光标挪到探针自己的窗口再点、结束还原光标）。
+
+## 2026-09-16 (第七十五轮: 流式 ASR —— 边说边出字)
+
+**来由**: 其它后端都是"整句识别完才出结果", 用户对着候选条只看到"识别中…"（云端坏网络时甚至是十几秒
+的黑箱）。`MouthWrite` / `PhoneMic` 那种形态是**边说边出**, 观感差别很大。
+
+**做法**（`voice_engine = stream`, 复用 `stt_url`/`stt_key`/`stt_model`）:
+- POST 到 OpenAI 兼容的 `chat/completions`, `stream: true`, 音频按 `data:audio/wav;base64,` 塞进 messages:
+  **两种 payload 按 URL 关键字自动选** —— 含 `dashscope`/`aliyuncs` → `input_audio` + `asr_options.enable_itn`
+  （阿里云百炼 `qwen3-asr-flash`）；否则 `audio_url`（自建 vLLM / 其它兼容端点, Qwen3-ASR）；
+- `voice._http_stream()` **照抄 `_http_post` 的网络语义**（代理顺序 / 连接层同路重试 / 服务端回过话不重发 /
+  每条路重建 `Request` / 自动模式记住可用路径），只把"一次读完"换成"按行读 SSE";
+- 每段 `choices[0].delta.content` 累积 → 经 `on_delta` 回主线程（`VOICE_Q.put(('partial', 文本))`）→ 候选条
+  **实时显示**（`show_page` 在 busy 且 `_VOICE['partial']` 非空时显示实时文本）；定稿时清 `partial`;
+- 健壮性: `data: [DONE]` 收尾、坏 JSON 行/心跳注释跳过（不丢整句）、**服务端忽略 stream 直接回整段 JSON
+  也能兜住**、`<|zh|>` 这类标签剥掉（`clean_asr_text`）。
+
+**验证**: 新 tracked 测试 `wgime-py-pure\tests\stream-asr-test.py` **22/22** —— **全打本地假 SSE 服务器,
+不依赖外网、不需要 key**（本机外网时通时断, 真端点做断言不可复现, 同第五十九轮那条规矩）:
+增量按序回调 + 越接越长 / 最终文本与标签处理 / 两种 payload 形状（`input_audio`+`asr_options` vs
+`audio_url`）/ 非流式回包兜底 / HTTP 500 报错且**只发一次** / 坏行心跳跳过 / 黑洞端口给明确错误 /
+`_dispatch('stream')` 真路由 / 没配 `stt_url` 与坏 wav 的明确错误 / `clean_asr_text` 单元断言。
+`tests\pure-state-harness.py` 另加 **3 项**（增量进状态 / 候选条显示实时文本 / 定稿清 partial 并把文本
+转成待确认）。
+
+**没做的部分（要用户定）**: 没有真实服务商的 key, 所以**线上链路没跑过** —— 要用就把 `voice_engine = stream`
+配上 `stt_url`（百炼 `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` + `qwen3-asr-flash`,
+或自建 vLLM 的 `/v1/chat/completions`）与 `stt_key`。本机默认仍是**常驻 sherpa**（离线、0.1~1.2s/句）。
+
 ## 2026-09-16 (第七十二轮: 补上 wrapper 的 `--serve` —— 常驻 sherpa 的"服务端"那一半)
 
 **背景（同步远端时发现的集成缺口）**: 远端这一批把常驻 sherpa 做成了首选后端（客户端在仓库里:

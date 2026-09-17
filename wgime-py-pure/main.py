@@ -786,7 +786,15 @@ def show_page():
     # 语音 (第四十七轮): ① 待确认结果 -> 占一行候选, 空格上屏 / Esc 丢弃;
     # ② 正在录/识别中/语音模式 -> 候选条当状态指示用 (显示"按住说话/正在听…")
     if _VOICE['text'] is not None and not _VOICE['busy']:
-        bar.show('[语音|开] ', '空格上屏 / Esc 丢弃', [_VOICE['text']], 0, 0, 1, follow)
+        if _VOICE['click']:
+            # 点击落点: 文本已在剪贴板, 只等用户点目标输入框
+            bar.show('[语音|开] ', '点目标输入框粘贴 / Esc 放弃', [_VOICE['text']], 0, 0, 1, follow)
+        else:
+            bar.show('[语音|开] ', '空格上屏 / Esc 丢弃', [_VOICE['text']], 0, 0, 1, follow)
+        return
+    if _VOICE['partial'] is not None and _VOICE['busy']:
+        # 流式后端: 边说边出 (第七十五轮)
+        bar.show('[语音|开] ', '识别中… (实时)', [_VOICE['partial']], 0, 0, 1, follow)
         return
     if _VOICE['busy'] or _VOICE['rec'] is not None or ime.mode == MODE_VOICE:
         bar.show('[语音|开] ', _voice_state_text(), [], 0, 0, 1, follow)
@@ -946,7 +954,9 @@ def reset():
 # ---------- 语音输入 (第四十七轮) ----------
 # 录音在 voice.py (winmm 纯 ctypes); 识别三条后端 (系统离线引擎/HTTP/外部命令) 也在那里。
 # 这里只负责: 热键、状态显示、结果进候选条(空格确认)或直接上屏。**识别走后台线程**, 主线程不卡。
-_VOICE = {'rec': None, 't0': 0.0, 'toggle': False, 'busy': False, 'text': None, 'mod': None}
+_VOICE = {'rec': None, 't0': 0.0, 'toggle': False, 'busy': False, 'text': None, 'mod': None,
+          'click': False,   # 第七十四轮: 语音"点击落点"等待态 (见 _voice_click_arm)
+          'partial': None}  # 第七十五轮: 流式识别的**实时文本** (边说边出)
 VOICE_Q = queue.Queue()
 _VOICE_TICK = [0.0]        # 上次给"正在听…(Ns)"续秒的时间 (见 _voice_tick)
 _VOICE_SEQ = [0]           # 录音文件序号 (每次一把独立文件名, 见 voice_finish; 第六十三轮)
@@ -1036,6 +1046,8 @@ def voice_down():
     _VOICE_TICK[0] = 0.0                    # 立刻画一次 "正在听… (0s)" (见 _voice_tick)
     _VOICE['toggle'] = False
     _VOICE['text'] = None
+    _VOICE['partial'] = None            # 新录一句: 上一句的实时文本作废 (第七十五轮)
+    _voice_click_disarm()               # 新录一句: 上一句的"点击落点"等待态作废 (顺带收钩)
     hook.COMPOSING[0] = False
     _dfn('voice: recording (engine=%s lang=%s silence=%s)'
          % (CFG.get('voice_engine'), CFG.get('voice_lang'), CFG.get('voice_silence')))
@@ -1112,7 +1124,7 @@ def voice_finish():
 
     def _work():
         try:
-            text, err = v.recognize(path, CFG)
+            text, err = v.recognize(path, CFG, on_delta=lambda s: VOICE_Q.put(('partial', s)))
         except Exception as e:
             text, err = None, '识别异常: %r' % (e,)
         VOICE_Q.put(('done', text, err, path))
@@ -1129,6 +1141,7 @@ def voice_cancel():
             pass
         _VOICE['rec'] = None
     _VOICE['text'] = None
+    _voice_click_disarm()               # Esc/切模式取消: 收钩 (别让全局鼠标钩子挂着)
     hook.COMPOSING[0] = False
     show_page()
 
@@ -1144,6 +1157,67 @@ def voice_commit():
     show_page()
 
 
+
+def _voice_click_arm(text):
+    """进入"点击落点"等待态: 文本已在剪贴板, 等用户点目标输入框 (见 _voice_drain 调用处).
+
+    为什么要落剪贴板: ① 用户随时可以自己 Ctrl+V; ② 命中后我们发的也是粘贴, 内容一致。
+    """
+    _VOICE['click'] = True
+    try:
+        win.clipboard_set(text)
+    except Exception as e:
+        _dfn('voice: clipboard_set failed: %r' % (e,))
+        _VOICE['click'] = False
+        return
+    _dfn_always('voice: click-to-paste armed (%d chars, 已进剪贴板)' % len(text))
+
+    def _hit():
+        try:
+            root.after(0, _voice_click_hit)
+        except Exception:
+            pass
+    try:
+        win.click_watch_start(_hit)
+    except Exception as e:
+        _dfn('voice: click watch failed: %r (降级为空格确认)' % (e,))
+
+
+def _voice_click_hit():
+    """钩子回调 (已 marshal 回主线程): 目标窗口刚被点中 -> 稍等一下再粘贴."""
+    if not _VOICE['click']:
+        return
+    win.click_watch_stop()
+    _dfn('voice: click-to-paste hit (150ms 后粘贴)')
+    try:
+        root.after(150, _voice_click_paste)     # 让这一下点击(mouseup/焦点切换)先走完
+    except Exception:
+        _voice_click_paste()
+
+
+def _voice_click_paste():
+    """真正粘贴 (走现有 inject: 剪贴板/keyfix/UIPI 全兼容), 并退出等待态."""
+    if not _VOICE['click']:
+        return
+    text = _VOICE['text']
+    _VOICE['click'] = False
+    _VOICE['text'] = None
+    hook.COMPOSING[0] = False
+    if text:
+        inject(text)
+        _dfn('voice: click-to-paste commit %r' % text)
+    show_page()
+
+
+def _voice_click_disarm():
+    """退出等待态 (取消/重新录音/退出/切模式): **必须收钩**, 别让全局鼠标钩子挂在那儿."""
+    _VOICE['click'] = False
+    try:
+        win.click_watch_stop()
+    except Exception:
+        pass
+
+
 def _voice_drain():
     """主线程 (poll 里) 收识别结果与 VAD 自动停请求."""
     while True:
@@ -1156,8 +1230,14 @@ def _voice_drain():
                 _dfn('voice: auto-stop (silence or max duration)')
                 voice_finish()
             continue
+        if item[0] == 'partial':
+            # 流式后端: 增量文本 (第七十五轮) —— 只更新界面, 不碰状态机
+            _VOICE['partial'] = item[1] if len(item) > 1 else None
+            show_page()
+            continue
         _kind, text, err, wav = (list(item) + [None, None, None])[:4]
         _VOICE['busy'] = False
+        _VOICE['partial'] = None        # 定稿: 实时文本让位给最终结果 (第七十五轮)
         # 删这一次的 wav; 顺带清掉旧版本遗留的固定名 voice-last.wav (升级后第一次用语音时清掉)
         for _p in (wav, os.path.join(DATA_DIR, 'runtime', 'voice-last.wav')):
             if not _p:
@@ -1178,6 +1258,8 @@ def _voice_drain():
             else:
                 _VOICE['text'] = text
                 hook.COMPOSING[0] = True    # 让空格/数字/Esc 被钩子吞进输入法 (同组字中的候选键)
+                if CFG.get('voice_click'):
+                    _voice_click_arm(text)  # 只进剪贴板 + 等点击 (第七十四轮)
         show_page()
 
 
@@ -1560,6 +1642,7 @@ def set_theme(name):
 
 
 def quit_app():
+    _voice_click_disarm()               # 退出前收钩: 别把全局鼠标钩子留给下一个进程/系统
     try:
         if 'TRAY' in globals() and TRAY and getattr(TRAY, 'icon', None):
             TRAY.icon.stop()                            # 停 pystray 循环 (其线程非 daemon)

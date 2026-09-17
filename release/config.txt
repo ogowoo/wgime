@@ -9,6 +9,9 @@ trans = 1
 ; voice: 语音输入总开关 (1/0, 默认0=关; 打开后 Ctrl+Alt+V 按住说话, 松开出候选, 空格上屏)
 voice = 0
 ; voice_engine: 识别后端 system=系统离线 / http=云端 / sherpa=本地(常驻,最快) / whisper=本地 / cmd=外部命令
+;               stream=云端**流式**(OpenAI 兼容 chat/completions + SSE: 阿里云百炼 qwen3-asr-flash,
+;                      或自建的 vLLM Qwen3-ASR) —— 文字边说边出, 地址仍填 stt_url/stt_key/stt_model;
+;                      两种 payload 按 URL 关键字自动选 (含 dashscope/aliyuncs 走 input_audio, 否则 audio_url)
 voice_engine = system
 ; voice_fallback: 第二个识别引擎 (留空=只用一个, 默认)。
 ;                 与主引擎**同时开跑, 谁先成功用谁** (赛跑) —— 云端健康时 0.6s 就赢, 云端卡住时
@@ -22,6 +25,10 @@ voice_fallback =
 voice_lang = zh-CN
 ; voice_auto: 识别完直接上屏 (1) 还是先进候选条等你按空格确认 (0, 默认)
 voice_auto = 0
+; voice_click: 点击落点 (1/0, 默认0; 只在 voice_auto = 0 时有效): 识别完**只把文本放进剪贴板**并在
+;              候选条提示「点目标输入框粘贴」, 你点哪它就往哪粘 (自动 Ctrl+V) —— 进程外工具猜不准
+;              目标输入框时, 比"猜当前焦点"稳; Esc 放弃, 新录一句也会作废上一次等待
+voice_click = 0
 ; voice_silence: 连续静音多少秒自动停 (秒, 默认1.2; 0=只能手动结束)
 voice_silence = 1.2
 ; voice_max: 单次录音上限 (秒, 默认20)

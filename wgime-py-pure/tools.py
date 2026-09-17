@@ -776,6 +776,15 @@ _WM_RBUTTONDOWN = 0x0204
 _MOUSEPROC = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 _col_user32 = ctypes.windll.user32
 _col_kernel32 = ctypes.windll.kernel32
+# 第七十四轮顺手修: 取色器的钩子回调里 `CallNextHookEx(..., lParam)` 有同样的 64 位 LPARAM 隐患
+# (没声明 argtypes -> OverflowError -> 那一次鼠标事件丢给系统处理不了)。hMod 同理要按指针取。
+_col_user32.CallNextHookEx.restype = ctypes.c_ssize_t
+_col_user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+_col_user32.SetWindowsHookExW.restype = ctypes.c_void_p
+_col_user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _MOUSEPROC, ctypes.c_void_p, ctypes.wintypes.DWORD]
+_col_user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+_col_kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+_col_kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
 
 
 class _ColPT(ctypes.Structure):

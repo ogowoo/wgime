@@ -305,6 +305,68 @@ def main():
     dot_obj.destroy()
     ns['_DOT'][0] = None
 
+    print('--- 语音"点击落点" (第七十四轮: 只进剪贴板 + 等用户点目标输入框再自动粘贴) ---')
+    shown, clip, watch = [], [], [0, 0]
+    bar.show = lambda *a, **k: shown.append(a)
+    win.clipboard_set = lambda txt: clip.append(txt)
+    win.click_watch_start = lambda cb: (watch.__setitem__(0, watch[0] + 1), True)[1]
+    win.click_watch_stop = lambda: watch.__setitem__(1, watch[1] + 1)
+    ns['CFG']['voice_click'] = True
+    ns['CFG']['voice_auto'] = False
+    ime.active = True
+    ime.mode = 0
+    ns['VOICE_Q'].put(('ok', '点击落点文本', None, None))
+    del log[:]
+    ns['_voice_drain']()
+    check('点击落点: 文本先落剪贴板', clip == ['点击落点文本'], repr(clip))
+    check('点击落点: 进入等待态', ns['_VOICE']['click'] is True)
+    check('点击落点: 装了鼠标左键钩子', watch[0] == 1, repr(watch))
+    check('点击落点: 候选条提示"点目标输入框粘贴"',
+          any('点目标输入框粘贴' in str(a) for a in shown), repr(shown[-1:]))
+    ns['_voice_click_hit']()                       # 模拟"用户点了一下"
+    check('命中: 立刻收钩', watch[1] >= 1, repr(watch))
+    ns['_voice_click_paste']()
+    check('命中: 上屏一次且内容正确',
+          any(c[0] in ('send', 'send_qtfix', 'paste') and c[1] == '点击落点文本' for c in log), repr(log))
+    check('命中: 退出等待态并清空待确认文本',
+          ns['_VOICE']['click'] is False and ns['_VOICE']['text'] is None)
+    # 取消路径: 再等一次, 然后 Esc 取消 -> 必须收钩 (别把全局鼠标钩子留系统里)
+    ns['VOICE_Q'].put(('ok', '第二句', None, None))
+    del clip[:]
+    ns['_voice_drain']()
+    was = watch[1]
+    ns['voice_cancel']()
+    check('取消: 收钩 + 退出等待态', ns['_VOICE']['click'] is False and watch[1] > was, repr(watch))
+    check('取消路径也把文本放进了剪贴板', clip == ['第二句'], repr(clip))
+    # 关掉这个开关就不该再装钩子 (回归默认行为)
+    ns['CFG']['voice_click'] = False
+    watch_before = watch[0]
+    ns['VOICE_Q'].put(('ok', '第三句', None, None))
+    ns['_voice_drain']()
+    check('voice_click=0: 不装钩子 (还是老的空格确认)', watch[0] == watch_before and ns['_VOICE']['click'] is False)
+    ns['voice_cancel']()
+    bar.show = lambda *a, **k: None
+    win.clipboard_set = lambda txt: None
+
+    print('--- 语音流式: 增量实时进候选条 (第七十五轮) ---')
+    shown2 = []
+    bar.show = lambda *a, **k: shown2.append(a)
+    ns['_VOICE']['busy'] = True
+    ns['_VOICE']['partial'] = None
+    ns['VOICE_Q'].put(('partial', '今天天气'))
+    ns['_voice_drain']()
+    check('流式增量: 状态已更新', ns['_VOICE']['partial'] == '今天天气', repr(ns['_VOICE']['partial']))
+    check('流式增量: 候选条显示实时文本', any('今天天气' in str(a) for a in shown2), repr(shown2[-1:]))
+    ns['VOICE_Q'].put(('done', '今天天气不错。', None, None))
+    del log[:]
+    ns['_voice_drain']()
+    check('流式定稿: 清 partial + 文本进待确认',
+          ns['_VOICE']['partial'] is None and ns['_VOICE']['text'] == '今天天气不错。',
+          repr((ns['_VOICE']['partial'], ns['_VOICE']['text'])))
+    ns['voice_cancel']()
+    ns['_VOICE']['busy'] = False
+    bar.show = lambda *a, **k: None
+
     print('--- [csharp] 插件 txt 用宽松解码读 (第五十一轮: ANSI/GBK 另存不能崩线程) ---')
     gbk_plugin = os.path.join(tmp, 'gbk-plugin.txt')
     with open(gbk_plugin, 'wb') as f:

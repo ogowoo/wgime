@@ -220,6 +220,9 @@ def load_config(path):
                voice_engine='system',          # system / http / whisper / sherpa / cmd  (后两个是本地离线)
         voice_fallback='',              # 第二引擎: 与主引擎**同时开跑, 谁先成功用谁** (第六十六轮); 空=不用
                voice_auto=False,               # True: 识别完直接上屏; False: 进候选条等空格确认
+               # voice_click 第七十四轮: 待确认时**只进剪贴板 + 提示**, 用户点目标输入框再自动 Ctrl+V
+               # (进程外工具猜不准目标窗口; "点哪儿粘哪儿"把聚焦那一步交回用户。见 AGENTS §D13)
+               voice_click=False,
                voice_lang='',                  # 系统引擎的识别语言 (如 zh-CN); 空=系统默认
                voice_silence=1.2,              # 连续静音多少秒自动停 (0=不自动停)
                voice_max=20,                   # 单次录音上限(秒)
@@ -268,6 +271,8 @@ def load_config(path):
                 cfg['voice'] = v in ('1', 'on', 'true')     # 语音输入总开关 (白名单, 非法值判"关")
             elif k == 'voice_auto':
                 cfg['voice_auto'] = v in ('1', 'on', 'true')    # 识别完直接上屏 (白名单)
+            elif k == 'voice_click':
+                cfg['voice_click'] = v in ('1', 'on', 'true')   # 点击落点 (白名单, 第七十四轮)
             elif k == 'voice_fallback':
                 cfg['voice_fallback'] = v.strip().lower()   # 第二引擎名; 空=回退关闭
             elif k == 'voice_engine':

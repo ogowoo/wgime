@@ -4,6 +4,7 @@ import ctypes
 import ctypes.wintypes as w
 import os
 import sys as _sys
+import threading      # 第七十四轮: 点击落点的一次性鼠标钩子要起自己的消息循环线程
 
 # debug 日志(光标跟随耗时排查用): 设 WGIME_DEBUG=1 时才记录, 不拖慢正常输入.
 # 写 %LOCALAPPDATA%\wgime-py\debug.log (与 main.py _dfn 同文件, 便于一起看).
@@ -833,6 +834,107 @@ def move_topmost(hwnd, x, y):
                                         int(x), int(y), 0, 0, flags))
     except Exception:
         return False
+
+
+# ---- 一次性鼠标左键监听 (第七十四轮: 语音"点击落点") ----
+# 为什么要它: 进程外工具没法可靠地知道"用户想把文字放进哪个输入框"。与其猜焦点, 不如让用户
+# **点一下** —— 那一下点击本身就完成了"聚焦目标输入框", 我们只要在旁边等着发 Ctrl+V。
+# 取自 harold-lu-bit/IMEDot / xiuleitan/MouthWrite 的那条"免注册路线"(见 §D11/§D13)。
+_WH_MOUSE_LL = 14
+_WM_LBUTTONDOWN = 0x0201
+_MOUSE_PROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [('pt', POINT), ('mouseData', w.DWORD), ('flags', w.DWORD),
+                ('time', w.DWORD), ('dwExtraInfo', ctypes.c_void_p)]
+
+
+_click_watch = {'hook': None, 'proc': None, 'thread': None, 'error': ''}
+
+# **CallNextHookEx 必须显式声明 argtypes**: 不声明时 ctypes 按默认 `c_int` 转换第 4 个参数(LPARAM),
+# 而 64 位下 LPARAM 是个大整数 -> `OverflowError: int too long to convert`; 回调抛异常的后果是
+# **这一次点击丢掉**(实测: 被点的窗口收不到 <Button-1>)。别删这两行。
+user32.CallNextHookEx.restype = ctypes.c_ssize_t
+user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+_click_watch_lock = threading.Lock()
+
+
+def click_watch_active():
+    return _click_watch['hook'] is not None
+
+
+def click_watch_error():
+    """上一次装钩失败的原因 (空=没失败过); 装成功了也会清空。"""
+    return _click_watch['error']
+
+
+def click_watch_stop():
+    """收钩 (幂等)。**每条路径都要调** —— 取色器那次"✕ 关窗没收钩, 之后鼠标左键被吞"的教训。"""
+    with _click_watch_lock:
+        h = _click_watch['hook']
+        _click_watch['hook'] = None
+        _click_watch['proc'] = None
+    if h:
+        try:
+            user32.UnhookWindowsHookEx(ctypes.c_void_p(h))
+        except Exception:
+            pass
+
+
+def click_watch_start(cb):
+    """装一次性 `WH_MOUSE_LL`: **下一次鼠标左键按下**时调 cb() (在钩子线程里调, 由调用方自己
+    `root.after(0, ...)` marshal 回 Tk 主线程), 然后**立刻收钩**。已装则不重复。
+
+    两个刻意的选择:
+    * **不吞这次点击** (`CallNextHookEx`): 这一下点击正是"聚焦目标输入框"的那一下, 吞了就白点了;
+    * 收钩放在 cb 之前: 回调里要再点一次鼠标也不会被我们吃掉第二次。
+    钩子跑在**自带消息循环**的 daemon 线程 (低层钩子要求装钩线程泵消息; 照抄取色器那套)。
+    """
+    if _click_watch['hook'] is not None:
+        return False
+
+    def _thread():
+        def proc(nCode, wParam, lParam):
+            if nCode >= 0 and wParam == _WM_LBUTTONDOWN:
+                click_watch_stop()
+                try:
+                    cb()
+                except Exception:
+                    pass
+                return user32.CallNextHookEx(None, nCode, wParam, lParam)   # 放行这一下
+            return user32.CallNextHookEx(None, nCode, wParam, lParam)
+        cb_ref = _MOUSE_PROC(proc)
+        _click_watch['proc'] = cb_ref                  # 防 GC
+        # **hMod 必须按指针取**: `GetModuleHandleW` 默认 restype 是 `c_int`, 64 位下 HMODULE(0x7FF6…)
+        # 会被截断成负数 -> 传给 SetWindowsHookExW 必失败(而且返回 0 不报错)。实测: 截断后装不上,
+        # NULL 或真实句柄都能装上 (见 %TEMP%\wg-r74-hook-diag.py)。
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _MOUSE_PROC, ctypes.c_void_p, w.DWORD]
+        user32.UnhookWindowsHookEx.restype = w.BOOL
+        user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+        hmod = kernel32.GetModuleHandleW(None)
+        h = user32.SetWindowsHookExW(_WH_MOUSE_LL, cb_ref, hmod, 0)
+        if not h:
+            # 失败要**看得见**(always-on): 点击落点会静默退化成"空格确认", 不写日志就无从查起
+            _click_watch['error'] = 'SetWindowsHookExW failed (hMod=%s, err=%s)' % (hmod, ctypes.get_last_error())
+            dfn_always('click watch: %s' % _click_watch['error'])
+            _click_watch['proc'] = None
+            return
+        _click_watch['error'] = ''
+        _click_watch['hook'] = h
+        msg = w.MSG()                                  # 装钩线程必须泵消息, 否则收不到回调
+        while _click_watch['hook'] is not None:
+            if user32.GetMessageW(ctypes.byref(msg), None, 0, 0) <= 0:
+                break
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    _click_watch['thread'] = threading.Thread(target=_thread, name='wgime-clickwatch', daemon=True)
+    _click_watch['thread'].start()
+    return True
 
 
 def mouse_buttons_down():
