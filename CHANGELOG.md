@@ -1,5 +1,48 @@
 ---
 
+## 2026-09-16 (第七十二轮: 补上 wrapper 的 `--serve` —— 常驻 sherpa 的"服务端"那一半)
+
+**背景（同步远端时发现的集成缺口）**: 远端这一批把常驻 sherpa 做成了首选后端（客户端在仓库里:
+`voice.py` 的 `_SherpaSrv` 会 `spawn('… wgime-stt.py --serve --itn= --threads=')`），
+但 **wrapper 那一半在仓库外**（`C:\Tools\wgime-local-asr\wgime-stt.py`，第六十四轮的产物），
+它当时只支持一次性模式 —— 也就是说本机一旦把 `voice_engine` 设成 `sherpa`，助手起不来。
+
+**做法**: 给 wrapper 补 `--serve`（一次性模式一行没改，连退出码 3/4/5/6/7 都对旧版一致）:
+- 启动即建识别器（载模型 1.3s），完成后 **stdout** 打 `{"ready": true, "boot_ms": …, "model": …}`；
+- 之后每行 stdin `{"id": 7, "wav": "…"}` → 每行 stdout `{"id":7,"ok":true,"text":"…","ms":…,"segs":1}`
+  或 `{"id":7,"ok":false,"error":"…"}`（**单句失败不退出**，继续服务）；
+- `{"cmd":"exit"}` / stdin EOF 干净退出；**回包一律 `ensure_ascii=True`**（中文走 \uXXXX，不依赖对端编码）；
+- 协议纯净: 服务模式 stdout **只**有 JSON 行，日志全走 stderr（对端按行 json.loads）。
+
+**实测（本机，`test-zh.wav` 音频长 4.7s）**:
+| 环节 | 实测 |
+|---|---|
+| 建识别器（载模型，只在启动付一次） | **1312 ~ 2375 ms** |
+| 解码吞吐 | 约 **0.27 × 音频时长**（4.7s 音频 → 1060~1266 ms） |
+| 走应用自己的 `voice.recognize()` 第一句 / 第二句 | **2.66s → 1.06s**（省下的是每句 ~1.3s 载模型） |
+| 子进程 | 常驻一个（pid 不变），`shutdown()` 后干净退出 |
+
+**顺手校正一处说法**: 文档里"常驻后每句 0.08~0.16s"只在**很短的口令**（约 0.3~0.5s 音频）成立；
+它省掉的其实是**每句固定 ~1.3s 的载模型**，解码本身跟音频长度成正比（我们的录音是"按住说一句话"，
+2~3 秒很常见 → 常驻后每句约 0.6~0.9s）。这样报数才不会让人以为"4 秒的话 0.1 秒就能出"。
+
+**本机接法（已生效）**: `package\config.txt` 里
+`voice_engine = sherpa` / `stt_script = C:\Tools\wgime-local-asr\wgime-stt.py` / `stt_itn = 1` /
+`stt_threads = 4` / `voice_fallback =`（空 —— 主引擎已经是本地的，没必要每句再跑一次云端）；
+`statedot = 0`（保持关，用户反馈过"影响到鼠标移动"）。云端那几行在新模板里本来就是注释状态，
+所以 API key 现在**不在 config.txt 里**（要用 http 后端再解开注释填上）。
+wrapper 同步到了便携包 `portable\wgime-stt.py`（同一份实现两处用）。
+
+**验证**: wrapper 探针 `%TEMP%\wg-r72-wrapper-serve-probe.py` **21/21**（一次性协议纯净 / ready 字段 /
+两句文本正确 / 坏路径不退出 / 第二次更快 / `exit` 与 EOF 都干净退出 / stdout 每行都是 JSON）；
+应用路径探针 `%TEMP%\wg-r72-app-sherpa-probe.py` **14/14**（走真 `voice.recognize()`: 配置认得出、
+助手是我们起的子进程且 ready、第二句明显更快、`shutdown()` 不留孤儿）。
+**合并后的全链也全绿**: harness、`undefined-globals` 0、`embedded-isolation` 10、tray-swap 42、
+voice-vad 31、whisper-warm 67、**sherpa-warm 74**、**dot-mouse 24**、`wgime-dist-sync-check` OK。
+
+**注**: wrapper 与模型在仓库外（`C:\Tools\wgime-local-asr\`，按机器各装一份），协议对端在
+`wgime-py-pure\voice.py` 的 `_SherpaSrv` —— 改任何一侧都要同时看另一侧（本次缺口就是这么来的）。
+
 ## 2026-09-16 (第六十九轮补充: 状态提示点默认关 —— 用户反馈"影响到鼠标移动")
 
 用户："跟着鼠标跑的那个小圆点可以拿掉吗？好像影响到鼠标移动了。"
