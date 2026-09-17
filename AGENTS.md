@@ -48,13 +48,13 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1    # WgIme ps1 版（15 项）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\chat-protocol-smoke.ps1  # chat 协议冒烟（需联网）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-interop.ps1  # chat 双向互通验证（需联网+node）
-python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（33 项，不装钩子/不联网）
+python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（51 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性（-S -E 干净环境逐个 import，10 项，见 §12）
 python wgime-py-pure\tests\voicepack-sync-test.py     # 语音包 wrapper 协议一致性（仓库参考副本 vs 机器上在用的那份，13 项，见 §D8.3.1）
 python wgime-py-pure\tests\voice-click-test.py       # 语音"点击落点"的真实 WH_MOUSE_LL 钩子（7 项：装/收/不吞点击；无桌面 SKIP，见 §D14）
-python wgime-py-pure\tests\stream-asr-test.py        # 流式 ASR（本地假 SSE 服务器，22 项：增量/两种 payload/坏行/不重试，见 §D14）
+python wgime-py-pure\tests\stream-asr-test.py        # 流式 ASR（本地假 SSE 服务器 + 现造的 wav，22 项，见 §D14）
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
 python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
@@ -64,6 +64,11 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
 
+- **测试要自足、且不许被"现场"干扰**（第七十六轮两条实证）：① 机器绝对路径/外部 fixture 一律**现造**
+  （`stream-asr-test.py` 曾写死 `...\portable\test-zh.wav` —— 本机没这文件就整份全红，且末行 `SEEN[-1]` 直接
+  `IndexError` 崩掉而不是 FAIL；现在自己搓 0.2s wav 到 `%TEMP%`，`PURE` 从 `__file__` 推）；② 被测代码读**真实
+  输入**（物理鼠标键/真实光标，如 `_dot_tick`）时，断言里必须**打桩**，否则屏幕前的人一点鼠标就假红 ——
+  桩要在段尾还原，且顺带补一条"输入真的变了就重画"的正向断言（只测"没动就不动"是靠环境恰好不动蒙过的）。
 - 测试需要 Windows PowerShell 5.1（`powershell.exe`，不是 pwsh）。
 - 测试会启动真实 IME 进程，可能被**单实例锁**影响；失败时先杀掉残留的 powershell 进程（`Get-CimInstance Win32_Process | ? CommandLine -match 'WgIme' | % { Stop-Process $_.ProcessId -Force }`），清理 `%LOCALAPPDATA%\wgime\WgIme.*.dll` 和 `wgime.mb` 缓存后重跑。
 - schtasks 相关断言在无交互会话会 SKIP（已处理）。
@@ -312,8 +317,7 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
-> **细节在 `AGENTS-DETAIL.md`**：正文只留"要照着做的规则"，实测数字/探针清单/历史轮次来龙去脉
-> 都搬到了 `AGENTS-DETAIL.md`（需要时 read 它，别凭记忆猜）。AGENTS.md 有 64KB 的注入预算上限。
+> 实测数字/探针清单/历史轮次来龙去脉都在 `AGENTS-DETAIL.md`（需要时 read，别凭记忆猜）。
 
 - **启动顺序（第三十八～四十轮）**：`单实例检查` → `load_config`+`hook.configure/start/set_active` →
   `Engine()` 后台线程（不碰 Tk）+ 跟随 helper spawn → `import tkinter/tools/plugins/bar`（dist 里懒装载）→
@@ -331,35 +335,25 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
 
 - 主分支 `master`（唯一活跃分支）。原独立 WgTray 程序已于 2026-09 退役（收敛为 `mode=tray` 运行模式），历史版本见早期 tag/提交。
 - 提交后推 `origin/master`。release 发版本用 GitHub API + zip，**已脚本化**（2026-09-10）：
-  1. `powershell -NoProfile -ExecutionPolicy Bypass -File tests\build-release-assets.ps1 -Version 1.2.7` → 三个 zip
-     （`.release-stage-v127\`；`-OnlyPython` 只重做 python 包）。脚本内的三条坑：zip 条目要逐条写 `/`、源目录必须长路径、
+  1. `tests\build-release-assets.ps1 -Version X` → 三个 zip
+     （`.release-stage-vX\`；`-OnlyPython` 只重做 python 包）。脚本内的三条坑：zip 条目要逐条写 `/`、源目录必须长路径、
      **python 包取自 `package\`，改完源码先跑 `build-package.ps1`**（有 hash 守卫，防发出上一个构建）。
   2. `tests\publish-release.ps1 -Version X -BodyFile <body.md> -AssetsDir <stage>`（同 tag 走 PATCH + 覆盖资产）。
      **务必先 push 再 publish**（脚本用本地 HEAD sha 作 target_commitish —— 传 master 会按远端解析，v1.2.9 就踩过）。
   3. 发完**回验**：线上 python zip 的 SHA256 与 stage 相同、内层 `wgime-py.py` 与 dist 逐字符一致、body 无 `?`、tag=本地 HEAD。
 - **中文坑**：release body 用 `HttpWebRequest` 显式 UTF-8 字节发（脚本已内置）；**别用 `Invoke-RestMethod`+`ConvertTo-Json`**（PS 5.1 把中文变 `?`）。
 - **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
-- 版本 tag：`v1.0.0` ~ `v1.2.12`（后续版本递增）。插件更新不单独发 release。
+- 版本 tag：`v1.0.0` ~ `v1.2.13`（后续版本递增）。插件更新不单独发 release。
   **发布回验记录**（`tests\publish-release.ps1` 之后必做：下线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD）：
-  v1.2.12（release id 388497981，含 bat/ps1/python 三个资产；第四十四～五十五轮，19 个提交）= body 2385 字、
-  **0 个 `?`**、含中文；三个 zip 的 SHA256 全部与 `.release-stage-v1212\` 相同（bat `4F9C04D1…`、ps1 `7DD902A8…`、
-  python `72C96996…`）；线上 python zip **与 stage 逐字节一致**且内层 `wgime-py.py` 853398 B / `E2B88F4A…`
-  与本地 dist 一致（含 `dicts/`）；tag = 本地 HEAD `e1934bb`。
-  v1.2.11（第四十轮，release id 386885107，含 bat/ps1/python 三个资产）= body 与本地逐字符一致（1478 字、
-  0 个 `?`）、三个 zip 的 SHA256 全部与 `.release-stage-v1211\` 相同、`wgime-v1.2.11-python.zip` 内层
-  `wgime-py.py` 744413 B / `6D6A6505…` 与本地 dist 一致、target = 本地 HEAD。
-  v1.2.13（release id 390380254，含 bat/ps1/python 三个资产；第七十～七十五轮：托盘 six 修复 + 瘦身 36% +
-  状态点默认关 + 常驻 sherpa + wrapper `--serve` + 点击落点 + 流式 ASR）= 线上 python zip 与
-  `.release-stage-v1213\` **逐字节一致**（25598416 B）、内层 `wgime-py.py` 619381 B 与本地 dist
-  **逐字节一致**、body 含中文且**无 `?`**、三个资产都在、**远端 tag `refs/tags/v1.2.13` = 本地 HEAD `56f7ffe`**。
+  v1.2.12 / v1.2.11 / v1.2.13 = 三个 zip 的 SHA256 与各自 `.release-stage-v12xx\` 全同、body 无 `?`（含中文）、
+  线上 python zip 内层 `wgime-py.py` 与本地 dist 逐字节一致、tag = 本地 HEAD（v1.2.13 = `56f7ffe`，
+  853398→744413→619381 B 的逐项数字与 release id 见 CHANGELOG）。
   **坑**: 本机 `git ls-remote`/`git fetch` 到 github:443 常年连不上（21s 超时），**回验 tag 要用 GitHub API**
-  （`/repos/<repo>/git/ref/tags/v1.2.13`，带重试），别把 ls-remote 的空结果当成"tag 没建"。
-  （线上资产下载偶尔 `Unable to connect`，重试即可，别当成发布失败。）
+  （`/repos/<repo>/git/ref/tags/<tag>`，带重试）；线上资产下载偶尔 `Unable to connect`，重试即可。
 
 ## 8. 当前状态速览
 
-> **细节在 `AGENTS-DETAIL.md`**：正文只留"要照着做的规则"，实测数字/探针清单/历史轮次来龙去脉
-> 都搬到了 `AGENTS-DETAIL.md`（需要时 read 它，别凭记忆猜）。AGENTS.md 有 64KB 的注入预算上限。
+> 实测数字/探针清单/历史轮次来龙去脉都在 `AGENTS-DETAIL.md`（需要时 read，别凭记忆猜）。
 
 - 已完成一次全面体检并修复高危+中危问题（2026-08-29，main/engine/win/tools/hook/plugins/ui 七模块），详见 CHANGELOG。
 - 托盘菜单（ime 模式）：开关 / 模式{混合,拼音,五笔,词典,语音} / 选项{**语音输入**, 繁体输出, 译文, 反查编码, 整句输入,

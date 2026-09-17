@@ -19,7 +19,8 @@ import sys
 import time
 import tkinter as tk
 
-sys.path.insert(0, r'C:\Tools\wgime\wgime-py-pure')
+PURE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # 本测试在 <pure>\tests\ 下
+sys.path.insert(0, PURE)
 import win  # noqa: E402
 
 u32 = ctypes.windll.user32

@@ -277,11 +277,20 @@ def main():
     ns['CFG']['mode'] = 'tray'
     ns['_dot_tick']()
     check('tray 模式不建窗口 (没有输入法开关状态)', ns['_DOT'][0] is None, repr(ns['_DOT'][0]))
+    # ⚠ 这一段必须把"真实鼠标状态/真实光标位置"打桩: `_dot_tick` 读的是 `win.mouse_buttons_down()`
+    # (物理左键) 与 `win.cursor_pos()`(物理光标)。第六十九轮的实机教训 —— **人在旁边点鼠标/移鼠标,
+    # 这三条断言就会红**: 按住键 -> 圆点本来就该隐藏, "没动就不摆窗"也会因光标真在动而变成"又摆了"。
+    # 桩只在这一段生效(存旧值, 段尾还原), 所以按住/松开的两种真实语义仍由下面显式打桩来测。
+    _real_mbd = ns['win'].mouse_buttons_down
+    _real_cpos = ns['win'].cursor_pos
+    _cur = [(100, 100)]
+    ns['win'].mouse_buttons_down = lambda: False
+    ns['win'].cursor_pos = lambda: _cur[0]
     ns['CFG']['mode'] = 'ime'
     ns['_dot_tick']()
     check('ime 模式 tick 后圆点已显示', ns['_DOT'][0] is not None and ns['_DOT'][0].is_shown(),
           repr(ns['_DOT'][0]))
-    # 第六十九轮补充: 光标没动就不该再摆窗; 状态变了(颜色)才重画; 按住鼠标键时隐藏
+    # 第六十九轮补充: 光标没动就不该再摆窗; 光标动了/状态变了(颜色)才重画; 按住鼠标键时隐藏
     dot_obj = ns['_DOT'][0]
     calls = []
     real_update = dot_obj.update
@@ -290,18 +299,23 @@ def main():
     n1 = len(calls)
     ns['_dot_tick']()
     check('光标没动、状态没变 -> 不再摆窗', len(calls) == n1, '%d -> %d' % (n1, len(calls)))
+    _cur[0] = (140, 130)
+    ns['_dot_tick']()
+    check('光标动了 -> 重新摆窗', len(calls) > n1, repr(calls[-1:]))
+    n2 = len(calls)
     ns['ime'].mode = 1
     ns['_dot_tick']()
-    check('状态变了(模式) -> 重新上色', len(calls) > n1, repr(calls[-1:]))
+    check('状态变了(模式) -> 重新上色', len(calls) > n2, repr(calls[-1:]))
     ns['ime'].mode = 0
-    _real_mbd = ns['win'].mouse_buttons_down
     ns['win'].mouse_buttons_down = lambda: True
     ns['_dot_tick']()
     check('按住鼠标键(拖动中) -> 隐藏', dot_obj.is_shown() is False)
-    ns['win'].mouse_buttons_down = _real_mbd
+    ns['win'].mouse_buttons_down = lambda: False
     ns['_dot_tick']()
     check('松开之后 -> 自动回来', dot_obj.is_shown() is True)
     dot_obj.update = real_update
+    ns['win'].mouse_buttons_down = _real_mbd
+    ns['win'].cursor_pos = _real_cpos
     dot_obj.destroy()
     ns['_DOT'][0] = None
 

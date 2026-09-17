@@ -14,13 +14,31 @@ import os
 import socket
 import socketserver
 import sys
+import tempfile
 import threading
 import time
 
-PURE = r'C:\Tools\wgime\wgime-py-pure'
-WAV = r'C:\Tools\wgime-local-asr\portable\test-zh.wav'
+PURE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # 本测试在 <pure>\tests\ 下
 sys.path.insert(0, PURE)
 import voice  # noqa: E402
+
+
+def _mk_wav(path):
+    """**自造**一个合法 wav —— 原来写死 `C:\\Tools\\wgime-local-asr\\portable\\test-zh.wav`(本机没有),
+    于是整份回归在"读不到录音文件"上全红 + 第 120 行 `SEEN[-1]` 直接 IndexError 崩掉。
+    流式这条路只要求"能从文件读出字节再 base64", 内容无关, 所以自己搓一个 (0.2s 16k 单声道)。"""
+    import struct
+    import wave
+    n = 3200
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(struct.pack('<%dh' % n, *([0] * n)))
+
+
+WAV = os.path.join(tempfile.gettempdir(), 'wg-stream-asr-test.wav')
+_mk_wav(WAV)
 
 fails, n = [], [0]
 
@@ -30,6 +48,12 @@ def check(name, cond, extra=''):
     print('  %-52s %s %s' % (name, 'OK' if cond else 'FAIL', '' if cond else extra))
     if not cond:
         fails.append(name)
+
+
+def last_seen():
+    """拿服务端收到的最后一条请求 —— **空了就干净地失败**, 不许 IndexError 把整份回归崩掉
+    (第六十九轮"桩不能比真的更宽容"的同一套规矩: 测试要么 OK 要么 FAIL, 不能中途炸)。"""
+    return SEEN[-1][1] if SEEN else {}
 
 
 SEEN = []          # 服务端收到的请求 (path, payload)
@@ -48,7 +72,7 @@ class H(http.server.BaseHTTPRequestHandler):
             obj = json.loads(raw.decode('utf-8'))
         except Exception:
             obj = {}
-        SEEN.append((self.path, obj))
+        SEEN.append((self.path, obj, self.headers.get('Authorization') or ''))
         if self.path.startswith('/dashscope/x'):
             self._sse(['<|zh|>今天天气', '不错，我们', '下午3点开会。'])
         elif self.path.startswith('/vllm/x'):
@@ -117,16 +141,17 @@ check('增量是"越接越长"的前缀', all(got[i].startswith(got[i - 1]) for 
 check('中间那次就已经能看到字', any('今天天气' in g for g in got), repr(got[-1:]))
 
 print('--- B. payload 形状按 URL 自动选 ---')
-p = SEEN[-1][1]
+p = last_seen()
 msg = (p.get('messages') or [{}])[0].get('content') or [{}]
 check('dashscope: 用 input_audio', msg[0].get('type') == 'input_audio', repr(msg[0].get('type')))
 check('dashscope: 带 asr_options', 'asr_options' in p, repr(list(p.keys())))
 check('dashscope: stream=true', p.get('stream') is True)
 check('dashscope: 音频是 data:audio/wav;base64', str(msg[0].get('input_audio', {})).startswith("{'data': 'data:audio/wav;base64,"), '')
-check('Authorization 头带上 key', SEEN[-1][0] and True)
+check('Authorization 头真的带上 key', (SEEN[-1][2] if SEEN else '') == 'Bearer sk-fake',
+      repr(SEEN[-1][2] if SEEN else None))
 got2 = []
 t2, e2 = voice._stream_recognize(WAV, cfg_for('/vllm/x', stt_model='qwen3-asr'), on_delta=got2.append)
-p2 = SEEN[-1][1]
+p2 = last_seen()
 m2 = (p2.get('messages') or [{}])[0].get('content') or [{}]
 check('vLLM: 用 audio_url', m2[0].get('type') == 'audio_url', repr(m2[0].get('type')))
 check('vLLM: 文本正确', (t2 or '') == '本地 vLLM 也行。', repr(t2))

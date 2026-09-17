@@ -819,7 +819,10 @@ GetAncestor(GA_ROOT)cls=TkTopLevel  ex=0x80088
 同样地, **颜色不要在进程外查**: 分层(`-transparentcolor`)窗口用 `GetPixel` 读到的是它自己的像素
 (微探针里 `#6B6B6B` 的圆点读回来是 `#000000`/`#FFFFFF`), 颜色只能进程内读 canvas 的 item fill。
 
-## §D12 第七十轮：内嵌「漏依赖」这一类 bug（pystray → six）
+## §D12b 第七十轮：内嵌「漏依赖」这一类 bug（pystray → six）
+
+> 编号撞车说明：本节原先也标成 §D12，而 `AGENTS.md` §38 与 CHANGELOG 里引的 **§D12 指的是"第五十八~六十二轮
+> 语音真因"那一节**（文件下方）。第七十轮这节改 **§D12b**，内容一字未动。
 
 ### 现象（用户机截图，Python 3.14 + pythonw）
 ```
@@ -992,7 +995,7 @@ headless 测：**改 VAD 必须跑 `python wgime-py-pure\tests\voice-vad-test.py
 whisper**）；`system` 只适合"完全不想配置"的场景。第六十四轮之后 **`cmd` + sherpa-onnx/SenseVoice 才是
 本机首选**（1.5s 建会话 + 0.24s 解码）。
 
-## §D14 第七十四/七十五轮：语音"点击落点"(`voice_click`) 与流式 ASR(`voice_engine = stream`)
+## §D14 第七十四~七十六轮：语音"点击落点"(`voice_click`)、流式 ASR(`voice_engine = stream`)、测试自足性
 
 > 三个参考实现（PhoneMic / MouthWrite / IMEDot）逐文件读过的结论在 **§D11** 末尾那张表里；本节只写
 > 由它引出的这两个功能、以及踩到的坑。通信/协议类细节都配了**不依赖外网**的回归（本机网络常年时通时断）。
@@ -1049,3 +1052,37 @@ MouthWrite 那种形态是**边说边出**。
   `voice_engine = sherpa` / `stt_script` 覆盖掉（本轮就中了一次，`voicepack-sync-test` 从 13 项掉到 4 项 →
   立刻暴露）。现在用 `%TEMP%\wg-runtime-cfg.py`（权威版本：sherpa + `stt_threads=8` + `statedot=0` +
   `followcaret=0` + `voice_click=0`），**每次 build-package 之后只跑它**。
+
+### 4) 第七十六轮：**测试自己**的两处缺陷（拉完第七十二~七十五轮后跑全量回归才暴露）
+两条都不是产品代码的错，但都会污染以后每一次回归 —— 一条让整份测试**在没跑之前就红**，一条让测试**看现场脸色**。
+
+**① `stream-asr-test.py` 依赖机器上一份不存在的录音**
+* 第七十五轮把 `WAV` 写死成 `C:\Tools\wgime-local-asr\portable\test-zh.wav` —— 本机**没有** `portable\`
+  这个目录（那里只有 `models\` 与 `wgime-stt.py`），于是 A/B 两组在"读不到录音文件"上全红；
+* 更糟的是第 120 行 `p = SEEN[-1][1]`：**服务端一条请求都没收到 → IndexError traceback 崩掉**，
+  而不是干净地 FAIL（规矩：测试要么 OK 要么 FAIL，不能中途炸 —— 与第六十九轮"桩不能比真的更宽容"同源）；
+* `PURE` 也写死 `C:\Tools\wgime\wgime-py-pure`，只有本机这个 checkout 碰巧对（Windows 大小写不敏感才没炸）；
+  同病的还有 `voice-click-test.py` 的 `sys.path.insert(0, r'C:\Tools\wgime\wgime-py-pure')`。
+* **修法**（三条，都不依赖机器）：
+  1. 流式这条路只要求"能从文件读出字节再 base64"，**内容无关** —— 测试开头用 `wave` 自己搓
+     0.2s / 16kHz / 单声道 / 全 0 样本的 wav 到 `tempfile.gettempdir()`；
+  2. `PURE = dirname(dirname(abspath(__file__)))`（测试在 `<pure>\tests\` 下）；
+  3. 加 `last_seen()`（空则 `{}`），所有"取最后一条请求"的地方走它；顺手把**恒真断言**改真：
+     原来 `check('Authorization 头带上 key', SEEN[-1][0] and True)`（`SEEN[-1][0]` 是 path，非空即真）永远 OK ——
+     现在服务端把 `Authorization` 头记进 `SEEN` 第三元，断言它**正好 = `Bearer sk-fake`**。
+* 结果 `22/22`（原 3 FAIL + 1 crash）。
+
+**② `tests\pure-state-harness.py` 的"状态提示点"段会被屏幕前的人干扰**
+* 后台跑全量时**恰好红了 3 条**：`ime 模式 tick 后圆点已显示` / `状态变了(模式) -> 重新上色` /
+  `松开之后 -> 自动回来`；前台单跑 4 次全绿。**不是随机**：`_dot_tick`（第六十九轮）读的是**物理**
+  `win.mouse_buttons_down()` 与**真实** `win.cursor_pos()`，**按住左键时圆点本来就该隐藏** ——
+  那一刻正好有人在 Web GUI 里点鼠标。同理"光标没动、状态没变 -> 不再摆窗"是**靠真实光标恰好没动蒙过的**。
+* **修法**：这一段把这两个真实输入**打桩**（存旧值、段尾还原；"按住/松开"两种真实语义仍由显式打桩测），
+  并补一条**正向断言** `光标动了 -> 重新摆窗`（只测"没动就不动"是半个断言）。
+* **守卫有效性自检**（"一个不会失败的测试等于没写"）：把 `_dot_tick` 的两处保护分别改坏跑一遍 ——
+  去掉"光标没动才跳过"（`_DOT_AT[0] == p and` 删掉）→ **恰好 1 条红**（新断言）；
+  去掉"按住鼠标键就隐藏"（`if win.mouse_buttons_down():` 改 `if False and ...`）→ **恰好 1 条红**（隐藏那条）；
+  还原后全绿。脚本：`%TEMP%\wg-mutate-dot.py`（改前先 `git show` 备份、跑完写回，别手改产品文件）。
+* 教训固化成 `AGENTS.md` §4 那条硬规则：**测试要自足**（机器绝对路径/外部 fixture 一律现造）+
+  **读真实输入的断言必须打桩**。
+
