@@ -563,7 +563,49 @@ python wgime-stt.py --serve [--itn=0|1] [--lang=zh] [--threads=4]
 - **代价**：每句都跑一次本地引擎（SenseVoice 建会话 ~1.5s 的 CPU）；不想白跑就别配 `voice_fallback`。
 - **探针**：`%TEMP%\wg-r59-stt-proxy-probe.py` H 段（6 项）+ 解析 3 组。
 
-### §D9 第六十七轮：keyfix 的"牺牲字符"必须不可见
+#### §D8.3.1 第七十二轮补：本机 wrapper 的 `--serve` **实现** + 实测校正
+
+**缺口**: §D8.3 写的是契约，客户端 `voice.py::_SherpaSrv` 也在仓库里 —— 但服务端 wrapper 在仓库外
+（`C:\Tools\wgime-local-asr\wgime-stt.py`），本机那份还是 9/15 的一次性版本（没有 `--serve`）。
+于是本机一旦 `voice_engine = sherpa`，助手起不来（会报"起不来 + HINT"）。
+
+**已补**（一次性模式一行没改，连退出码 3/4/5/6/7 都与旧版一致）:
+- 启动即建识别器 → `{"ready":true,"boot_ms":…,"model":…,"itn":…,"lang":…}`；
+- 每行 stdin `{"id","wav"}` → `{"id":…,"ok":true,"text":…,"ms":…,"segs":1,"audio_ms":…}` /
+  `{"id":…,"ok":false,"error":…}`（**单句失败不退出**）；
+- 支持 `{"cmd":"ping"}`（立刻回 `{"id":…,"ok":true,"text":"","ms":0}`）与 `{"cmd":"exit"}` / stdin EOF；
+- 服务模式 stdout **只有 JSON 行**，日志一律 stderr；回包 `ensure_ascii=True`。
+- wrapper 同步到便携包 `portable\wgime-stt.py`。
+
+**本机接法（已生效）**: `package\config.txt` = `voice_engine = sherpa` /
+`stt_script = C:\Tools\wgime-local-asr\wgime-stt.py` / `stt_itn = 1` / `stt_threads = 8` /
+`voice_fallback =`（空）。
+
+**实测（本机 = Intel Core Ultra 7 155H，8 核 / **8 逻辑核**，`test-zh.wav` 音频 4.7s）**:
+
+| 项 | 结果 |
+|---|---|
+| 载模型（只在启动付一次） | **1312 ~ 2375 ms** |
+| 解码 · threads 扫描 | 2 / 4 / 8 / 16 → **1532 / 1265 / 1171 / 1640 ms**（8 线程最优，再多反而退化） |
+| 走 `voice.recognize()` | 第一句 **2.66 ~ 3.31s**、第二句 **1.06 ~ 1.38s**（差值就是省掉的载模型） |
+| 子进程 | 常驻同一个 pid，`shutdown()` 后干净退出（不留孤儿） |
+
+**校正 §D8.3 表格里的一处数字**: 那行"每句 0.08~0.15s（`audio_ms=4610`）"在本机**复现不出** ——
+同一段 4.6~4.7s 音频，本机最好 1.17s（≈ 4x 实时）。常驻真正省掉的是**每句固定 ~1.3s 的载模型**，
+解码耗时与音频长度成正比（实测 ≈ **0.25~0.27 × 时长**）。所以对外报数要说
+"省掉每句 1.3s；短口令（~0.5s）常驻后 0.1~0.2s，按住说一句 2~3s 的话 0.6~0.9s"，
+**别**说成"4 秒的话 0.1 秒就能出"。（0.08~0.15s 那个数应该来自另一台机器/另一段更短的音频。）
+
+**探针**: `%TEMP%\wg-r72-wrapper-serve-probe.py`（21 项，只测 wrapper：一次性协议纯净 / ready 字段 /
+两句文本正确 / 坏路径不退出 / 第二次更快 / `exit`+EOF 干净退出 / stdout 每行都是 JSON）、
+`%TEMP%\wg-r72-app-sherpa-probe.py`（14 项，走**应用自己的** `voice.recognize()`：配置认得出 /
+助手是活着的子进程且 ready / 第二句更快 / `shutdown()` 不留孤儿）。
+
+**待办（可选）**: wrapper 在仓库外**没有任何跟踪**，这次"客户端改了、服务端没跟上"就是这么发生的。
+若要根治，可把 wrapper 作为参考副本收进仓库（放在 docs 或 `wgime-py-pure\` 下），
+用一条测试断言"仓库副本与 `stt_script` 指向的文件关键协议一致"。
+
+## §D9 第六十七轮：keyfix 的"牺牲字符"必须不可见
 
 - **机制**（C# `UnicodeCommitQtFix` 同款）：Qt 类应用（微信 4.x）在全角标点后会把**下一个注入字符**
   错认成该标点，所以 python 在标点后追加 `[牺牲字符 down/up][VK 0x08 down/up]` 把它吸收+擦掉。
