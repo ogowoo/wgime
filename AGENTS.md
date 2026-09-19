@@ -112,8 +112,7 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
     **第六十七轮登记**：`keyfix` 的"牺牲字符"python 用 **`U+200B` 零宽空格**（`win.QT_FIX_SENTINEL`），C# 用可见的 `'X'` —— python 有意分歧：牺牲字符一旦没被应用吸收、退格又没生效，可见字符会留在文档里（用户报的"联想时打标点显示 X"），零宽空格则**看不见**。别再改回 `ord('X')`；改这块跑 `%TEMP%\wg-r67-qtfix-probe.py`（16 项，直接查注入事件序列）。
 28. **用户可改的文本一律用 `engine.read_text()` 读**（`utf-8-sig` → `gbk` → `utf-8+replace`）：中文 Windows 下记事本/编辑器"另存为 ANSI(GBK)"会把 config.txt / tools.txt / plugins\*.txt / pastemode.txt / plugins-disabled.txt / userwords.txt / userdict_*.txt / lastpick_*.txt / assoc.txt 写成非 UTF-8 —— 用 `open(..., encoding='utf-8')` 会**抛 UnicodeDecodeError 直接崩启动**（C# 侧 `File.ReadAllLines(UTF8)` 是替换式解码, 不抛）。`read_text` 只以 OSError 表示不可读，编码问题一律降级；新增读取点照此办理（plugins.py 已 `import engine as engmod` 复用）。**便签文件也在名单里**（第二十三轮）：`notes\*.txt`（便签正文，用户最常拿记事本改）、`notes.txt`（旧版迁移源）、`notes-meta.txt`、`note-color.txt` —— 用严格 `open(..., encoding='utf-8')` 读会抛 `UnicodeDecodeError`，而那里的 `except OSError` 抓不到，结果是**便签窗口打不开/半死**（`_note_win[0]` 已置上，再点只是 deiconify 坏窗口），C# 的 `File.ReadAllText(UTF8)` 则是替换式解码永不抛。**码表与插件也在名单里**（第三十二轮）：`py.txt`/`wb.txt`/`ec.txt`/`trad.txt`/`import_*.txt`（`engine.parse_dict` —— 严格 utf-8 会让 GBK 码表**把启动直接打崩**，且 BOM 会让**第一行读不进来**，所以快路径用 `utf-8-sig`、失败退回 `read_text`）、用户手改过的 `import_*.txt`（`load_import_base`）、插件 `.py`（`main._py_plugin_meta_static`：GBK+coding 声明的插件 python 能跑，严格 utf-8 会让插件管理器列举时崩）。
    **配套：写这些文件时行尾要跟 C# 对齐** —— C# 的 `ImportCodeTable` 写 `import_*.txt` 是 `WriteAllText(..., UTF8Encoding(false))` + `'\n'`（**裸 LF**），python 的 `open(..., 'w')` 在 Windows 上会翻成 CRLF（`import_*.txt` 是入库跟踪文件，被翻成 CRLF 就是整文件 diff）；所以 `engine.write_import_file` 必须带 `newline='\n'`。反之 `config.txt` 是 C# `WriteAllLines`（CRLF），python 默认写 CRLF 正好一致。
-   **读的那一侧注意（第五十轮）**：`read_text` 是**二进制读 + 解码**，**不做 universal newlines**（§39），
-   所以按 `'\n'` 切行后行尾的 `\r` 还在——需要值干净的地方必须自己 `line = line.rstrip('\r')`。
+   **读的那一侧注意**：`read_text` **不做 universal newlines**，行尾 `\r` 会进值 —— 见 §39。
 29. **未闭合的多行块整块丢弃**（对齐 C# `ParseToolSteps`/`LoadTools`：块只在遇到闭标签时才入 steps）：`plugins.run_steps` 若扫描到行尾仍没找到闭标签，记一条 `块未闭合…已跳过` 就 `continue`，**不要执行**半截块（否则会把后面的行当脚本体跑掉）。
 30. **改 `.py` 的脚本必须用二进制写**：python 文件在仓库里是 **LF**（只有 `wgime.bat` 走 `eol=crlf`）。用 `open(p, 'w', encoding='utf-8')` 在 Windows 上写会把 `\n` 自动翻成 `\r\n`，于是**整个文件变成"全部改动"**（曾造成 1885 行幽灵 diff，还得回滚重写）。脚本改文件时用 `open(p,'w',encoding='utf-8',newline='')` 或 `[IO.File]::WriteAllBytes` 写二进制；改完用 `CRLF=0` 自检（PowerShell 统计 `\r\n` 数），并确认 `git diff --stat` 的行数符合预期。`build-wgime-pure.py` 内嵌模块源码，**行尾变了要重新构建 dist** 否则 payload 与源码不一致。
 
@@ -219,12 +218,11 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
     `--serve` 时才用它。**key 的语义两边不同, 最容易写错**：sherpa 的 `itn`/`lang`/`threads`/`script` 是**建识别器**
     的参数（改了要重启助手），whisper 的 `lang`/`prompt`/`beam` 是每次请求带的。**这套东西在仓库外、按机器各装一份**
     —— 换机器要重装（Store Python 3.13 从头装一遍的步骤/实测/`--serve` 契约见 `AGENTS-DETAIL.md` §D8.2）。
-    **第六十五轮（国内站 + 坏网络三件套）**：国内站 key 必须配 `api.siliconflow.cn`（同一把 key 在 `.com` 回 401、`.cn` 回 200）。
-    新增 `stt_retry`（连接层同路重试，默认 3；**HTTPError 不重试**，免得白花额度）、`stt_timeout`（默认 15s，取代写死的 30s）、
-    **记住可用路径**（哪条通下次优先；本机那个本地代理是黑洞，不记住每句白等 3×timeout）。
-    **第六十六轮（`voice_fallback` 双引擎赛跑）**：第二引擎与主引擎**同时开跑、谁先成功用谁**（`voice._race_engines`），
-    不是"失败再回退"（坏网络下串行回退每句 24~38s，赛跑后平均 2.80s）。两个都失败才报错(带两边原因)；`http` 配了它时
-    重试/超时收紧成 2×10s。代价：每句都多跑一次本地引擎。数字见 CHANGELOG 第六十四~六十六轮与 `AGENTS-DETAIL.md` §D7.1/§D8。
+    **第六十五/六十六轮（坏网络）**：国内站 key 必须配 `api.siliconflow.cn`（`.com` 回 401、`.cn` 回 200）；
+    `stt_retry`（连接层同路重试，默认 3，**HTTPError 不重试**，免得白花额度）、`stt_timeout`（默认 15s）、
+    **记住可用路径**（哪条通下次优先）；`voice_fallback` = 第二引擎与主引擎**同时开跑、谁先成功用谁**
+    （不是"失败再回退"），两个都失败才报错（带两边原因），`http` 配了它时重试/超时收紧成 2×10s。
+    数字见 CHANGELOG 第六十四~六十六轮与 `AGENTS-DETAIL.md` §D7.1/§D8。
 
 39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
     **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。
@@ -343,13 +341,17 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
   3. 发完**回验**：线上 python zip 的 SHA256 与 stage 相同、内层 `wgime-py.py` 与 dist 逐字符一致、body 无 `?`、tag=本地 HEAD。
 - **中文坑**：release body 用 `HttpWebRequest` 显式 UTF-8 字节发（脚本已内置）；**别用 `Invoke-RestMethod`+`ConvertTo-Json`**（PS 5.1 把中文变 `?`）。
 - **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
-- 版本 tag：`v1.0.0` ~ `v1.2.13`（后续版本递增）。插件更新不单独发 release。
-  **发布回验记录**（`tests\publish-release.ps1` 之后必做：下线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD）：
-  v1.2.12 / v1.2.11 / v1.2.13 = 三个 zip 的 SHA256 与各自 `.release-stage-v12xx\` 全同、body 无 `?`（含中文）、
-  线上 python zip 内层 `wgime-py.py` 与本地 dist 逐字节一致、tag = 本地 HEAD（v1.2.13 = `56f7ffe`，
-  853398→744413→619381 B 的逐项数字与 release id 见 CHANGELOG）。
-  **坑**: 本机 `git ls-remote`/`git fetch` 到 github:443 常年连不上（21s 超时），**回验 tag 要用 GitHub API**
-  （`/repos/<repo>/git/ref/tags/<tag>`，带重试）；线上资产下载偶尔 `Unable to connect`，重试即可。
+- 版本 tag：`v1.0.0` ~ `v1.2.14`（后续版本递增）。插件更新不单独发 release。
+  **发版前必跑**（第七十六轮新增）：`python tests\release-assets-check.py --version X --assets <stage>` ——
+  断言三个 zip 的 `config.txt` 与仓库模板**逐字节一致**、不含 `sk-` 私钥 / `C:\Users\` 私用路径 / 启用的 `stt_*` 行。
+  来由：**v1.2.13 的 python 包带着开发机私用 config（含一把 API key + 本机路径）发了出去**，根因是
+  `build-release-assets.ps1` 逐字节打包 `package\`，而那里的 `config.txt` 常常是"本机在用的活配置"。
+  自检：拿那份泄漏包跑它必红。
+  **发布回验记录**（publish 之后必做：线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD；本机 `git ls-remote`
+  到 github 常年连不上，**tag 要用 GitHub API** `/repos/<repo>/git/ref/tags/<tag>`，别把空结果当"tag 没建"）：
+  v1.2.14（id 391874873，tag = 本地 HEAD `d85a98e`）与 v1.2.11/v1.2.12/v1.2.13（python 资产已换成干净包，
+  tag 仍 `56f7ffe`）= 三个 zip 的 SHA256 与 stage 全同、body 无 `?` 且与本地逐字符一致、内层 `wgime-py.py`
+  与 dist 逐字节一致（逐项数字/release id 见 CHANGELOG）；线上资产下载偶尔 `Unable to connect`，重试即可。
 
 ## 8. 当前状态速览
 

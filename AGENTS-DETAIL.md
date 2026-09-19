@@ -1086,3 +1086,52 @@ MouthWrite 那种形态是**边说边出**。
 * 教训固化成 `AGENTS.md` §4 那条硬规则：**测试要自足**（机器绝对路径/外部 fixture 一律现造）+
   **读真实输入的断言必须打桩**。
 
+## §D15 第七十六轮补充：发布资产预检（v1.2.13 泄漏事故复盘）
+
+> 这一节记的是**发布流程**上的一个真事故：v1.2.13 的 python 资产里带着开发机私用 `config.txt`（含一把
+> 硅基流动 API key）。它跟代码/测试都无关，但"只有校验能拦"这条结论要留在这儿。
+
+### 1) 事故是怎么发现的
+拉完远端第七十二~七十五轮、准备发版时，按 §7 流程先看"python 包取自哪里"：
+`tests\build-release-assets.ps1` 的 `$pkg = wgime-py-pure\package`，而 `Get-ChildItem` 一看，
+`package\config.txt` 是 **11865 B、12:12 修改**，里面 `voice = 1` / `voice_engine = sherpa` /
+`stt_script = C:\Tools\wgime-local-asr\wgime-stt.py` / `stt_python = C:\Users\watl\...python.exe` ——
+**那是本机在用的活配置**（`build-package.ps1` 会用仓库根模板覆盖它，但本机跑过脚本/改过配置后又变回去了）。
+再下线上 v1.2.13 的 python 资产（25598416 B）核对：里面的 `config.txt` 是 **12859 B**，`voice = 1`、
+`stt_url = https://api.siliconflow.cn/v1/audio/transcriptions`、
+**`stt_key = sk-…（64 字符真 key）`**、`stt_cmd`/`stt_script` 指向本机路径 —— 泄漏已经发生（资产自
+2026-09-17T01:44Z 起公开可见，`download_count = 1`，是本机回验时下的那一次）。
+顺手核了历史版本：v1.2.12 的 `config.txt` 3303 B、v1.2.11 的 2385 B，**都是干净模板**
+（0 个 `sk-`、0 条启用的本机 `stt_*`）—— 只有 v1.2.13 这一个版本中招。
+
+### 2) 处置（三步）
+1. **修**：`powershell -File wgime-py-pure\build-package.ps1` 重建 `package\`（`config.txt` 回到仓库根模板，
+   12492 B）+ `%TEMP%\wg-restore-baseline-zip.py` 把 `THIRD_ZIP_B64` 还原成 HEAD 基线
+   （`build-package.ps1` 不是可复现构建，见 §30）→ 确认 `git status` 对 `dist\wgime-py.py` 干净、
+   `Copy-Item dist\wgime-py.py package\wgime-py.py`（两者必须逐字节相等，发布脚本自己有这道 hash 守卫）
+   → `tests\build-release-assets.ps1 -Version 1.2.14` → `tests\publish-release.ps1 …`。
+2. **补**：新增 `tests\release-assets-check.py`（本地、不联网、退出码即判据）。判据见 `AGENTS.md` §7。
+   **守卫有效性自检**（这条规矩的又一次实践）：
+   * 干净资产 `.release-stage-v1214` → **27/27 全绿**；
+   * 拿**那份泄漏的** `wgime-v1.2.13-python.zip`（存在 `%TEMP%\wg-rel\`）跑 → 13 项里 **5 项红**：
+     `config.txt 与模板逐字节一致`(12859 vs 12492)、`没有 API key`、`没有启用的本机 stt_* 项`，
+     外加两条"bat/ps1 文件存在"（那个目录里只有 python zip）——**该红的都红了**；
+   * 报错里的 key 一律打码（`sk-***MASKED***`），别让检查器自己变成第二个泄漏点。
+3. **清**：把 v1.2.14 的 python zip 复制成 `wgime-v1.2.13-python.zip`（内容 = 干净包），
+   用 `publish-release.ps1 -Version 1.2.13 -BodyFile <从 API 取回的原文+补记> -AssetsDir <那个目录>
+   -TargetSha 56f7ffe…` 走 PATCH + **覆盖同名资产**（脚本会先 DELETE 旧资产再上传）。
+   **`-TargetSha` 必须显式给 v1.2.13 当时的 commit**：脚本默认用本地 HEAD，会给出一条
+   "local HEAD != origin/master" 的警告，而这次我们**不是**要移动 tag。
+   改完回验：python 资产 25598416 → 25598298 B（created 时间变成新的）、bat/ps1 **一字未动**、
+   body 与本地逐字符一致、tag 仍 `56f7ffe`。
+
+### 3) 可复用的命令/脚本（都在 `%TEMP%`，换机器要重写）
+* `wg-fetch-release.ps1`：按 tag 取 release JSON + 下载指定资产（PS `HttpWebRequest`，**python urllib 在本机
+  经代理会 SSL EOF**，别用）。
+* `wg-verify-release.ps1` / `wg-verify-release2.ps1`：publish 之后的线上回验（资产 SHA256 / 内层文件 /
+  body / tag）。**注意 part1 里 `[IO.Compression.ZipFile]::Open((New-Object IO.MemoryStream(,$bytes)),'Read')`
+  这种写法在 PS 5.1 会解析成 `Open(string,…)` 去磁盘找文件** —— 落盘再 `OpenRead($path)` 最省事。
+* 中文只许出现在**数据文件**里：`wg-fetch-body.ps1` 第一版把中文写进 `Write-Host`，PS 5.1 按 ANSI 读 `.ps1`
+  → 直接把整个脚本解析坏（§2 那条规矩的又一次实锤）。
+
+

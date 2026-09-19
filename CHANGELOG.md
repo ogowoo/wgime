@@ -1,5 +1,34 @@
 ---
 
+## 2026-09-16 (发布 v1.2.14 —— 顺带修掉一个发布事故: v1.2.13 的 python 包带着开发机私用 config 和一把 API key)
+
+**发布**: release id **391874873**，tag `v1.2.14` = 本地 HEAD `d85a98e`；三个资产（bat/ps1/python）与
+`.release-stage-v1214\` **SHA256 全同**、body 与本地 `wg-rel-body-v1.2.14.md` 逐字符一致（2079 字、**0 个 `?`**）、
+线上 python 包内层 `wgime-py.py` **619381 B** 与本地 dist 逐字节一致。功能代码与 v1.2.13 **完全相同**
+（本轮只动测试与文档，所以这是一次"打包修复 + 汇总"的发布）。
+
+**事故（v1.2.13 的 python 资产）**: 那份 `wgime-v1.2.13-python.zip` 里混进了**开发机正在使用的 `config.txt`** ——
+`voice = 1`、`voice_engine = sherpa`、`stt_script = C:\Tools\wgime-local-asr\wgime-stt.py`、`stt_threads = 8`，
+并且**含一把硅基流动 API key**（自 2026-09-17T01:44Z 起随公开资产可见，**必须吊销/更换** —— 这件事只有用户能做）。
+根因：`tests\build-release-assets.ps1` 是**逐字节打包** `wgime-py-pure\package\`，而那里的 `config.txt` 常常是
+"本机在用的活配置"（`build-package.ps1` 本会用仓库根模板覆盖它，但只要之后改过配置/跑过本机脚本就又变回私用）。
+
+**三件事**:
+1. **修**: 重建 package（`build-package.ps1`）→ `package\config.txt` 重新等于仓库模板（12492 B）→ 再打 v1.2.14；
+2. **补**: 新增永久守卫 `tests\release-assets-check.py`（**发版前必跑**，见 AGENTS.md §7）：断言三个 zip 的
+   `config.txt` 与仓库模板**逐字节一致**、不含 `sk-` 私钥 / `C:\Users\` 私用路径 / **启用**的 `stt_key|stt_script|
+   stt_python|stt_cmd` 行、python 包内层 `wgime-py.py` 与 dist 逐字节一致、条目分隔符都是 `/`。
+   **守卫有效性自检**：拿**那份泄漏包**跑它 → `config.txt 与模板逐字节一致`、`没有 API key`、`没有启用的本机 stt_* 项`
+   三条**红**（13 项里 5 项失败，另两条是那个目录里没有 bat/ps1 zip）；干净资产 **27/27 全绿**；报错输出里 key 打码；
+3. **清**: 原 `wgime-v1.2.13-python.zip` 资产**已替换成同一份干净包**（25598416 → 25598298 B；v1.2.13 的 body
+   追加了"已替换为干净包"的补记，tag 仍指 `56f7ffe`，bat/ps1 资产一字未动）。
+   **历史资产核查**（顺手做的）：v1.2.12 / v1.2.11 的 python 包 `config.txt` 分别是 3303 / 2385 B，
+   **0 个 `sk-` key、0 条启用的本机 `stt_*` 行** —— 泄漏只发生在这一个版本上。
+
+**教训**: "把开发机的活配置打进发行包"这类事故**肉眼看不出**（zip 能解压、程序能跑），**只有校验能拦**。
+所以判据固定成"`config.txt` 必须与仓库模板**逐字节相等**"，而不是"看起来像个模板"；
+发布流程里也因此多了一道**本地**（不联网）的预检关。复盘/命令见 `AGENTS-DETAIL.md` §D15。
+
 ## 2026-09-16 (第七十六轮: 拉取第七十二~七十五轮后跑全量回归 —— 修两处"测试自己"的缺陷)
 
 **来由**: 上一轮把远端进度拉下来（wrapper `--serve` + 协议漂移守卫、`voice_click`、`voice_engine = stream`、
