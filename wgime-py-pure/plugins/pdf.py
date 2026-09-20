@@ -923,8 +923,8 @@ def run():
             pass
         return _W['win']
 
-    # 内容区需要 558px, 标题栏 38px (ui.make_window 的 content 只占 h-38, 见 AGENTS §42)
-    W, H = 640, 596
+    # 内容区需要 588px (最后一行结束于 576), 标题栏 38px (ui.make_window 的 content 只占 h-38, 见 §42)
+    W, H = 640, 626
     win, content = ui.make_window('WgIme PDF 工具', W, H)
     _W['win'] = win
     _BUSY[0] = False
@@ -987,22 +987,23 @@ def run():
                     selectmode=tk.EXTENDED, activestyle='none')
     lb.place(x=12, y=100, width=616, height=86)
 
-    # ---- 参数行 ----
+    # ---- 参数行 (第 3 行操作磁贴到 302 为止, 所以这里从 310 起 —— 原来放 272 会**正压在磁贴上**,
+    #      而"越出窗口"的审计查不出这种重叠, 现在 tests/pdf-test.py 里有专门的两两不重叠断言) ----
     tk.Label(content, text='页码范围', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
-             anchor='w').place(x=12, y=272, width=62, height=32)
-    range_e = ui.rounded_entry(content, x=76, y=272, w=150, h=32)
+             anchor='w').place(x=12, y=310, width=62, height=32)
+    range_e = ui.rounded_entry(content, x=76, y=310, w=150, h=32)
     tk.Label(content, text='角度', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
-             anchor='w').place(x=238, y=272, width=34, height=32)
+             anchor='w').place(x=238, y=310, width=34, height=32)
     angle_btns = {}
     for i, (txt, deg) in enumerate((('90°', 90), ('180°', 180), ('270°', 270))):
         b = ui.flat_button(content, txt, (lambda d: (lambda: _set_angle(d)))(deg),
-                           x=274 + i * 54, y=272, w=50, h=32)
+                           x=274 + i * 54, y=310, w=50, h=32)
         angle_btns[deg] = b
     each_var = tk.IntVar(value=0)
     chk = tk.Checkbutton(content, text='拆分: 每页一个文件', variable=each_var, bg=ui.BG, fg=ui.SUB,
                          font=ui.font(8.5), activebackground=ui.BG, selectcolor=ui.CARD,
                          bd=0, highlightthickness=0, anchor='w', cursor='hand2')
-    chk.place(x=440, y=272, width=188, height=32)
+    chk.place(x=440, y=310, width=188, height=32)
 
     def _set_angle(d):
         _ANGLE[0] = d
@@ -1018,22 +1019,22 @@ def run():
 
     # ---- 第二参数行: 图片宽度 / 图片格式 / OCR 语言 (P2 那三个操作用) ----
     tk.Label(content, text='宽度', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
-             anchor='w').place(x=12, y=310, width=40, height=32)
-    width_e = ui.rounded_entry(content, x=56, y=310, w=80, h=32, initial='1240')
+             anchor='w').place(x=12, y=348, width=40, height=32)
+    width_e = ui.rounded_entry(content, x=56, y=348, w=80, h=32, initial='1240')
     tk.Label(content, text='格式', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
-             anchor='w').place(x=146, y=310, width=38, height=32)
+             anchor='w').place(x=146, y=348, width=38, height=32)
     fmt_btns = {}
     for i, (txt, key) in enumerate((('PNG', 'png'), ('JPG', 'jpg'))):
         fmt_btns[key] = ui.flat_button(content, txt, (lambda k: (lambda: _set_fmt(k)))(key),
-                                       x=186 + i * 60, y=310, w=56, h=32)
+                                       x=186 + i * 60, y=348, w=56, h=32)
     tk.Label(content, text='OCR', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
-             anchor='w').place(x=310, y=310, width=34, height=32)
+             anchor='w').place(x=310, y=348, width=34, height=32)
     lang_btns = {}
     for i, (txt, key) in enumerate((('中', 'zh-Hans-CN'), ('EN', 'en-US'), ('自动', ''))):
         lang_btns[key] = ui.flat_button(content, txt, (lambda k: (lambda: _set_lang(k)))(key),
-                                        x=348 + i * 48, y=310, w=44, h=32)
+                                        x=348 + i * 48, y=348, w=44, h=32)
     tk.Label(content, text='宽 px · 渲染/识别用', bg=ui.BG, fg=ui.SUB, font=ui.font(8),
-             anchor='w').place(x=502, y=310, width=126, height=32)
+             anchor='w').place(x=502, y=348, width=126, height=32)
 
     def _set_fmt(k):
         _FMT[0] = k
@@ -1058,7 +1059,7 @@ def run():
     _set_lang(_LANG[0])
 
     # ---- 日志 ----
-    tb = ui.console_text(content, x=12, y=350, w=616, h=150)
+    tb = ui.console_text(content, x=12, y=390, w=616, h=140)
     _W['tb'] = tb
     log('就绪。先「添加 PDF…」, 再点下面任意一个操作。引擎: pypdf(内嵌, 后台预热中…)')
 
@@ -1250,11 +1251,11 @@ def run():
         _CANCEL[0] = True
         log('已请求取消 (纯 Python 的循环会在下一页停下; WinRT 操作会杀掉助手, 下次稍慢)')
 
-    ui.flat_button(content, '取消当前操作', do_cancel, x=12, y=510, w=140, h=36)
-    ui.flat_button(content, '打开输出目录', lambda: _open_dir(log, pick_one), x=160, y=510, w=140, h=36)
-    ui.flat_button(content, '关闭', win.destroy, x=308, y=510, w=96, h=36)
+    ui.flat_button(content, '取消当前操作', do_cancel, x=12, y=540, w=140, h=36)
+    ui.flat_button(content, '打开输出目录', lambda: _open_dir(log, pick_one), x=160, y=540, w=140, h=36)
+    ui.flat_button(content, '关闭', win.destroy, x=308, y=540, w=96, h=36)
     tk.Label(content, text='pypdf + Windows WinRT · 不联网 · 不修改原文件', bg=ui.BG, fg=ui.SUB,
-             font=ui.font(8)).place(x=412, y=510, width=216, height=36)
+             font=ui.font(8)).place(x=412, y=540, width=216, height=36)
     win.after(0, lambda: lb.focus_set())
     return win
 

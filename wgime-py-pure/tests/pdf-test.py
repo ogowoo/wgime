@@ -146,6 +146,22 @@ def ui_check(mod):
                 clipped.append((str(ch), x, y, w, h))
     check('[UI] %d 个控件没有一个越出窗口 (§42 裁切审计)' % n_widgets, not clipped, repr(clipped[:3]))
 
+    # **重叠审计**: 只查"越出窗口"是不够的 —— 第七十七轮 P2 就漏过一次真重叠(第 3 行操作磁贴
+    # y=270 正压在"页码范围/角度"那行 y=272 上, 而越界审计全绿: 两边都在窗口内)。
+    # 判据: 两个兄弟控件的矩形**真相交**(贴边不算), 全部用 place() 显式坐标摆的窗口必须两两不重叠。
+    rects = []
+    if content is not None:
+        for ch in content.winfo_children():
+            rects.append((str(ch), ch.winfo_x(), ch.winfo_y(), ch.winfo_width(), ch.winfo_height()))
+    over = []
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            a, b = rects[i], rects[j]
+            if (a[1] + a[3] > b[1] and b[1] + b[3] > a[1]
+                    and a[2] + a[4] > b[2] and b[2] + b[4] > a[2]):
+                over.append((a[0], b[0], (a[1], a[2], a[3], a[4]), (b[1], b[2], b[3], b[4])))
+    check('[UI] %d 个控件两两不重叠' % len(rects), not over, repr(over[:3]))
+
     state = {'seen': [], 'txt': '', 'win2': None, 'tops': (0, 0)}
 
     def from_thread():
