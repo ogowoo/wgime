@@ -102,9 +102,10 @@ Runtime), wgime 是纯 Python 单文件 + Tk, **一行都抄不过来**。能做
   (`fatal: Cannot prompt because user interactivity has been disabled.`) 而不是挂住;
   ③ 远端 ref 用 `git ls-remote origin master` 核(公开仓库的读不需要认证, 所以 **GET 能通不代表能 push**)。
   **另两个本轮踩到的脚本坑**: `Start-Process` **不继承 PowerShell 的 `cd`**(用的是 .NET CWD) ——
-  免 CWD 依赖就写 `git -C <repo>`; 以及 `if (Fanc ...)` 会把函数写进输出流的诊断文本**当成布尔条件**
-  (非空数组恒真), 于是"假成功"——诊断要用 `Write-Host`(host 流)或先落到变量里。上一条命令是
-  `48b5dd3`(本地已提交, 推送待认证)。
+  免 CWD 依赖就写 `git -C <repo>`(再顺手加 `-WorkingDirectory`); 以及 `if (Func ...)` 会把函数写进
+  输出流的诊断文本**当成布尔条件**(非空数组恒真), 于是出现"假成功" —— 诊断要用 `Write-Host`(host 流)
+  或先落到变量里。**判定推送成不成只认 `git ls-remote origin master` 与本地 HEAD 是否相等**,
+  别信任何脚本的"OK"(`git push` 在 Start-Process 下 rc 都拿不到)。
 
 ## 2026-09-16 (发布 v1.2.14 —— 顺带修掉一个发布事故: v1.2.13 的 python 包带着开发机私用 config 和一把 API key)
 
