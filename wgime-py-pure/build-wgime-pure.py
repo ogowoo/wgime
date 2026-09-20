@@ -57,12 +57,16 @@ main_src = read(os.path.join(BASE, 'main.py'))
 # 判据: C 扩展(.pyd/.so)与解释器 ABI 绑定, zipimport 加载不了 —— 我们构建机是 cp312, 用户机可能是
 # cp314(实测那台就是 Program Files\Python314), 二进制嵌进去也白搭。这类依赖必须先"可用则可选、
 # 不可用则明确降级", 不能崩。
+# 第七十七轮新增 `pypdf` (PDF 工具的纯 Python 引擎, plugins/pdf.py): 60 个 .py / 0 个 .pyd,
+# 声明依赖只有 python<3.11 才需要的 typing_extensions(有版本守卫), BSD-3-Clause, classifier 列到 3.14。
+# 代价实测: 源码 1,708,063 B -> zip 380,633 B -> 单文件 base64 **+497 KB** (619,381 -> ~1.10 MB)。
 _THIRD_SKIP = {
     'Pillow': 'C 扩展(_imaging.pyd) —— 托盘图标已在**构建期**渲染成 ICO 内嵌, 运行时不需要它',
     'comtypes': '第四十四轮起全项目 0 处 import(光标跟随 helper 改成纯 ctypes 源码), 不再内嵌',
     'uiautomation': '同上(它只依赖 comtypes; 进程内 UIA 已被 §17 明确禁止)',
     'psutil': 'C 扩展(_psutil_windows.pyd) —— plugins.py 里是可选路径, 缺了就回退 wmic',
-    'cryptography': 'C 扩展(_rust.pyd) —— chat 插件加密的可选能力, 缺了给明确提示(见 plugins/chat.py)',
+    'cryptography': 'C 扩展(_rust.pyd) —— chat 插件加密 + pypdf 打开 **AES 加密 PDF** 的可选能力, '
+                    '缺了给明确提示(见 plugins/chat.py 与 plugins/pdf.py; PDF 的 RC4 老加密有纯 Python 回退, 仍可用)',
     'faster-whisper': 'C 扩展(ctranslate2) + 模型文件 —— 只有 voice_engine=whisper 才要, 由用户自己装',
     'argostranslate': 'C/纯 Python 混合 + 语言模型 —— wgtranslate 插件的可选离线翻译, 由用户自己装',
 }
@@ -136,7 +140,16 @@ def collect_thirdparty(pkgnames):
 
 
 # roots = 我们真正 import 的第三方; 其余靠**声明依赖的传递闭包**自动带出来(six 就是这么来的)
-third_files = collect_thirdparty(['pystray'])
+# pypdf: 只有 plugins/pdf.py 用到, 但那是个**进程内**插件 -> 必须进内嵌 zip(插件子进程拿不到宿主
+# 的 sys.path, .py 插件则是直接 exec 在宿主里, 所以只能内嵌)。startup 不受影响: 插件是懒 import。
+third_files = collect_thirdparty(['pystray', 'pypdf'])
+# 第七十七轮: 源码目录里会出现 `__pycache__`(构建机 import 过一次就有)。collect_thirdparty 走
+# spec.origin 只读 .py, 本来就不会收 —— 但万一以后有人改成遍历目录: 实测会把 1.71MB 源码变 3.72MB、
+# zip 0.38MB 变 1.12MB(单文件白胖 1MB), 而且 cp312 的 .pyc 在 cp314 宿主上纯属死重。
+# 所以在打包这一层留一条**死断言**, 让这种回退在构建时就炸掉。
+_bad_third = [rel for rel in third_files if '__pycache__' in rel or rel.endswith('.pyc')]
+if _bad_third:
+    raise SystemExit('BUILD-ABORT: third-party zip 里混进了字节码: %r' % _bad_third[:5])
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
     for rel, src in sorted(third_files.items()):

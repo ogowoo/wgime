@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""内嵌第三方"自足性"回归 (第六十九轮, 用户机真 bug).
+r"""内嵌第三方"自足性"回归 (第六十九轮, 用户机真 bug).
 
 **背景**: 单文件里的第三方源码是从构建机**已安装的包**读出来内嵌的。但运行时的 import 会
 **回退到宿主 site-packages** —— 于是"构建机恰好装了某个依赖"就会掩盖"内嵌漏了它"。
@@ -60,12 +60,19 @@ def main():
     print('  内嵌顶层条目: %s (%.1f KB)' % (tops, len(blob) / 1024.0))
     check("内嵌里有 'six' (pystray 的硬依赖, 第六十九轮那个 bug)", 'six' in tops, repr(tops))
     check("内嵌里有 'pystray'", 'pystray' in tops, repr(tops))
+    check("内嵌里有 'pypdf' (第七十七轮: plugins/pdf.py 的纯 Python PDF 引擎)", 'pypdf' in tops, repr(tops))
     # 第七十一轮收紧: 内嵌清单**正好**这两项 —— 多了(死重)少了(用户机 ImportError)都要如实报出来。
-    check("内嵌清单正好 = {pystray, six}", set(tops) == {'pystray', 'six'}, repr(tops))
+    # 第七十七轮起加 pypdf。
+    check("内嵌清单正好 = {pystray, six, pypdf}", set(tops) == {'pystray', 'six', 'pypdf'}, repr(tops))
     check("comtypes/uiautomation 已不再内嵌 (第四十四轮起全项目 0 处 import)",
           'comtypes' not in tops and 'uiautomation' not in tops, repr(tops))
     check("PIL/Pillow 不在内嵌里 (C 扩展爬不进 zipimport; 托盘图标构建期已渲染成 ICO)",
           'PIL' not in tops and 'Pillow' not in tops, repr(tops))
+    # 第七十七轮: 字节码混进 zip 是"构建机私有"的假自足 —— pypdf 的 __pycache__ 实测能让 zip 从
+    # 0.38MB 涨到 1.12MB, 且 cp312 的 .pyc 在 cp314 宿主上毫无用处。
+    check("内嵌 zip 里没有 __pycache__/.pyc",
+          not any('__pycache__' in nm or nm.endswith('.pyc') for nm in z.namelist()),
+          repr([nm for nm in z.namelist() if nm.endswith('.pyc')][:4]))
 
     # 干净环境: -S 不加载 site-packages, -E 忽略 PYTHON* 环境变量
     import tempfile
@@ -91,6 +98,22 @@ def main():
                            capture_output=True, encoding='utf-8', errors='replace')
         check('干净环境 pystray + six.moves.queue (真 bug 的形状)',
               r.returncode == 0 and 'COMBO-OK' in (r.stdout or ''),
+              ((r.stderr or '') + (r.stdout or '')).strip()[-400:])
+        # 第七十七轮: pypdf 光 import 成功不够 —— 它在干净环境里要能**真的跑一遍**
+        # (写一个空白页 -> 存成 bytes -> 再读回来), 否则"内嵌了但解析器用不了"照样糊过去。
+        code = ('import sys, io; sys.path.insert(0, %r)\n'
+                'import pypdf\n'
+                'from pypdf import PdfWriter, PdfReader\n'
+                'w = PdfWriter()\n'
+                'w.add_blank_page(width=200, height=200)\n'
+                'buf = io.BytesIO()\n'
+                'w.write(buf)\n'
+                'r = PdfReader(io.BytesIO(buf.getvalue()))\n'
+                'print("PDF-OK", pypdf.__version__, len(r.pages))' % zp)
+        r = subprocess.run([sys.executable, '-S', '-E', '-c', code],
+                           capture_output=True, encoding='utf-8', errors='replace')
+        check('干净环境 pypdf 读写信封往返 (写空白页->读回页数=1)',
+              r.returncode == 0 and 'PDF-OK 6.' in (r.stdout or '') and ' 1' in (r.stdout or ''),
               ((r.stderr or '') + (r.stdout or '')).strip()[-400:])
     finally:
         import shutil

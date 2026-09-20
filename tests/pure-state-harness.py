@@ -393,6 +393,29 @@ def main():
         err = repr(ex)
     check('GBK 插件 txt 不再抛异常', err == '', err)
 
+    print('--- plugins/*.py 装载契约 + PDF 插件 (第七十七轮) ---')
+    # 前缀的截断点(主循环标记)在启动流程的 load_py_plugins() **之前**, 所以这里手动跑一次装载器 ——
+    # 测的正是"插件契约不对就会被静默丢弃"这条 (load_py_plugins 只记日志, 不抛)。
+    try:
+        ns['load_py_plugins']()
+    except Exception as ex:
+        check('load_py_plugins() 不抛异常', False, repr(ex))
+    codes = [getattr(m, 'CODE', None) for m in ns['PLUGINS']]
+    check('plugins/pdf.py 被装载器收下 (CODE + callable run 契约)', 'pdf' in codes, repr(codes))
+    pdfmods = [m for m in ns['PLUGINS'] if getattr(m, 'CODE', None) == 'pdf']
+    if pdfmods:
+        pm = pdfmods[0]
+        check('pdf 插件: run 可调用 + PERM=low(不弹权限确认)',
+              callable(getattr(pm, 'run', None)) and getattr(pm, 'PERM', '') == 'low')
+        check('pdf 插件: 纯逻辑层可直接调用 (parse_ranges)',
+              pm.parse_ranges('1-3', 5) == [1, 2, 3], repr(pm.parse_ranges('1-3', 5)))
+        # 懒 import 是硬要求: pypdf 走 zipimport 冷启实测 ~865ms, 模块级 import 会把
+        # "按键进输入法"的时刻推后近 1 秒 (对齐 §6 的启动链预算)。
+        check('pdf 插件: 模块级没 import pypdf (启动不受影响)',
+              'pypdf' not in sys.modules, repr([k for k in sys.modules if k == 'pypdf']))
+    else:
+        check('pdf 插件: run/懒 import 检查', False, '插件没被装载, 上面一条已报')
+
     ns['root'].destroy()
     shutil.rmtree(tmp, ignore_errors=True)
     if fails:

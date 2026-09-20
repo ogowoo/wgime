@@ -1135,3 +1135,80 @@ MouthWrite 那种形态是**边说边出**。
   → 直接把整个脚本解析坏（§2 那条规矩的又一次实锤）。
 
 
+## §D16 第七十七轮：PDF 工具（内嵌纯 Python `pypdf` + `plugins/pdf.py`）的调研与实测
+
+### 1) 为什么不能照抄 itools（结论先写死）
+`C:\Tools\ITools\ITools.bat` 的 PDF 是 **WebView2 + pdf.js + pdf-lib**：整份 HTML UI 塞进 Edge 内核
+(`NavigateToString`)，`###PDFJS:…###` 分段 base64 内嵌、解包到 `%LOCALAPPDATA%\itools\pdfjs`、
+`SetVirtualHostNameToFolderMapping` 挂虚拟主机加载；C# `PDFBridge` 只做原生对话框/文件读写，九个面板
+(compress/split/merge/analyze/rotate/delete/extract/images/edit) 全在 JS 里算。**wgime 没有 WebView2、
+也不能要求用户装 Edge Runtime**，所以那套一行都抄不过来 —— 只有"分段 base64 内嵌 + 解包"这个**做法**
+可以借（wgime 早有同类机制），代码本身不行。
+
+### 2) 依赖可行性的实测台账（`%TEMP%\wg-pdf-feas\`）
+| 项 | 实测 |
+|---|---|
+| pypdf 6.19.0 | wheel `py3-none-any`，60 个 `.py`，**0 个 `.pyd/.so`**，BSD-3-Clause，`Requires-Python >=3.9`，classifier 列到 **3.14** |
+| 强制依赖 | **无**。`typing_extensions` 只在 `python_version < '3.11'`，且源码里是 `if sys.version_info >= (3,11): from typing import Self else: from typing_extensions import Self` |
+| 3.13/3.14 移除的 stdlib | 全量 grep `imghdr/sndhdr/cgi/pipes/telnetlib/audioop/distutils/imp/…` → **0 处**（匹配到的都是 `chunk`/`crypt` 这类词内子串） |
+| 隔离自检 | `python -S -E` + 只挂内嵌 zip（`site-packages` 不在 sys.path）：读/页数/元数据/拆分/合并/旋转/删页/取字 全通 |
+| import 成本 | **zipimport 冷启 865 ms**（同一份源码放普通目录 388 ms，第二次 0 ms）→ 插件必须懒 import + 窗口一开后台预热 |
+| 体积 | 源码 1,708,063 B → zip **380,633 B**（4.5×）→ base64 **+507,511 字符** → dist `619,381 → 1,137,049 B`（605 KB → 1.11 MB） |
+| 踩到的构建陷阱 | 用**目录遍历**打包会把 `__pycache__/*.pyc` 一起收（源码 1.71MB→3.72MB，zip 0.38MB→**1.12MB**）。`collect_thirdparty` 走 `spec.origin` 读 `.py` 本来安全，但仍加了死断言 + 回归断言 |
+
+### 3) 能力边界（别在文档/UI 里吹过头）
+* **结构压缩没用**: `compress_content_streams` + `compress_identical_objects` 实测 —— 真实图片型
+  PDF(1900.6 KB) → 1874.9 KB（**99%**）；小的文字型 PDF(1359 B) → 1452 B（**107%，反而变大**）。
+  要真能缩小只能栅格化重排（P2）。
+* **取文字看 PDF 类型**: 手写 fixture(文字型) 精确取到；本机两份真实 PDF（都是
+  `Microsoft: Print To PDF` 产物，1.9MB/1.4MB）**取到 0 字符** —— 图片型。所以 UI 要如实报
+  "可能是扫描件"，别把 0 字符当成功。
+* **加密**: AES → `DependencyError: cryptography>=3.1 is required`（`cryptography` 在 `_THIRD_SKIP`，
+  是 C 扩展）；**RC4-40 / RC4-128 走 `_crypt_providers/_fallback.py` 纯 Python 回退能开**
+  （实测 `decrypt()` 返回真值且取到原文）。
+* **加文字**: `PageObject` 只有 `merge_page/merge_transformed_page/merge_resources`，
+  `dir(PdfWriter)` 里**没有任何字体嵌入 helper** → 拉丁文还能自己拼 content stream + 标准 Helvetica，
+  **中文要自己写 CIDFontType2 子集嵌入**。性价比最低，本轮不做。
+
+### 4) P2（WinRT 那条腿）已验证可用 —— 探针结论
+`render3.ps1`（PS 5.1，`powershell.exe -NoProfile -ExecutionPolicy Bypass -File`）：
+```
+load 2 pages           99 ms
+page size              1587 x 1123 pt
+render png 1240px      146,065 B / 626 ms
+render jpg 1240px      110,587 B
+render 2 pages as jpg  196,268 B  = 原件的 9.7%   (原 1,900,600 B)
+WinRT PdfPage text API NONE
+Windows.Media.Ocr      AvailableRecognizerLanguages = en-US, zh-Hans-CN
+```
+三个必须记住的坑（都真踩过）：
+1. PS 5.1 里 WinRT 类型**必须**写全 `[Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]`，
+   光写 `[Windows.Storage.StorageFile]` 报 `Unable to find type`；
+2. `PdfPage.RenderToStreamAsync()` 返回的是 **`IAsyncAction`** —— 要用 `AsTask` 的**非泛型**重载
+   (`GetParameters()[0].ParameterType.Name -eq 'IAsyncAction'`)；塞进泛型 `AsTask<T>` 会报
+   `Object of type 'System.__ComObject' cannot be converted to type 'IAsyncOperation`1[…]'`。
+   `GetFileFromPathAsync` / `LoadFromFileAsync` 是 `IAsyncOperation<T>`，才走泛型那条；
+3. `PdfPageRenderOptions` **没有 `JpegQuality`**（只有 `DestinationWidth/Height`、`BackgroundColor`、
+   `BitmapEncoderId`、`SourceRect`）→ 质量档要再用 `System.Drawing` 的 JPEG 编码器重编一次。
+设计: 一个**常驻 PowerShell 子进程 + JSON 行协议**（照抄第六十三/六十四轮 `_WarmSrv` 那套：源码走环境
+变量不落盘、stdout 只许 JSON、父进程退出=stdin EOF=自退；key = (宽, 编码, 质量)）；渲染 ~340 ms/页@1240px，
+100 页要进度条 + 可取消。压缩必须让用户显式选"结构无损"还是"转图片(有损)"，不做 itools 那种自动档。
+
+### 5) 插件形态的判据（本轮最重要的可复用结论）
+带 UI 的插件必须写成 **`plugins/*.py`**：`main.load_py_plugins()` 用 `exec_module` 收进 `PLUGINS`，
+上屏编码命中后 `run_launcher()` 直接调 `run()` —— 那是 **Tk 主线程**，能直接用宿主 `ui.make_window`。
+`plugins/*.txt` 的 `[python]` 块**不行**：它是 `python.exe <临时 .py>` 子进程（`_run_python_block`，
+默认 60s 熔断），`sys.path` 里没有单文件的 `thirdparty.zip`，import 不到内嵌的 pypdf，也开不了窗口。
+（反过来, 需要"崩了也不拖垮输入法"的重活才应该用 `[python]` 块。）
+
+### 6) 给"带 UI 的插件"写回归时的一个陷阱（第七十七轮踩到，会假红）
+子线程 `win.after(0, …)` 回主线程改控件是插件里**唯一**允许的跨线程 UI 路径（所有操作日志/进度都走它）。
+但**用 `root.update()` 循环驱动事件来测它必假红**：`_tkinter` 会以
+`RuntimeError: main thread is not in main loop` 直接拒绝子线程的 `createcommand`（`Tkapp_CreateCommand`
+只在主线程真的在 `mainloop()` 里、`dispatching` 为真时才放行）。第一版探针就是这么被骗的 —— 看着像
+"插件的日志路径坏了"，其实只是测法不对。**判据**：UI 断言必须**真跑 `mainloop()`**，用主线程里排的
+`root.after(5000, 收网)` + `root.quit()` 退出。`tests/pdf-test.py` 最后 5 项就是这么写的（无桌面 → 整段 SKIP），
+另外用 AGENTS §42 的审计法断言"26 个控件没有一个越出窗口"。
+
+
+

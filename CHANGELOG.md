@@ -1,5 +1,71 @@
 ---
 
+## 2026-09-16 (第七十七轮: PDF 工具作为插件落地 —— 内嵌纯 Python pypdf + 51 项回归)
+
+**来由**: 用户让"看看 itools 里的 PDF 功能怎么实现的" → 给出可行性方案 → 用户拍板三问:
+①接受单文件变大 ②**要插件形态** ③WinRT 渲染那条线**并做**。本轮做了 P1(纯 pypdf 的结构操作),
+P2(WinRT 常驻 helper: 转图片/扫描件压缩/OCR 取字) 留到下一轮。
+
+**一件事的边界先划清楚**: itools 那套是 **WebView2 + pdf.js + pdf-lib**(浏览器栈, 依赖宿主装 Edge
+Runtime), wgime 是纯 Python 单文件 + Tk, **一行都抄不过来**。能做的是另找两条腿:
+**pypdf**(纯 Python, 能内嵌) 管页面结构, **Windows 自带的 `Windows.Data.Pdf`**(探针实测可用, 零安装)
+管栅格化。本轮只落第一条腿。
+
+**做了什么**:
+1. **把 pypdf 6.19.0 收进内嵌第三方** (`build-wgime-pure.py`): roots 由 `['pystray']` 变成
+   `['pystray','pypdf']`; 它是 60 个 `.py` / **0 个 `.pyd`**、BSD-3-Clause、`Requires-Python >=3.9`
+   (classifier 列到 **3.14**)、唯一声明依赖 `typing_extensions` 只在 <3.11 且源码里有版本守卫 ——
+   所以是"能内嵌"的那一类, 不是 Pillow/comtypes 那种 ABI 绑定的故事。
+   实测代价: 源码 1,708,063 B → zip 380,633 B → 单文件 base64 **+507,511 字符**;
+   **dist 605 KB → 1,110.4 KB**(1,137,049 B), 内嵌第三方模块 14 → **73** 个。
+   构建机多一个**构建期**依赖: `python -m pip install pypdf`(用户机不需要, 单文件里已经有了)。
+2. **新插件 `wgime-py-pure/plugins/pdf.py`** (CODE=`pdf`, PERM=`low`, 25.4 KB): 拆分 / 合并 / 旋转 /
+   删页 / 提取文字 / 分析 六个操作 + 结构无损压缩(`compress_lossless`, 只在逻辑层暴露)。
+   形态要点: 它是**进程内** `.py` 插件(`load_py_plugins` → exec_module → `run()` 跑在 **Tk 主线程**),
+   所以能直接用宿主 `ui.make_window` 建同款窗口; 重活全丢后台线程, 只经 `win.after(0, …)` 回主线程
+   改控件; 带取消(`_CANCEL` 检查在每页循环里)。**绝不覆盖原文件** —— 输出写同目录 `xxx_后缀`,
+   重名自动 `-2`/`-3`。发现方式: 上屏打编码 `pdf`(`refresh()` 的 `find_launcher` 会给
+   `▶PDF 工具` 候选), 插件管理器里也能直接运行。
+3. **新回归 `wgime-py-pure/tests/pdf-test.py` (56 项)**: 从 **dist 成品**里解出 `THIRD_ZIP_B64`
+   挂到 sys.path 最前面, 断言 `pypdf.__file__` **确实在解出来的那个 zip 里**(否则"构建机装了 pypdf"
+   会把"内嵌漏了"糊过去 —— 同第六十九轮 six 的教训); fixture 全部**现造**(脚本里手写带正确 xref 的
+   PDF, 可切 FlateDecode/空内容流), 然后 合并/拆分/每页一文件/取消/旋转/删页/取字/压缩/页号解析/
+   不覆盖写/错误路径 全部真跑一遍; 最后 5 项是 **UI 层真建窗口**(无桌面则 SKIP): ① `run()` 建得出窗口
+   ② 26 个控件没有一个越出窗口(§42 的裁切审计法) ③ **子线程 `win.after(0, …)` 能回主线程** ④ 后台预热的
+   引擎日志真到达主线程 ⑤ 重复 `run()` 是单例。
+   **这里踩到一个"测试自己会骗人"的坑**: 第一版探针用 `root.update()` 循环驱动事件, 子线程的 `after`
+   直接被 `_tkinter` 以 `RuntimeError: main thread is not in main loop` 拒掉 —— 看着像"插件的日志路径坏了",
+   其实只有 `mainloop()` 里的主线程才允许别的线程 `createcommand`。所以 UI 断言**必须真跑 mainloop**
+   (用主线程里排的 `after(5000, …)` 收网再 `root.quit()`)。
+4. **两个守卫跟着更新**: `embedded-isolation-test.py` 13 → **14 项**(内嵌清单断言改成
+   **正好** `{pystray, six, pypdf}`; 新增"干净环境 pypdf 写空白页→读回"往返; 新增
+   **内嵌 zip 里不许有 `__pycache__`/`.pyc`**); `tests/pure-state-harness.py` +4 项(插件
+   **装载契约**、PERM=low、纯逻辑层可直接调用、**模块级不许 import pypdf**)。
+
+**实测数字 (探针在 `%TEMP%\wg-pdf-feas\`, 结论抄进 `AGENTS-DETAIL.md` §D16)**:
+* pypdf 隔离可用: `python -S -E` + 只挂内嵌 zip, 读/页数/元数据/拆分/合并/旋转/删页全通;
+  **zipimport 冷启 865 ms**(普通目录 388 ms) → 所以插件里必须**懒 import**(harness 有守卫),
+  窗口一开就后台预热。
+* **结构压缩不承诺能压小**: 真实图片型 PDF 1900.6 KB → 1874.9 KB(**99%**); 小文字型 PDF
+  1359 → 1452 B(**107%, 反而变大**)。能不能大幅缩小要看 P2 的栅格化。
+* **取文字**: born-digital fixture 精确取到; 本机两份真实 PDF(`Microsoft: Print To PDF` 产物)
+  **0 字符** —— 它们是图片型, 这时插件如实报"可能是扫描件", 不假装成功。
+* **加密**: AES 打不开(要 `cryptography`, 已在 `_THIRD_SKIP`); **RC4-40/RC4-128 有纯 Python 回退, 能开**。
+* **WinRT 那条腿已验证可用**(P2 的底气): `Windows.Data.Pdf` 加载 2 页 99 ms、渲染 1240 px
+  宽 PNG 626 ms/146 KB、JPEG 110 KB、两页 JPEG 合计 196,268 B = **原件的 9.7%**;
+  `WinRT PdfPage` **没有**取字 API; `Windows.Media.Ocr` 语言包含 **en-US + zh-Hans-CN**。
+  两个 PS 5.1 的坑: WinRT 类型必须写 `,Windows.X,ContentType=WindowsRuntime`;
+  `RenderToStreamAsync` 返回 **`IAsyncAction`**, 塞进泛型 `AsTask<T>` 会报 `__ComObject` 转换失败;
+  `PdfPageRenderOptions` **没有 `JpegQuality`**(质量档要再用 System.Drawing 重编)。
+
+**教训 (要照做)**:
+* **插件要"跑在宿主进程里"才能开宿主风格的窗口** —— `plugins/*.txt` 的 `[python]` 块是
+  `python.exe <临时脚本>` 子进程(还有 60s 熔断), **拿不到宿主的 sys.path**, import 不到内嵌的
+  pypdf, 也开不了 `ui.make_window`。要带 UI 的插件就写成 `plugins/*.py`(exec 在宿主, `run()` 在 Tk 主线程)。
+* `build-package.ps1` 第 48 行本来就会把 `plugins\*.py` 拷进 `package\plugins\` —— **但要在
+  pdf.py 存在之后重跑一次**, 否则成品包里没有这个插件(本轮实测踩到)。
+* 新增/删除内嵌依赖后**必须重跑 build-package + 两条守卫**; 内嵌清单断言是"正好等于", 改动必然会红一次。
+
 ## 2026-09-16 (发布 v1.2.14 —— 顺带修掉一个发布事故: v1.2.13 的 python 包带着开发机私用 config 和一把 API key)
 
 **发布**: release id **391874873**，tag `v1.2.14` = 本地 HEAD `d85a98e`；三个资产（bat/ps1/python）与
