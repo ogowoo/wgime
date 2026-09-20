@@ -171,6 +171,13 @@ Runtime), wgime 是纯 Python 单文件 + Tk, **一行都抄不过来**。能做
   ② `GCM_INTERACTIVE=never` + `-c credential.interactive=false` 让它**快速失败**并给人话
   (`fatal: Cannot prompt because user interactivity has been disabled.`) 而不是挂住;
   ③ 远端 ref 用 `git ls-remote origin master` 核(公开仓库的读不需要认证, 所以 **GET 能通不代表能 push**)。
+  **第七十八轮补充(更狠的现场)**: GCM 后来恶化到**连 `git credential fill` 都卡 30s+ 不返回**,
+  7 个 git 进程全部 0 CPU / 0 I/O 挂几十分钟(不是慢, 是完全没开始传 —— 43MB 一度以为要 40 分钟)。
+  **抢修办法(全速 25s 推完)**: 绕过 GCM —— 用 P/Invoke `CredRead('git:https://github.com')` 直接从
+  Windows 凭据管理器读存量 PAT(脚本 `%TEMP%\wg-push-pat.ps1`), push 时
+  `-c credential.helper=`(置空, 不让它问 GCM) + `-c "http.extraHeader=Authorization: Basic <b64>"`
+  (**值里有空格, 参数要内嵌引号**, 否则 git 把 `Basic` 当成子命令)。`Start-Process` 只能按空格拼参数,
+  含空格的值一律自己加引号。
   **另两个本轮踩到的脚本坑**: `Start-Process` **不继承 PowerShell 的 `cd`**(用的是 .NET CWD) ——
   免 CWD 依赖就写 `git -C <repo>`(再顺手加 `-WorkingDirectory`); 以及 `if (Func ...)` 会把函数写进
   输出流的诊断文本**当成布尔条件**(非空数组恒真), 于是出现"假成功" —— 诊断要用 `Write-Host`(host 流)
