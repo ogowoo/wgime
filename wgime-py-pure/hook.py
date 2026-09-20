@@ -281,13 +281,15 @@ def _proc(nCode, wParam, lParam):
                             if not shift and vk in _swallow_pick[0]:   # 以词定字 (C# 372: 额外要求 !sh)
                                 EVENTS.put(vk)
                                 return 1
-                        # 中文标点 (cnpunct 开时): 吞 , . ; / \ [ ] ' 及 Shift 变体 (《》？：等), Shift 状态随事件编码
-                        # (C# 把 MapPunct 放在最后判定, 返回 null 的组合=透传: Shift+/ 有 ？, Shift+\ [ ] 无 => 透传)
+                        # 中文标点 (cnpunct 开时): 标准输入法全角映射 —— 吞 , . ; ' ` 及 Shift 变体、
+                        # 任意 Shift 的 \ [ ] (裸=、 【 】, Shift=｜ 『 』)、Shift+/ - = (？ —— ＋)、
+                        # 以及**空闲时** Shift+数字行 (！＠＃￥％……＆＊（）; 组字中数字已被上面候选分支吞走)。
+                        # 裸 / - = 与 Shift+字母 不在表里: 透传半角 (对齐标准输入法)。
                         if PUNCT[0] and (
-                                vk in (0xBC, 0xBE, 0xBA, 0xDE)          # , . ; ' -> 任意 shift 都吞
-                                or (shift and vk == 0xBF)               # Shift+/ -> ？ (裸 / 透传)
-                                or (not shift and vk in (0xDC, 0xDB, 0xDD))   # \ [ ] -> 、 【 】 (Shift 变体透传 | { })
-                                or (shift and vk == 0x34 and not COMPOSING[0])):   # Shift+4 -> ¥ (组字中让位候选选择)
+                                vk in (0xBC, 0xBE, 0xBA, 0xDE, 0xC0)      # , . ; ' ` -> 任意 shift 都吞
+                                or (shift and vk in (0xBF, 0xBD, 0xBB))   # Shift+/ - = -> ？ —— ＋
+                                or vk in (0xDC, 0xDB, 0xDD)               # \ [ ] -> 任意 shift (裸=、 【 】, Shift=｜ 『 』)
+                                or (shift and 0x30 <= vk <= 0x39 and not COMPOSING[0])):   # Shift+1..0 -> ！…（）
                             EVENTS.put(vk | (0x200 if shift else 0))
                             return 1
                         if shift:                              # Shift 修正键: 透传

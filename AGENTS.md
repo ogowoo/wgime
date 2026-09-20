@@ -48,7 +48,7 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\wgime-ps1.tests.ps1    # WgIme ps1 版（15 项）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\chat-protocol-smoke.ps1  # chat 协议冒烟（需联网）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\interop\run-interop.ps1  # chat 双向互通验证（需联网+node）
-python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（55 项，不装钩子/不联网）
+python tests\pure-state-harness.py                    # 纯 Python 版状态机 headless 回归（67 项，不装钩子/不联网）
 python tests\pure-state-harness.py --ref HEAD~1       # 对旧版本的 main.py 跑同一组用例（before/after 对照）
 python wgime-py-pure\tests\undefined-globals.py       # 未定义全局量静态扫描（symtable mini-pyflakes，应输出 0）
 python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性（-S -E 干净环境逐个 import，10 项，见 §12）
@@ -135,7 +135,7 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
 
 32. **步骤 DSL（`plugins.py` `run_steps`/`_run_verb`）的动词语义对齐 C# `ExecToolStep`**（第十一轮审计）：① `confirm` 的 `title=`/`buttons=`/`default=` 三项必须**真的生效**（`_confirm_args(arg, confirm, **msgbox**)` —— `msgbox` 是参数，原来漏传导致 `buttons=ok` 直接 `NameError` 崩；`okcancel` 走 OK/Cancel，缺省按钮是"否"对齐 C# `MessageBoxDefaultButton.Button2`），回调签名 `confirm(text, title, buttons, default_no)`，保留单参数旧回调兼容；② `kill` 只看**第一个 token**（C# `tk[1]`），不是整行 rest；③ 缺参动词（`run` 无程序名、`reg-set` <4 token、`reg-del` 无键路径）必须**记一步失败**，不能静默成功（C# 是 `tk[n]` 越界抛异常）；④ 多行块控制台显示名按 C# 映射：`cmd→[shell]`、`shellx|cmdx→[shellx]`、`powershellx→[psx]`、`powershell|ps→[powershell]`。python 有意保留：破坏性动词执行前强确认（§16）、块开标签大小写不敏感、`file-del C:\*` 拒删（C# 会真删 C 盘根）。改完 `plugins.py`/`tools.py`/`main.py` 要重建 dist + package。
 
-33. **hook 吞键表的判定次序：别把 `Shift` 提前透传**（第十二轮审计）：C# `bare = !ModifierDown()`，而 `ModifierDown()` **只含 Ctrl/Alt/LWin/RWin**（wgime.bat 124-130）——所以**组字中** `Shift`+数字/退格/Esc/回车/空格/PgUp/PgDn/配置翻页键在 C# 里照样被吞；只有 `a-z`、`;`（SemiAsCode）、以词定字 `[`/`]` 显式要求 `!sh`。python `hook._proc` 的次序必须是：数字（`COMPOSING`）→ `_swallow`（退格/取消/回车/空格/翻页，只要求 bare）→ `_swallow_pick`（`!sh`）→ 中文标点（MapPunct：`/` 只有 Shift 有映射、`\ [ ]` 只有裸键有映射）→ `if shift: 透传` → 裸字母；`_rebuild_swallow` 就按这两组建表。改动后跑 hook 判定矩阵（伪造 lParam + `_key_state` 直接调 `_proc`，见 CHANGELOG 第十二轮 89 例）再提交。
+33. **hook 吞键表的判定次序：别把 `Shift` 提前透传**（第十二轮审计）：C# `bare = !ModifierDown()`，而 `ModifierDown()` **只含 Ctrl/Alt/LWin/RWin**（wgime.bat 124-130）——所以**组字中** `Shift`+数字/退格/Esc/回车/空格/PgUp/PgDn/配置翻页键在 C# 里照样被吞；只有 `a-z`、`;`（SemiAsCode）、以词定字 `[`/`]` 显式要求 `!sh`。python `hook._proc` 的次序必须是：数字（`COMPOSING`）→ `_swallow`（退格/取消/回车/空格/翻页，只要求 bare）→ `_swallow_pick`（`!sh`）→ 中文标点（标准全角映射，全表见 §D17）→ `if shift: 透传` → 裸字母；`_rebuild_swallow` 就按这两组建表。改动后跑 hook 判定矩阵（伪造 lParam + `_key_state` 直接调 `_proc`，见 CHANGELOG 第十二轮 89 例；第七十八轮起 24 组常驻在 harness）再提交。
 
 34. **「自动造词链」`record_commit` 与「词频学习」`engine.learn` 是两件事，别再绑在同一个门控里**（第十三轮审计）：C# 在**每条上屏路径**都调 `RecordCommit`（`Hook_OnSpaced` 空格与数字共用段、`Hook_OnPunct` 标点自动上屏、五笔唯一四码自动上屏），而 python 的 `commit()` 原来把它跟 `engine.learn` 一起塞在 `if i > 0` 里 → "打全拼 + 空格逐字确认"这条最常见的路径永不进 `ime.recent`，**自动造词几乎不触发**。现在的规则：`record_commit(text, code)` 在 `commit()` 里**无条件**调用（含 `commit(0)`，于是五笔自动上屏也覆盖）、`handle_punct` 自动上屏首候选时也补记；**只有动态候选/`vf` 面板符号不参与**（提前 return）。`if i > 0` 只该管 `engine.learn` + `_last_learn`(LastPick/词频回滚)。改上屏路径后跑 CHANGELOG 第十三轮的 headless 状态机 harness（真 engine + 出口打桩 + 临时 `LOCALAPPDATA`，别碰用户数据）。
 

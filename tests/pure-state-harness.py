@@ -192,6 +192,121 @@ def main():
     ns['handle_punct'](0xBC, False)
     check('vf 面板: 不自动上屏候选', not any(c[0] == 'send' and c[1] == '℃' for c in log), repr(log))
 
+    print('--- 标准全角标点映射表 (第七十八轮: 数字行符号 + 缺口补齐, 对齐标准输入法) ---')
+    mp = ns['map_punct']
+    FULL = [
+        (0xC0, False, '·'), (0xC0, True, '～'),
+        (0xBD, False, None), (0xBD, True, '——'),
+        (0xBB, False, None), (0xBB, True, '＋'),
+        (0xDB, False, '【'), (0xDB, True, '『'),
+        (0xDD, False, '】'), (0xDD, True, '』'),
+        (0xDC, False, '、'), (0xDC, True, '｜'),
+        (0xBC, False, '，'), (0xBC, True, '《'),
+        (0xBE, False, '。'), (0xBE, True, '》'),
+        (0xBA, False, '；'), (0xBA, True, '：'),
+        (0xBF, False, None), (0xBF, True, '？'),
+    ]
+    bad = [(hex(v), s, mp(v, s), w) for v, s, w in FULL if mp(v, s) != w]
+    check('标准映射: 16 组非数字标点键全对', not bad, repr(bad[:4]))
+    dg = ('）', '！', '＠', '＃', '￥', '％', '……', '＆', '＊', '（')   # 索引 = vk-0x30 (0=Shift+0, 1=Shift+1)
+    bad2 = [(i, mp(0x30 + i, True), dg[i]) for i in range(10) if mp(0x30 + i, True) != dg[i]]
+    check('标准映射: Shift+1..0 -> ！＠＃￥％……＆＊（）', not bad2, repr(bad2))
+    check('标准映射: Shift+1 给 ！ (vk-0x30 索引的坑: 曾按 1..9,0 排错给 ＠)', mp(0x31, True) == '！')
+    check('标准映射: Shift+4 是全角 ￥ 不是半角 ¥', mp(0x34, True) == '￥', repr(mp(0x34, True)))
+    ns['_sq_open'][0] = False                             # 引号交替状态要先复位, 别被上一条段消耗过
+    ns['_dq_open'][0] = False
+    q = [mp(0xDE, False), mp(0xDE, False), mp(0xDE, True), mp(0xDE, True)]
+    check('标准映射: 引号开闭交替 ‘’“”', q == ['‘', '’', '“', '”'], repr(q))
+    ns['_sq_open'][0] = False                             # 复位, 免得污染后面的段
+    ns['_dq_open'][0] = False
+    check('标准映射: 裸数字不受标点表影响', all(mp(0x30 + i, False) is None for i in range(10)))
+
+    print('--- 全角标点: hook 吞键矩阵 (伪造 lParam + 假 _key_state 直调 _proc) ---')
+    hk = ns['hook']
+    orig_ks = hk._key_state
+    saved = (hk.ACTIVE[0], hk.COMPOSING[0], hk.PUNCT[0])
+    modstate = {0x11: False, 0x12: False, 0x10: False, 0x5B: False, 0x5C: False}
+    hk._key_state = lambda v: bool(modstate.get(v, False))
+    import ctypes as _ct
+
+    def fire(vk, shift, composing=False, punct_on=True, active=True):
+        modstate[0x10] = bool(shift)
+        hk.ACTIVE[0] = active
+        hk.COMPOSING[0] = composing
+        hk.PUNCT[0] = punct_on
+        while not hk.EVENTS.empty():
+            hk.EVENTS.get()
+        s = hk.KBDLLHOOKSTRUCT()
+        s.vkCode = vk
+        s.scanCode = 0
+        s.flags = 0
+        s.time = 0
+        s.dwExtraInfo = 0
+        rc = hk._proc(0, 0x0100, _ct.addressof(s))
+        got = []
+        while not hk.EVENTS.empty():
+            got.append(hk.EVENTS.get())
+        return (rc == 1), (got[0] if got else None)
+
+    try:
+        M = [
+            # (vk, shift, 组字中, 期望吞, 期望事件)
+            (0x31, False, False, False, None),          # 空闲裸数字: 透传
+            (0x31, True, False, True, 0x31 | 0x200),    # 空闲 Shift+1 -> 吞 (！)
+            (0x34, True, False, True, 0x34 | 0x200),    # 空闲 Shift+4 -> 吞 (￥)
+            (0x30, True, False, True, 0x30 | 0x200),    # 空闲 Shift+0 -> 吞 (）)
+            (0x31, True, True, True, 0x31),             # 组字中 Shift+1: 仍是数字(无 shift 位), 选候选
+            (0x35, True, True, True, 0x35),             # 组字中 Shift+5: 同上
+            (0xBC, False, False, True, 0xBC),           # 裸 , -> ，
+            (0xBC, True, False, True, 0xBC | 0x200),    # Shift+, -> 《
+            (0xBF, False, False, False, None),          # 裸 / -> 透传
+            (0xBF, True, False, True, 0xBF | 0x200),    # Shift+/ -> ？
+            (0xBD, False, False, False, None),          # 裸 - -> 透传
+            (0xBD, True, False, True, 0xBD | 0x200),    # Shift+- -> ——
+            (0xBB, False, False, False, None),          # 裸 = -> 透传
+            (0xBB, True, False, True, 0xBB | 0x200),    # Shift+= -> ＋
+            (0xC0, False, False, True, 0xC0),           # 裸 ` -> ·
+            (0xC0, True, False, True, 0xC0 | 0x200),    # Shift+` -> ～
+            (0xDB, False, False, True, 0xDB),           # 裸 [ -> 【
+            (0xDB, True, False, True, 0xDB | 0x200),    # Shift+[ -> 『
+            (0xDC, True, False, True, 0xDC | 0x200),    # Shift+\ -> ｜
+            (0x41, False, False, True, 0x41),           # 裸字母 -> 组字
+            (0x41, True, False, False, None),           # Shift+字母 -> 透传 (大写英文)
+        ]
+        badM = []
+        for vk, sh, comp, want_sw, want_ev in M:
+            sw, ev = fire(vk, sh, comp)
+            if sw != want_sw or ev != want_ev:
+                badM.append((hex(vk), sh, comp, sw, ev, want_sw, want_ev))
+        check('hook 矩阵: 21 组按键吞/放全对', not badM, repr(badM[:5]))
+        sw1, _e1 = fire(0x31, True, False, punct_on=False)
+        sw2, _e2 = fire(0xBC, False, False, punct_on=False)
+        check('hook 矩阵: cnpunct=0 时 Shift+1 与 , 都透传', not sw1 and not sw2, repr((sw1, sw2)))
+        sw3, _e3 = fire(0x31, True, False, active=False)
+        check('hook 矩阵: 输入法未激活时透传', not sw3, repr(sw3))
+    finally:
+        hk._key_state = orig_ks
+        hk.ACTIVE[0], hk.COMPOSING[0], hk.PUNCT[0] = saved
+        while not hk.EVENTS.empty():
+            hk.EVENTS.get()
+
+    print('--- 全角标点: 上屏路径集成 ---')
+    setup('', [])
+    ns['handle'](0x31 | 0x200)
+    check('空闲 Shift+1: 直接上屏 ！', any(c[0] in ('send', 'send_qtfix', 'paste') and c[1] == '！' for c in log), repr(log))
+    setup(k1, [c1])
+    ns['handle'](0x31 | 0x200)
+    seq = [c[1] for c in log if c[0] in ('send', 'send_qtfix', 'paste')]
+    check('组字中 Shift+1: 先上屏首候选再上屏 ！', seq == [c1, '！'], repr(seq))
+    check('组字中 Shift+1: 记入 recent 链', [r[0] for r in ime.recent] == [c1], repr(ime.recent))
+    old_cp = ns['CFG'].get('cnpunct', True)
+    ns['CFG']['cnpunct'] = False
+    setup('', [])
+    ns['handle'](0x31 | 0x200)
+    check('半角模式 (cnpunct=0): 上屏 ASCII !', any(c[0] in ('send', 'send_qtfix', 'paste') and c[1] == '!' for c in log), repr(log))
+    ns['CFG']['cnpunct'] = old_cp
+
+
     print('--- 退格: 删组字缓冲 (不泄漏给应用) ---')
     setup(k1 + k1, [c1])
     ns['handle'](0x08)

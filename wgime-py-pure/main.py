@@ -454,12 +454,21 @@ MODE_NAMES = ('混合', '拼音', '五笔', '词典', '语音')
 MODE_VOICE = 4                     # 「语音」模式: 不组字 (按键透传), 候选条显示录音/识别状态 (第四十七轮)
 
 
-# 中文标点映射 (对齐 C# MapPunct; vk | 0x200 = Shift 按住, hook 编码)
+# 中文标点映射 (标准输入法全角逻辑, 第七十八轮补全; vk | 0x200 = Shift 按住, hook 编码)
+# 与 C# MapPunct 逐条一致 (表见 AGENTS-DETAIL §D17)。裸 / - = 无映射(透传半角)。
 _sq_open = [False]   # 单引号开闭交替状态
 _dq_open = [False]   # 双引号开闭交替状态
 
+_SHIFT_DIGIT = ('）', '！', '＠', '＃', '￥', '％', '……', '＆', '＊', '（')
+# 索引 = vk - 0x30: [0] 是 Shift+0=）, [1] 是 Shift+1=！, ..., [9] 是 Shift+9=（
+# (物理键序: !@#$%^&*() 对应 1234567890; 别按 1..9,0 排 —— 那会把 Shift+1 错给成 ＠)
+
 
 def map_punct(vk, sh):
+    if vk == 0xC0:                           # ` ~ (VK_OEM_3)
+        return '～' if sh else '·'
+    if 0x30 <= vk <= 0x39:                   # Shift+数字行 (裸数字是组字键, 不会到这)
+        return _SHIFT_DIGIT[vk - 0x30] if sh else None
     if vk == 0xBC:
         return '《' if sh else '，'
     if vk == 0xBE:
@@ -469,13 +478,15 @@ def map_punct(vk, sh):
     if vk == 0xBF:
         return '？' if sh else None          # 裸 / 透传
     if vk == 0xDC:
-        return None if sh else '、'          # Shift+\ 透传 |
+        return '｜' if sh else '、'
     if vk == 0xDB:
-        return None if sh else '【'
+        return '『' if sh else '【'
     if vk == 0xDD:
-        return None if sh else '】'
-    if vk == 0x34:
-        return '¥' if sh else None           # Shift+4
+        return '』' if sh else '】'
+    if vk == 0xBD:
+        return '——' if sh else None          # Shift+- -> 破折号 (U+2014 x2); 裸 - 透传
+    if vk == 0xBB:
+        return '＋' if sh else None          # Shift+= -> ＋; 裸 = 透传
     if vk == 0xDE:                           # 引号开闭交替
         if sh:
             _dq_open[0] = not _dq_open[0]
@@ -2305,7 +2316,11 @@ _HALF_PUNCT = {
     (0xBC, False): ',', (0xBC, True): '<', (0xBE, False): '.', (0xBE, True): '>',
     (0xBA, False): ';', (0xBA, True): ':', (0xBF, False): '/', (0xBF, True): '?',
     (0xDC, False): '\\', (0xDC, True): '|', (0xDB, False): '[', (0xDB, True): '{',
-    (0xDD, False): ']', (0xDD, True): '}', (0x34, True): '$',
+    (0xDD, False): ']', (0xDD, True): '}', (0xC0, False): '`', (0xC0, True): '~',
+    (0xBD, True): '_', (0xBB, True): '+',
+    (0x31, True): '!', (0x32, True): '@', (0x33, True): '#', (0x34, True): '$',
+    (0x35, True): '%', (0x36, True): '^', (0x37, True): '&', (0x38, True): '*',
+    (0x39, True): '(', (0x30, True): ')',
     (0xDE, False): "'", (0xDE, True): '"',
 }
 
@@ -2404,7 +2419,9 @@ def handle(vk):
             return
         return                                       # 其它键忽略: 别把待确认结果弄丢
     # 中文标点 (cnpunct=1 时 hook 吞键): 组字中先上屏首候选再上屏标点
-    if vk in (0xBC, 0xBE, 0xBA, 0xBF, 0xDC, 0xDB, 0xDD, 0xDE) or (vk == 0x34 and sh):
+    if (vk in (0xBC, 0xBE, 0xBA, 0xBF, 0xDC, 0xDB, 0xDD, 0xDE, 0xC0)
+            or (sh and vk in (0xBD, 0xBB))
+            or (sh and 0x30 <= vk <= 0x39)):
         handle_punct(vk, sh)
         return
     # vf 符号面板 (字母键不拦截, 继续组字 -> 退出面板)
