@@ -1,5 +1,27 @@
 ---
 
+## 2026-09-20 (第七十七轮补: PDF 工具的两个用户实测问题 —— 默认选项文字消失 + 没有预览)
+
+用户拿真窗口试 P2, 截图反馈两个问题:
+
+1. **默认选项的文字会消失** ('90°' / 'PNG' / '自动' 三个预选项, hover 一次就变"白底白字"):
+   根因是用 `ui.flat_button` + 事后 `.configure(bg=ACCENT, fg='white')` 做选中态, 而 flat_button 的
+   Enter/Leave/Press/Release 处理器把 `bg` 恢复到**创建时**那一份(闭包绑死) —— 预选的按钮被划过
+   就复位成 CARD 白底, 而 fg 还是白, 文字消失。修法: 换成插件内的 `_toggle_btn`, 颜色**每次重画都从
+   当前状态现算**(hover/press 只调亮暗, 不动语义色)。**守卫**: `tests/pdf-test.py` UI 段新增
+   "对全部 Label 模拟 Enter/Leave(光划过不点 —— 带上 Release 反而会被 flat_button 的
+   先复位 bg→再触发 command→又把色配回来 的顺序盖住) 后, 断言没有'前景=背景'的控件",
+   颜色用 `winfo_rgb` 解析再比('white' 与 '#ffffff' 才不会误判)。守卫自检: 旧代码 → **1/75 红**
+   并打印 `('90°','white','#FFFFFF')` 三项, 修完 → 绿。**同类存量问题**: `plugins/chat.py:156`
+   是同一种写法(标签页选中态), 同样会在 hover 后隐形, 记为待修(本轮不扩大范围)。
+2. **没有预览**: 文件列表缩窄(616→420), 右侧加 188×86 预览框 —— 选中文件后**后台**走
+   `preview_first_page()`(pypdf 读第 1 页 mediabox 算贴框缩放 → WinRT 渲染)出图,
+   `win.after` 回主线程 `tk.PhotoImage` 显示(保引用防 GC; token 丢弃过期结果, 防"快速换选后旧图
+   盖新图"; 临时目录用完即删)。预览依赖 WinRT 这条腿, 不可用就如实写"预览不可用", 不假装有图。
+
+`tests/pdf-test.py` 75 → **78 项**(preview_first_page 贴框 + PNG 存在; UI 段预览真的渲进框)。
+窗口 640×626, **40 个控件**: 越界/两两不重叠/hover 隐形文字/单例/线程日志 全绿。
+
 ## 2026-09-16 (第七十七轮: PDF 工具作为插件落地 —— 内嵌纯 Python pypdf + 51 项回归)
 
 **来由**: 用户让"看看 itools 里的 PDF 功能怎么实现的" → 给出可行性方案 → 用户拍板三问:

@@ -1240,5 +1240,16 @@ Windows.Media.Ocr      AvailableRecognizerLanguages = en-US, zh-Hans-CN
 **规则**：这类窗口全用 `place()` 显式坐标（没有布局管理器兜底），所以"出界"和"重叠"**两条都要断言**；
 窗口最终布局记在插件顶部注释里（三行磁贴 194/232/270、参数 310/348、日志 390/h140、底栏 540、窗口 640×626）。
 
+**再补（2026-09-20，用户截图反馈的两个问题）**：
+* **`ui.flat_button` 不能用来做"选中态"**：它的 Enter/Leave/Press/Release 处理器把 `bg` 恢复到
+  **创建时**那一份（闭包绑死）。事后 `.configure(bg=ACCENT, fg='white')` 的按钮被 hover 一次就复位成
+  CARD 白底 + 白字 = 文字消失（'90°'/'PNG'/'自动' 三个默认项实测全看不见）。修法是插件内
+  `_toggle_btn`（颜色每次重画都从状态现算）。**同类存量**: `plugins/chat.py:156` 同写法，待修。
+  **测法细节**: 模拟 hover 时**只发 Enter/Leave、别带 Release** —— 带上 Release 的话 flat_button
+  会"先复位 bg → 再触发 command → 又把色配回来"，恰好把 bug 盖住；颜色比较用 `winfo_rgb` 解析后比，
+  否则 'white' ≠ '#ffffff' 会漏判。
+* **预览**: `preview_first_page()`（pypdf 读 mediabox 算贴框缩放 → WinRT 渲染 → `tk.PhotoImage`，
+  保引用防 GC、token 丢弃过期结果）。Tk 8.6 的 PhotoImage **原生支持 PNG**，不需要 Pillow。
+
 
 

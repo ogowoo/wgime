@@ -108,15 +108,19 @@ def mk_pdf(path, pages=3, flate=False, info=True, lines=8):
     return len(buf)
 
 
-def ui_check(mod):
-    """UI 层真建窗口(需要桌面; 没有就 SKIP)。测三件在纯逻辑层测不到的事:
+def ui_check(mod, fixture_pdf=None, has_winrt=False):
+    """UI 层真建窗口(需要桌面; 没有就 SKIP)。测几件在纯逻辑层测不到的事:
 
     ① run() 能建出窗口, 且**没有控件被窗口裁掉**(AGENTS §42 的审计法: 遍历 content 子控件算绝对 x+w/y+h);
+    ①b 兄弟控件**两两不重叠**(越界查不出互相压; 第七十七轮真 bug);
+    ①c 对全部 Label 模拟 hover 之后没有"前景=背景"的隐形文字(ui.flat_button 会把 bg 恢复到创建时
+       的值, 事后手动改色做选中态会被 hover 一次洗掉 —— 用户实测的真 bug);
     ② **子线程 -> win.after(0, ..) -> 主线程改控件** 这条路真的通 —— 操作日志/进度全走它, 不通的话
        用户看到的是"窗口像死的", 重活却在后台跑;
        **注意测法**: 必须真跑 `mainloop()`。用 `root.update()` 循环时 `_tkinter` 会以
        "main thread is not in main loop" 拒绝子线程的 `after`(假红), 我第一版探针就是这么被骗的。
-    ③ 重复调 run() 是单例(抬起旧窗, 不叠第二个)。
+    ③ 重复调 run() 是单例(抬起旧窗, 不叠第二个);
+    ④ 预览: 选中文件后后台渲出第 1 页并显示进预览框(要 WinRT; 没有就不验这条)。
     """
     import tkinter as tk
     import threading
@@ -162,7 +166,39 @@ def ui_check(mod):
                 over.append((a[0], b[0], (a[1], a[2], a[3], a[4]), (b[1], b[2], b[3], b[4])))
     check('[UI] %d 个控件两两不重叠' % len(rects), not over, repr(over[:3]))
 
-    state = {'seen': [], 'txt': '', 'win2': None, 'tops': (0, 0)}
+    # **隐形文字扫描**: 对所有 Label 模拟一遍 Enter/Leave(不点), 然后断言没有任何"前景色==背景色"
+    # 的控件。来由: ui.flat_button 的 hover 处理器会把 bg 恢复到**创建时**的值(闭包绑定), 而插件
+    # 原来对"默认选中的单选钮"是事后 .configure(bg=ACCENT, fg='white') —— 被 hover 一次就变成
+    # 白底+白字, 默认选项的文字直接消失(第七十七轮用户实测)。注意要模拟"光划过不点" ——
+    # 如果带上 Release, flat_button 会先复位 bg 再触发 command 又把色配回来, 恰好把 bug 盖住。
+    labels = []
+    if content is not None:
+        for ch in content.winfo_children():
+            if ch.winfo_class() == 'Label':
+                labels.append(ch)
+    for ch in labels:
+        try:
+            ch.event_generate('<Enter>')
+        except Exception:
+            pass
+    root.update()
+    for ch in labels:
+        try:
+            ch.event_generate('<Leave>')
+        except Exception:
+            pass
+    root.update()
+    invis = []
+    for ch in labels:
+        try:
+            fg, bg = str(ch.cget('fg')), str(ch.cget('bg'))
+            if ch.winfo_rgb(fg) == ch.winfo_rgb(bg):      # 'white' 与 '#ffffff' 要解析成 RGB 再比
+                invis.append((str(ch.cget('text'))[:16], fg, bg))
+        except Exception:
+            pass
+    check('[UI] 对全部 Label 划过一遍之后, 没有"前景=背景"的隐形文字', not invis, repr(invis[:4]))
+
+    state = {'seen': [], 'txt': '', 'win2': None, 'tops': (0, 0), 'pv_img': ''}
 
     def from_thread():
         time.sleep(0.3)
@@ -170,20 +206,28 @@ def ui_check(mod):
 
     threading.Thread(target=from_thread, daemon=True).start()
 
+    # 预览: 有 WinRT 就把 fixture 喂给预览通道, 主循环期间它应该渲出第 1 页并显示出来
+    if has_winrt and fixture_pdf:
+        mod._W['preview']['show'](fixture_pdf)
+
     def finish():
         state['txt'] = mod._W['tb'].get('1.0', 'end')
+        state['pv_img'] = str(mod._W['preview']['label'].cget('image'))
         n0 = len([w for w in root.winfo_children() if isinstance(w, tk.Toplevel)])
         state['win2'] = mod.run()
         state['tops'] = (n0, len([w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]))
         root.quit()
 
-    root.after(5000, finish)                     # 主线程里排的 after(合法), 到点收网退出 mainloop
+    root.after(6000, finish)                     # 主线程里排的 after(合法), 到点收网退出 mainloop
     root.mainloop()
 
     check('[UI] 子线程 after 回调到达主线程', bool(state['seen']))
     check('[UI] 后台预热的引擎日志到达主线程', '引擎就绪' in state['txt'], repr(state['txt'][-80:]))
     check('[UI] 重复 run() 是单例(抬起, 不叠窗)',
           state['win2'] is win and state['tops'] == (1, 1), repr(state['tops']))
+    if has_winrt and fixture_pdf:
+        check('[UI] 预览: 第 1 页渲染进了预览框 (PhotoImage 已挂上)',
+              bool(state['pv_img']), repr(state['pv_img']))
     try:
         win.destroy()
     except Exception:
@@ -444,6 +488,14 @@ def main():
                   rc['before'] > 0 and rc['size'] > 0 and rc['ratio'] > 0, repr(rc['ratio']))
             print('  (fixture 只有 %d B, 所以 ratio=%.0f%% —— 小文字 PDF 栅格化必然变大, 这是预期)'
                   % (rc['before'], rc['ratio']))
+            # 预览: 第 1 页渲成"恰好贴框"的 PNG (预览功能依赖 WinRT 这条腿)
+            pv = mod.preview_first_page(a, 184, 82)
+            check('preview_first_page: 恰好贴框 (<=184x82 且有一边贴满)',
+                  pv['w'] <= 184 and pv['h'] <= 82 and (pv['w'] >= 180 or pv['h'] >= 78),
+                  repr((pv['w'], pv['h'])))
+            check('preview_first_page: PNG 真的存在且非空',
+                  os.path.exists(pv['png']) and os.path.getsize(pv['png']) > 100)
+            shutil.rmtree(pv['outdir'], ignore_errors=True)
             # 取消的机制是"杀掉助手", 下次调用要能自动重启 —— 这条必须验(否则取消一次就永久废掉)
             mod._w32().shutdown()
             info2 = mod.winrt_info()
@@ -453,7 +505,7 @@ def main():
         # ---- UI 层 (要真桌面; 没有就 SKIP) ----
         try:
             import tkinter as _tk
-            ui_check(mod)
+            ui_check(mod, fixture_pdf=a, has_winrt=bool(info.get('ok')))
         except ImportError:
             print('  %-58s SKIP %s' % ('UI 层真建窗口', 'no tkinter'))
         except Exception as _ex:

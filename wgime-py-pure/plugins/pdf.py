@@ -829,6 +829,28 @@ def render_images(path, outdir, pages=None, width=1240, fmt='png', cancel=None, 
     return _render_to(path, outdir, pages, width, fmt, cancel=cancel, on_page=on_page)
 
 
+def preview_first_page(path, box_w, box_h, outdir=None):
+    """把 PDF 第 1 页渲成"恰好放进 (box_w, box_h)"的一张 PNG -> {'png','w','h','outdir'}。
+
+    纯逻辑(不碰 Tk, 可被测试直接调): 先用 pypdf 读第 1 页 mediabox 算出恰好贴框的渲染宽度,
+    再走 WinRT 渲染 —— 栅格化器只有 WinRT 这一条腿, 所以"预览"在没装 WinRT 的机器上会如实报失败
+    (而不是假装有图)。调用方负责 `shutil.rmtree(result['outdir'])`。
+    """
+    r = open_reader(path)
+    mb = r.pages[0].mediabox
+    pw, ph = float(mb.width), float(mb.height)
+    if pw <= 0 or ph <= 0:
+        raise PdfError('第 1 页尺寸异常: %sx%s' % (pw, ph))
+    scale = min(float(box_w) / pw, float(box_h) / ph)
+    w = max(40, min(2000, int(pw * scale)))
+    outdir = outdir or tempfile.mkdtemp(prefix='wg-pdf-prev-')
+    res = render_images(path, outdir, [1], width=w, fmt='png')
+    f0 = res['files'][0]
+    data = open(f0['path'], 'rb').read()
+    wh = png_size(data) or (w, max(1, int(ph * scale)))
+    return {'png': f0['path'], 'w': wh[0], 'h': wh[1], 'outdir': outdir}
+
+
 def ocr_text(path, out, pages=None, lang=None, width=2000, cancel=None, on_page=None):
     """扫描件取字: WinRT 渲染 -> Windows.Media.Ocr 识别 -> 写成 UTF-8(BOM) txt。
 
@@ -966,15 +988,19 @@ def run():
             if p and p not in files():
                 lb.insert('end', p)
         log('已添加 %d 个文件, 列表共 %d 个' % (len(ps or ()), lb.size()))
+        if ps:
+            preview_show(lb.get(0))
 
     def del_sel():
         for i in reversed(list(lb.curselection())):
             lb.delete(i)
         log('移除选中, 剩 %d 个' % lb.size())
+        on_select()
 
     def clear_all():
         lb.delete(0, 'end')
         log('已清空文件列表')
+        preview_clear()
 
     ui.flat_button(content, '添加 PDF…', add_files, x=12, y=62, w=118, h=32)
     ui.flat_button(content, '移除选中', del_sel, x=136, y=62, w=92, h=32)
@@ -985,7 +1011,105 @@ def run():
     lb = tk.Listbox(content, font=ui.font(9), bg=ui.CARD, fg=ui.TEXT, bd=0,
                     highlightthickness=1, highlightbackground=ui.BORDER,
                     selectmode=tk.EXTENDED, activestyle='none')
-    lb.place(x=12, y=100, width=616, height=86)
+    lb.place(x=12, y=100, width=420, height=86)
+
+    # ---- 预览框 (选中文件后后台渲染第 1 页贴进来; 栅格化走 WinRT, 不可用就如实写"预览不可用") ----
+    pv = {'img': None, 'token': 0}
+    pv_box = tk.Frame(content, bg=ui.CARD, highlightthickness=1, highlightbackground=ui.BORDER)
+    pv_box.place(x=440, y=100, width=188, height=86)
+    pv_lbl = tk.Label(pv_box, text='预览\n(加文件后自动渲染)', bg=ui.CARD, fg=ui.SUB,
+                      font=ui.font(8), justify='center')
+    pv_lbl.place(x=2, y=2, width=184, height=82)
+    _W['preview'] = {'label': pv_lbl, 'state': pv}
+
+    def preview_clear(msg='预览\n(加文件后自动渲染)'):
+        pv['token'] += 1
+        pv['img'] = None
+        try:
+            pv_lbl.configure(image='', text=msg)
+        except Exception:
+            pass
+
+    def preview_fail(ex):
+        preview_clear('预览不可用\n%s' % str(ex)[:26])
+
+    def preview_show(path):
+        """后台渲第 1 页 -> after 回主线程显示 (token 防"快速换选后旧图盖新图")。"""
+        pv['token'] += 1
+        tok = pv['token']
+        try:
+            pv_lbl.configure(image='', text='渲染预览…')
+        except Exception:
+            pass
+
+        def work():
+            try:
+                d = preview_first_page(path, 184, 82)
+            except Exception as ex:
+                win.after(0, lambda: preview_fail(ex))
+                return
+
+            def show():
+                if tok != pv['token']:                      # 期间又选了别的文件: 丢弃过期结果
+                    shutil.rmtree(d['outdir'], ignore_errors=True)
+                    return
+                try:
+                    img = tk.PhotoImage(file=d['png'])
+                except Exception as ex:
+                    preview_fail(ex)
+                    shutil.rmtree(d['outdir'], ignore_errors=True)
+                    return
+                pv['img'] = img                             # 必须保引用, 否则被 GC 后 Label 变白
+                pv_lbl.configure(image=img, text='')
+                shutil.rmtree(d['outdir'], ignore_errors=True)
+            win.after(0, show)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    _W['preview']['show'] = preview_show
+    _W['preview']['clear'] = preview_clear
+
+    def on_select(_=None):
+        sel = list(lb.curselection())
+        fs = files()
+        if sel:
+            preview_show(lb.get(sel[0]))
+        elif fs:
+            preview_show(fs[0])
+        else:
+            preview_clear()
+
+    lb.bind('<<ListboxSelect>>', on_select)
+
+    def _toggle_btn(text, x, y, w, h, is_sel, on_pick):
+        """扁平"单选"按钮: 颜色**每次重画都从 is_sel() 现算**。
+
+        **不能**用 ui.flat_button + 事后 .configure(bg=ACCENT) 来做选中态 —— flat_button 的
+        Enter/Leave/Press/Release 处理器把 bg 恢复到**创建时**那一份(闭包绑死), 于是默认选中的
+        按钮被 hover 一次就变成「白底 + 白字」, 文字直接消失(第七十七轮用户实测:
+        '90°'/'PNG'/'自动' 三个默认项划过之后全看不见)。
+        """
+        btn = tk.Label(content, text=text, bg=ui.CARD, fg=ui.TEXT,
+                       font=ui.font(9.5), cursor='hand2')
+        btn.place(x=x, y=y, width=w, height=h)
+
+        def paint(hover=False, pressed=False):
+            if is_sel():
+                btn.configure(bg=('#0A6CDC' if pressed else ('#2C92FF' if hover else ui.ACCENT)),
+                              fg='white')
+            else:
+                btn.configure(bg=(ui.SURF2 if (hover or pressed) else ui.CARD), fg=ui.TEXT)
+
+        def release(_):
+            on_pick()                  # 先改状态
+            paint()                    # 再按新状态重画自己(整组的重画由 on_pick 里的 setter 做)
+        btn.bind('<Enter>', lambda e: paint(hover=True))
+        btn.bind('<Leave>', lambda e: paint())
+        btn.bind('<ButtonPress-1>', lambda e: paint(pressed=True))
+        btn.bind('<ButtonRelease-1>', release)
+        paint()
+        btn.refresh = paint
+        return btn
 
     # ---- 参数行 (第 3 行操作磁贴到 302 为止, 所以这里从 310 起 —— 原来放 272 会**正压在磁贴上**,
     #      而"越出窗口"的审计查不出这种重叠, 现在 tests/pdf-test.py 里有专门的两两不重叠断言) ----
@@ -995,25 +1119,22 @@ def run():
     tk.Label(content, text='角度', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
              anchor='w').place(x=238, y=310, width=34, height=32)
     angle_btns = {}
+
+    def _set_angle(d):
+        _ANGLE[0] = d
+        for b in angle_btns.values():
+            b.refresh()
+        log('旋转角度 = %d°' % d)
+
     for i, (txt, deg) in enumerate((('90°', 90), ('180°', 180), ('270°', 270))):
-        b = ui.flat_button(content, txt, (lambda d: (lambda: _set_angle(d)))(deg),
-                           x=274 + i * 54, y=310, w=50, h=32)
-        angle_btns[deg] = b
+        angle_btns[deg] = _toggle_btn(txt, 274 + i * 54, 310, 50, 32,
+                                      lambda d=deg: _ANGLE[0] == d,
+                                      lambda d=deg: _set_angle(d))
     each_var = tk.IntVar(value=0)
     chk = tk.Checkbutton(content, text='拆分: 每页一个文件', variable=each_var, bg=ui.BG, fg=ui.SUB,
                          font=ui.font(8.5), activebackground=ui.BG, selectcolor=ui.CARD,
                          bd=0, highlightthickness=0, anchor='w', cursor='hand2')
     chk.place(x=440, y=310, width=188, height=32)
-
-    def _set_angle(d):
-        _ANGLE[0] = d
-        for deg, btn in angle_btns.items():
-            try:
-                btn.configure(bg=ui.ACCENT if deg == d else ui.CARD,
-                              fg='white' if deg == d else ui.TEXT)
-            except Exception:
-                pass
-        log('旋转角度 = %d°' % d)
 
     _set_angle(_ANGLE[0])
 
@@ -1024,39 +1145,32 @@ def run():
     tk.Label(content, text='格式', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
              anchor='w').place(x=146, y=348, width=38, height=32)
     fmt_btns = {}
-    for i, (txt, key) in enumerate((('PNG', 'png'), ('JPG', 'jpg'))):
-        fmt_btns[key] = ui.flat_button(content, txt, (lambda k: (lambda: _set_fmt(k)))(key),
-                                       x=186 + i * 60, y=348, w=56, h=32)
-    tk.Label(content, text='OCR', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
-             anchor='w').place(x=310, y=348, width=34, height=32)
-    lang_btns = {}
-    for i, (txt, key) in enumerate((('中', 'zh-Hans-CN'), ('EN', 'en-US'), ('自动', ''))):
-        lang_btns[key] = ui.flat_button(content, txt, (lambda k: (lambda: _set_lang(k)))(key),
-                                        x=348 + i * 48, y=348, w=44, h=32)
-    tk.Label(content, text='宽 px · 渲染/识别用', bg=ui.BG, fg=ui.SUB, font=ui.font(8),
-             anchor='w').place(x=502, y=348, width=126, height=32)
 
     def _set_fmt(k):
         _FMT[0] = k
-        for key, btn in fmt_btns.items():
-            try:
-                btn.configure(bg=ui.ACCENT if key == k else ui.CARD,
-                              fg='white' if key == k else ui.TEXT)
-            except Exception:
-                pass
+        for b in fmt_btns.values():
+            b.refresh()
+
+    for i, (txt, key) in enumerate((('PNG', 'png'), ('JPG', 'jpg'))):
+        fmt_btns[key] = _toggle_btn(txt, 186 + i * 60, 348, 56, 32,
+                                    lambda k=key: _FMT[0] == k,
+                                    lambda k=key: _set_fmt(k))
+    tk.Label(content, text='OCR', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
+             anchor='w').place(x=310, y=348, width=34, height=32)
+    lang_btns = {}
 
     def _set_lang(k):
         _LANG[0] = k
-        for key, btn in lang_btns.items():
-            try:
-                btn.configure(bg=ui.ACCENT if key == k else ui.CARD,
-                              fg='white' if key == k else ui.TEXT)
-            except Exception:
-                pass
+        for b in lang_btns.values():
+            b.refresh()
         log('OCR 语言 = %s' % (k or '自动(系统用户配置语言)'))
 
-    _set_fmt(_FMT[0])
-    _set_lang(_LANG[0])
+    for i, (txt, key) in enumerate((('中', 'zh-Hans-CN'), ('EN', 'en-US'), ('自动', ''))):
+        lang_btns[key] = _toggle_btn(txt, 348 + i * 48, 348, 44, 32,
+                                     lambda k=key: _LANG[0] == k,
+                                     lambda k=key: _set_lang(k))
+    tk.Label(content, text='宽 px · 渲染/识别用', bg=ui.BG, fg=ui.SUB, font=ui.font(8),
+             anchor='w').place(x=502, y=348, width=126, height=32)
 
     # ---- 日志 ----
     tb = ui.console_text(content, x=12, y=390, w=616, h=140)
