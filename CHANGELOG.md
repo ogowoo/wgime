@@ -41,6 +41,16 @@ Runtime), wgime 是纯 Python 单文件 + Tk, **一行都抄不过来**。能做
    **正好** `{pystray, six, pypdf}`; 新增"干净环境 pypdf 写空白页→读回"往返; 新增
    **内嵌 zip 里不许有 `__pycache__`/`.pyc`**); `tests/pure-state-harness.py` +4 项(插件
    **装载契约**、PERM=low、纯逻辑层可直接调用、**模块级不许 import pypdf**)。
+5. **P2 —— WinRT 那条腿也落地了**(用户拍板"并做"): 新增常驻 **PowerShell 助手**
+   (内嵌在插件里、源码走环境变量 `WGIME_PDFW32_SRC` + `iex`, **不落盘**), 三个新操作:
+   **转图片**(PNG/JPG, 宽度可调) / **OCR 取字**(`Windows.Media.Ocr`) / **压缩(转图片)**
+   (栅格化后由新增的 **纯 Python `build_pdf_from_jpegs`** 重拼 PDF —— 连 pdf-lib 都不需要,
+   itools 那边这一步是靠 pdf-lib 的)。窗口加一行操作磁贴 + 一行参数(宽度/格式/OCR 语言),
+   640×584 → **640×596**。
+   助手机制照抄第六十三/六十四轮的 `_WarmSrv`: `lock` 管起杀、`rlock` 管一问一答(**两把锁别合并**)、
+   `ensure_ascii` JSON 回包、父进程退出=stdin EOF=子进程自退(实测 rc=0/81ms)、连续 3 次起不来不再重试;
+   差异只在协议(JSON 行 + `id` 配对 + `progress` 行)和**取消 = 杀掉助手**(单线程助手渲染途中读不到
+   stdin, 所以只能杀; 下次调用自动重启, 回归里专门验了这条)。
 
 **实测数字 (探针在 `%TEMP%\wg-pdf-feas\`, 结论抄进 `AGENTS-DETAIL.md` §D16)**:
 * pypdf 隔离可用: `python -S -E` + 只挂内嵌 zip, 读/页数/元数据/拆分/合并/旋转/删页全通;
@@ -57,6 +67,11 @@ Runtime), wgime 是纯 Python 单文件 + Tk, **一行都抄不过来**。能做
   两个 PS 5.1 的坑: WinRT 类型必须写 `,Windows.X,ContentType=WindowsRuntime`;
   `RenderToStreamAsync` 返回 **`IAsyncAction`**, 塞进泛型 `AsTask<T>` 会报 `__ComObject` 转换失败;
   `PdfPageRenderOptions` **没有 `JpegQuality`**(质量档要再用 System.Drawing 重编)。
+* **P2 实测**(助手走环境变量 + `iex` 的真实路径): 命令行 **89 字符**(脚本 7.3 KB 不进命令行)、
+  spawn 28 ms、**就绪(spawn→能用)1.2~1.8 s**、渲染 **~217 ms/页**@1240px、OCR 1 页 ~0.3 s;
+  OCR 把我那个手写 fixture 读成 `'Page 1 ： HeIlo PDF WorId -- WgIme feasibility probe...'`
+  (l/I 混淆, 内容全对); 取消后重启也验过。**fixture 只有 1.4 KB, 栅格化后 ratio 必然 >100%**
+  (实测 11113%) —— 压缩率的意义在图片型 PDF 上, 别拿小文字 PDF 当证据。
 
 **教训 (要照做)**:
 * **插件要"跑在宿主进程里"才能开宿主风格的窗口** —— `plugins/*.txt` 的 `[python]` 块是
@@ -65,6 +80,24 @@ Runtime), wgime 是纯 Python 单文件 + Tk, **一行都抄不过来**。能做
 * `build-package.ps1` 第 48 行本来就会把 `plugins\*.py` 拷进 `package\plugins\` —— **但要在
   pdf.py 存在之后重跑一次**, 否则成品包里没有这个插件(本轮实测踩到)。
 * 新增/删除内嵌依赖后**必须重跑 build-package + 两条守卫**; 内嵌清单断言是"正好等于", 改动必然会红一次。
+* **`.ps1` 里的中文会要命**(§2 那条规矩的又一次实锤): 助手第一版带中文注释和中文报错, 用
+  `powershell -File` 跑直接 **ParserError**(PS 5.1 按 ANSI 读 .ps1) —— 现在助手源码**纯 ASCII**,
+  面向用户的中文提示全留在 Python 侧。走"环境变量 + `iex`"这条路时没有 ANSI 解码问题(环境块是 UTF-16),
+  但**纯 ASCII 是更省心的选择**, 别留混编。
+* **助手"就绪要多久"要从父进程量**: 子进程自己报的 `boot_ms` 只算了"PS 起来之后脚本初始化"那一段
+  (0.1 s), 而用户真等的是 powershell.exe 冷启 + WinRT 初始化(**1.2~1.8 s**) —— 少报会让 UI 那句
+  "WinRT 就绪 (x.x s)" 变成假话。现在用 `spawn 时刻 → 收到 ready`。
+* **push 卡住先怀疑凭据管理器的 UI 对话框, 不是网络**(本轮实测): `git push` 挂了 10 分钟没有任何输出;
+  `GIT_TRACE=1` 一看, 卡点不是 TLS、不是传输, 而是 `run_command: 'git credential-manager get'`
+  —— GCM 在等一个对话框(过往日志里就有 `fatal: User cancelled dialog.`)。
+  抢修/排查的固定姿势: ① `GIT_TRACE=1 git -C <repo> push origin master` 看卡在哪一步;
+  ② `GCM_INTERACTIVE=never` + `-c credential.interactive=false` 让它**快速失败**并给人话
+  (`fatal: Cannot prompt because user interactivity has been disabled.`) 而不是挂住;
+  ③ 远端 ref 用 `git ls-remote origin master` 核(公开仓库的读不需要认证, 所以 **GET 能通不代表能 push**)。
+  **另两个本轮踩到的脚本坑**: `Start-Process` **不继承 PowerShell 的 `cd`**(用的是 .NET CWD) ——
+  免 CWD 依赖就写 `git -C <repo>`; 以及 `if (Fanc ...)` 会把函数写进输出流的诊断文本**当成布尔条件**
+  (非空数组恒真), 于是"假成功"——诊断要用 `Write-Host`(host 流)或先落到变量里。上一条命令是
+  `48b5dd3`(本地已提交, 推送待认证)。
 
 ## 2026-09-16 (发布 v1.2.14 —— 顺带修掉一个发布事故: v1.2.13 的 python 包带着开发机私用 config 和一把 API key)
 

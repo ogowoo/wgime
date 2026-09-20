@@ -351,6 +351,89 @@ def main():
             except Exception as ex:
                 check('%s -> PdfError' % label, False, '抛了 %r' % (ex,))
 
+        # ---- P2 纯 Python 部分: 尺寸解析 + "图片拼 PDF" ----
+        print('  --- P2: 尺寸解析 + 图片拼 PDF (纯 Python, 不依赖 pypdf 的图片 API) ---')
+        # 手搓一个"看起来像 JPEG"的字节流: 尺寸解析只读 SOF 标记, 不解码像素 ——
+        # 所以 fixture 可以完全自足(不需要任何真图片文件)。
+        jpg_small = (b'\xff\xd8'
+                     + b'\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+                     + b'\xff\xc0\x00\x11\x08' + bytes([0x01, 0xF4]) + bytes([0x02, 0x58])
+                     + b'\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01'
+                     + b'\xff\xd9')
+        check('jpeg_size: 从 SOF0 读出 (宽600, 高500)', mod.jpeg_size(jpg_small) == (600, 500),
+              repr(mod.jpeg_size(jpg_small)))
+        check('jpeg_size: 非 JPEG -> None', mod.jpeg_size(b'definitely not a jpeg') is None)
+        check('jpeg_size: 截断字节流 -> None (不抛)', mod.jpeg_size(jpg_small[:12]) is None)
+        png_small = (b'\x89PNG\r\n\x1a\n' + b'\x00\x00\x00\rIHDR'
+                     + (1240).to_bytes(4, 'big') + (1754).to_bytes(4, 'big'))
+        check('png_size: 从 IHDR 读出 (1240x1754)', mod.png_size(png_small) == (1240, 1754),
+              repr(mod.png_size(png_small)))
+        check('png_size: 非 PNG -> None', mod.png_size(b'nope') is None)
+
+        out_j = os.path.join(d, 'fromjpg.pdf')
+        mod.build_pdf_from_jpegs([(jpg_small, 600, 500, 612.0, 792.0),
+                                  (jpg_small, 600, 500, 300.0, 200.0)], out_j)
+        rj = pypdf.PdfReader(out_j)
+        check('build_pdf_from_jpegs: 2 页, 页尺寸用原 mediabox',
+              len(rj.pages) == 2
+              and abs(float(rj.pages[0].mediabox.width) - 612.0) < 0.1
+              and abs(float(rj.pages[1].mediabox.height) - 200.0) < 0.1,
+              repr([(float(p.mediabox.width), float(p.mediabox.height)) for p in rj.pages]))
+        check('build_pdf_from_jpegs: 图片以 /DCTDecode 原样内嵌(不重编码)',
+              b'/DCTDecode' in open(out_j, 'rb').read())
+        try:
+            mod.build_pdf_from_jpegs([], os.path.join(d, 'empty.pdf'))
+            check('build_pdf_from_jpegs: 空列表 -> PdfError', False, '没有抛异常')
+        except mod.PdfError:
+            check('build_pdf_from_jpegs: 空列表 -> PdfError', True)
+
+        # ---- P2 WinRT 部分 (没装/没有 WinRT 就 SKIP 整段) ----
+        print('  --- P2: WinRT 栅格化 + OCR + 有损压缩 (无 WinRT 则 SKIP) ---')
+        info = mod.winrt_info()
+        if not info.get('ok'):
+            print('  %-58s SKIP %s' % ('WinRT 段', (info.get('error') or '')[:100]))
+        else:
+            check('WinRT: 助手就绪并报出 OCR 语言包', bool(info.get('ocr')), repr(info))
+            print('  WinRT 就绪 %.1fs, OCR 语言 = %s'
+                  % (info.get('boot_ms', 0) / 1000.0, ','.join(info.get('ocr') or [])))
+            dirimg = os.path.join(d, 'imgs')
+            r = mod.render_images(a, dirimg, [1, 2, 3], width=1240, fmt='png')
+            check('render_images: 3 页 -> 3 个 png', r['count'] == 3 and
+                  all(os.path.exists(f['path']) for f in r['files']), repr(r['count']))
+            check('render_images: 文件名带页号 + 尺寸已解析',
+                  os.path.basename(r['files'][0]['path']) == 'a_p001.png'
+                  and r['files'][0]['w'] > 100 and r['files'][0]['h'] > 100,
+                  repr((os.path.basename(r['files'][0]['path']), r['files'][0]['w'], r['files'][0]['h'])))
+            r1 = mod.render_images(a, dirimg, [2], width=800, fmt='jpg')
+            check('render_images: 只渲染指定页 + jpg 尺寸解析',
+                  r1['count'] == 1 and r1['files'][0]['page'] == 2 and r1['files'][0]['w'] == 800,
+                  repr((r1['count'], r1['files'][0]['w'])))
+            # OCR: 我们的 fixture 是 1240px 渲染的 Helvetica 文字, OCR 会把它读回来
+            _, _, _, _, _ = (0, 0, 0, 0, 0)
+            out_o = os.path.join(d, 'ocr.txt')
+            ro = mod.ocr_text(a, out_o, [1, 2], lang=None, width=2000)
+            body = io.open(out_o, encoding='utf-8-sig').read().lower()
+            check('ocr_text: 认出 fixture 的文字 (含 page/pdf)', ro['chars'] > 20
+                  and 'pdf' in body and 'page 1' in body, repr(body[:70]))
+            check('ocr_text: 写成 UTF-8(BOM) 的 txt + 报出引擎语言',
+                  open(out_o, 'rb').read(3) == b'\xef\xbb\xbf' and bool(ro['lang']), repr(ro['lang']))
+            # 有损压缩: fixture 太小(1.4KB), 栅格化后**必然变大** —— 这里只断言"产出合法 PDF",
+            # 真实收益(图片型 PDF ~10x)见 AGENTS-DETAIL §D16, 别用这个 fixture 去证明压缩率。
+            out_c2 = os.path.join(d, 'raster.pdf')
+            rc = mod.compress_raster(a, out_c2, width=1240)
+            rc2 = pypdf.PdfReader(out_c2)
+            check('compress_raster: 产出合法 PDF, 页数一致',
+                  len(rc2.pages) == 3 and rc['pages'] == 3, repr((len(rc2.pages), rc['ratio'])))
+            check('compress_raster: 如实报出 before/size/ratio',
+                  rc['before'] > 0 and rc['size'] > 0 and rc['ratio'] > 0, repr(rc['ratio']))
+            print('  (fixture 只有 %d B, 所以 ratio=%.0f%% —— 小文字 PDF 栅格化必然变大, 这是预期)'
+                  % (rc['before'], rc['ratio']))
+            # 取消的机制是"杀掉助手", 下次调用要能自动重启 —— 这条必须验(否则取消一次就永久废掉)
+            mod._w32().shutdown()
+            info2 = mod.winrt_info()
+            check('取消/杀掉助手后能自动重启 (冷启)', bool(info2.get('ok')), repr(info2)[:120])
+            mod._w32().shutdown()
+
         # ---- UI 层 (要真桌面; 没有就 SKIP) ----
         try:
             import tkinter as _tk

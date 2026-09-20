@@ -1194,6 +1194,27 @@ Windows.Media.Ocr      AvailableRecognizerLanguages = en-US, zh-Hans-CN
 变量不落盘、stdout 只许 JSON、父进程退出=stdin EOF=自退；key = (宽, 编码, 质量)）；渲染 ~340 ms/页@1240px，
 100 页要进度条 + 可取消。压缩必须让用户显式选"结构无损"还是"转图片(有损)"，不做 itools 那种自动档。
 
+**落地后（第七十七轮 P2 已完成）的实测/实现要点**：
+* 交付方式: 源码**内嵌在 `plugins/pdf.py`**（`_W32_SRC` 常量），运行时经环境变量
+  `WGIME_PDFW32_SRC` + `powershell -NoProfile -STA -ExecutionPolicy Bypass -Command "iex $env:WGIME_PDFW32_SRC"`
+  —— **不落盘**（没有 sidecar .ps1）、命令行只有 **89 字符**（脚本 7.3KB 不进命令行）。
+* 实测: spawn 28 ms; **就绪（spawn→能用）1.2~1.8 s**; 渲染 **~217 ms/页**@1240px;
+  OCR 1 页 ~0.3 s; 渲染出的图**写到磁盘**是"渲染到 `InMemoryRandomAccessStream` 再用
+  `System.IO.WindowsRuntimeStreamExtensions::AsStreamForRead` 拷贝"（`DataReader` 那条路要处理
+  `IAsyncOperation<uint32>`，更绕）; OCR 走 `BitmapDecoder.CreateAsync → GetSoftwareBitmapAsync → OcrEngine.RecognizeAsync`，
+  全程内存、不落临时图。
+* 协议: 请求 `{id,cmd,...}`，回包 `{id,ok,...}` + `{id,progress:{i,total,page}}` 进度行，父进程按 `id` 配对
+  （串包/过期回包直接丢）；**取消的语义 = 杀掉助手**（单线程助手渲染途中读不到 stdin），下次调用自动重启
+  —— 回归里专门有一条"杀掉后能自动重启"，否则取消一次就把功能永久废掉。
+* 有损压缩的最后一棒是**纯 Python** 的 `build_pdf_from_jpegs`（JPEG 以 `/DCTDecode` 原样内嵌 + 页尺寸取原
+  mediabox），**不需要 pypdf 的图片 API，也不需要 pdf-lib**。`tests/pdf-test.py` 用**手搓的 SOF0 字节流**
+  测 `jpeg_size`（尺寸解析只读标记、不解码像素，所以 fixture 完全自足）。
+* **`.ps1` 里放中文会要命**（§2 那条规矩的第 N 次实锤）：助手第一版带中文注释/中文报错，`-File` 跑直接
+  ParserError（PS 5.1 按 ANSI 读 .ps1）。现在助手**纯 ASCII**，面向用户的中文提示全在 Python 侧。
+  走"环境变量 + `iex`"时环境块是 UTF-16、没有 ANSI 解码问题，但**纯 ASCII 更省心**。
+* **别用子进程自己报的 boot_ms**: 它只算"PS 起来之后脚本初始化"那一段（0.1 s），用户真等的是
+  powershell.exe 冷启 + WinRT 初始化（1.2~1.8 s）。父进程侧用 `spawn 时刻 → 收到 ready` 才诚实。
+
 ### 5) 插件形态的判据（本轮最重要的可复用结论）
 带 UI 的插件必须写成 **`plugins/*.py`**：`main.load_py_plugins()` 用 `exec_module` 收进 `PLUGINS`，
 上屏编码命中后 `run_launcher()` 直接调 `run()` —— 那是 **Tk 主线程**，能直接用宿主 `ui.make_window`。

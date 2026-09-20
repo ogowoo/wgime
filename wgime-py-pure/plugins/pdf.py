@@ -23,8 +23,15 @@
 安全约定: **绝不覆盖/修改原文件**。所有输出都写成新名字(`xxx_split.pdf`), 重名自动 `-2`/`-3`。
 重活全部丢后台线程, 只经 `win.after(0, ...)` 回主线程改控件 (Tk 不是线程安全的)。
 """
+import collections
+import json
 import os
+import queue
+import shutil
+import subprocess
+import tempfile
 import threading
+import time
 
 CODE = 'pdf'
 NAME = 'PDF 工具'
@@ -342,12 +349,557 @@ def compress_lossless(path, out):
 
 
 # ======================================================================
+# P2 纯逻辑层: WinRT 栅格化 / OCR (Windows.Data.Pdf + Windows.Media.Ocr)
+# ======================================================================
+_W32_SRC = r"""# wg-pdfw32.ps1 -- resident JSON-line helper (Windows.Data.Pdf rasterize + Windows.Media.Ocr). ASCII ONLY: PS 5.1 reads .ps1 as ANSI.
+# protocol: one JSON per line on stdin; one JSON per line on stdout (JSON ONLY). stderr = diagnostics.
+# reqs: {"cmd":"ping"} | {"cmd":"render",...,"format":"png|jpg"}
+#       {"cmd":"ocr",...,"lang":"zh-Hans-CN","width":2000} | {"cmd":"exit"}
+$ErrorActionPreference = 'Continue'
+$WarningPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+$sw0 = [Diagnostics.Stopwatch]::StartNew()
+
+Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
+
+$SF = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$PPD = [Windows.Data.Pdf.PdfDocument, Windows.Data.Pdf, ContentType = WindowsRuntime]
+$BE = [Windows.Graphics.Imaging.BitmapEncoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+$BD = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+$OcrEngine = [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime]
+$WLanguage = [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
+$XStream = [System.IO.WindowsRuntimeStreamExtensions]
+
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+$asTaskAction = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction' })[0]
+
+function Await($op, $type) {
+    $t = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op))
+    $t.Wait(-1) | Out-Null
+    return $t.Result
+}
+function AwaitAction($op) {
+    $t = $asTaskAction.Invoke($null, @($op))
+    $t.Wait(-1) | Out-Null
+}
+function Emit($o) {
+    [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress -Depth 6))
+    [Console]::Out.Flush()
+}
+function Bytes($stream) {
+    $stream.Seek(0)
+    $net = $XStream::AsStreamForRead($stream)
+    $ms = New-Object IO.MemoryStream
+    $net.CopyTo($ms)
+    $net.Dispose()
+    return $ms.ToArray()
+}
+
+try {
+    $langs = @()
+    foreach ($l in $OcrEngine::AvailableRecognizerLanguages) { $langs += $l.LanguageTag }
+    Emit @{ ready = $true; boot_ms = $sw0.ElapsedMilliseconds; pdf_api = $true; ocr = $langs }
+} catch {
+    Emit @{ ready = $false; error = ("WinRT init failed: " + $_.Exception.Message) }
+}
+
+while ($true) {
+    $line = [Console]::In.ReadLine()
+    if ($null -eq $line) { break }
+    $line = $line.Trim()
+    if (-not $line) { continue }
+    $id = 0
+    try {
+        $req = $line | ConvertFrom-Json
+        $id = [int]($req.id)
+        $cmd = [string]$req.cmd
+        if ($cmd -eq 'exit') { break }
+        elseif ($cmd -eq 'ping') {
+            Emit @{ id = $id; ok = $true; ocr = (@($OcrEngine::AvailableRecognizerLanguages | ForEach-Object { $_.LanguageTag })) }
+        }
+        elseif ($cmd -eq 'render') {
+            $t0 = [Diagnostics.Stopwatch]::StartNew()
+            $file = Await ($SF::GetFileFromPathAsync([string]$req.pdf)) $SF
+            $doc = Await ($PPD::LoadFromFileAsync($file)) $PPD
+            $total = $doc.PageCount
+            $pages = @()
+            if ($null -ne $req.pages) { foreach ($p in $req.pages) { $pages += [int]$p } }
+            else { for ($i = 1; $i -le $total; $i++) { $pages += $i } }
+            $fmt = [string]$req.format
+            $width = [int]$req.width
+            $stem = [string]$req.stem
+            $outdir = [string]$req.outdir
+            [void][IO.Directory]::CreateDirectory($outdir)
+            $files = @()
+            $wrote = 0
+            foreach ($pn in $pages) {
+                if ($pn -lt 1 -or $pn -gt $total) { continue }
+                $pg = $doc.GetPage($pn - 1)
+                $st = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+                $op = New-Object Windows.Data.Pdf.PdfPageRenderOptions
+                $op.DestinationWidth = [uint32]$width
+                if ($fmt -eq 'jpg') { $op.BitmapEncoderId = $BE::JpegEncoderId }
+                AwaitAction ($pg.RenderToStreamAsync($st, $op))
+                $bytes = Bytes $st
+                $path = [IO.Path]::Combine($outdir, ('{0}_p{1:d3}.{2}' -f $stem, $pn, $fmt))
+                [IO.File]::WriteAllBytes($path, $bytes)
+                $files += @{ path = $path; page = $pn; bytes = $bytes.Length }
+                $wrote++
+                Emit @{ id = $id; progress = @{ i = $wrote; total = $pages.Count; page = $pn } }
+            }
+            Emit @{ id = $id; ok = $true; files = $files; ms = $t0.ElapsedMilliseconds; total_pages = $total }
+        }
+        elseif ($cmd -eq 'ocr') {
+            $t0 = [Diagnostics.Stopwatch]::StartNew()
+            $lang = [string]$req.lang
+            $eng = $null
+            if ($lang) {
+                try { $eng = $OcrEngine::TryCreateFromLanguage([Windows.Globalization.Language]::new($lang)) } catch { $eng = $null }
+            }
+            if ($null -eq $eng) { $eng = $OcrEngine::TryCreateFromUserProfileLanguages() }
+            if ($null -eq $eng) { throw 'no OCR language pack (Settings > Time & Language > Language > add a language + Optional features: Optical character recognition)' }
+            $file = Await ($SF::GetFileFromPathAsync([string]$req.pdf)) $SF
+            $doc = Await ($PPD::LoadFromFileAsync($file)) $PPD
+            $total = $doc.PageCount
+            $pages = @()
+            if ($null -ne $req.pages) { foreach ($p in $req.pages) { $pages += [int]$p } }
+            else { for ($i = 1; $i -le $total; $i++) { $pages += $i } }
+            $width = [int]$req.width
+            if ($width -le 0) { $width = 2000 }
+            $out = @()
+            $done = 0
+            foreach ($pn in $pages) {
+                if ($pn -lt 1 -or $pn -gt $total) { continue }
+                $pg = $doc.GetPage($pn - 1)
+                $st = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+                $op = New-Object Windows.Data.Pdf.PdfPageRenderOptions
+                $op.DestinationWidth = [uint32]$width
+                $op.BitmapEncoderId = $BE::PngEncoderId
+                AwaitAction ($pg.RenderToStreamAsync($st, $op))
+                $st.Seek(0)
+                $dec = Await ($BD::CreateAsync($st)) $BD
+                $bmp = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime])
+                $res = Await ($eng.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult, Windows.Media.Ocr, ContentType = WindowsRuntime])
+                $out += @{ page = $pn; text = [string]$res.Text }
+                $done++
+                Emit @{ id = $id; progress = @{ i = $done; total = $pages.Count; page = $pn } }
+            }
+            Emit @{ id = $id; ok = $true; texts = $out; ms = $t0.ElapsedMilliseconds; lang = $eng.RecognizerLanguage.LanguageTag }
+        }
+        else {
+            Emit @{ id = $id; ok = $false; error = ('unknown cmd: ' + $cmd) }
+        }
+    } catch {
+        Emit @{ id = $id; ok = $false; error = $_.Exception.Message }
+    }
+}
+"""
+
+
+class _W32(object):
+    """常驻 PowerShell 助手 (JSON 行协议) 的父进程侧。
+
+    机制照抄 voice.py 的 `_WarmSrv`(第六十三/六十四轮那套), 只是协议不同 —— 那几条坑是共通的:
+      * `lock` 只管起/杀, `rlock` 只管一问一答; **两个锁别合并**(合并了就会在识别时把起进程堵住)
+      * 源码走**环境变量** `WGIME_PDFW32_SRC` + `iex` 引导: 不落盘、不把 7.3KB 塞进命令行
+        (实测命令行只有 89 字符, 起进程 28ms)
+      * 回包 `ensure_ascii=True`(裸 UTF-8 在中文机会变 `?`), 父进程退出 = stdin EOF = 子进程自退(实测 rc=0)
+      * 连续起不来 `MAX_FAIL` 次后不再重试(否则用户每点一次都白起一个 powershell)
+    取消的语义: 助手是**单线程一问一答**的, 渲染途中它读不到 stdin, 所以 __取消 = 杀掉助手__,
+    下次调用会自动重启(冷启实测 ~1.8s)。
+    """
+    MAX_FAIL = 3
+    T_COLD = 180.0                 # 首次(含 WinRT 初始化)
+    T_TIMEOUT = 1800.0             # 之后(大文件多页)
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.rlock = threading.Lock()
+        self.proc = None
+        self.q = None
+        self.errbuf = None
+        self.ready = False
+        self.boot_ms = 0
+        self.info = {}
+        self.fail = 0
+        self.rid = 0
+        self.last_err = ''
+        self.started = 0.0
+
+    def _tail_err(self):
+        if not self.errbuf:
+            return ''
+        tail = [t for t in list(self.errbuf)[-2:] if t]
+        return (' | stderr: ' + ' / '.join(tail)) if tail else ''
+
+    def _kill_locked(self):
+        p, self.proc = self.proc, None
+        self.ready = False
+        if p is None:
+            return
+        try:
+            if p.poll() is None:
+                try:
+                    p.stdin.write('{"cmd":"exit"}\n')
+                    p.stdin.flush()
+                except Exception:
+                    pass
+                p.kill()
+        except Exception:
+            pass
+
+    def shutdown(self):
+        with self.lock:
+            self._kill_locked()
+
+    def _spawn(self):
+        env = dict(os.environ)
+        env['WGIME_PDFW32_SRC'] = _W32_SRC
+        argv = ['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
+                '-Command', 'iex $env:WGIME_PDFW32_SRC']
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, encoding='utf-8',
+                                errors='replace', bufsize=1,
+                                creationflags=0x08000000,      # CREATE_NO_WINDOW
+                                env=env)
+
+    def ensure(self):
+        """起进程(或复用)。**不等 READY** —— 预热路径要能在别的线程上调它。"""
+        with self.lock:
+            if self.proc is not None and self.proc.poll() is None:
+                return True
+            if self.fail >= self.MAX_FAIL:
+                return False
+            now = time.monotonic()
+            if now - self.started < 1.0:                      # 起得太密: 挡一下重试风暴
+                return False
+            self._kill_locked()
+            self.started = now
+            self.ready = False
+            self.boot_ms = 0
+            self.last_err = ''
+            q = queue.Queue()
+            errbuf = collections.deque(maxlen=20)
+            self.q, self.errbuf = q, errbuf
+            try:
+                p = self._spawn()
+            except Exception as e:
+                self.last_err = '启动 WinRT 助手失败: %r' % (e,)
+                self.fail += 1
+                return False
+            self.proc = p
+            threading.Thread(target=self._reader, args=(p, q), daemon=True).start()
+            threading.Thread(target=self._err_reader, args=(p, errbuf), daemon=True).start()
+            return True
+
+    def _reader(self, p, q):
+        """**q 必须是参数**: 重启时 self.q 会换成新队列, 用 self.q 会让旧线程的 EOF 落到新队列里。"""
+        try:
+            for line in p.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    q.put(json.loads(line))
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+        finally:
+            try:
+                q.put({'eof': True})
+            except Exception:
+                pass
+
+    def _err_reader(self, p, buf):
+        try:
+            for line in p.stderr:
+                buf.append(line.rstrip()[:300])
+        except Exception:
+            pass
+
+    def _died(self, why, rc=None):
+        self.fail += 1
+        with self.lock:
+            self._kill_locked()
+        return None, '%s%s%s' % (why, (' (rc=%s)' % rc) if rc is not None else '', self._tail_err())
+
+    def call(self, req, cancel=None, on_page=None):
+        """发一条请求 -> (回包 dict, 错误串)。`on_page(i, total, page)` 收进度行。"""
+        if not self.ensure():
+            if self.fail >= self.MAX_FAIL:
+                return None, ('WinRT 助手连续 %d 次起不来, 已停止重试(重启 WgIme 可再试)'
+                              '%s' % (self.fail, ('; 上次错误: ' + self.last_err) if self.last_err else ''))
+            return None, (self.last_err or 'WinRT 助手还没就绪, 请再试一次')
+        with self.rlock:
+            p, q = self.proc, self.q
+            if p is None or p.poll() is not None:
+                return self._died('WinRT 助手已退出', p.poll() if p else None)
+            self.rid += 1
+            rid = self.rid
+            req = dict(req)
+            req['id'] = rid
+            cold = not self.ready
+            try:
+                p.stdin.write(json.dumps(req, ensure_ascii=True) + '\n')
+                p.stdin.flush()
+            except Exception as e:
+                return self._died('给 WinRT 助手发请求失败: %r' % (e,))
+            limit = self.T_COLD if cold else self.T_TIMEOUT
+            deadline = time.monotonic() + limit
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    with self.lock:
+                        self._kill_locked()
+                    return None, 'WinRT 操作超时 (%.0fs)' % limit
+                if cancel is not None and cancel():
+                    with self.lock:
+                        self._kill_locked()
+                    return None, '已取消(助手已重启, 下次会稍慢)'
+                try:
+                    o = q.get(timeout=min(left, 0.25))
+                except queue.Empty:
+                    if p.poll() is not None:
+                        return self._died('WinRT 助手退出', p.poll())
+                    continue
+                if o.get('eof'):
+                    return self._died('WinRT 助手退出', p.poll())
+                if o.get('ready') is False:
+                    self.fail += 1
+                    with self.lock:
+                        self._kill_locked()
+                    return None, str(o.get('error') or 'WinRT 不可用(需要 Windows 10/11)')
+                if o.get('ready') and 'id' not in o:
+                    self.ready = True
+                    # 用户真正等的是**从 spawn 到能用**: 子进程自己报的 boot_ms 只算了"PS 起来之后
+                    # 脚本初始化"那一段(实测 ~0.1s), 而 powershell.exe 冷启本身要 ~1.7s —— 别少报。
+                    self.boot_ms = int((time.monotonic() - self.started) * 1000)
+                    self.info = o
+                    self.fail = 0
+                    continue
+                if int(o.get('id') or 0) != rid:              # 串包/过期回包: 丢掉继续等自己那条
+                    continue
+                if o.get('progress'):
+                    if on_page:
+                        pr = o['progress']
+                        on_page(int(pr.get('i') or 0), int(pr.get('total') or 0),
+                                int(pr.get('page') or 0))
+                    continue
+                if not o.get('ok'):
+                    return None, 'WinRT 失败: %s' % (o.get('error') or '?')
+                self.fail = 0
+                return o, None
+
+
+_W32C = {'cli': None}
+
+
+def _w32():
+    if _W32C['cli'] is None:
+        _W32C['cli'] = _W32()
+    return _W32C['cli']
+
+
+def winrt_info(timeout_note=None):
+    """探测 WinRT 可用性 + 可用的 OCR 语言。返回 {ok, ocr:[...], boot_ms, error?}。"""
+    o, err = _w32().call({'cmd': 'ping'})
+    if err:
+        return {'ok': False, 'error': err, 'ocr': []}
+    return {'ok': True, 'ocr': list(o.get('ocr') or []), 'boot_ms': _w32().boot_ms}
+
+
+def jpeg_size(data):
+    """从 JPEG 字节读 (宽, 高); 不是 JPEG 或找不到 SOF 就 None。"""
+    if not data or len(data) < 4 or data[0] != 0xFF or data[1] != 0xD8:
+        return None
+    i, n = 2, len(data)
+    while i + 3 < n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        m = data[i + 1]
+        if m == 0xD8 or m == 0x01 or 0xD0 <= m <= 0xD7:
+            i += 2
+            continue
+        if m == 0xD9:
+            break
+        seglen = (data[i + 2] << 8) | data[i + 3]
+        if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):     # SOF0..SOF15 去掉 DHT/JPG/DAC
+            if i + 9 > n:
+                return None
+            h = (data[i + 5] << 8) | data[i + 6]
+            w = (data[i + 7] << 8) | data[i + 8]
+            return (w, h)
+        i += 2 + max(2, seglen)
+    return None
+
+
+def png_size(data):
+    """从 PNG 字节读 (宽, 高) (IHDR 固定在偏移 16..24); 不是 PNG 就 None。"""
+    if not data or len(data) < 24 or data[:8] != b'\x89PNG\r\n\x1a\n':
+        return None
+    return ((data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19],
+            (data[20] << 24) | (data[21] << 16) | (data[22] << 8) | data[23])
+
+
+def build_pdf_from_jpegs(items, out):
+    """把一组 JPEG 拼成一个 PDF —— **纯 Python, 连 pypdf 都不用**。
+
+    items: [(jpeg_bytes, img_w, img_h, page_w, page_h)]; 页尺寸用原 PDF 的 mediabox(pt),
+    图铺满整页(JPEG 直接以 /DCTDecode 内嵌, 不再重编码)。
+    栅格化"压缩"的最后一棒就是它(itools 那边靠 pdf-lib, 我们不需要)。
+    """
+    n = len(items)
+    if not n:
+        raise PdfError('没有可写入的页面')
+    objs = {1: b'<</Type/Catalog/Pages 2 0 R>>'}
+    kids = []
+    num = 2
+    for jpg, iw, ih, pw, ph in items:
+        page_no, cont_no, img_no = num + 1, num + 2, num + 3
+        num += 3
+        kids.append(page_no)
+        objs[page_no] = ('<</Type/Page/Parent 2 0 R/MediaBox[0 0 %.2f %.2f]'
+                         '/Resources<</XObject<</Im0 %d 0 R>>>>/Contents %d 0 R>>'
+                         % (pw, ph, img_no, cont_no)).encode()
+        cs = ('q %.2f 0 0 %.2f 0 0 cm /Im0 Do Q' % (pw, ph)).encode()
+        objs[cont_no] = (b'<</Length ' + str(len(cs)).encode() + b'>>\nstream\n' + cs + b'\nendstream')
+        objs[img_no] = (('<</Type/XObject/Subtype/Image/Width %d/Height %d/ColorSpace/DeviceRGB'
+                         '/BitsPerComponent 8/Filter/DCTDecode/Length %d>>\nstream\n'
+                         % (iw, ih, len(jpg))).encode() + jpg + b'\nendstream')
+    objs[2] = ('<</Type/Pages/Kids[%s]/Count %d>>'
+               % (' '.join('%d 0 R' % k for k in kids), n)).encode()
+
+    buf = bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+    offs = {}
+    for k in sorted(objs):
+        offs[k] = len(buf)
+        buf += ('%d 0 obj\n' % k).encode() + objs[k] + b'\nendobj\n'
+    xref = len(buf)
+    mx = max(objs)
+    buf += ('xref\n0 %d\n' % (mx + 1)).encode() + b'0000000000 65535 f \n'
+    for k in range(1, mx + 1):
+        buf += (('%010d 00000 n \n' % offs[k]) if k in offs else '0000000000 65535 f \n').encode()
+    buf += (b'trailer\n<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF\n' % (mx + 1, xref))
+    with open(out, 'wb') as f:
+        f.write(bytes(buf))
+    size = os.path.getsize(out)
+    if not size:
+        raise PdfError('写出 0 字节: %s' % out)
+    return size
+
+
+def _render_to(path, outdir, pages, width, fmt, cancel=None, on_page=None):
+    """共用的栅格化入口: 开始前先 `open_reader` 校验(加密/损坏在这里就报人话)。"""
+    open_reader(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    o, err = _w32().call({'cmd': 'render', 'pdf': path, 'outdir': outdir,
+                          'pages': list(pages) if pages else None,
+                          'width': int(width), 'format': fmt, 'stem': stem},
+                         cancel=cancel, on_page=on_page)
+    if err:
+        raise PdfError(err)
+    files = sorted(o.get('files') or [], key=lambda f: int(f.get('page') or 0))
+    out = []
+    for f in files:
+        try:
+            data = open(f['path'], 'rb').read()
+        except OSError as ex:
+            raise PdfError('渲染结果读不到: %s' % ex)
+        wh = png_size(data) if fmt == 'png' else jpeg_size(data)
+        out.append({'path': f['path'], 'page': int(f.get('page') or 0), 'bytes': len(data),
+                    'w': wh[0] if wh else 0, 'h': wh[1] if wh else 0})
+    if not out:
+        raise PdfError('一页都没渲染出来')
+    return {'files': out, 'count': len(out), 'ms': o.get('ms'), 'format': fmt, 'width': int(width)}
+
+
+def render_images(path, outdir, pages=None, width=1240, fmt='png', cancel=None, on_page=None):
+    """PDF -> 图片 (由 WinRT 助手渲染, 不依赖任何第三方图像库)。"""
+    if fmt not in ('png', 'jpg'):
+        raise PdfError('图片格式只能是 png / jpg')
+    if not os.path.isdir(outdir):
+        os.makedirs(outdir, exist_ok=True)
+    return _render_to(path, outdir, pages, width, fmt, cancel=cancel, on_page=on_page)
+
+
+def ocr_text(path, out, pages=None, lang=None, width=2000, cancel=None, on_page=None):
+    """扫描件取字: WinRT 渲染 -> Windows.Media.Ocr 识别 -> 写成 UTF-8(BOM) txt。
+
+    `lang` 为空时用系统"用户配置语言"的 OCR 引擎; 指定(如 zh-Hans-CN)则要求装了对应语言包。
+    """
+    open_reader(path)
+    o, err = _w32().call({'cmd': 'ocr', 'pdf': path,
+                          'pages': list(pages) if pages else None,
+                          'lang': lang or '', 'width': int(width)},
+                         cancel=cancel, on_page=on_page)
+    if err:
+        raise PdfError(err)
+    texts = sorted(o.get('texts') or [], key=lambda t: int(t.get('page') or 0))
+    if not texts:
+        raise PdfError('一页都没识别出来')
+    text = '\n'.join((t.get('text') or '') for t in texts)
+    with open(out, 'w', encoding='utf-8-sig', newline='') as f:
+        f.write(text)
+    cjk = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff')
+    return {'out': out, 'chars': len(text), 'cjk': cjk, 'pages': len(texts),
+            'lang': o.get('lang') or '', 'size': os.path.getsize(out), 'ms': o.get('ms')}
+
+
+def compress_raster(path, out, width=1240, cancel=None, on_page=None):
+    """**有损**压缩: 每页栅格化成 JPEG, 再用 build_pdf_from_jpegs 重拼一个 PDF。
+
+    代价必须说清楚: 文字/矢量/链接**全部消失**(变成图片), 换来的是体积(实测图片型 PDF ~10x)。
+    结构无损那条路是 `compress_lossless`, 两条路别混。
+    """
+    pypdf = _pypdf()
+    r = open_reader(path)
+    sizes = []
+    for pg in r.pages:
+        mb = pg.mediabox
+        sizes.append((float(mb.width), float(mb.height)))
+    n = len(sizes)
+    tmpdir = tempfile.mkdtemp(prefix='wg-pdf-raster-')
+    try:
+        res = _render_to(path, tmpdir, list(range(1, n + 1)), width, 'jpg',
+                         cancel=cancel, on_page=on_page)
+        items = []
+        for f in res['files']:
+            data = open(f['path'], 'rb').read()
+            wh = jpeg_size(data) or (f['w'], f['h'])
+            pw, ph = sizes[f['page'] - 1] if 1 <= f['page'] <= n else (float(wh[0]), float(wh[1]))
+            items.append((data, int(wh[0]), int(wh[1]), pw, ph))
+        size = build_pdf_from_jpegs(items, out)
+        before = os.path.getsize(path)
+        return {'out': out, 'size': size, 'before': before, 'pages': len(items),
+                'ratio': (100.0 * size / before) if before else 0.0, 'ms': res.get('ms')}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+# ======================================================================
 # UI 层 (只在这里 import tkinter / ui)
 # ======================================================================
 _W = {'win': None, 'tb': None}          # 单例窗口 + 日志控件
 _BUSY = [False]
 _CANCEL = [False]
 _ANGLE = [90]
+_FMT = ['png']                          # 转图片的格式
+_LANG = ['']                            # OCR 语言 ('' = 系统用户配置语言)
+
+
+def _entry_int(e, default, lo=64, hi=6000):
+    """读一个"数字输入框", 任何非法输入回落到 default 并钳进 [lo, hi]。"""
+    try:
+        v = int(float((e.get() or '').strip()))
+    except (ValueError, AttributeError, Exception):
+        v = default
+    return max(lo, min(hi, v))
 
 
 def _alive(w):
@@ -371,8 +923,8 @@ def run():
             pass
         return _W['win']
 
-    # 内容区需要 540px, 标题栏 38px (ui.make_window 的 content 只占 h-38, 见 AGENTS §42)
-    W, H = 640, 584
+    # 内容区需要 558px, 标题栏 38px (ui.make_window 的 content 只占 h-38, 见 AGENTS §42)
+    W, H = 640, 596
     win, content = ui.make_window('WgIme PDF 工具', W, H)
     _W['win'] = win
     _BUSY[0] = False
@@ -464,18 +1016,68 @@ def run():
 
     _set_angle(_ANGLE[0])
 
+    # ---- 第二参数行: 图片宽度 / 图片格式 / OCR 语言 (P2 那三个操作用) ----
+    tk.Label(content, text='宽度', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
+             anchor='w').place(x=12, y=310, width=40, height=32)
+    width_e = ui.rounded_entry(content, x=56, y=310, w=80, h=32, initial='1240')
+    tk.Label(content, text='格式', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
+             anchor='w').place(x=146, y=310, width=38, height=32)
+    fmt_btns = {}
+    for i, (txt, key) in enumerate((('PNG', 'png'), ('JPG', 'jpg'))):
+        fmt_btns[key] = ui.flat_button(content, txt, (lambda k: (lambda: _set_fmt(k)))(key),
+                                       x=186 + i * 60, y=310, w=56, h=32)
+    tk.Label(content, text='OCR', bg=ui.BG, fg=ui.SUB, font=ui.font(8.5),
+             anchor='w').place(x=310, y=310, width=34, height=32)
+    lang_btns = {}
+    for i, (txt, key) in enumerate((('中', 'zh-Hans-CN'), ('EN', 'en-US'), ('自动', ''))):
+        lang_btns[key] = ui.flat_button(content, txt, (lambda k: (lambda: _set_lang(k)))(key),
+                                        x=348 + i * 48, y=310, w=44, h=32)
+    tk.Label(content, text='宽 px · 渲染/识别用', bg=ui.BG, fg=ui.SUB, font=ui.font(8),
+             anchor='w').place(x=502, y=310, width=126, height=32)
+
+    def _set_fmt(k):
+        _FMT[0] = k
+        for key, btn in fmt_btns.items():
+            try:
+                btn.configure(bg=ui.ACCENT if key == k else ui.CARD,
+                              fg='white' if key == k else ui.TEXT)
+            except Exception:
+                pass
+
+    def _set_lang(k):
+        _LANG[0] = k
+        for key, btn in lang_btns.items():
+            try:
+                btn.configure(bg=ui.ACCENT if key == k else ui.CARD,
+                              fg='white' if key == k else ui.TEXT)
+            except Exception:
+                pass
+        log('OCR 语言 = %s' % (k or '自动(系统用户配置语言)'))
+
+    _set_fmt(_FMT[0])
+    _set_lang(_LANG[0])
+
     # ---- 日志 ----
-    tb = ui.console_text(content, x=12, y=312, w=616, h=170)
+    tb = ui.console_text(content, x=12, y=350, w=616, h=150)
     _W['tb'] = tb
     log('就绪。先「添加 PDF…」, 再点下面任意一个操作。引擎: pypdf(内嵌, 后台预热中…)')
 
-    # ---- 后台预热 pypdf (zipimport 冷启实测 ~865ms; 不预热的话第一次点按钮会像卡住) ----
+    # ---- 后台预热 (pypdf zipimport 冷启实测 ~865ms; WinRT 助手冷启 ~1.8s) ----
     def warm():
         try:
             pypdf = _pypdf()
             log('引擎就绪: pypdf %s' % getattr(pypdf, '__version__', '?'))
         except Exception as ex:
             log('引擎不可用: %s' % ex)
+        try:
+            info = winrt_info()
+            if info['ok']:
+                log('WinRT 就绪 (%.1fs): 转图片/OCR 可用, OCR 语言 = %s'
+                    % (info['boot_ms'] / 1000.0, ', '.join(info['ocr']) or '无'))
+            else:
+                log('WinRT 不可用(转图片/OCR/压缩将失败): %s' % info['error'])
+        except Exception as ex:
+            log('WinRT 探测异常: %r' % (ex,))
     threading.Thread(target=warm, daemon=True).start()
 
     # ---- 操作 ----
@@ -590,22 +1192,69 @@ def run():
             log('已删除 %d 页, 剩 %d 页 -> %s (%s)' % (r['deleted'], r['left'], out, human(r['size'])))
         spawn('删页', work)
 
+    def do_images():
+        def work():
+            p = pick_one()
+            n = len(open_reader(p).pages)
+            pg = parse_ranges(range_e.get() or 'all', n)
+            outdir = os.path.splitext(p)[0] + '_images'
+            w = _entry_int(width_e, 1240)
+            r = render_images(p, outdir, pg, width=w, fmt=_FMT[0], cancel=lambda: _CANCEL[0],
+                              on_page=lambda i, t, _pg: log('  渲染 %d/%d' % (i, t))
+                              if (i % 5 == 0 or i == t) else None)
+            f0 = r['files'][0]
+            log('已导出 %d 张 %s 图 (%dpx 宽) -> %s' % (r['count'], r['format'].upper(), r['width'], outdir))
+            log('  例: %s (%s, %dx%d)' % (os.path.basename(f0['path']), human(f0['bytes']), f0['w'], f0['h']))
+        spawn('转图片', work)
+
+    def do_ocr():
+        def work():
+            p = pick_one()
+            n = len(open_reader(p).pages)
+            pg = parse_ranges(range_e.get() or 'all', n)
+            out = sibling(p, '_ocr', '.txt')
+            w = max(_entry_int(width_e, 2000), 1200)      # OCR 太糊会认不出, 至少 1200px
+            r = ocr_text(p, out, pg, lang=(_LANG[0] or None), width=w, cancel=lambda: _CANCEL[0],
+                         on_page=lambda i, t, _pg: log('  识别 %d/%d' % (i, t))
+                         if (i % 3 == 0 or i == t) else None)
+            log('OCR 完成: %s (%s, %d 字符, 汉字 %d, 引擎 %s)'
+                % (out, human(r['size']), r['chars'], r['cjk'], r['lang'] or '?'))
+            if r['chars'] < 10:
+                log('  几乎没认出来 —— 页面可能是纯图/太小, 试着把「宽度」调大')
+        spawn('OCR 取字', work)
+
+    def do_raster():
+        def work():
+            p = pick_one()
+            w = _entry_int(width_e, 1240)
+            out = sibling(p, '_small')
+            log('  这条是**有损**的: 文字/矢量/链接会变成图片')
+            r = compress_raster(p, out, width=w, cancel=lambda: _CANCEL[0],
+                                on_page=lambda i, t, _pg: log('  渲染 %d/%d' % (i, t))
+                                if (i % 5 == 0 or i == t) else None)
+            log('已重排为图片 PDF: %s (%.1f%%: %s -> %s, %d 页)'
+                % (out, r['ratio'], human(r['before']), human(r['size']), r['pages']))
+        spawn('压缩(转图片)', work)
+
     ui.flat_button(content, '拆分', do_split, x=12, y=194, w=196, h=32)
     ui.flat_button(content, '合并', do_merge, x=222, y=194, w=196, h=32)
     ui.flat_button(content, '旋转', do_rotate, x=432, y=194, w=196, h=32)
     ui.flat_button(content, '删页', do_delete, x=12, y=232, w=196, h=32)
     ui.flat_button(content, '提取文字', do_extract, x=222, y=232, w=196, h=32)
     ui.flat_button(content, '分析', do_analyze, x=432, y=232, w=196, h=32)
+    ui.flat_button(content, '转图片', do_images, x=12, y=270, w=196, h=32)
+    ui.flat_button(content, 'OCR 取字', do_ocr, x=222, y=270, w=196, h=32)
+    ui.flat_button(content, '压缩(转图片)', do_raster, x=432, y=270, w=196, h=32)
 
     def do_cancel():
         _CANCEL[0] = True
-        log('已请求取消 (正在跑的循环会在下一页停下来)')
+        log('已请求取消 (纯 Python 的循环会在下一页停下; WinRT 操作会杀掉助手, 下次稍慢)')
 
-    ui.flat_button(content, '取消当前操作', do_cancel, x=12, y=492, w=140, h=36)
-    ui.flat_button(content, '打开输出目录', lambda: _open_dir(log, pick_one), x=160, y=492, w=140, h=36)
-    ui.flat_button(content, '关闭', win.destroy, x=308, y=492, w=96, h=36)
-    tk.Label(content, text='pypdf 引擎 · 不联网 · 不修改原文件', bg=ui.BG, fg=ui.SUB,
-             font=ui.font(8)).place(x=412, y=492, width=216, height=36)
+    ui.flat_button(content, '取消当前操作', do_cancel, x=12, y=510, w=140, h=36)
+    ui.flat_button(content, '打开输出目录', lambda: _open_dir(log, pick_one), x=160, y=510, w=140, h=36)
+    ui.flat_button(content, '关闭', win.destroy, x=308, y=510, w=96, h=36)
+    tk.Label(content, text='pypdf + Windows WinRT · 不联网 · 不修改原文件', bg=ui.BG, fg=ui.SUB,
+             font=ui.font(8)).place(x=412, y=510, width=216, height=36)
     win.after(0, lambda: lb.focus_set())
     return win
 

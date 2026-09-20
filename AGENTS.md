@@ -55,7 +55,7 @@ python wgime-py-pure\tests\embedded-isolation-test.py # 内嵌第三方自足性
 python wgime-py-pure\tests\voicepack-sync-test.py     # 语音包 wrapper 协议一致性（仓库参考副本 vs 机器上在用的那份，13 项，见 §D8.3.1）
 python wgime-py-pure\tests\voice-click-test.py       # 语音"点击落点"的真实 WH_MOUSE_LL 钩子（7 项：装/收/不吞点击；无桌面 SKIP，见 §D14）
 python wgime-py-pure\tests\stream-asr-test.py        # 流式 ASR（本地假 SSE 服务器 + 现造的 wav，22 项，见 §D14）
-python wgime-py-pure\tests\pdf-test.py               # PDF 插件（内嵌 pypdf + 六操作 + UI 真建窗，56 项，见 §D16）
+python wgime-py-pure\tests\pdf-test.py               # PDF 插件（pypdf 六操作 + WinRT 转图/OCR/压缩 + UI 真建窗，73 项，见 §D16）
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，假桩照抄真 pystray 语义，见 §43 ④）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，纯桩不碰麦克风，见 §38 第六十一轮）
 python wgime-py-pure\tests\whisper-warm-test.py       # 本地常驻 whisper 助手回归（67 项，假 Popen 照抄真管道语义，见 §38 第六十三轮）
