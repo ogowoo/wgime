@@ -27,8 +27,9 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ['win', 'hook', 'bar', 'dot', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray', 'voice', 'deps']
+MODULES = ['win', 'hook', 'bar', 'dot', 'wspy', 'engine', 'plugins', 'ui', 'tools', 'tray', 'voice', 'deps', 'update']
 # 第六十九轮: 加了 dot (状态提示点) —— 项目模块 10 -> 11 个。
+# 第八十二轮: 加 deps (可选依赖自检); 第八十五轮: 加 update (GitHub Releases 自动更新) -> 13 个。
 OUT = os.path.join(BASE, 'dist', 'wgime-py.py')
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 

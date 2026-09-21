@@ -169,3 +169,19 @@ key_picklast = rbracket
 ; mode: 运行模式 ime=输入法(默认) / tray=纯托盘工具箱(wgtray 行为, 无键盘 hook)
 ; 托盘菜单「运行模式」可切换, 切换后自动重启生效
 mode = ime
+
+; ---- 自动更新 (第八十五轮; 服务器 = GitHub Releases, 只替换 wgime-py.py 单文件) ----
+; update_auto: 启动后 +7s 后台查一次新版本 (1/0, 默认1)。**只发托盘提示, 绝不自动重启**;
+;              查到之后, 托盘「这个程序 → 更新到 vX.Y.Z…」那一下才会下载并换文件。
+; update_repo: GitHub 仓库 owner/name (默认 ogowoo/wgime)。
+; update_api:  Releases API 基址 (默认 https://api.github.com; 自建镜像/代理时改这里)。
+; update_mirror: 给下载 URL 加前缀的镜像 (如 https://ghproxy.net/ ; 留空 = 直连 github)。
+; update_source: raw = 取仓库里的 dist/wgime-py.py (~1.1MB, 默认) / asset = 取发行包 (~25MB, 带 sha256 校验);
+;                两条路会互相兜底, 各自失败的原因都写进 %LOCALAPPDATA%\wgime-py\update.log。
+; update_timeout: 单次请求超时秒数 (5~60, 默认15)。
+update_auto = 1
+update_repo = ogowoo/wgime
+update_api = https://api.github.com
+update_mirror =
+update_source = raw
+update_timeout = 15

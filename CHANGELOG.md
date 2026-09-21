@@ -1,5 +1,50 @@
 ---
 
+
+## 2026-09-21 (第八十五轮: 自动更新 —— 服务器就用 GitHub Releases)
+
+**来由**: 用户要"加一个自动更新功能, 就用 GitHub 来当服务器"。定的方案(用户选): **启动后台检查 → 发现新版发
+托盘提示 → 点「更新」才下载并重启**; 范围**只更新纯 Python 单文件** `wgime-py.py`(config.txt / 词库 / 插件一概不碰)。
+
+**做法**(新模块 `wgime-py-pure/update.py`; 托盘「这个程序 → 检查更新 / 更新到 vX.Y.Z…」):
+1. **检查**: `GET {api}/repos/{repo}/releases/latest`(拿不到就退 `/releases` 取第一个非 draft/prerelease);
+   必须比 `main.VERSION` **严格新**才算。启动 +7s 后台跑一次(6 小时内不重复), **只发气泡**, 绝不自动重启;
+   查到新版后 main 调 `TRAY.rebuild()`, 那一行文案从「检查更新」变成「更新到 v1.2.15…」。
+2. **下载**: 两条路自动互备 —— `raw`(仓库里的 `wgime-py-pure/dist/wgime-py.py`, ~1.1MB) 优先, 失败退
+   `asset`(发行包 `*-python.zip`, ~25MB 但带 SHA256 校验); 网络先 urllib **直连**(`ProxyHandler({})` —— 本机
+   WinINET 代理是黑洞), 失败退 PowerShell `HttpWebRequest`(python 到 github 会 SSL EOF, §D15 的老账);
+   `update_mirror` 可加 ghproxy 那类前缀。两条路各自失败的原因都会写进 `update.log`。
+3. **四条安全线**(全文见 `update.py` 开头): 必须是我们的单文件(三个标记 + 能 `compile()` + >= 200KB);
+   内层 `VERSION` 必须**比当前新且不低于 release tag**; asset 路的 sha256 必须与 release body 里写的一致;
+   下载先落 `.part` 临时名、失败即删 —— **一切先校验再写 `.new`**。
+4. **替换**: 写同目录 `wgime-py.py.new` → 拉起一个 **detached 小助手**(源码走环境变量, 照 §17 的老规矩):
+   它用 `OpenProcess(SYNCHRONIZE)+WaitForSingleObject` **等本进程退出** → 备份 `wgime-py.py.bak-<旧版本>` →
+   `os.replace`(最多重试 10s) → 用 pythonw 重启新文件; 本进程发完气泡就 `quit_app()`。
+   **只替换单文件** —— config.txt/dicts/plugins 原地不动。
+5. **配置键**: `update_auto`(默认1) / `update_repo` / `update_api` / `update_mirror` / `update_source`(raw|asset) / `update_timeout`。
+   只对单文件生效(`update.is_single_file` = 头 8KB 有 `MODULES = `); 源码布局直接拒绝并提示用 git pull。
+
+**顺带修一个真问题(VERSION 陈旧)**: 真机验收第一跑就被守卫拦下 —— **tag v1.2.14 的资产里 `VERSION` 还写着
+`1.2.12-py`**(v1.2.14 发布时 main.py 没跟着改)。后果: 升级后自动更新会"下载成功但被拒绝"(文件自称的版本 =
+当前版本), 而且会一直提示有新版本。修法两处: ① `main.VERSION` 改成 `1.2.14-py`(当前发布版本);
+② `tests\release-assets-check.py` **加一条发版预检**: 单文件里的 `VERSION` 必须**等于** `--version`
+(自检: 拿 1.2.15 的名字跑 → `VERSION='1.2.14-py' vs --version 1.2.15` 红)。发布流程从此发不出"版本号与 tag 不符"的单文件。
+
+**测试**: 新回归 `wgime-py-pure\tests\update-test.py` **32/32**(本地假 GitHub 服务器 + 真替换助手, 不碰外网):
+版本解析/严格更新判断/单文件判据/body 抠 sha256/镜像前缀; 检查-下载(有新版本 / 已是最新 / raw 成功 /
+raw 坏自动退 asset / asset sha 不符拒绝 / 两条路都坏报两条原因 / 内层比 tag 旧拒绝 / 内层不比当前新拒绝 /
+HTML 与太短拒绝); 替换助手(目标已退出→替换+备份 / **目标还活着→先等它退出再换** / 新文件不存在→拒绝且不动目标);
+端到端 `spawn_apply()` 真拉起助手换文件。
+**守卫有效性**(三处保护分别改坏): 去掉 sha256 核对 → 3 红; 去掉"必须比当前新" → 2 红; 助手不等目标退出 → 1 红。
+**真机对真 GitHub 验收**(探针 `%TEMP%\wg-r85-real-github.py`, **9/9**): `fetch_latest` 拿到 v1.2.14 与三个资产、
+body 里的 sha256 抠得出来、**两个下载源(raw 619381 B 与发行包内层)给出同一份文件**、发行包 sha256 与 body 一致,
+并且**守卫确实拒绝了那份旧 VERSION 的文件**。
+**顺手抓到自己的一个 bug**: 助手脚本原来 `apply_job(...)` 的返回值没进进程退出码(测试断言 rc≠0 时露馅) → `sys.exit(apply_job(...))`。
+
+**重建**: `update` 进了内嵌清单(`build-wgime-pure.py` MODULES **13 个**) → 重建 dist+package 并核对 13 个模块与磁盘
+逐字符一致、`package == dist`、用户 `config.txt` hash 不变。复跑: harness 67 / tray-swap 42 / embedded-isolation 14 /
+plugin-window 23 / update 32 / translate-window 13 / undefined-globals 0 全绿。
+
 ## 2026-09-21 (第八十四轮: 插件管理器加「结束窗口」 —— 独立进程里的插件窗口也能关掉了)
 
 **来由**: 上一轮修好"翻译插件关不掉"之后, 用户要一个**入口** —— 插件窗口活在独立进程里时, 宿主既没有它的

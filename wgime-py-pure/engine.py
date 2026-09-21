@@ -233,6 +233,12 @@ def load_config(path):
                stt_device='', stt_compute='', stt_python='', stt_prompt='',     # 本地 whisper 后端 (第六十三轮)
                stt_script='', stt_itn=True, stt_threads=4,                      # 本地 sherpa 后端 (常驻助手)
                stt_prewarm=True, stt_beam=5,   # 启动后台预热 / beam size (1=贪心最快, 5=默认)
+               # 自动更新 (第八十五轮, 服务器 = GitHub Releases; 只换单文件 wgime-py.py):
+               #   update_auto 启动 +7s 后台查一次(6h 内不重复, 只发托盘提示, 绝不自动重启);
+               #   update_repo/update_api 换仓库或自建镜像的 API; update_mirror 给下载 URL 加前缀
+               #   (如 https://ghproxy.net/); update_source=raw(仓库原文件 ~1.1MB, 默认)/asset(发行包 ~25MB, 带 sha256)
+               update_auto=True, update_repo='ogowoo/wgime', update_api='https://api.github.com',
+               update_mirror='', update_source='raw', update_timeout=15,
                hotkeys={}, ckeys={})          # hotkey_* / key_*: 原样收下, 由 hook.configure 解析(缺省在 hook 里)
     try:
         text = read_text(path)                     # 宽松解码: ANSI/GBK 另存的 config.txt 也能读, 不崩
@@ -310,6 +316,17 @@ def load_config(path):
             elif k == 'stt_timeout':
                 try:
                     cfg[k] = max(5, min(60, int(v)))        # 单次请求超时(秒)
+                except ValueError:
+                    pass
+            elif k == 'update_auto':
+                cfg['update_auto'] = v in ('1', 'on', 'true')    # 白名单 (第八十五轮): 启动后台查一次新版
+            elif k in ('update_repo', 'update_api', 'update_mirror'):
+                cfg[k] = v.strip()                              # 仓库 / API 基址 / 下载镜像前缀
+            elif k == 'update_source':
+                cfg['update_source'] = v.strip().lower() if v.strip().lower() in ('raw', 'asset') else 'raw'
+            elif k == 'update_timeout':
+                try:
+                    cfg[k] = max(5, min(60, int(v)))             # 单次请求超时(秒); 非法值保持缺省
                 except ValueError:
                     pass
             elif k == 'sentence':

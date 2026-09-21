@@ -1762,3 +1762,57 @@ WgIme 自己**才 `win.terminate_process(pid)`。两条路都要, 因为插件�
 translate-window 13 / undefined-globals 0。
 > 注意: 这次 `THIRD_ZIP_B64 == HEAD baseline` 是 **False**(改了内嵌模块, dist 必须重新提交) ——
 > `%TEMP%\wg-dist-verify2.py` 里那条断言只适用于"没动内嵌模块"的场合(§30)。
+
+
+## §D33 第八十五轮：自动更新（服务器 = GitHub Releases）
+
+> 用户原话："加一个自动更新功能吧, 就用 github 来当服务器"。方案(用户选): **启动后台检查 + 托盘提示, 点一下才下载并重启**,
+> 范围**只换纯 Python 单文件**。这一节记设计取舍、真机数字、以及验收时抓出来的那个"VERSION 陈旧"。
+
+### 1) 为什么是"两条下载路 + 四条安全线"
+* **`raw` 优先**: 发行包 `*-python.zip` 有 **25.6MB**(里面装的是 dicts, 真正的代码只有 1.1MB)。`raw` 取仓库里
+  `wgime-py-pure/dist/wgime-py.py` 只要 1.1MB —— 用户点一次更新的等待从"几分钟(国内)"变成"几秒"。
+* **`asset` 兜底**: raw 走的是 `raw.githubusercontent.com`(国内时通时断), 而且它**没有**独立校验和; 发行包那条路
+  可以用 release body 里那张资产表的 **SHA256**(本仓库发布流程会写)做完整性核对。两条路互相兜底, 各自失败原因都记进
+  `%LOCALAPPDATA%\wgime-py\update.log`。
+* **安全线**除"标记 + 编译 + 体积"外, 关键是**版本必须真的变新**: `verify_source()` 会拒"低于 tag"和"不比当前新"
+  两种情况 —— 防的是"有人拿旧构建重新打了 tag"这类发布事故(下面第 4 节就是这么被抓出来的)。
+* **替换前备份**: `wgime-py.py.bak-<旧版本>` 与被换掉的文件同目录, 回滚就是改个文件名。
+
+### 2) 替换为什么必须另起一个进程
+Windows 上 `python wgime-py.py` 的**文件本身**其实可以被改名/覆盖(python 读完就关了句柄), 但:
+* 正在跑的进程内存里还是旧代码, 必须重启;
+* 杀软/索引器/编辑器偶尔会短时占住文件, 原地替换会偶发 `PermissionError`;
+* 我们**不希望**"更新"这件事发生在打字/录音中途 —— 所以顺序是: 用户点确认 → 下载校验(几秒) → 落 `.new` →
+  拉起助手 → **本进程正常退出** → 助手等到 pid 真的消失 → 备份 → `os.replace`(重试 10s) → `pythonw` 启新文件。
+助手的等待用 `OpenProcess(SYNCHRONIZE)+WaitForSingleObject`(比轮询进程表准; 进程已退出时 `OpenProcess` 直接失败=立刻往下走)。
+助手源码走环境变量 `WGIME_UPDATE_SRC`(照 §17 caret helper 的老规矩: 不落盘 .py、进程命令行只有短引导), job 走
+`WGIME_UPDATE_JOB`(JSON: src/dst/wait_pid/old_version/relaunch/cwd)。
+
+### 3) 真机对真 GitHub 的验收(`%TEMP%\wg-r85-real-github.py`, 9/9)
+```
+fetch_latest -> tag=v1.2.14, assets=[bat, ps1, python]        ; body 里的 sha256 抠得出来
+plan('1.2.13-py') -> 有新版计划(raw_url 带 tag, asset 25598298 B, sha=f6210635…)
+raw 下载 619381 B  -> 能编译 + 三个标记齐 (== 该 tag 的历史尺寸)
+asset 下载 -> sha256 == body 里写的; 内层 == raw(两个源给出同一份文件)
+verify_source(这份文件, info_version='1.2.14') -> **被拒绝**: '下载到的文件是旧版本(1.2.12-py < 1.2.14)'
+```
+最后那一条就是"VERSION 陈旧"的证据: v1.2.14 的资产里 `VERSION` 还写着 `1.2.12-py`。
+
+### 4) 由此落下的两条修改
+1. `main.VERSION` = `1.2.14-py`(此前是 `1.2.12-py`, 一直没人改 —— 而它正是单文件里"我是谁"的唯一标识);
+2. `tests\release-assets-check.py` 增加一条**发版预检**: 从 python zip 的内层 `wgime-py.py` 里抠 `VERSION`,
+   必须**等于** `--version`。自检: 用 1.2.15 的名字跑同一份 stage →
+   `python: 单文件 VERSION == 发布的版本  FAIL VERSION='1.2.14-py' vs --version 1.2.15`。
+   **正则的坑(文档级)**: dist 里 main.py 是"嵌套转义"的字符串, 真实字节是 `VERSION = \\'1.2.14-py\\'` ——
+   反斜杠要允许**任意多个**; 而且必须要求**以数字开头**, 否则会先命中 `update.py` 自己文档里那句 `VERSION = '...'`(实测踩过)。
+
+### 5) 回归测试的 30+ 项怎么来的
+`tests\update-test.py` 起一个**本地假 GitHub**(`http.server`): `/repos/o/r/releases/latest` 返回带 body 表的 JSON,
+`/raw…` 与 `/dl/<asset>` 各返回假单文件/假 zip; 假单文件是"三个标记 + VERSION + 填充到 210KB"的可编译文本。
+覆盖: 纯函数(S)、检查/下载校验(A)、**真替换助手**(B)、端到端 `spawn_apply`(C)。
+**三个突变自检**(`%TEMP%\wg-r85-mutate-update.py`): sha256 核对去掉 → 3 红; "必须比当前新"去掉 → 2 红;
+助手不等目标进程 → 1 红。其中第 2 条一开始**没红** —— 因为"低于 tag"那条先拦住了, 于是补了一个"内层版本 == tag
+但比当前旧"的用例, 才真正压到那行。
+**测试抓到的真 bug**: 助手脚本原来结尾是裸 `apply_job(...)`, 返回值不进进程退出码 → "新文件不存在"那条断言
+(rc≠0)失败; 改成 `sys.exit(apply_job(...))`。

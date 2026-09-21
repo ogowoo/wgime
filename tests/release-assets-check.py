@@ -104,6 +104,12 @@ def main():
                 d = z.read(inner[0])
                 check('python: 内层 wgime-py.py == dist(逐字节)', d == dist,
                       '%d B vs dist %d B' % (len(d), len(dist)))
+                # 第八十五轮: 单文件里的 VERSION 必须**正好是这个 tag 的版本** ——
+                # 自动更新拿它比对(见 wgime-py-pure/update.py), 写错了会让用户"更新完还是旧版"或反复提示有新版本。
+                m = re.search(r"VERSION\s*=\s*\\*['\"](\d+\.\d+[^'\"\\]*)", d.decode('utf-8', 'replace'))
+                got = m.group(1) if m else ''
+                check('python: 单文件 VERSION == 发布的版本', got.split('-')[0] == a.version,
+                      'VERSION=%r vs --version %s' % (got, a.version))
             check('python: 带 dicts/ 与 plugins/',
                   any(x.startswith('dicts/') for x in names)
                   and any(x.startswith('plugins/') for x in names))

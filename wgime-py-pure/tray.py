@@ -476,6 +476,7 @@ class Tray:
                                  pystray.MenuItem(L('标点吞字修复', 'Punct stale-char fix'),
                                                   self._on(self.api['appkeyfix']),
                                                   checked=lambda _it: self.api['get_appkeyfix']()),
+                                 self._update_item(),
                                  pystray.MenuItem(L('编辑配置 (config.txt)…', 'Edit config (config.txt)…'),
                                                   self._on(self.api['open_config'])),
                                  pystray.MenuItem(L('重载配置 (config/tools/插件)', 'Reload config (config/tools/plugins)'),
@@ -501,6 +502,7 @@ class Tray:
             # 配置
             pystray.MenuItem(L('配置', 'Config'),
                              pystray.Menu(
+                                 self._update_item(),
                                  pystray.MenuItem(L('编辑配置 (config.txt)…', 'Edit config (config.txt)…'),
                                                   self._on(self.api['open_config'])),
                                  pystray.MenuItem(L('重载配置 (config/tools/插件)', 'Reload config (config/tools/plugins)'),
@@ -513,6 +515,18 @@ class Tray:
             # 退出
             pystray.MenuItem(L('退出', 'Exit'), self._on(self.api['quit'])),
         )
+
+    def _update_item(self):
+        """「检查更新」/「更新到 vX.Y.Z…」—— 文案由 `api['update_label']()` 给 (第八十五轮).
+
+        发现新版时那一行会变成「更新到 vX.Y.Z…」; 文案是**每次 rebuild 时**问一次 —— 检查是后台线程,
+        查到新版后 main 会 `rebuild()` 一次刷新它。
+        """
+        try:
+            text = self.api['update_label']()
+        except Exception:
+            text = '检查更新'
+        return pystray.MenuItem(L(text, 'Check for updates'), self._on(self.api['check_update']))
 
     def rebuild(self):
         """重建菜单 (插件/应用列表随配置变化, reload 后调用). pystray 菜单结构需整体替换."""

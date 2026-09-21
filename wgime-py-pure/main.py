@@ -11,7 +11,7 @@ import importlib.util
 import ctypes
 import re
 
-VERSION = '1.2.12-py'      # 单文件里唯一的版本标识: 写在启动 always-on 日志里, 方便确认"跑的是哪个文件"
+VERSION = '1.2.14-py'      # 单文件里唯一的版本标识: 写在启动 always-on 日志里, 方便确认"跑的是哪个文件"
                            # (第四十五轮: 用户机器上出现过"拿旧的 wgime-py.py 测新功能"的混乱)
 # 注意: tkinter **不在这里** import (第四十轮). 首次 import tkinter ≈70ms, 而"单实例 -> 读 config ->
 # 装键盘钩子"这一段完全用不到它; 挪到钩子装好之后 (见下面的"钩子之后才 import"段)。
@@ -617,6 +617,9 @@ def _tray_api():
         'get_apppaste': lambda: APPMODES.get(win.foreground_process_name(), 0) == 1,
         'get_appkeyfix': lambda: bool(effective_keyfix()),
         'appkeyfix': lambda: toggle_app_keyfix(),
+        # 自动更新 (第八十五轮): 文案随"是否已知有新版"变 (检查更新 / 更新到 vX…)
+        'check_update': lambda: _update_click(),
+        'update_label': lambda: _update_label(),
         'followcaret': lambda: toggle_followcaret(),
         'get_followcaret': lambda: _caret_follow(),
         'toggleshowcode': lambda: toggle_showcode(),
@@ -2542,6 +2545,147 @@ def handle(vk):
             show_page()
 
 
+# ---------- 自动更新 (第八十五轮, 服务器 = GitHub Releases) ----------
+# 只更新**纯 Python 单文件** `wgime-py.py` (config.txt / dicts / plugins 一概不碰):
+#   · 启动 +7s 后台检查一次(6 小时内不重复), 发现新版只发**托盘提示** —— 绝不自动重启
+#     (打字/录音中途被重启是事故, 用户选的方案就是"提示 + 点一下才下");
+#   · 用户点「这个程序 → 更新到 vX…」才下载: 校验(标记/编译/版本/资产 sha256) → 写 `wgime-py.py.new`
+#     → 拉起 detached 小助手(等本进程退出 → 备份 → 原子替换 → 重启新文件) → 本进程退出;
+#   · 任何一步失败都只弹气泡 + 写 `update.log`, 旧文件原样保留 (四条安全线全文见 update.py 开头)。
+_UPDATE = {'info': None, 'busy': False, 'err': ''}
+
+
+def _update_cfg():
+    import update as updmod
+    return {'repo': (CFG.get('update_repo') or '').strip() or updmod.REPO_DEFAULT,
+            'api': (CFG.get('update_api') or '').strip() or updmod.API_DEFAULT,
+            'mirror': (CFG.get('update_mirror') or '').strip(),
+            'source': (CFG.get('update_source') or 'raw').strip().lower(),
+            'timeout': int(CFG.get('update_timeout') or 15)}
+
+
+def _update_target():
+    """要更新的那个文件 = 正在跑的这个文件(单文件模式); 源码布局下为 main.py(会被拒绝)。"""
+    return os.path.abspath(__file__)
+
+
+def _update_label():
+    """托盘那一行的文案: 平时「检查更新」, 已经知道有新版就是「更新到 vX.Y.Z…」。"""
+    info = _UPDATE.get('info')
+    return ('更新到 v%s…' % info['version']) if (info and info.get('version')) else '检查更新'
+
+
+def _update_refresh_tray():
+    """查到新版后刷新托盘菜单 —— 那一行会从「检查更新」变成「更新到 vX.Y.Z…」。"""
+    try:
+        if 'TRAY' in globals() and TRAY:
+            TRAY.rebuild()
+    except Exception as e:
+        _dfn('update: tray rebuild failed %r' % (e,))
+
+
+def _update_check_bg(manual=False):
+    """后台检查(手动点也走它 —— 网络慢时绝不卡主线程)。只改状态 + 发气泡。"""
+    if _UPDATE.get('busy'):
+        return
+    _UPDATE['busy'] = True
+    try:
+        import update as updmod
+        c = _update_cfg()
+        info = None
+        try:
+            info = updmod.plan(VERSION, repo=c['repo'], api=c['api'], timeout=c['timeout'],
+                               source=c['source'])
+            _UPDATE['info'], _UPDATE['err'] = info, ''
+        finally:
+            updmod.mark_checked()
+        if info:
+            v = info['version']
+            _dfn_always('update: 发现新版 %s (当前 %s)' % (v, VERSION))
+            root.after(0, lambda: (_update_refresh_tray(),
+                                   _notify('WgIme 有新版本 v%s' % v,
+                                           '当前 v%s。点托盘菜单「这个程序 → 更新到 v%s…」下载并重启'
+                                           '(config/词库/插件不受影响)' % (VERSION, v))))
+        elif manual:
+            root.after(0, lambda: _notify('已是最新版本', '当前 v%s' % VERSION))
+    except Exception as e:
+        _UPDATE['err'] = str(e)
+        _dfn_always('update: check failed %r' % (e,))
+        if manual:
+            root.after(0, lambda: _notify('检查更新失败', str(e)[:220]))
+    finally:
+        _UPDATE['busy'] = False
+
+
+def _update_apply_bg(info):
+    """下载+校验+落 .new+拉起替换助手; 成功后本进程退出(助手负责换文件并重启新版本)。"""
+    import update as updmod
+    c = _update_cfg()
+    target = _update_target()
+    try:
+        if not updmod.is_single_file(target):
+            raise updmod.UpdateError('当前是**源码布局**在跑(不是发布的单文件), 自动更新不适用; '
+                                     '源码目录请用 git pull')
+        dest = os.path.dirname(target)
+        if not os.access(dest, os.W_OK):
+            raise updmod.UpdateError('目录不可写, 换个位置放 wgime-py.py: %s' % dest)
+        new_path, sha = updmod.stage(info, dest, VERSION, mirror=c['mirror'])
+        _dfn_always('update: staged %s sha256=%s' % (new_path, sha[:16]))
+        relaunch = [updmod.pythonw_path(), target] + list(sys.argv[1:])
+        updmod.spawn_apply(new_path, target, wait_pid=os.getpid(), old_version=VERSION,
+                           relaunch=relaunch, cwd=dest)
+        root.after(0, lambda: _notify('正在重启完成更新',
+                                      'WgIme 将退出并自动以 v%s 重新启动' % info['version']))
+        time.sleep(1.2)                       # 让气泡先出去, 再由助手接着换文件+重启
+        root.after(0, quit_app)
+    except Exception as e:
+        _dfn_always('update: apply failed %r' % (e,))
+        try:
+            import update as _u
+            _u._rm(os.path.join(os.path.dirname(target), updmod.INNER_NAME + '.new'))
+        except Exception:
+            pass
+        root.after(0, lambda: _notify('更新失败', str(e)[:220]))
+
+
+def _update_click():
+    """托盘「检查更新 / 更新到 vX…」: 已知有新版就问一句; 否则先查一次。"""
+    if _UPDATE.get('busy'):
+        _notify('正在检查更新', '上一次检查还没跑完')
+        return
+    info = _UPDATE.get('info')
+    if not info:
+        threading.Thread(target=_update_check_bg, args=(True,), daemon=True).start()
+        return
+    v = info['version']
+    try:
+        from tkinter import messagebox as _mb
+        ok = _mb.askyesno('WgIme 更新',
+                          '下载并更新到 v%s？\n\n当前 v%s\n\n'
+                          '只替换 WgIme 单文件本身 —— config.txt / 词库 / 插件都不会动。\n'
+                          '下载校验完成后 WgIme 会自动重启。' % (v, VERSION))
+    except Exception:
+        ok = False
+    if ok:
+        threading.Thread(target=_update_apply_bg, args=(info,), daemon=True).start()
+
+
+def _deferred_update_check():
+    """启动后台检查一次: 只在 `update_auto` 开、单文件模式、且距上次检查 > 6h 时。"""
+    if not CFG.get('update_auto', True):
+        return
+    try:
+        import update as updmod
+        if not updmod.is_single_file(_update_target()):
+            return                            # 源码布局: 别提示一个用不了的更新
+        if not updmod.should_auto_check(6.0):
+            return
+    except Exception as e:
+        _dfn('update: skip check (%r)' % (e,))
+        return
+    threading.Thread(target=_update_check_bg, args=(False,), daemon=True).start()
+
+
 # ---------- 可选依赖自检 / 安装 (第八十二轮) ----------
 # 宿主核心**零依赖**(单文件自带 pystray/pypdf): 缺的只是"某一项功能", 所以:
 #   · 首启只问一次(默认「否」), 答案落 DATA_DIR\deps-state.txt; 想重跑走启动编码 `deps` / `yilai`;
@@ -2879,6 +3023,7 @@ root.after(30, _deferred_plugins)        # 30ms  : plugins/tools.txt/pastemode (
 root.after(150, _deferred_tray)          # 150ms : 托盘对象 + 图标线程 (~300ms)
 root.after(600, _deferred_tools)         # 600ms : tools 懒装载 + 通知回调 (~150ms)
 root.after(2000, _deferred_depcheck)     # 2s    : 首启可选依赖自检 (第八十二轮; 只问一次)
+root.after(7000, _deferred_update_check)  # 7s   : 后台查一次新版本 (第八十五轮; 只提示, 不自动重启)
 if is_tray_mode():
     _dfn('runmode=tray (no keyboard hook)')
 else:
