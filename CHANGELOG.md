@@ -17,9 +17,9 @@
 **规矩**: 冒烟脚本一律 `WGIME_RELAUNCHED=1`, 日志/data 看 `%LOCALAPPDATA%\wgime-py\`(不是 `%LOCALAPPDATA%\`)。
 
 **坑②**: `git add -A -- wgime-py-pure` 会把 `wgime-py-pure\testing\`(永不入库的草稿目录)一起暂存 —— 已
-`git restore --staged` 撤回。附带乌龙: `git grep -I -l fzenufe --cached`(`--cached` 写在模式**之后**)会让 git
+`git restore --staged` 撤回。附带乌龙: `git grep -I -l --cached 'ghp_'`(`--cached` 写在模式**之后**)会让 git
 报错, 那条 stderr 被 `Measure-Object` 数成"命中 1", 看着像泄露密钥; 正确写法是
-`git grep -I -l --cached fzenufe`(空 = 干净)。
+`git grep -I -l --cached 'ghp_'`(空 = 干净)。
 
 **坑③**: `docs\WGIME_使用说明.md`/`docs\WGIME_技术文档.md` 的 **blob 是 CRLF**, 我的生成脚本兜底
 `t.replace('\r\n','\n')` 把整文件规整成 LF ⇒ 出现 376/347 的"整文件 diff"(忽略行尾只剩 29/26 = 真正新增)。

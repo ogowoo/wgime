@@ -1597,10 +1597,10 @@ deps: first-run check, missing=argostranslate,faster_whisper
 教训：冒烟脚本一律 `WGIME_RELAUNCHED=1`（harness 早就这么干了，见 `tests\pure-state-harness.py:72`）。
 
 **② `git add -A -- wgime-py-pure` 会把 `testing\` 暂存进去。** 那是永不入库的草稿目录；已
-`git restore --staged wgime-py-pure/testing` 撤回，并复查 `git grep -I -l --cached fzenufe` 为空。
-附带一个自摆乌龙：`git grep ... --cached fzenufe` 把 `--cached` 写在模式**之后** ⇒ git 报
+`git restore --staged wgime-py-pure/testing` 撤回，并复查 `git grep -I -l --cached 'ghp_'` 为空。
+附带一个自摆乌龙：`git grep ... --cached ghp_` 把 `--cached` 写在模式**之后** ⇒ git 报
 `option '--cached' must come before non-option arguments`，而那条 stderr 被 `Measure-Object` 数成"命中 1"，
-看着像泄露了密钥、实际什么都没匹配到。查密钥的正确写法：`git grep -I -l --cached fzenufe`。
+看着像泄露了密钥、实际什么都没匹配到。查密钥的正确写法：`git grep -I -l --cached 'ghp_'`。
 
 ### 9) 文档行尾：`.md` 也要按 blob 走（§30 的老规矩不只适用于 txt）
 

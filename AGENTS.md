@@ -153,7 +153,7 @@ python wgime-py-pure\tests\deps-test.py             # 可选依赖自检/安装�
   3. 发完**回验**：线上 python zip 的 SHA256 与 stage 相同、内层 `wgime-py.py` 与 dist 逐字符一致、body 无 `?`、tag=本地 HEAD。
 - **中文坑**：release body 用 `HttpWebRequest` 显式 UTF-8 字节发（脚本已内置）；**别用 `Invoke-RestMethod`+`ConvertTo-Json`**（PS 5.1 把中文变 `?`）。
 - **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
-- **暂存纪律**：**别用 `git add -A -- wgime-py-pure`** —— 会把 `wgime-py-pure\testing\`（**永不入库**的草稿目录）一起暂存进去；提交前 `git diff --cached --name-only` 过一眼，并查密钥：`git grep -I -l --cached fzenufe`（注意 `--cached` 必须写在**模式之前**，否则 git 直接报错、那条错误会被 `Measure-Object` 当成"命中 1"，白紧张一场）。
+- **暂存纪律**：**别用 `git add -A -- wgime-py-pure`** —— 会把 `wgime-py-pure\testing\`（**永不入库**的草稿目录）一起暂存进去；提交前 `git diff --cached --name-only` 过一眼，并查密钥：`git grep -I -l --cached 'ghp_'`（注意 `--cached` 必须写在**模式之前**，否则 git 直接报错、那条错误会被 `Measure-Object` 当成"命中 1"，白紧张一场）。
 - 版本 tag：`v1.0.0` ~ `v1.2.14`（后续版本递增）。插件更新不单独发 release。
   **发版前必跑**（第七十六轮新增）：`python tests\release-assets-check.py --version X --assets <stage>` ——
   断言三个 zip 的 `config.txt` 与仓库模板**逐字节一致**、不含 `sk-` 私钥 / `C:\Users\` 私用路径 / 启用的 `stt_*` 行。
