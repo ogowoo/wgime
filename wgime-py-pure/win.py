@@ -1139,3 +1139,126 @@ def foreground_elevated():
             kernel32.CloseHandle(h)
     except Exception:
         return False
+
+
+# ---- 插件窗口: 枚举 / 关闭 / 结束 (第八十三轮) ----
+# 用途: 插件管理器里的「结束窗口」。插件窗口可能在**别的进程**里 (wgtranslate 的 detached 子进程),
+# tk 的 winfo_children 根本看不到它, 所以只能走 EnumWindows + pid/exe 这套进程级原语。
+_WM_CLOSE = 0x0010
+_PROCESS_TERMINATE = 0x0001
+
+
+def enum_top_windows():
+    """枚举**可见且标题非空**的顶层窗口: `[(hwnd, pid, title), ...]`.
+
+    不做任何过滤 —— "哪些窗口属于某个插件"的策略在 tools.plugin_window_match 里 (只认 python 进程)。
+    """
+    out = []
+    try:
+        u32 = user32
+        u32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        u32.IsWindowVisible.restype = w.BOOL
+        u32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+        u32.GetWindowTextLengthW.restype = ctypes.c_int
+        u32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        u32.GetWindowTextW.restype = ctypes.c_int
+        u32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.DWORD)]
+        u32.GetWindowThreadProcessId.restype = w.DWORD
+        proc = ctypes.WINFUNCTYPE(w.BOOL, ctypes.c_void_p, w.LPARAM)
+
+        def _cb(hwnd, _lparam):
+            try:
+                if not u32.IsWindowVisible(hwnd):
+                    return True
+                n = int(u32.GetWindowTextLengthW(hwnd))
+                if n <= 0:
+                    return True                       # 无标题的窗口不是插件窗口(插件都会 title())
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u32.GetWindowTextW(hwnd, buf, n + 1)
+                pid = w.DWORD()
+                u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                out.append((int(hwnd), int(pid.value), buf.value))
+            except Exception:
+                pass
+            return True
+
+        u32.EnumWindows.argtypes = [proc, w.LPARAM]
+        u32.EnumWindows.restype = w.BOOL
+        u32.EnumWindows(proc(_cb), 0)
+    except Exception:
+        pass
+    return out
+
+
+def process_exe_name(pid):
+    """某个 pid 的可执行文件名(小写, 不含路径); 拿不到返回 ''.
+
+    第八十三轮用它当**安全阀**: 只对 `python*` 进程的窗口动手 —— 万一标题匹配撞上了别的程序
+    (插件名很短、用户恰好开了个同名窗口), 也不会把无关进程关掉/杀掉。
+    """
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return ''
+        kernel32.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, w.DWORD,
+                                                        ctypes.c_wchar_p, ctypes.POINTER(w.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = w.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = kernel32.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ''
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            size = w.DWORD(512)
+            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value).lower()
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        pass
+    return ''
+
+
+def window_alive(hwnd):
+    """窗口句柄还有效吗(进程死了句柄就无效)。"""
+    try:
+        user32.IsWindow.argtypes = [ctypes.c_void_p]
+        user32.IsWindow.restype = w.BOOL
+        return bool(user32.IsWindow(ctypes.c_void_p(int(hwnd))))
+    except Exception:
+        return False
+
+
+def post_close(hwnd):
+    """给窗口投一个 WM_CLOSE (= 用户点标题栏 ✕)。**投递即返回**, 不等对方处理。"""
+    try:
+        user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, w.WPARAM, w.LPARAM]
+        user32.PostMessageW.restype = w.BOOL
+        return bool(user32.PostMessageW(ctypes.c_void_p(int(hwnd)), _WM_CLOSE, 0, 0))
+    except Exception:
+        return False
+
+
+def terminate_process(pid):
+    """TerminateProcess 强杀。**拒绝 pid<=0 与本进程** —— 插件窗口可能就在 WgIme 自己进程里
+    (pdf/clock 那种 `run()` 直接建窗), 杀它等于自杀; 那种窗口只能靠 WM_CLOSE 关。返回是否发出终止。"""
+    try:
+        pid = int(pid)
+        if pid <= 0 or pid == os.getpid():
+            return False
+        kernel32.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        kernel32.TerminateProcess.restype = w.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)
+        if not h:
+            return False
+        try:
+            return bool(kernel32.TerminateProcess(h, 1))
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return False

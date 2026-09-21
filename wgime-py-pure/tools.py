@@ -1798,6 +1798,80 @@ def _confirm_dialog(title, text):
     return res['ok']
 
 
+# ---------- 插件窗口: 找到并结束 (第八十三轮) ----------
+def plugin_window_match(title, name='', code='', filename=''):
+    """这个窗口标题是不是该插件的窗口? (**纯函数**, 回归直接测它)
+
+    认三种线索, 从强到弱:
+      ① 插件**文件名主干** —— `wgtranslate` ← `wgtranslate.py` (插件窗口基本都以它当 title/APP 名);
+      ② `NAME` —— 如「剪贴板翻译」(插件若用中文名当标题);
+      ③ `CODE` —— 如 `fy`/`pdf`。
+    **短 CODE 只认完全相等**: `fy` 这种两字母若也做子串匹配, 会把任何标题里含 "fy" 的窗口认成它的
+    (实测标题里带 "fy" 的窗口一抓一大把) —— 那是别人的窗口, 关掉/杀掉就是事故。
+    """
+    t = (title or '').strip().lower()
+    if not t:
+        return False
+    stem = os.path.splitext(os.path.basename(filename or ''))[0].strip().lower()
+    for cand in (stem, (name or '').strip().lower(), (code or '').strip().lower()):
+        if not cand:
+            continue
+        if len(cand) < 3:
+            if t == cand:
+                return True
+            continue
+        if cand in t or t in cand:
+            return True
+    return False
+
+
+def plugin_windows(name='', code='', filename=''):
+    """当前属于这个插件的窗口: `[(hwnd, pid, title), ...]`.
+
+    **安全阀**: 只收 `python*` 进程的窗口 —— 插件都是宿主用 python 跑的; 万一标题匹配撞上了
+    别的程序(用户恰好开了个同名窗口), 也不会动它。
+    """
+    hits = []
+    try:
+        for hwnd, pid, title in w32.enum_top_windows():
+            if not w32.process_exe_name(pid).startswith('python'):
+                continue
+            if plugin_window_match(title, name, code, filename):
+                hits.append((hwnd, pid, title))
+    except Exception:
+        pass
+    return hits
+
+
+def end_plugin_windows(name='', code='', filename='', wait=1.2):
+    """把插件的窗口结束掉: 先 `WM_CLOSE`(= 点 ✕), 等 `wait` 秒还在就 `TerminateProcess`.
+
+    两条路都要, 因为插件窗口有两种活法:
+      * **本进程内**的窗口(`run()` 直接建窗, 如 pdf/clock): 只能 WM_CLOSE, 进程是 WgIme 自己;
+      * **另起进程**的窗口(`wgtranslate` 的 detached 子进程): WM_CLOSE 之后还得确认它真的退了 ——
+        第八十三轮那个"关一次回来一次"就是子进程没退干净留下的孤儿。
+    返回 `{'found','closed','killed','pids'}`; `win.terminate_process` 自带"不杀本进程"的保护。
+    """
+    hits = plugin_windows(name, code, filename)
+    pids = sorted({p for _h, p, _t in hits})
+    if not hits:
+        return {'found': 0, 'closed': 0, 'killed': 0, 'pids': []}
+    for hwnd, _pid, _t in hits:
+        w32.post_close(hwnd)
+    deadline = time.time() + max(0.0, float(wait))
+    while time.time() < deadline and any(w32.window_alive(h) for h, _p, _t in hits):
+        time.sleep(0.05)
+    killed = 0
+    for pid in pids:
+        if pid == os.getpid():                      # 本进程的窗口只能靠上面的 WM_CLOSE
+            continue
+        if any(w32.window_alive(h) for h, p, _t in hits if p == pid):
+            if w32.terminate_process(pid):
+                killed += 1
+    gone = sum(1 for h, _p, _t in hits if not w32.window_alive(h))
+    return {'found': len(hits), 'closed': gone, 'killed': killed, 'pids': pids}
+
+
 # ---------- 插件管理 ----------
 # ---------- 插件管理 (复刻 C# PluginMgrForm: 重载/启停/打开目录/编辑/删除/新建/运行) ----------
 def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_fn=None, plugin_dir_fn=None):
@@ -1949,8 +2023,53 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
         else:
             _msgbox('插件管理', '该插件无运行入口')
 
+    def on_end_windows():
+        """「结束窗口」: 关掉(必要时强杀)选中插件的窗口/子进程 (第八十三轮).
+
+        为什么需要它: 有些插件的窗口活在**独立进程**里(wgtranslate 的 detached 子进程),
+        宿主既没有它的句柄、也不知道它的 pid —— 以前只能去任务管理器里找。这里按
+        "标题匹配 + 只认 python 进程" 找出来, 先 WM_CLOSE, 不退再强杀。
+        """
+        r = sel()
+        if not r:
+            _msgbox('插件管理', '先在列表里选中一个插件')
+            return
+        name, code, fn = r.get('name') or '', r.get('code') or '', r.get('file') or ''
+        if not fn:
+            _msgbox('插件管理', '这个插件没有文件路径, 找不到它的窗口')
+            return
+        _tip('WgIme 插件管理', '正在结束「%s」的窗口…' % name)
+
+        def _work():
+            try:
+                res = end_plugin_windows(name, code, fn)
+            except Exception as e:
+                res = {'found': 0, 'closed': 0, 'killed': 0, 'pids': [], 'err': repr(e)}
+
+            def _done():
+                if res.get('err'):
+                    text = '结束「%s」的窗口失败: %s' % (name, res['err'])
+                elif not res['found']:
+                    text = '没找到「%s」的窗口 (还没运行过, 或窗口已经关了)' % name
+                else:
+                    text = '已结束「%s」的窗口: 关闭 %d 个%s' % (
+                        name, res['closed'],
+                        (', 强制结束进程 %d 个' % res['killed']) if res['killed'] else '')
+                try:
+                    _tip('WgIme 插件管理', text)
+                except Exception:
+                    w32.dfn_always('plugin-end tip failed')   # 与 main._dfn_always 同一个 debug.log
+
+            try:
+                win.after(0, _done)          # 结果提示回主线程 (Tk 不在子线程里动)
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True).start()
+
     # 第五十五轮: 原来 x 从 10 起、间距 8, 七个按钮总宽 494+48=542 > bar 的 540 —— 最右边"运行"
     # 被窗口右边缘切掉 2px。改成贴 bar 左沿起、间距 6: 494+36=530, 右侧留 10px。
+    # 第八十三轮新增的「结束窗口」放在**底部那行**(顶部条已只剩 10px, 塞不下第 8 个按钮)。
     x = 0
     for cap, fn, prim, w in (('重载', on_reload, False, 56), ('启用/禁用', on_toggle, False, 84),
                              ('打开目录', on_open_dir, False, 80), ('编辑', on_edit, False, 56),
@@ -1958,6 +2077,9 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
                              ('运行', on_run, True, 60)):
         ui.flat_button(bar, cap, fn, primary=prim, x=x, y=2, w=w, h=30)
         x += w + 6
+    ui.flat_button(content, '结束窗口', on_end_windows, x=10, y=372, w=100, h=32)
+    tk.Label(content, text='关掉选中插件的窗口（含它另起的子进程）', bg=ui.BG, fg=ui.SUB,
+             font=ui.font(9), anchor='w').place(x=118, y=372, width=344, height=32)
     lst.bind('<Double-Button-1>', lambda e: on_run())
     win.bind('<Escape>', lambda e: win.destroy())
     refresh()

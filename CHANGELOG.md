@@ -1,5 +1,49 @@
 ---
 
+## 2026-09-21 (第八十四轮: 插件管理器加「结束窗口」 —— 独立进程里的插件窗口也能关掉了)
+
+**来由**: 上一轮修好"翻译插件关不掉"之后, 用户要一个**入口** —— 插件窗口活在独立进程里时, 宿主既没有它的
+句柄也不知道它的 pid, 以前只能去任务管理器里找。
+
+**做法** (`win.py` 出原语, `tools.py` 出策略与 UI):
+* **找窗口**: `win.enum_top_windows()`(EnumWindows, 只要可见+有标题的顶层窗口 —— 插件窗口在别的进程里,
+  tk 的 `winfo_children()` 根本看不到) → `tools.plugin_window_match(title, name, code, filename)` 按三条线索匹配:
+  **文件名主干**(`wgtranslate` ← `wgtranslate.py`, 最强) / `NAME`(「剪贴板翻译」) / `CODE`;
+  **短 CODE(<3 字符, 如 `fy`)只认完全相等** —— 否则任何标题里含 "fy" 的窗口都会被认成它的;
+* **安全阀**: 只收 `python*` 进程的窗口(`win.process_exe_name`) —— 万一标题撞上别的程序, 也不动它;
+* **结束**: `tools.end_plugin_windows()` 先 `win.post_close()`(WM_CLOSE = 点 ✕), 等 1.2s 仍不退**且不是 WgIme 自己**
+  才 `win.terminate_process(pid)`(`terminate_process` 自带"拒绝 pid<=0 / 拒绝本进程" —— pdf/clock 那种
+  `run()` 直接建窗的插件, 窗口就在宿主进程里, 杀进程等于自杀, 那种只能 WM_CLOSE);
+* **UI**: 插件管理器**底部**那行加「结束窗口」按钮 + 一行灰字提示(顶部按钮条已只剩 10px, 塞不下第 8 个按钮);
+  重活在后台线程, 结果经 `win.after(0, …)` 回主线程弹**托盘气泡**(§25): "已结束「剪贴板翻译」的窗口: 关闭 1 个"
+  / "没找到「X」的窗口" / "…强制结束进程 1 个".
+
+**验证**: 新回归 `wgime-py-pure\tests\plugin-window-test.py` **23/23** ——
+S 纯函数(matcher 命中/短码不误伤/空标题/无关窗口 + `terminate_process` 拒绝自杀)与**打桩**测的安全阀
+(标题一样但 exe 不是 python → 不许认领; 换成 pythonw → 认领);
+A 真窗口优雅路径(起标题 `wgtranslate` 的 Tk 子进程 → 找得到且 pid 对得上 → `end_plugin_windows`:
+`found>=1`/`killed==0`/`closed>=1`/子进程退出/无残留);
+B 安全阀真机(标题不相关的 python 窗口不被认领, 调完之后那个子进程**还活着**);
+C 强杀路径(`WM_DELETE_WINDOW` 被写成"什么都不做"的窗口 —— 就是用户遇到的形态 —— 必须 `killed==1` 结束掉)。
+开跑前若检测到用户自己开着的同插件窗口, A/B/C 整体 SKIP(不动用户的窗口); 没桌面只跑 S。
+
+**守卫有效性自检**: ①把 matcher 改成永远为真 → **5 条红**(含两条真机"无关窗口/子进程"); ②去掉"只认 python"
+安全阀 → **1 条红**(就是安全阀那条); 还原后 23/23。
+
+**布局审计** (§42 的判据, 探针 `%TEMP%\wg-r83-pluginmgr-audit.py`): 建窗遍历子孙量绝对矩形 —— **16 个控件
+没有一个越界、同父兄弟两两不重叠**; 新按钮 `x=10 y=410 w=100`、提示 `x=118 w=344`(右缘 462 < 关闭按钮的 470,
+下缘 442 < 窗高 452)。
+
+**顺手被自己的守卫抓到**: 第一版在 except 里写了 `_dfn(...)` —— `tools.py` 里根本没有这个函数(它是 main.py 的),
+`tests\undefined-globals.py` 立刻报 `tools.py.show_plugin_mgr.on_end_windows._work._done -> _dfn`(1 处);
+改成 `w32.dfn_always(...)`(与 `main._dfn_always` 同一个 debug.log)后归零。§35 那条规矩又一次证明有用。
+
+**重建**: `tools.py`/`win.py` 都在内嵌清单里 → 已 `build-package.ps1` 重建 dist+package
+(12 个内嵌模块与磁盘**逐字符一致**、`main` 一致、dist 编译通过、`package == dist`), 本机
+`package\plugins\wgtranslate.py` 仍是第八十三轮修好的版本, 你的 `package\config.txt` 建包前后 hash 不变。
+复跑: harness 67、deps 51、embedded-isolation 14、plugin-window 23、standalone 6、example-plugin 24、
+translate-window 13、undefined-globals 0 —— 全绿。
+
 ## 2026-09-21 (第八十三轮: 修"翻译插件无法结束进程" —— 两个 `__main__` 入口并列, 关一次回来一次)
 
 **用户报**: "翻译那个插件无法结束进程哦, (目前)"。

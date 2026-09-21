@@ -1687,3 +1687,78 @@ def _run_standalone():
   **重新读一遍文件**，所以把修好的 `wgtranslate.py` 放进 `package\plugins\` 之后**不用重启 WgIme**；
 * 用户当时那扇关不掉的窗口（pid 47172）连同探针/测试留下的窗口已 `Stop-Process -Force` 清掉，跑完确认进程表里
   再无 `wgtranslate.py`。
+
+
+## §D32 第八十四轮：插件管理器「结束窗口」（找得到、关得掉、不误伤）
+
+> 第八十三轮修好了"翻译窗口关一次回来一次", 但用户还是只能去任务管理器里找那个进程 —— 因为宿主**既没有
+> 它的句柄也不知道它的 pid**(窗口在 `run()` 另起的 detached 子进程里)。这一节记那个入口怎么做的、为什么
+> 每一步都要那么写, 以及实测/自检数字。
+
+### 1) 为什么不能只靠 tk
+`wgtranslate` 的窗口在**另一个进程**里 (`python wgtranslate.py --wgime-translate-window`), 主进程的
+`winfo_children()` 什么都看不到。所以走 Win32: `win.enum_top_windows()` = `EnumWindows` + `IsWindowVisible` +
+`GetWindowTextLengthW > 0` + `GetWindowThreadProcessId`, 返回 `[(hwnd, pid, title)]`。
+`GetWindowText` 必须先取长度再取文本(拿 `GetWindowTextW` 的返回值当长度会截断, 文档里也这么说)。
+
+### 2) 认领规则（`tools.plugin_window_match`，纯函数）
+三条线索, 从强到弱: ①插件**文件名主干**(`wgtranslate` ← `wgtranslate.py`; 插件普遍拿它当 `title`/`APP` 名);
+②`NAME`(「剪贴板翻译」); ③`CODE`(`fy`/`pdf`)。规则细节:
+* **短 CODE(<3 字符)只认完全相等**。第一版对 `fy` 也做子串匹配, 结果"标题里含 fy"的窗口全被认领 ——
+  那是别人的窗口, 关掉/杀掉就是事故;
+* 长的候选做**双向包含**(`cand in t or t in cand`): 插件把标题写成 `wgtranslate 翻译窗口` 也能认出来。
+
+**安全阀**(`tools.plugin_windows`): 只收 `win.process_exe_name(pid).startswith('python')` 的窗口 ——
+插件都是宿主用 python 跑的; 万一标题撞上别的程序(比如用户开了个同名窗口), 一律不动。
+
+### 3) 结束顺序（`tools.end_plugin_windows`）
+先 `win.post_close(hwnd)`(**WM_CLOSE**, 等价于点标题栏 ✕, 投递即返回), 等 `wait=1.2s`; 仍活着**且 pid 不是
+WgIme 自己**才 `win.terminate_process(pid)`。两条路都要, 因为插件窗口有两种活法:
+* **本进程内**的窗口(`pdf`/`clock` 那种 `run()` 直接建窗): 只能 WM_CLOSE —— `terminate_process` 里写着
+  "拒绝 `pid<=0` / 拒绝本进程", 杀自己等于自杀;
+* **另起进程**的窗口(`wgtranslate` 的 detached 子进程): WM_CLOSE 之后还要确认它真退了。
+返回值 `{'found','closed','killed','pids'}` 直接决定气泡里那句话。
+
+### 4) UI 放哪 + 布局审计
+插件管理器**顶部**按钮条已经用满(7 个按钮 494+6×6=530, bar 宽 540, 只剩 10px), 塞不下第 8 个 —— 新按钮
+放**底部**那行: 「结束窗口」`x=10 y=410 w=100`, 右侧一行灰字提示 `x=118 w=344`(右缘 462 < 关闭按钮的 470)。
+探针 `%TEMP%\wg-r83-pluginmgr-audit.py` 用 §42 的判据量: **16 个控件没有一个越出窗口、同父兄弟两两不重叠**
+(`place()` 摆的控件要看**绝对**坐标 —— 第一版探针直接读 `winfo_rootx()`, 而窗口没 `deiconify()` 时所有控件
+都返回同一个值, 看起来"16 个全越界"; 改成沿父链累加 `winfo_x/winfo_y` 才对)。
+
+### 5) 回归与自检（`tests\plugin-window-test.py`，23 项）
+* S 纯函数: matcher 的命中/短码不误伤/空标题/无关窗口 + `terminate_process` 拒绝自杀与非法 pid;
+  **安全阀用打桩测**(不依赖桌面): `win.enum_top_windows`/`win.process_exe_name` 换成假的,
+  标题一样但 exe 是 `notepad.exe` -> 不许认领; 换成 `pythonw.exe` -> 认领(对照);
+* A 真窗口优雅路径: 起一个标题 `wgtranslate` 的 Tk 子进程 -> `plugin_windows` 找得到(pid 对得上) ->
+  `end_plugin_windows` 之后 `found>=1`/`killed==0`/`closed>=1`/子进程退出/无残留窗口;
+* B 安全阀真机: 标题 `WgIme 不相关测试窗` 的 python 子进程不被认领, 调完 `end_plugin_windows` 它还活着;
+* C 强杀路径: `WM_DELETE_WINDOW` 写成 `lambda: None` 的窗口(点 ✕ 关不掉 = 用户遇到的形态)
+  -> `killed == 1`, 进程被结束;
+* 安全: 只统计/清理**本测试自己起的** pid; 开跑前若发现用户已有该插件窗口, A/B/C 整体 SKIP。
+
+**守卫有效性自检**（"一个不会失败的测试等于没写"）:
+| 突变 | 结果 |
+|---|---|
+| `plugin_window_match` 改成永远为真 | **5 条红**: 短码不误伤 / 空标题 / 无关窗口(Firefox) / 无关标题不被认领 / 无关子进程还活着 |
+| 去掉"只认 python 进程"的安全阀 | **1 条红**: 非 python 进程的同名窗口不被认领 |
+还原后 23/23。脚本留在 `%TEMP%\wg-r83-mutate-pluginwin.py`。
+
+### 6) 顺手被自己的守卫抓到的一个真错
+第一版在"气泡失败"的 except 里写了 `_dfn('plugin-end tip failed')` —— 那**是 main.py 的函数**, `tools.py`
+里没有。`tests\undefined-globals.py`(symtable 版 mini-pyflakes)立刻报:
+`tools.py: tools.py.show_plugin_mgr.on_end_windows._work._done -> _dfn`, 1 处。
+改成 `w32.dfn_always(...)`(win.py 里那个"与 `main._dfn_always` 同一个 debug.log"的实现)之后归零。
+**这类错在 pythonw 下完全无声**(`except` 把 NameError 吞了, 用户只看到"点了没反应") —— 所以 §35 那条
+"改完 .py 先跑 undefined-globals" 不是仪式, 是真的会在几分钟内抓到人。
+
+### 7) 重建与复跑
+`tools.py`/`win.py` 都在 dist 的内嵌清单里 -> `wgime-py-pure\build-package.ps1` 重建:
+12 个内嵌模块与磁盘逐字符一致(自写校验 `%TEMP%\wg-r83-dist-verify.py`, 用 `ast.literal_eval` 读 dist 的
+`MODULES`, **不 import dist** —— import 它会真启动输入法); `main` 与磁盘一致、dist 编译通过;
+`Copy-Item dist\wgime-py.py package\wgime-py.py` 后两者逐字节相同(hash `86544357…`), 用户的
+`package\config.txt` 建包前后 hash 不变(`C7C08ACB…`)。
+复跑全绿: harness 67 / deps 51 / embedded-isolation 14 / plugin-window 23 / standalone 6 / example-plugin 24 /
+translate-window 13 / undefined-globals 0。
+> 注意: 这次 `THIRD_ZIP_B64 == HEAD baseline` 是 **False**(改了内嵌模块, dist 必须重新提交) ——
+> `%TEMP%\wg-dist-verify2.py` 里那条断言只适用于"没动内嵌模块"的场合(§30)。
