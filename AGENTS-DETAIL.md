@@ -1297,4 +1297,43 @@ Windows.Media.Ocr      AvailableRecognizerLanguages = en-US, zh-Hans-CN
 cnpunct=0 全透传、未激活全透传。
 
 
+## §D18 第七十九轮：双模式插件（`plugins/*.py` 既能被宿主装载，也能 `python xxx.py` 独立运行）
+
+**用户约定全文在 `docs/WGIME_插件规范.md` §8.7**；这里记实现的细节和坑。
+
+### 1) 为什么"文件头"必须放在第一个宿主 import 之前
+插件的 `import ui`/`import engine`/`import win` 大多在**模块级**（`calc.py` 第 19 行就是 `import ui`）。
+独立跑 `python plugins/calc.py` 时 `sys.path[0]` 是 `plugins/`，宿主目录(`wgime-py-pure/`)不在里面，
+`import ui` 直接 ImportError —— **而且文件尾的 `if __name__ == '__main__':` 块根本来不及执行**
+（模块级的 import 先炸）。所以 sys.path 的修复必须放在**文件头**(docstring 之后、第一个宿主 import 之前)。
+宿主装载时 `__name__` 是合成模块名(`wgime_ext_<hash>_calc`)，文件头/文件尾两块都不执行，零冲突。
+
+### 2) 共享引导层 `plugins/_standalone.py`
+**名字以 `_` 开头是故意的**: `load_py_plugins` 跳过 `_` 开头的文件(`fn.startswith('_')`)，所以它不会被
+当成插件收(没有 CODE/run 也不会报 "plugin must define CODE and callable run()")，但跟插件同目录，
+`import _standalone` 找得到。`build-package.ps1` 的 `plugins\*.py` glob 也照拷它进 package。
+`standalone(run, title)` 做的事：补 sys.path → 挂内嵌第三方 zip(见下) → 建**隐藏** Tk root →
+`run()` 建窗 → **200ms 轮询 `win.winfo_exists()`，窗口关了就 `root.quit()`**(插件窗是隐藏 root 下的
+Toplevel，不加这个 watch，关窗后进程还赖在 mainloop 里)；成功打印 `STANDALONE-OK`；
+测试钩子 `WGIME_STANDALONE_AUTOEXIT_MS` 到点自动关窗。
+
+### 3) STANDALONE 识别标记
+清单常量 `STANDALONE = True`(与 CODE/NAME/PERM 同风格)。`main._py_plugin_meta_static` 用正则
+`^\s*STANDALONE\s*=\s*(True|1)\b` 读它(**不 import**)；插件管理器的行格式在 `kind=py` 且有该标记时
+显示 `py·双模`(tools.py)。
+
+### 4) 内嵌第三方 zip 的独立运行时定位
+`pypdf` 这类内嵌依赖由单文件 preamble 解到 `%LOCALAPPDATA%\wgime-py\site\thirdparty.zip`
+(Store Python 虚拟化则 `~\wgime-py\site\`)。`_standalone._add_embedded_zip()` 按这两个已知位置挂进
+sys.path；都找不到就不管(插件自己懒 import 时报人话)。**所以"独立运行"要正常工作，前提是这台机器上
+单文件至少跑过一次**(把 zip 解出来过)，或宿主机 `pip install` 了那份依赖。
+
+### 5) 回归
+`tests/standalone-plugin-test.py`(6 项)：把每个插件当真独立程序跑 —— 子进程 +
+`WGIME_STANDALONE_AUTOEXIT_MS=2500` + **`LOCALAPPDATA` 指向临时目录**(绝不碰用户数据) +
+`PYTHONIOENCODING=utf-8`，断言子进程打印 `STANDALONE-OK` 且退出码 0；起不了 Tk(无桌面)整体 SKIP。
+注意 pdf.py 独立跑会顺带把 WinRT 助手也起出来 —— 进程退出时助手 stdin EOF 自退，无残留。
+
+
+
 

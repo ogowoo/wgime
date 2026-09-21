@@ -1,5 +1,32 @@
 ---
 
+## 2026-09-20 (第七十九轮: plugins/*.py 双模式 —— 既能被宿主装载, 也能 `python xxx.py` 独立运行)
+
+**来由**: 用户要"py 插件能同时作为插件和独立程序"。现状做不到: 插件的 `import ui`/`import engine`
+等宿主模块在**模块级**, 独立跑直接 ImportError; 且 `run()` 依赖宿主已建好的 Tk root。
+
+**机制 (三块都有才算双模式; 约定全文在 `docs/WGIME_插件规范.md` §8.7)**:
+1. **文件头**(在第一个宿主 import 之前): `if __name__ == '__main__':` 把宿主目录(上级)插进 `sys.path`。
+2. **清单识别标记**: 模块级 `STANDALONE = True` —— 插件管理器据此显示 `py·双模`;
+   `main._py_plugin_meta_static` 用正则读它(不 import)。
+3. **文件尾**: `if __name__ == '__main__': import _standalone; _standalone.standalone(run, NAME)`。
+
+宿主装载时 `__name__` 是合成模块名(`wgime_ext_...`), 三块都不执行, 与装载零冲突。
+
+**新增共享引导 `plugins/_standalone.py`**(**名字以 `_` 开头是故意的**: `load_py_plugins` 跳过 `_` 开头的
+文件, 所以它不会被当成插件收, 但跟插件同目录, `import _standalone` 找得到): `standalone()` = 补 sys.path
+(宿主目录) → 挂内嵌第三方 zip(`%LOCALAPPDATA%\wgime-py\site\thirdparty.zip`, 给 pypdf 这类用) → 建隐藏
+Tk root → `run()` 建窗 → 窗口关即退出; 成功打印 `STANDALONE-OK`; 测试钩子 `WGIME_STANDALONE_AUTOEXIT_MS`
+到点自动关窗(不然回归测试挂住)。
+
+**6 个插件全部加齐三块** (calc/chat/clock/wgime-qr/wgtranslate/pdf); 插件管理器列表显示 `py·双模`。
+
+**新回归 `wgime-py-pure/tests/standalone-plugin-test.py` (6 项)**: 真把每个插件当独立程序跑
+(子进程 + 自动关窗钩子 + `LOCALAPPDATA` 隔离 —— 绝不碰用户数据), 断言打印 `STANDALONE-OK` 且退出码 0;
+无桌面则 SKIP。
+
+**全链**: compile 0 / undefined-globals 22 文件 0 / harness 67 / pdf 78 / standalone 6 / iso 14 / dist-sync OK。
+
 ## 2026-09-20 (第七十八轮: 中文标点全面补齐为标准输入法全角映射 —— 数字行符号 ！＠＃￥％……＆＊（）)
 
 **来由**: 用户实测"上屏标点符号的时候还是有问题，比如数字键上面的符号没办法成为全角的符号，
