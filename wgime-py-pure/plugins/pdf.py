@@ -635,8 +635,25 @@ class _W32(object):
             self._kill_locked()
         return None, '%s%s%s' % (why, (' (rc=%s)' % rc) if rc is not None else '', self._tail_err())
 
-    def call(self, req, cancel=None, on_page=None):
-        """发一条请求 -> (回包 dict, 错误串)。`on_page(i, total, page)` 收进度行。"""
+    def call(self, req, cancel=None, on_page=None, timeout=None, retry=True):
+        """发一条请求 -> (回包 dict, 错误串)。`on_page(i, total, page)` 收进度行。
+
+        第八十五轮补两件事(都是被 pdf-test 的"取消助手后立刻要预览"这条路径逼出来的):
+          * `timeout=` 可指定本次上限 —— 预览这种"锦上添花"的调用不该跟着 T_COLD(180s)/T_TIMEOUT(1800s)
+            一起干等: 它自己给 20s, 超了就当"预览不可用"如实报出来;
+          * 起助手有 1 秒防风暴门(`ensure()` 里那条), 刚被杀掉/刚起步时会立刻返回"还没就绪";
+            这里**自动重试一次**(0.4s 后再来), 否则用户点一下"取消"再点预览就必然吃一次假失败。
+        """
+        o, err = self._call_once(req, cancel=cancel, on_page=on_page, timeout=timeout)
+        if err and retry and ('还没就绪' in err or '超时' in err):
+            time.sleep(0.4)
+            o2, err2 = self._call_once(req, cancel=cancel, on_page=on_page, timeout=timeout)
+            if err2 is None:
+                return o2, None
+            return None, '%s；重试一次仍失败: %s' % (err, err2)
+        return o, err
+
+    def _call_once(self, req, cancel=None, on_page=None, timeout=None):
         if not self.ensure():
             if self.fail >= self.MAX_FAIL:
                 return None, ('WinRT 助手连续 %d 次起不来, 已停止重试(重启 WgIme 可再试)'
@@ -656,7 +673,7 @@ class _W32(object):
                 p.stdin.flush()
             except Exception as e:
                 return self._died('给 WinRT 助手发请求失败: %r' % (e,))
-            limit = self.T_COLD if cold else self.T_TIMEOUT
+            limit = float(timeout) if timeout else (self.T_COLD if cold else self.T_TIMEOUT)
             deadline = time.monotonic() + limit
             while True:
                 left = deadline - time.monotonic()
@@ -801,14 +818,14 @@ def build_pdf_from_jpegs(items, out):
     return size
 
 
-def _render_to(path, outdir, pages, width, fmt, cancel=None, on_page=None):
+def _render_to(path, outdir, pages, width, fmt, cancel=None, on_page=None, timeout=None):
     """共用的栅格化入口: 开始前先 `open_reader` 校验(加密/损坏在这里就报人话)。"""
     open_reader(path)
     stem = os.path.splitext(os.path.basename(path))[0]
     o, err = _w32().call({'cmd': 'render', 'pdf': path, 'outdir': outdir,
                           'pages': list(pages) if pages else None,
                           'width': int(width), 'format': fmt, 'stem': stem},
-                         cancel=cancel, on_page=on_page)
+                         cancel=cancel, on_page=on_page, timeout=timeout)
     if err:
         raise PdfError(err)
     files = sorted(o.get('files') or [], key=lambda f: int(f.get('page') or 0))
@@ -826,13 +843,14 @@ def _render_to(path, outdir, pages, width, fmt, cancel=None, on_page=None):
     return {'files': out, 'count': len(out), 'ms': o.get('ms'), 'format': fmt, 'width': int(width)}
 
 
-def render_images(path, outdir, pages=None, width=1240, fmt='png', cancel=None, on_page=None):
+def render_images(path, outdir, pages=None, width=1240, fmt='png', cancel=None, on_page=None,
+                  timeout=None):
     """PDF -> 图片 (由 WinRT 助手渲染, 不依赖任何第三方图像库)。"""
     if fmt not in ('png', 'jpg'):
         raise PdfError('图片格式只能是 png / jpg')
     if not os.path.isdir(outdir):
         os.makedirs(outdir, exist_ok=True)
-    return _render_to(path, outdir, pages, width, fmt, cancel=cancel, on_page=on_page)
+    return _render_to(path, outdir, pages, width, fmt, cancel=cancel, on_page=on_page, timeout=timeout)
 
 
 def preview_first_page(path, box_w, box_h, outdir=None):
@@ -850,7 +868,9 @@ def preview_first_page(path, box_w, box_h, outdir=None):
     scale = min(float(box_w) / pw, float(box_h) / ph)
     w = max(40, min(2000, int(pw * scale)))
     outdir = outdir or tempfile.mkdtemp(prefix='wg-pdf-prev-')
-    res = render_images(path, outdir, [1], width=w, fmt='png')
+    # 预览是"锦上添花": 给它一个**自己的上限**(20s) —— 助手卡住时如实报"预览不可用",
+    # 而不是跟着 T_COLD(180s)/T_TIMEOUT(1800s) 一起干等(第八十五轮, 被"取消后立刻预览"那条路径逼出来的)。
+    res = render_images(path, outdir, [1], width=w, fmt='png', timeout=20.0)
     f0 = res['files'][0]
     data = open(f0['path'], 'rb').read()
     wh = png_size(data) or (w, max(1, int(ph * scale)))
