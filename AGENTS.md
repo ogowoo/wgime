@@ -58,6 +58,7 @@ python wgime-py-pure\tests\voice-click-test.py       # 语音"点击落点"真�
 python wgime-py-pure\tests\stream-asr-test.py        # 流式 ASR（假 SSE 服务器，22 项，§D14）
 python wgime-py-pure\tests\pdf-test.py               # PDF 插件（pypdf + WinRT + UI，78 项，§D16）
 python wgime-py-pure\tests\standalone-plugin-test.py # 双模式插件: 装载 + 独立运行（6 项）
+python wgime-py-pure\tests\example-plugin-test.py    # 示例插件模板: 契约 + 不被装载 + 独立运行（24 项，§D29）
 python wgime-py-pure\tests\tray-swap-test.py          # 托盘换图状态机回归（42 项，§43）
 python wgime-py-pure\tests\voice-vad-test.py          # 语音录音 VAD 回归（31 项，§38）
 python wgime-py-pure\tests\whisper-warm-test.py       # 常驻 whisper 助手回归（67 项，§38）

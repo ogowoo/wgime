@@ -1475,3 +1475,39 @@ v1.2.14（id 391874873，tag = 本地 HEAD `d85a98e`）与 v1.2.11/v1.2.12/v1.2.
 tag 仍 `56f7ffe`）= 三个 zip 的 SHA256 与 stage 全同、body 无 `?` 且与本地逐字符一致、内层 `wgime-py.py`
 与 dist 逐字节一致（逐项数字/release id 见 CHANGELOG）；线上资产下载偶尔 `Unable to connect`，重试即可。
 
+## §D29 第八十一轮：把普通单文件 Python 应用改造成插件（规范 §8.8 + 可跑模板 + 回归）
+
+### 1) 这一轮补的是什么
+
+用户问「普通的 python 应用（单文件）要怎么改才能作为 wgime 的插件？」。答案散在 `main.load_py_plugins()`
+（`main.py:694`）、`run_launcher()`（`main.py:2091`）、`_run_plugin_file()`（`main.py:2235`）和规范 §8.1/§8.7 里，
+没有一处**面向"我有个现成单文件程序"**的成文指南。本轮把它写成规范 **§8.8**，并配一个**可跑模板**
+`plugins\_example-plugin.py`（双模式三块齐全，`python` 直接能跑）+ 回归 `tests\example-plugin-test.py`。
+
+### 2) 为什么模板文件以 `_` 开头
+
+`load_py_plugins()` 明确跳过 `_` 开头的文件（既有的 `_standalone.py` 共享层用的就是这条约定）。
+所以模板**不会被自动装载**：插件管理器里看不到它、不占启动编码、不影响任何现有行为，
+但它又确实躺在插件目录里（`_standalone` 同目录，独立运行 `import _standalone` 找得到）。
+要当插件用：复制成 `myplugin.py` + 改 `CODE`。
+
+### 3) 实测澄清的一处「不对称」（不是 bug，别"修"）
+
+- `.py` 插件：`base\plugins` **和** `APP_DIR\plugins` **两个目录都扫**（`main.py:715-719`）。
+- `.txt` 插件：**只**从 `APP_DIR\plugins` 读（`main.py:689` → `plugins.load_plugins(APP_DIR\plugins, DATA_DIR)`）。
+- 开发版取值：`BASE = wgime-py-pure\`（`main.py:69`），`DICT_DIR =` 仓库根（根目录有 `py.txt`，`main.py:99`），
+  故 `APP_DIR = DICT_DIR =` 仓库根（`main.py:107`，basename 不是 `dicts`）⇒ txt 插件目录 = 仓库根 `plugins\`；
+  分发版 `DICT_DIR` 是 `package\dicts` ⇒ `APP_DIR = package\`，两者都是成品目录。
+
+这个分工正好对应两种插件的来源：txt 插件是与 C# 版共用的格式（放仓库根 `plugins\`，`sync-dist`/`build-package`
+负责分发），.py 插件是纯 Python 版专有（放 `wgime-py-pure\plugins\`，`build-package.ps1:48` 拷进 `package\plugins`）。
+
+### 4) 回归怎么钉住「不被装载」
+
+光断言"文件名有下划线"是在测我自己写的谓词；所以测试两头都查：
+①用**宿主同一谓词**遍历真实目录（模板被排除、`pdf.py` 被包含）；
+②断言 `main.py` 源码里确实存在 `fn.startswith('_')` 这一句 —— 谓词改了测试就会红。
+另有：双模式三块、"文件头必须在第一个宿主 import 之前"（用位置比较，不是子串包含）、清单六键、
+按 `load_py_plugins` 同一套判据装载（`CODE` 非空 + `run` 可调用）、`run()` 真建出窗口（`max(winfo_width,
+winfo_reqwidth) >= 300`）、独立运行（子进程 + `WGIME_STANDALONE_AUTOEXIT_MS` + `LOCALAPPDATA` 隔离）、
+文档一致性（§8.8 存在且指向模板、写明目录差异）。

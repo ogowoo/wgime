@@ -173,3 +173,63 @@ txt 插件里的 `[csharp]` 块在纯 Python 版**仍然可用**：经 sidecar �
    ```
 
 宿主装载时 `__name__` 是合成模块名（不是 `'__main__'`），三块都不执行，与装载行为零冲突。独立运行时引导层做：补 sys.path（宿主目录）→ 挂内嵌第三方 zip（`%LOCALAPPDATA%\wgime-py\site\thirdparty.zip`，pypdf 等）→ 建隐藏 Tk root → `run()` 建窗 → 窗口关即退出。回归：`python wgime-py-pure\tests\standalone-plugin-test.py`（真把每个插件当独立程序跑；`WGIME_STANDALONE_AUTOEXIT_MS` 是测试钩子，到点自动关窗）。
+
+
+### 8.8 把普通单文件 Python 应用改造成插件（第八十一轮）
+
+**可跑模板**：`wgime-py-pure\plugins\_example-plugin.py`。文件名以 `_` 开头 ⇒ **装载器不装载它**
+（插件管理器里看不到、也不占启动编码）；当插件用就复制成 `插件目录\myplugin.py` 并改 `CODE`。
+独立运行：`python wgime-py-pure\plugins\_example-plugin.py`。
+
+#### 装载契约（`main.load_py_plugins()`）
+
+| 项 | 要求 |
+|---|---|
+| 位置 | `plugins\*.py`，扫**两个目录**：脚本目录 `BASE\plugins` 与分发/配置目录 `APP_DIR\plugins` |
+| 必需 | 模块级 `CODE`（非空）+ **可调用的 `run()`**；缺一即整份丢弃（日志 `plugin load err ...`） |
+| 装载方式 | `importlib` 以合成名 `wgime_ext_<hash>_<文件名>` exec ⇒ **模块级代码在输入法启动时就执行** |
+| 跳过 | `_` 开头的文件；`plugins-disabled.txt` 里的小写文件名（判断在 exec **之前**） |
+| 触发 | 把 `CODE` 当启动编码打进去 → 候选条出启动器候选 → 上屏 → `run_launcher()` → 权限确认 → `run()` |
+| 线程 | **`run()` 跑在 Tk 主线程且同步执行**：慢活儿自己开线程，否则打字停摆 |
+
+> **`.py` 与 `.txt` 的插件目录不一样（有意为之，别踩）**：`.py` 插件 `BASE\plugins` 与 `APP_DIR\plugins`
+> **两个都扫**；`.txt` 插件**只**从 `APP_DIR\plugins` 读（`main.reload_plugins()` 调
+> `plugins.py load_plugins(APP_DIR\plugins)`）。开发版 `BASE = wgime-py-pure\`、`APP_DIR =` 仓库根
+> （码表所在目录）；分发版两者都是成品目录。所以「与 C# 版兼容的 txt 插件」放仓库根 `plugins\`，
+> 「纯 Python 插件」放 `wgime-py-pure\plugins\` 最自然。
+
+#### 五步改造
+
+1. 补清单：`CODE` / `NAME` / `DESC` / `VERSION` / `AUTHOR` / `PERM`。
+2. 入口改名：`if __name__ == '__main__': main()` → `def run():`（无参）。
+3. **删掉自己的 `tk.Tk()` 和 `mainloop()`** —— 宿主已有 Tk root；窗口改用
+   `ui.make_window(title, w, h, on_close=None)`，返回 `(win, content)`，`content` 的坐标原点在标题栏下方
+   （标题栏固定 38px；所以窗口高度 = 内容真正需要的高度 + 38）。
+4. 不要 `sys.exit()`；关窗只 `win.destroy()`。
+5. 慢活儿开 `threading.Thread(..., daemon=True)`，**后台异常自己兜住**（pythonw 下 `sys.stdout/stderr` 都是
+   `None`，裸线程抛异常完全无声）。
+
+`ui` 可用 API：`make_window` / `flat_button(parent, text, command, primary=False, x, y, w, h)` /
+`console_text(..., scrollbar=True)` / `rounded_entry(..., initial='')` / `font(size, bold=False, mono=False)` /
+配色 `BG CARD TEXT SUB BORDER HEADER RED`。示例见模板文件。
+
+#### 不想改原程序的两条替代路线
+
+- **txt 插件拉起外部程序**：`plugins\xxx.txt` 写头部 `code`/`name` + 步骤 DSL，如
+  `run python "C:\Tools\myapp\app.py"`（静默运行并等结束，输出/退出码入日志）或 `open "...\app.py"`（不等待）。
+  零改造，但它是**独立进程**、没有 WgIme 外观，也不能与输入法共享状态。
+- **`[python]` 块**：整段在**子进程**里跑（超时 60s 熔断）；定义了 `handle(ctx) -> actions` 就走 JSON IPC（§8.3）。
+- **插件壳**：`.py` 插件的 `run()` 里只 `subprocess.Popen([sys.executable, ...], creationflags=0x08000000)`
+  把原程序拉起来 —— 原程序一行不改，同时又是个正规插件（`0x08000000` = `CREATE_NO_WINDOW`，免黑框）。
+
+#### 陷阱
+
+1. **模块级代码在输入法启动时就执行**（用户可能永不点它）—— 别在模块级建窗口/连网/读大文件；重初始化搬进 `run()`。
+2. `PERM` 非 `low` 会在运行前弹权限确认：`network` / `run` / `registry` / `destructive`（支持 `network,run` 多值）。
+3. 文件 **UTF-8 无 BOM + LF**；脚本改 `.py` 要用二进制写（AGENTS.md §30），否则整文件变 diff。
+4. 读用户可改的文本用 `engine.read_text()`（GBK 容错，见 AGENTS.md §28）。
+5. 第三方库：内嵌的是**纯 Python**（如 `pypdf`）；**C 扩展内嵌不了**（`numpy`/`PIL`…），只能"装了就用、没装报人话"。
+6. 改了宿主模块（`main`/`ui`/`engine`…）要重建 dist；**只改插件不用** —— 插件不内嵌进单文件。
+
+回归：`python wgime-py-pure\tests\example-plugin-test.py`（模板契约 + `_` 前缀不被装载 + `run()` 真建窗 +
+独立运行 + 文档一致性；无桌面时后两项 SKIP）。

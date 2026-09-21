@@ -1,5 +1,50 @@
 ---
 
+## 2026-09-21 (第八十一轮: 「普通单文件 Python 应用 → wgime 插件」写成规范 §8.8 + 可跑模板 + 回归)
+
+**来由**: 用户问"普通的 python 应用（单文件）要怎么改才能作为 wgime 的插件？"，随后说"写进去吧"。
+答案原本散在 `main.load_py_plugins()`(`main.py:694`)、`run_launcher()`(`main.py:2091`)、
+`_run_plugin_file()`(`main.py:2235`)与规范 §8.1/§8.7 里, 没有一处**面向"我有个现成单文件程序"**的成文指南。
+
+**产出**:
+1. **规范 §8.8**（`docs\WGIME_插件规范.md`）—— 装载契约表(位置/必需/装载方式/跳过/触发/线程)、**五步改造**、
+   `ui` 可用 API、三条替代路线(txt+外部程序 / `[python]` 块 / 插件壳)、六条陷阱。
+2. **可跑模板 `wgime-py-pure\plugins\_example-plugin.py`**（3.7 KB）—— 清单六键 + `ui.make_window` 窗口 +
+   后台线程 + 双模式三块齐全, `python` 直接能跑。
+3. **回归 `wgime-py-pure\tests\example-plugin-test.py`（24 项）**。
+4. `AGENTS.md` §4 测试清单加一行; `AGENTS-DETAIL.md` 新增 **§D29**（本轮细节）。
+
+**为什么模板以 `_` 开头**: `load_py_plugins()` 明确跳过下划线开头的文件(既有 `_standalone.py` 用的就是这条
+约定) —— 所以模板**不会被自动装载**: 插件管理器里看不到、不占启动编码、不影响任何现有行为, 但确实躺在插件
+目录里(独立运行 `import _standalone` 找得到)。要当插件用: 复制成 `myplugin.py` + 改 `CODE`。
+
+**实测澄清的一处「不对称」（有意为之，不是 bug，别"修"）**: `.py` 插件 `BASE\plugins` 与 `APP_DIR\plugins`
+**两个目录都扫**(`main.py:715-719`); `.txt` 插件**只**从 `APP_DIR\plugins` 读(`main.py:689`)。
+开发版 `BASE=wgime-py-pure\`、`APP_DIR=`仓库根 ⇒ txt 插件放仓库根 `plugins\`; 分发版两者都是成品目录。
+这个分工正对应两种插件的来源(txt 与 C# 版共用, .py 是纯 Python 版专有)。
+
+**回归怎么钉住"不被装载"**: 光断言"文件名有下划线"是在测我自己写的谓词, 所以两头都查 ——
+①用**宿主同一谓词**遍历真实目录(模板被排除、`pdf.py` 被包含); ②断言 `main.py` 源码里确实写着
+`fn.startswith('_')`(谓词一改测试就红)。另有双模式三块、"文件头必须在第一个宿主 import **之前**"
+(用位置比较而非子串包含)、清单六键、按 `load_py_plugins` 同一套判据装载、`run()` 真建出窗口
+(`max(winfo_width, winfo_reqwidth) >= 300`)、独立运行(子进程 + 自动关窗钩子 + `LOCALAPPDATA` 隔离)、
+文档一致性(§8.8 存在、指向模板、写明目录差异)。
+
+**本轮自查出并修掉的一处真缺陷**: 模板的模块 docstring 原写成普通字符串, 里面的 `\myplugin.py`/`\plugins\`
+触发 `SyntaxWarning: invalid escape sequence` —— 已改 `r"""`, 并用 `python -W error::SyntaxWarning -m py_compile`
+复验两个新文件(rc=0, 零告警)。
+
+**验证链**: py_compile(+`-W error::SyntaxWarning`) 0 / `undefined-globals.py` 23 文件 0 /
+`example-plugin-test.py` **24/24** / `standalone-plugin-test.py` 6/6(模板按设计被排除) /
+`pure-state-harness.py` 全部通过(67) / dist-sync `mismatches=0`、`main.py embedded match: True`。
+
+**sync-dist 副产品（第七十六/三十轮的老坑，已按规矩处置）**: ①`release\plugins\wgtranslate.txt` 又被逐字节
+拷贝翻成整文件 186/186 的 diff —— `--ignore-cr-at-eol` 证明**纯行尾差异**, 已 `git checkout` 还原;
+②`release\docs\WGIME_插件规范.md` 顺带补上了**第七十九轮漏同步的 §8.7**（+84 行里 60 行是本轮 §8.8,
+24 行是那次漂移）—— 属于修复, 保留。
+
+**未动 C#**: 没碰 `wgime.bat`, 无需重建 bat/ps1 载荷。
+
 ## 2026-09-21 (第八十轮补: §5 改「结构化记法」—— 编号. 主题|硬规则, 一条一物理行)
 
 **来由**: 用户问"文言文压缩实施了？或者直接用计算机能识别理解的编码来记录力求最小化"。
