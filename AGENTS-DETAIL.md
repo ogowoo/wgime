@@ -1466,3 +1466,12 @@ sys.path；都找不到就不管(插件自己懒 import 时报人话)。**所以
     真正的外框是 `GetAncestor(GA_ROOT)`（`TkTopLevel`）—— 写到子窗口上 `GetWindowLong` 读得回来、但窗口管理器不看，
     等于没生效（第六十九轮实机 dump 抓出来的真 bug，一行改动：`win.top_level_hwnd()`；细节见 `AGENTS-DETAIL.md` §D11）。
 
+## §D28 发布回验记录（AGENTS.md §7 压缩前的原文）
+> 压缩前逐字保留（AGENTS.md 现在只留规则 + 指针）。
+
+  **发布回验记录**（publish 之后必做：线上 zip 比对 + body 逐字符 + tag 指向本地 HEAD；本机 `git ls-remote`
+到 github 常年连不上，**tag 要用 GitHub API** `/repos/<repo>/git/ref/tags/<tag>`，别把空结果当"tag 没建"）：
+v1.2.14（id 391874873，tag = 本地 HEAD `d85a98e`）与 v1.2.11/v1.2.12/v1.2.13（python 资产已换成干净包，
+tag 仍 `56f7ffe`）= 三个 zip 的 SHA256 与 stage 全同、body 无 `?` 且与本地逐字符一致、内层 `wgime-py.py`
+与 dist 逐字节一致（逐项数字/release id 见 CHANGELOG）；线上资产下载偶尔 `Unable to connect`，重试即可。
+
