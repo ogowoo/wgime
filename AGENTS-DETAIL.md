@@ -1609,3 +1609,81 @@ deps: first-run check, missing=argostranslate,faster_whisper
 376/347 的"整文件改动"，而 `--ignore-cr-at-eol` 只剩 29/26 行（= 我真正加的行）。修法：按 blob 行尾写回
 （`%TEMP%\wg-r82-fixeol.py`），再 `sync-dist` 一次，diff 收敛到 29/26。**改任何文本文件前先看 blob 行尾**
 （`git cat-file blob HEAD:<path>` 数 `\r\n`）—— 注意别用 PowerShell 按行拆分去数，那样会把行尾证据弄丢。
+
+
+## §D31 第八十三轮：翻译插件"无法结束进程"（两个 `__main__` 入口并列 → 关一次回来一次）
+
+> 用户报："翻译那个插件无法结束进程哦, (目前)"。这一节记真因、实测数字、修法与守卫自检，以及"为什么双模式那条腿
+> 必须另起一个**进程内**入口"。
+
+### 1) 复现（先量，不猜）
+探针 `%TEMP%\wg-r83-translate-probe.ps1`（ASCII only —— 第一版把中文写进 `.ps1`，PS 5.1 按 ANSI 读直接把脚本
+解析坏，§2 规则又踩一次）：
+1. 记下当前所有"命令行含 `wgtranslate.py`"的 python 进程 pid（`Get-CimInstance Win32_Process`，只有 WMI 拿得到命令行）；
+2. `Start-Process python plugins\wgtranslate.py --wgime-translate-window`，等 4s；
+3. `taskkill /PID <新 pid>` **不带 `/F`**（= 送 WM_CLOSE，与用户点窗口 ✕ 同一条路），等 4s；
+4. 再看进程表。
+
+实测（修前）：
+```
+BEFORE: 47172                                     # 用户当时那扇关不掉的窗口
+UP    : 47172(parent=39320), 11456(parent=51892)  # 11456 = 我起的
+taskkill 11456 -> SUCCESS
+AFTER : 47172(parent=39320), 36188(parent=11456)  # 36188 的 parent 正是刚被关掉的 11456
+RESULT: RESPAWNED
+```
+**关一次回来一次**，这就是用户看到的现象；新进程的 parent pid 直接指认了"是谁又生了一个"。
+
+### 2) 真因
+`plugins\wgtranslate.py` 文件尾曾是两个**并列**的守卫：
+```python
+if __name__ == "__main__" and CHILD_ARG in sys.argv:
+    _window_main()
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)
+```
+子窗口进程（`--wgime-translate-window`）里 `_window_main()` 跑完 `mainloop()` 返回后，执行**继续往下落**到第二块 ——
+`standalone(run, NAME)` → `run()` → `_start_detached_window()` → **又起一个 detached 窗口**（还顺带建了一个隐藏 Tk root）。
+其它双模式插件（pdf/clock/chat/calc/wgime-qr）都只有一个 `__main__` 尾块，所以只有这个插件中招。
+
+### 3) 修法（两处，都在文件尾）
+① **入口互斥**：只留一个分派块
+```python
+if __name__ == "__main__":
+    if CHILD_ARG in sys.argv:
+        _window_main()
+    else:
+        import _standalone
+        _standalone.standalone(_run_standalone, NAME)
+```
+② **独立运行改走进程内建窗的 `_run_standalone()`**（建窗后 `return root` 交给 `_standalone` 看守）：
+```python
+def _run_standalone():
+    root = tk.Tk(); App(root); return root
+```
+为什么不能复用 `run()`：`run()` 是**宿主入口**，它必须 `_start_detached_window()` 另起进程（纯 Python 插件入口要在
+`[python]` 块的 60 秒超时内返回，窗口也不能被宿主收尾带走）；可独立运行不需要，复用它的后果是
+**父进程立刻返回 0、留下一扇没主的孤儿窗口**，`_standalone` 的 `WGIME_STANDALONE_AUTOEXIT_MS` 也管不住它
+（它监视的是 `win`，而 `run()` 返回 `None`）—— 所以 `standalone-plugin-test.py` 每跑一次就漏一个真窗口出来。
+
+### 4) 守卫与自检
+新回归 `wgime-py-pure\tests\translate-window-test.py`（13 项）：
+* **S 结构**（不依赖桌面，用 **AST**：注释/文档串里提到 `__name__ == '__main__'` 不算数 —— 第一版用正则，直接把
+  注释里那句话也数进去，误报 3 处）：入口分派块只有一个 / 体内先判 `CHILD_ARG` 走 `_window_main()` /
+  双模式尾块在 `else` 里 / 独立运行走 `_run_standalone`（不是会另起进程的 `run`）；
+* **A 子窗口**：起进程 → 优雅关窗（`taskkill /PID` 不带 `/F`）→ 原进程退出，且 **6 秒内不得出现新进程**；
+* **B 独立运行**：`WGIME_STANDALONE_AUTOEXIT_MS=2500 python wgtranslate.py` → rc 0、stdout 有 `STANDALONE-OK`、
+  **不留孤儿**。没桌面只跑 S 并 SKIP A/B。
+* 安全：只统计/清理**本测试自己起的**进程（先记 before 集合），用户已开着的窗口一律不碰。
+
+**守卫有效性**（"一个不会失败的测试等于没写"）：把 HEAD 的修前版本换回去跑同一份测试 →
+`入口分派块只有一个: found 2` / `入口体内先判 CHILD_ARG: body=['Import','Expr']` /
+`关窗后没有新进程: respawned=[34684]` / `独立运行不留孤儿窗口: orphan=[13160]`（共 4~6 条红）；
+换回修好的版本 13/13。修前/修后的补丁留在 `%TEMP%\wgtranslate-prefix.py` / `wgtranslate-fixed.py`。
+
+### 5) 生效方式与现场清理
+* `main._run_plugin_file` → `_run_py_file_once` 每次「运行」都 `spec_from_file_location` + `exec_module`
+  **重新读一遍文件**，所以把修好的 `wgtranslate.py` 放进 `package\plugins\` 之后**不用重启 WgIme**；
+* 用户当时那扇关不掉的窗口（pid 47172）连同探针/测试留下的窗口已 `Stop-Process -Force` 清掉，跑完确认进程表里
+  再无 `wgtranslate.py`。

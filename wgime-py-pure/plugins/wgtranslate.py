@@ -501,11 +501,29 @@ def run():
     return
 
 
-if __name__ == "__main__" and CHILD_ARG in sys.argv:
-    _window_main()
+def _run_standalone():
+    """独立运行 (`python wgtranslate.py`) 的入口: **进程内**建窗, 返回窗口对象给 `_standalone` 看守.
+
+    第八十三轮: 这里**不能**复用 `run()` —— `run()` 是"宿主入口", 它会另起一个 detached 子进程:
+      * 宿主那条必须这样 (纯 Python 插件入口要在 `[python]` 块的 60 秒超时内返回, 窗口也不能被宿主收尾时带走);
+      * 独立运行却不需要 —— 复用 `run()` 的结果是: 父进程立刻返回 0、留下一扇**没主的孤儿窗口**
+        (窗口自带的"关窗"逻辑还在, 于是关一次又起一次), `_standalone` 的 `WGIME_STANDALONE_AUTOEXIT_MS`
+        也管不住它 (它监视的是 `win`, 而 `run()` 返回 None)。
+    """
+    root = tk.Tk()
+    App(root)
+    return root
 
 
-# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
-if __name__ == '__main__':
-    import _standalone
-    _standalone.standalone(run, NAME)
+if __name__ == "__main__":
+    # 第八十三轮的真 bug: 原来两个入口是**并列**的两个 `if __name__ == '__main__':` ——
+    # 子窗口进程 (`--wgime-translate-window`) 关窗后 mainloop 返回, 会**继续往下落到**双模式尾块,
+    # 于是 `_standalone.standalone(run, ...)` → `run()` → `_start_detached_window()` **又起一个新窗口**:
+    # 表现就是用户报的"翻译插件无法结束进程"(关一次回来一次, 永远关不掉, 还每次都多一个隐藏 Tk root)。
+    # 入口必须**互斥** —— 子窗口进程跑完就退出。
+    if CHILD_ARG in sys.argv:
+        _window_main()
+    else:
+        # ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+        import _standalone
+        _standalone.standalone(_run_standalone, NAME)

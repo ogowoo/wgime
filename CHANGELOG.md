@@ -1,5 +1,43 @@
 ---
 
+## 2026-09-21 (第八十三轮: 修"翻译插件无法结束进程" —— 两个 `__main__` 入口并列, 关一次回来一次)
+
+**用户报**: "翻译那个插件无法结束进程哦, (目前)"。
+
+**实测复现** (探针 `%TEMP%\wg-r83-translate-probe.ps1`): 起 `python plugins\wgtranslate.py --wgime-translate-window`,
+再用 `taskkill /PID`(**不带 `/F`** = 送 WM_CLOSE, 与用户点 ✕ 同一条路) 优雅关窗 —— 被关的 pid 消失了,
+但**立刻冒出一个新进程, 它的 parent 正是刚被关掉的那个**: 关一次回来一次 (任务管理器里那个"关不掉的 wgtranslate"
+就是这么来的, 而且每关一次还多留一个隐藏 Tk root)。
+
+**真因** (`wgime-py-pure\plugins\wgtranslate.py` 文件尾): 两个入口写成了**并列**的两个守卫 ——
+```
+if __name__ == "__main__" and CHILD_ARG in sys.argv: _window_main()
+if __name__ == '__main__': import _standalone; _standalone.standalone(run, NAME)
+```
+子窗口进程关窗后 `mainloop()` 返回, 于是**继续往下落到**第二块 → `_standalone.standalone(run, …)` → `run()`
+→ `_start_detached_window()` **又起一个 detached 窗口**。
+
+**修法** (两处):
+1. **入口互斥**: 只留一个分派块 —— `if CHILD_ARG in sys.argv: _window_main() else: …standalone(_run_standalone, NAME)`;
+2. **独立运行改走进程内建窗的 `_run_standalone()`** (建窗后 `return root` 交给 `_standalone` 看守)。
+   双模式那条腿原来复用 `run()` (宿主入口, 必须另起进程才能躲开 `[python]` 块的 60 秒超时), 于是
+   `python wgtranslate.py` 的父进程**立刻返回 0**、留下一扇**没主的孤儿窗口**, `WGIME_STANDALONE_AUTOEXIT_MS`
+   也管不住它 (`standalone-plugin-test.py` 每跑一次就多留一个窗口 —— 本轮跑完就抓到过一个)。
+
+**验证**: 新回归 `wgime-py-pure\tests\translate-window-test.py` **13/13** — S 结构 (AST: 入口分派块唯一 /
+体内先判 CHILD_ARG / 双模式尾块在 `else` / 独立运行走 `_run_standalone`) + A 子窗口 (起进程 → 优雅关窗 →
+原进程退出、6 秒内**不得**出现新进程) + B 独立运行 (AUTOEXIT 到点自己退、rc 0、stdout 有 `STANDALONE-OK`、
+不留孤儿)。没桌面时只跑 S 并把 A/B SKIP。
+**守卫有效性**: 拿**修前版本** (HEAD) 跑同一份测试 → **4~6 条红**, 含"关窗后没有新进程" `respawned=[34684]`
+与"独立运行不留孤儿窗口" `orphan=[13160]`; 换回修好的版本 13/13。
+
+**顺带**: `standalone-plugin-test.py` 6/6、`example-plugin-test.py` 24/24 复跑仍绿; 本机
+`package\plugins\wgtranslate.py` 已同步为修好的版本 —— 插件管理器每次「运行」都会**重新 exec** 那个文件
+(`main._run_py_file_once`), 所以**不用重启 WgIme** 就能生效。
+
+**脚注**: 这一轮又踩了一次"`.ps1` 里写中文" —— PS 5.1 按 ANSI 读脚本, 中文直接把探针脚本解析坏 (§2 规则);
+探针改回纯 ASCII 才跑起来。
+
 ## 2026-09-21 (第八十二轮补: 成品冒烟 + 应答分支验证 + 三个坑)
 
 **真成品冒烟**（隔离 `LOCALAPPDATA` + `WGIME_DICT_DIR=仓库根` 跑 `dist\wgime-py.py`）: 日志里出现
