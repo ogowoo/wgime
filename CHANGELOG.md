@@ -41,7 +41,15 @@
    修完 `build-wgime-pure.py`/`update.py` 后**重打**，资产 SHA256 与最终 stage 一致);
 4. 预检 28/28 → 提交推送 → `publish-release.ps1` → API 回验。
 
-**回验**: 见本文件"发布回验"记录与 §D35。
+**回验(真 GitHub, `%TEMP%\wg-r85c-verify.py`, 20/20)**: release id **393363320**、tag `v1.2.15` = 本地 HEAD
+`2aaee38`(API `/git/ref/tags/v1.2.15` 解引用确认), 三个线上资产 SHA256 与 `.release-stage-v1215\` **全同**,
+线上 python 包内层 `wgime-py.py` 与 `dist\wgime-py.py` **逐字节同**, release body 无 `?`、资产表里三条 SHA256 都对得上。
+**最要紧的一条**: 以"老用户 `1.2.14-py`"的身份跑真 `update.plan()` + `stage()` —— 真的下载了 v1.2.15、
+**四道校验通过**(这条在修 ① 之前会被 `verify_source` 判"下载到的是旧版本"而拒绝, 即自动更新永远装不上),
+落盘内容与本地 dist 逐字节一致; 再用 `1.2.15-py` 查一次返回"已是最新"。raw 通道
+(`raw.githubusercontent.com/<repo>/v1.2.15/wgime-py-pure/dist/wgime-py.py`)与本地 dist 也逐字节同。
+
+**回验记录汇总**见 §D35 与 AGENTS-DETAIL §D28。
 
 ---
 

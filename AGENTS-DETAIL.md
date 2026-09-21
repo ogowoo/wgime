@@ -1474,6 +1474,10 @@ sys.path；都找不到就不管(插件自己懒 import 时报人话)。**所以
 v1.2.14（id 391874873，tag = 本地 HEAD `d85a98e`）与 v1.2.11/v1.2.12/v1.2.13（python 资产已换成干净包，
 tag 仍 `56f7ffe`）= 三个 zip 的 SHA256 与 stage 全同、body 无 `?` 且与本地逐字符一致、内层 `wgime-py.py`
 与 dist 逐字节一致（逐项数字/release id 见 CHANGELOG）；线上资产下载偶尔 `Unable to connect`，重试即可。
+**v1.2.15（id 393363320，tag = 本地 HEAD `2aaee38`）**：同上一套之外，还**以老用户身份端到端验了一回自动更新** ——
+真 `update.plan('1.2.14-py')` → 发现 v1.2.15 → 真 `stage()`（raw 通道下载）→ 四道校验通过、落盘与本机 dist
+逐字节同；这条正是 §D35 那个"单文件自称旧版本"bug 的**反向证明**（修之前这里必被 `verify_source` 拒绝）。
+探针 `%TEMP%\wg-r85c-verify.py`（20 项全过）。
 
 ## §D29 第八十一轮：把普通单文件 Python 应用改造成插件（规范 §8.8 + 可跑模板 + 回归）
 
@@ -1895,5 +1899,8 @@ dist 里 version_in_text 正则的全部命中(修前):
   SHA256 表要用**最终 stage** 的值。
 * `build-wgime-pure.py` 有 "missing import_ec.txt" 警告属正常(本机不产 EC 表)。
 
-**回验(v1.2.15)**: 见 CHANGELOG 第八十五轮那条与本文件 §D28 的格式; release id / tag / stage SHA256 三方一致,
+**回验(v1.2.15, 探针 `%TEMP%\wg-r85c-verify.py`, 20/20)**: release id **393363320**、tag `v1.2.15` = 本地 HEAD
+`2aaee38`、三个线上资产 SHA256 与 `.release-stage-v1215\` 全同、线上 python 包内层与 `dist\wgime-py.py` 逐字节同、
+body 无 `?`、资产表三条 SHA256 对得上; **并以 `1.2.14-py` 的老用户身份真跑了一遍 `plan`+`stage`** ——
+下载 v1.2.15、四道校验通过(修 ① 之前这条必被拒)、落盘与本机 dist 逐字节同。记录见 §D28;
 `release-assets-check.py --version 1.2.15` **28/28**。
