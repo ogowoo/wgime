@@ -1566,3 +1566,46 @@ value ⇒ 假红（改成整行匹配 `'deps':`）。两条都说明**报错先�
 present = `pypdf` / `psutil` / `cryptography` / `sherpa_onnx`；missing = `argostranslate`（可一键装）、
 `faster_whisper`（只报告）。也就是说这条链在开发机上是**真的会触发一次确认框**的。
 
+
+### 7) 真实启动冒烟（成品 dist）与应答分支
+
+单测覆盖了 `deps.py` 与窗口，但**启动接线那 4 行**（`ensure_site_on_path` + `root.after(2000, _deferred_depcheck)`）
+不被 harness 覆盖（harness 在 `# ---------- 主循环` 处截断）。所以另跑了一次**真成品冒烟**：
+隔离 `LOCALAPPDATA` + `WGIME_DICT_DIR=C:\Tools\wgime` 跑 `dist\wgime-py.py`，11 秒后收工。
+结果（`<temp>\wgime-py\debug.log`）：
+
+```
+tray start ok=True has_tray=True exe=...\pythonw.exe err=
+tray selfcheck: nim_add=True(count=1) promoted=True ... console=no(pythonw)
+deps: first-run check, missing=argostranslate,faster_whisper
+```
+
+即：**探测真的在启动链里跑了**，缺件集合与进程内探针一致，无 Traceback；日志里**没有** `deps prompt err`，
+而 `deps-state.txt` 也没落盘 —— 说明当时**正停在模态确认框上**（格式串有问题会被 `except` 抓成 `prompt err`
+并写状态）。应答后的分支另用一次性探针 `%TEMP%\wg-r82-prompt.py`（harness 同款：exec main 前缀 +
+把 `tkinter.messagebox.askyesno/showinfo` 换成桩 + 桩掉 `_deps_open_window`）补验，**11/11**：
+否 → `declined`+`asked=1`；是 → `opened`+真开窗；只有语音缺件 → `reported`（走 `showinfo` 而非询问）；
+弹框自己抛异常 → `result=error` 但**仍记 `asked=1`**（不每次启动反复炸）；并断言"问过就不问"。
+
+### 8) 两个自己踩的坑（都值得记住）
+
+**① 成品会自我重启成 pythonw ⇒ 冒烟必须设 `WGIME_RELAUNCHED=1`。** 第一次冒烟"进程已退出、无日志、无状态文件"
+全是假象：`python dist\wgime-py.py` 起的启动器把真正的 IME 交给 `pythonw` 子进程后自己退出了，而我杀的是启动器。
+更糟的是日志/data 写在 `%LOCALAPPDATA%\wgime-py\`（我在 `%LOCALAPPDATA%\` 找，什么都没找到），且因为我把
+`config.txt` 放错了层级，那两个实例按缺省 **ime** 模式跑、**装了键盘钩子** —— 一度有三个 wgime 在跑。
+清理时按**启动时间**区分归属（27 分钟前那个是用户自己的，17:10 那两个才是我的），只杀自己的。
+教训：冒烟脚本一律 `WGIME_RELAUNCHED=1`（harness 早就这么干了，见 `tests\pure-state-harness.py:72`）。
+
+**② `git add -A -- wgime-py-pure` 会把 `testing\` 暂存进去。** 那是永不入库的草稿目录；已
+`git restore --staged wgime-py-pure/testing` 撤回，并复查 `git grep -I -l --cached fzenufe` 为空。
+附带一个自摆乌龙：`git grep ... --cached fzenufe` 把 `--cached` 写在模式**之后** ⇒ git 报
+`option '--cached' must come before non-option arguments`，而那条 stderr 被 `Measure-Object` 数成"命中 1"，
+看着像泄露了密钥、实际什么都没匹配到。查密钥的正确写法：`git grep -I -l --cached fzenufe`。
+
+### 9) 文档行尾：`.md` 也要按 blob 走（§30 的老规矩不只适用于 txt）
+
+`docs\WGIME_使用说明.md` 与 `docs\WGIME_技术文档.md` 的 **blob 是 CRLF**（347/347、472/472 行），
+而我的生成脚本里有 `t.replace('\r\n', '\n')` 的兜底 ⇒ 整个文件被规整成 LF，`git diff --numstat` 变成
+376/347 的"整文件改动"，而 `--ignore-cr-at-eol` 只剩 29/26 行（= 我真正加的行）。修法：按 blob 行尾写回
+（`%TEMP%\wg-r82-fixeol.py`），再 `sync-dist` 一次，diff 收敛到 29/26。**改任何文本文件前先看 blob 行尾**
+（`git cat-file blob HEAD:<path>` 数 `\r\n`）—— 注意别用 PowerShell 按行拆分去数，那样会把行尾证据弄丢。

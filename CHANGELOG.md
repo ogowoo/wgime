@@ -1,5 +1,34 @@
 ---
 
+## 2026-09-21 (第八十二轮补: 成品冒烟 + 应答分支验证 + 三个坑)
+
+**真成品冒烟**（隔离 `LOCALAPPDATA` + `WGIME_DICT_DIR=仓库根` 跑 `dist\wgime-py.py`）: 日志里出现
+`deps: first-run check, missing=argostranslate,faster_whisper`, 与进程内探针一致, 无 Traceback;
+且**没有** `deps prompt err`、`deps-state.txt` 也没落盘 ⇒ 当时正停在模态确认框上(格式串有问题会被
+`except` 抓成 `prompt err` 并写状态)。**应答后的分支**另用一次性探针 `%TEMP%\wg-r82-prompt.py`
+(harness 同款: exec main 前缀 + 桩掉 `messagebox`/`_deps_open_window`)补验 **11/11**: 否→`declined`+`asked=1`;
+是→`opened`+真开窗; 只有语音缺件→`reported`(走 `showinfo`); 弹框自己抛异常→`result=error` 但**仍记
+`asked=1`**(不每次启动反复炸); 问过就不再问。
+
+**坑①(我的, 代价最大)**: 成品会**自我重启成 pythonw** —— 第一次冒烟"已退出/无日志"是假象: 启动器把 IME
+交给 pythonw 子进程后自己退出, 我杀的正是启动器。加上 `config.txt` 放错层级(应放 `DATA_DIR\wgime-py\`),
+那两个实例按缺省 ime 模式跑、**装了键盘钩子**, 一度三个 wgime 并存。已按**启动时间**区分归属
+(27 分钟前那个是用户自己的, 17:10 两个是我的), 只杀自己的, 复查只剩用户实例。
+**规矩**: 冒烟脚本一律 `WGIME_RELAUNCHED=1`, 日志/data 看 `%LOCALAPPDATA%\wgime-py\`(不是 `%LOCALAPPDATA%\`)。
+
+**坑②**: `git add -A -- wgime-py-pure` 会把 `wgime-py-pure\testing\`(永不入库的草稿目录)一起暂存 —— 已
+`git restore --staged` 撤回。附带乌龙: `git grep -I -l fzenufe --cached`(`--cached` 写在模式**之后**)会让 git
+报错, 那条 stderr 被 `Measure-Object` 数成"命中 1", 看着像泄露密钥; 正确写法是
+`git grep -I -l --cached fzenufe`(空 = 干净)。
+
+**坑③**: `docs\WGIME_使用说明.md`/`docs\WGIME_技术文档.md` 的 **blob 是 CRLF**, 我的生成脚本兜底
+`t.replace('\r\n','\n')` 把整文件规整成 LF ⇒ 出现 376/347 的"整文件 diff"(忽略行尾只剩 29/26 = 真正新增)。
+已按 blob 行尾写回(`%TEMP%\wg-r82-fixeol.py`)并重跑 `sync-dist`, diff 收敛。**§30 的老规矩适用于所有文本,
+不只 txt; 且别用 PowerShell 按行拆分去数 \r\n —— 那样会把行尾证据弄丢。**
+
+**记账**: `AGENTS.md` §5 第 44 条补"冒烟须设 `WGIME_RELAUNCHED=1`"、§7 新增「暂存纪律」;
+`AGENTS-DETAIL.md` §D30 追加第 7~9 节(冒烟/应答分支/三个坑)。本轮无代码改动, 未重建 dist。
+
 ## 2026-09-21 (第八十二轮: 首次启动自动检查依赖 —— 可选件一键装到 wgime 私有目录)
 
 **来由**: 用户要"增加一个首次启动时自动检查依赖并安装的功能"。先摸清"依赖"在本项目的真实形态:
