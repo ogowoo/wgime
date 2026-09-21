@@ -337,6 +337,35 @@ stt_prompt = 以下是普通话的句子。
 `stt_device`/`stt_compute`/`stt_beam`/`stt_prompt`/`stt_python`（`whisper` 后端）、
 `stt_script`/`stt_itn`/`stt_threads`（`sherpa` 后端）、`stt_prewarm`（两个常驻后端共用的启动预热开关）。
 
+## 12. 可选依赖：首次启动自检与一键安装（Python 版，第八十二轮）
+
+输入法本体**零依赖**（分发单文件自带要用的纯 Python 包），所以下面这些都是**可选项**：
+缺了只是对应功能不能用或降级，**不影响打字**。
+
+**首次启动**会做一次自检：发现缺件时**弹一次**确认框（默认「否」），选「是」打开安装窗口；
+无论选装还是跳过都记一笔，**以后不再打扰**。
+
+| 依赖 | 用在哪 | 缺了会怎样 | 能否一键装 |
+|---|---|---|---|
+| `pypdf` | PDF 工具（plugins/pdf.py） | PDF 工具报错 | 可以（单文件已内嵌，只有源码目录跑时会缺） |
+| `psutil` | 进程列举（插件管理器/清理） | 回退 taskkill，慢一点 | 可以 |
+| `cryptography` | chat 插件的加密会话 | 加密不可用（明文仍可用） | 可以 |
+| `argostranslate` | wgtranslate 离线翻译 | 翻译报错 | 可以（首次用还要下语言包） |
+| `faster-whisper` | 语音引擎 `whisper` | 该后端不可用 | **不代装**（几百 MB + 还要模型，见 §D8.2） |
+| `sherpa-onnx` | 语音引擎 `sherpa`（首选） | 该后端不可用 | **不代装**（同上） |
+
+**装到哪**：`%LOCALAPPDATA%\wgime-py\site\pip\`（Store 版 Python 是 `%USERPROFILE%\wgime-py\site\pip\`）——
+**不写系统 site-packages、不污染你的 Python**；卸载就是删这个目录。装完可能要**重启 wgime** 才生效。
+
+**手动重跑**：打启动编码 `deps`（或 `yilai`）打开依赖自检窗口 —— 勾选 → 「安装所选」，窗口下半是 pip 实时输出；
+另有「全选可安装」「重新检测」「复制命令」。
+
+**状态文件**：`%LOCALAPPDATA%\wgime-py\deps-state.txt`（记 `asked=1` 与装过哪些包）。
+想让它下次启动重新问一次，删掉这个文件即可。
+
+**失败怎么办**：pip 不存在（Store 版 Python 常见）会提示 `python -m ensurepip --upgrade`；网络不通会明确报出来，
+核心功能不受影响。窗口里的「复制命令」给出可直接粘贴执行的完整命令（含 `--target` 私有目录）。
+
 ## 附录：第三方数据与许可
 
 - **`en-freq.txt`**（英语常用词表：5 万词 + 频次）：来自 **Hermit Dave 的 FrequencyWords** 项目

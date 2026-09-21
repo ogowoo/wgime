@@ -462,6 +462,32 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 - **启动链**：单文件开头是一段 preamble——先把内嵌的 `thirdparty.zip` 解到 `%LOCALAPPDATA%\wgime-py\site`（Store Python 虚拟化场景同 §12.1 处理），`zipimport` 挂上标准 import 机制，然后 `exec` 内嵌的 `main` 模块进入主程序。
 - **词频机制比 C# 版更优（有意保留，勿对齐）**：候选排序 = 语料先验 `word_freq` + 学习词频 `fb×learnk` + 近期热度 `freq_recent×recentk`（滑动窗口 RE_CAP=500，上屏即计、退格删除回滚）。
 
+### 12.4 可选依赖自检与安装（第八十二轮）
+
+**设计契约**（`wgime-py-pure\deps.py`：纯逻辑、不 import 宿主任何模块、`DATA_DIR` 由调用方传入）：
+
+| 规矩 | 为什么 |
+|---|---|
+| 只碰**可选件**，核心零依赖不变 | 单文件自带 pystray/pypdf；缺件只是功能降级，绝不因缺件拒绝启动 |
+| 装到 `DATA_DIR\site\pip`（`pip install --target`）+ 挂 `sys.path` | 不污染用户 Python；绕开 Store Python 的 `%LOCALAPPDATA%` 虚拟化；与内嵌 zip（`site/thirdparty.zip`）同址；卸载＝删目录。**不用 `--user`、不写系统 site-packages** |
+| 首启**只问一次**（默认「否」），状态存 `DATA_DIR\deps-state.txt` | 不做"每次启动都弹"的骚扰；重跑走启动编码 `deps`/`yilai` |
+| 探测/安装都在**后台线程**；失败只记日志 + 气泡 | §40⑤：pythonw 下裸线程异常无声；卡主线程＝打字停摆 |
+| 语音大件（`faster-whisper`/`sherpa-onnx`）只**报告**不代装 | 几百 MB 且要另外准备模型（§D8.2），代装等于替用户做错决定 |
+
+**接线**（`main.py`）：启动链上 `root.after(2000, _deferred_depcheck)`，排在 poll(8ms) / 插件(30ms) /
+托盘(150ms) / tools(600ms) 之后；**`deps.ensure_site_on_path(DATA_DIR)` 必须在 30ms 的插件装载之前**执行，
+否则插件模块级的可选 import 看不到私有目录。窗口是 `tools.show_depcheck()`（勾选 + pip 实时日志 +
+重新检测 + 复制命令），窗高按"内容真需高度 + 38"推（§42）。
+
+**可测试性**：`probe(finder=...)` 与 `install(runner=...)` 都可注入 ⇒ 回归 `tests\deps-test.py`（51 项）
+**完全不联网、不装任何东西、不碰用户数据**。其中 4 项是依赖窗口的**几何审计**（遍历子孙算绝对坐标，
+越界即红），守卫本身用"故意把窗高 `+38` 改成 `+0`"验证过会红。`deps.py` 已进
+`build-wgime-pure.py` 的 `MODULES`（单文件内嵌 12 个项目模块），回归里有一条断言 dist 的 `MODULES` 行含
+`'deps'` —— 免得"加了模块忘了重建 dist"。
+
+**实测（2026-09-21 开发机）**：present = `pypdf`/`psutil`/`cryptography`/`sherpa_onnx`；
+missing = `argostranslate`（可一键装）、`faster_whisper`（只报告）。
+
 ## 13. 已知局限（C# 版）
 
 - **注入上屏**：管理员权限窗口/部分 UWP 应用可能拒绝注入；游戏全屏输入不支持。Qt 应用（微信 4.x）的 VK_PACKET 陈旧字符问题已由 keyfix 全局修复（§3.4）；顽固程序可按进程覆盖（pastemode.txt）。

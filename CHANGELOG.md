@@ -1,5 +1,51 @@
 ---
 
+## 2026-09-21 (第八十二轮: 首次启动自动检查依赖 —— 可选件一键装到 wgime 私有目录)
+
+**来由**: 用户要"增加一个首次启动时自动检查依赖并安装的功能"。先摸清"依赖"在本项目的真实形态:
+宿主**核心零依赖**(单文件自带 pystray/pypdf), 缺的只是**某一项功能**。产品决定由用户拍板:
+**首启弹一次确认框(默认「否」)** + **语音大件只报告不代装**。
+
+**产出**:
+1. **`wgime-py-pure\deps.py`**(新) —— 纯逻辑、不 import 宿主: 清单/探测/安装/状态文件。
+2. **`tools.show_depcheck()`**(新窗口) —— 逐项状态 + 勾选 + pip 实时日志 + 全选/重新检测/复制命令。
+3. **`main.py`** —— 启动编码 `deps`/`yilai`; 首启 2s 档后台探测(只问一次) + 确认框(默认否);
+   `deps.ensure_site_on_path()` 挂在 **30ms 插件装载之前**; 失败只记日志+气泡, 绝不拖累打字。
+4. **回归 `tests\deps-test.py`(51 项)**; `deps` 进单文件内嵌清单(12 个项目模块)。
+
+**三条硬规矩**: ①**装到 `DATA_DIR\site\pip`**(`pip install --target`)+挂 `sys.path` —— 不污染用户 Python、
+绕开 Store Python 的 `%LOCALAPPDATA%` 虚拟化、与内嵌 zip 同址、卸载=删目录; **不用 `--user`、不写系统
+site-packages**(回归里有硬断言)。②**首启只问一次**(默认否), 状态 `DATA_DIR\deps-state.txt`(`asked=1`
+之后不再打扰), 重跑走 `deps`/`yilai`。③探测/安装都在后台线程, 异常只记日志+气泡(§40⑤)。
+
+**范围**: 可一键装 = `psutil`/`cryptography`/`argostranslate`(+源码目录缺的 `pypdf`);
+只报告 = `faster-whisper`/`sherpa-onnx`(几百 MB 且要另外准备模型, 见 §D8.2)。
+
+**接线里最容易错的一处**: `ensure_site_on_path` 必须在**插件装载之前**执行 —— 插件模块级的
+`import psutil` 之类在 `load_py_plugins()` 里就跑掉了, 挂晚了插件看不见私有目录。
+
+**测试怎么做到不联网**: `probe(finder=...)` / `install(runner=...)` 都可注入 ⇒ 全程假 runner, 只验
+分类/命令行形态/失败翻译/状态文件/sys.path 幂等; 另有 4 项**窗口几何审计**(手工 `place()` 排版的窗,
+遍历子孙算绝对坐标, 越界即红)。**守卫自检**: 故意把窗高 `+38` 改成 `+0`, 审计如期变红
+(`bottom=506 H=480`), 还原后 51/51 —— 不会失败的测试等于没写(§43)。
+
+**自查出的两个测试自身 bug**(都表现为假红, 记下来): ①几何审计的 walk 一路走到 `root`, 把窗口在屏幕上的
+位置也算进去 ⇒ 改成走到 `win` 为止; ②`dist` 的 `MODULES` 是一行超长 dict 字面量, 正则窗口取 400 字符
+只装得下第一个 value ⇒ 改成整行匹配 `'deps':`。
+
+**本机实测(2026-09-21)**: present = `pypdf`/`psutil`/`cryptography`/`sherpa_onnx`;
+missing = `argostranslate`(可一键装)、`faster_whisper`(只报告) —— 这条链在开发机上真的会弹一次确认框。
+
+**验证链**: `py_compile -W error::SyntaxWarning` 0 / `undefined-globals.py` 24 文件 0 /
+`deps-test.py` **51/51** / `pure-state-harness.py` 全部通过(67) / `example-plugin-test.py` 24/24 /
+`standalone-plugin-test.py` 6/6 / `embedded-isolation-test.py` 14/14 / dist-sync
+`project modules embedded=12, mismatches=0`、`main.py embedded match: True`。
+重建 dist(1136.1 KB)+`build-package.ps1`(package 57.5 MB)后已跑 `%TEMP%\wg-runtime-cfg.py` 还原活配置。
+
+**文档**: `docs\WGIME_使用说明.md` 新增 §12(用户视角: 表格/装到哪/怎么重跑/失败怎么办);
+`docs\WGIME_技术文档.md` 新增 §12.4(设计契约表/接线/可测试性/实测); `AGENTS.md` §4 加测试行、
+§5 新增第 44 条; `AGENTS-DETAIL.md` 新增 §D30。
+
 ## 2026-09-21 (第八十一轮: 「普通单文件 Python 应用 → wgime 插件」写成规范 §8.8 + 可跑模板 + 回归)
 
 **来由**: 用户问"普通的 python 应用（单文件）要怎么改才能作为 wgime 的插件？"，随后说"写进去吧"。

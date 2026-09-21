@@ -2052,3 +2052,136 @@ def show_import(engine, dict_dir):
         _msgbox('导入完成但刷新失败', '重启 WgIme 后生效: %s' % ex)
         return
     _msgbox('导入完成', '新增 %d 词条 (跳过 %d 行, 截断 %d 码)' % (new_words, skipped, trunc_codes))
+
+
+
+
+def show_depcheck(items, data_dir, on_install=None, on_reprobe=None):
+    """可选依赖自检窗口 (第八十二轮).
+
+    items      = `deps.probe()` 的结果
+    on_install = `on_install(pkgs, log, done)`: **调用方在后台线程里**装。`log(text)` 线程安全
+                 (内部 `win.after` 回主线程), `done()` 装完回主线程重探/刷新状态
+    on_reprobe = 返回新的 items (装完刷新用); None 则只更新日志不刷新
+
+    窗高按 `内容真需高度 + 38` 推 (标题栏, AGENTS §42) —— 行数变了也不会把底部日志/按钮裁掉。
+    """
+    import deps as depmod
+
+    rows = [dict(i) for i in items]
+    W = 660
+    row_h = 36
+    list_y = 52
+    list_h = row_h * max(1, len(rows))
+    btn_y = list_y + list_h + 10
+    log_h = 150
+    log_y = btn_y + 30 + 10
+    H = (log_y + log_h + 12) + 38
+
+    win, content = ui.make_window('WgIme 依赖自检', W, H)
+    tk.Label(content, text='可选依赖缺失只影响对应功能, 输入法本身不受影响 (核心零依赖)。勾选后可一键安装:',
+             bg=ui.BG, fg=ui.SUB, font=ui.font(9)).place(x=14, y=9)
+    tk.Label(content, text='安装位置: %s' % depmod.site_dir(data_dir),
+             anchor='w', bg=ui.BG, fg=ui.SUB, font=ui.font(8, mono=True)).place(x=14, y=28, width=W - 28)
+
+    vars_, stat = {}, {}
+    for idx, it in enumerate(rows):
+        yy = list_y + idx * row_h
+        can = bool(it.get('missing') and it.get('inst'))
+        tk.Frame(content, bg=ui.BORDER, height=1).place(x=10, y=yy + row_h - 1, width=W - 20, height=1)
+        if can:
+            v = tk.IntVar(value=0)
+            vars_[it['key']] = v
+            tk.Checkbutton(content, text='', variable=v, bg=ui.BG, fg=ui.TEXT,
+                           selectcolor=ui.CARD, activebackground=ui.BG, activeforeground=ui.TEXT,
+                           highlightthickness=0, bd=0).place(x=10, y=yy + 7)
+        else:
+            tk.Label(content, text=('\u2713' if not it.get('missing') else '\u2014'),
+                     bg=ui.BG, fg=(ui.SUB if it.get('missing') else ui.TEXT),
+                     font=ui.font(11)).place(x=14, y=yy + 6, width=20)
+        tk.Label(content, text=it['label'], anchor='w', bg=ui.BG, fg=ui.TEXT,
+                 font=ui.font(9.5, bold=True)).place(x=42, y=yy + 4, width=190)
+        tk.Label(content, text=it['why'], anchor='w', bg=ui.BG, fg=ui.SUB,
+                 font=ui.font(8)).place(x=42, y=yy + 20, width=W - 200)
+        s = tk.Label(content, text=('已装' if not it.get('missing')
+                                    else ('可安装' if it.get('inst') else '需手工装')),
+                     anchor='e', bg=ui.BG, fg=(ui.SUB if not it.get('missing') else ui.TEXT),
+                     font=ui.font(9))
+        s.place(x=W - 150, y=yy + 9, width=136)
+        stat[it['key']] = s
+
+    tb = ui.console_text(content, x=10, y=log_y, w=W - 20, h=log_h)
+
+    def log(text):
+        """线程安全的日志追加: 后台线程(跑 pip)也能调。"""
+        def _do():
+            try:
+                tb.insert('end', str(text) + '\n')
+                tb.see('end')
+            except Exception:
+                pass
+        try:
+            win.after(0, _do)
+        except Exception:
+            pass
+
+    def apply(new_items):
+        by = {i['key']: i for i in new_items}
+        for it in rows:
+            nb = by.get(it['key'])
+            if not nb:
+                continue
+            it.update(nb)
+            miss = bool(it.get('missing'))
+            stat[it['key']].configure(text=('已装' if not miss else ('可安装' if it['inst'] else '需手工装')),
+                                      fg=(ui.SUB if not miss else ui.TEXT))
+            if it['key'] in vars_:
+                vars_[it['key']].set(0)
+
+    def refresh():
+        if on_reprobe is None:
+            return
+        try:
+            apply(on_reprobe())
+        except Exception as ex:
+            log('重新检测失败: %r' % (ex,))
+
+    def install_selected():
+        pkgs = [it['pkg'] for it in rows
+                if it.get('missing') and it.get('inst') and vars_.get(it['key']) is not None
+                and vars_[it['key']].get()]
+        if not pkgs:
+            log('（没有勾选任何可安装项；标记「需手工装」的请照 AGENTS-DETAIL §D8.2 自己装）')
+            return
+        log('==> 安装: %s' % ', '.join(pkgs))
+        if on_install is None:
+            log('（当前环境不支持一键安装，可复制上面的命令自己跑）')
+            return
+        on_install(pkgs, log, lambda: win.after(0, refresh))
+
+    def select_all():
+        for v in vars_.values():
+            v.set(1)
+
+    def copy_cmd():
+        lines = []
+        for it in rows:
+            if it.get('missing'):
+                lines.append('# %s (%s)\n%s' % (
+                    it['label'], '可安装' if it['inst'] else '需手工装',
+                    depmod.shell_command(depmod.site_dir(data_dir), [it['pkg']])))
+        text = '\n'.join(lines) or '(没有缺失的依赖)'
+        try:
+            win.clipboard_clear()
+            win.clipboard_append(text)
+            log('命令已复制到剪贴板：\n' + text)
+        except Exception as ex:
+            log('复制失败: %r' % (ex,))
+
+    ui.flat_button(content, '安装所选', install_selected, primary=True, x=10, y=btn_y, w=100, h=30)
+    ui.flat_button(content, '全选可安装', select_all, x=118, y=btn_y, w=110, h=30)
+    ui.flat_button(content, '重新检测', refresh, x=236, y=btn_y, w=90, h=30)
+    ui.flat_button(content, '复制命令', copy_cmd, x=334, y=btn_y, w=90, h=30)
+    ui.flat_button(content, '关闭', win.destroy, x=W - 80, y=btn_y, w=70, h=30)
+    log('装到 %s（不污染系统 Python；卸载=删这个目录）' % depmod.site_dir(data_dir))
+    return win

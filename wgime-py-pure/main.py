@@ -774,7 +774,8 @@ def find_launcher(code):
          'bj': ('便签', 'notes'), 'notes': ('便签', 'notes'),
          'ys': ('取色器', 'color'), 'color': ('取色器', 'color'),
          'net': ('网络工具', 'nettools'), 'wlgj': ('网络工具', 'nettools'),
-         'plugins': ('插件管理', 'pluginmgr'), 'cjgl': ('插件管理', 'pluginmgr')}
+         'plugins': ('插件管理', 'pluginmgr'), 'cjgl': ('插件管理', 'pluginmgr'),
+         'deps': ('依赖自检', 'depcheck'), 'yilai': ('依赖自检', 'depcheck')}
     if code in b:
         return (b[code][0], 'builtin', b[code][1])
     return None
@@ -2299,6 +2300,8 @@ def _show_builtin(kind):
             tools.show_plugin_mgr(PLUGINS, DATA_DIR, _reload_all_plugins,
                                   run_file_fn=_run_plugin_file, list_files_fn=_list_plugin_files,
                                   plugin_dir_fn=_plugin_dir)
+        elif kind == 'depcheck':
+            _deps_open_window()
     except Exception as ex:
         _dfn('builtin err %s %r' % (kind, ex))
 
@@ -2539,6 +2542,119 @@ def handle(vk):
             show_page()
 
 
+# ---------- 可选依赖自检 / 安装 (第八十二轮) ----------
+# 宿主核心**零依赖**(单文件自带 pystray/pypdf): 缺的只是"某一项功能", 所以:
+#   · 首启只问一次(默认「否」), 答案落 DATA_DIR\deps-state.txt; 想重跑走启动编码 `deps` / `yilai`;
+#   · 装到 DATA_DIR\site\pip (`pip install --target`) + 挂 sys.path —— 不污染用户 Python、
+#     绕开 Store Python 虚拟化、"卸载"就是删目录 (三条硬规矩全文见 deps.py 开头);
+#   · 探测/安装都在后台线程, 异常只记日志+气泡 —— 绝不拖累打字 (AGENTS §40⑤)。
+def _deps_probe():
+    import deps as depmod
+    return depmod.probe(DATA_DIR)
+
+
+def _deps_install(pkgs, log, done=None):
+    """后台装依赖 (依赖窗口的「安装所选」触发); 逐行回显 + 结果气泡 + 回主线程刷新状态。"""
+    import deps as depmod
+
+    def work():
+        try:
+            res = depmod.install(pkgs, DATA_DIR, on_line=log)
+        except Exception as ex:                       # install 本身不抛, 这里只是最后一道兜底
+            res = {'ok': False, 'error': '%r' % (ex,)}
+        if res.get('ok'):
+            depmod.note_installed(DATA_DIR, pkgs)
+            log('[OK] 装好了: %s' % ', '.join(pkgs))
+            log('     位置: %s' % res.get('target'))
+            _dfn_always('deps: installed %s -> %s' % (','.join(pkgs), res.get('target')))
+            _notify('依赖安装完成', '已装 %s；新功能可能要重启 WgIme 后生效' % ', '.join(pkgs))
+        else:
+            err = res.get('error') or ('pip 返回码 %s' % res.get('code'))
+            log('[失败] %s' % err)
+            _dfn_always('deps: install failed %s -> %s' % (','.join(pkgs), err))
+            _notify('依赖安装失败', err)
+        if done:
+            try:
+                done()
+            except Exception:
+                pass
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _deps_open_window(items=None):
+    """打开依赖自检窗口 (启动编码 `deps`/`yilai`, 或首启确认框里选「是」)。"""
+    try:
+        import deps as depmod
+        items = items if items is not None else depmod.probe(DATA_DIR)
+        tools.show_depcheck(items, DATA_DIR, _deps_install, _deps_probe)
+    except Exception as ex:
+        _dfn('deps window err %r' % (ex,))
+        _notify('依赖自检', '打不开窗口: %r' % (ex,))
+
+
+def _deps_prompt(items):
+    """首启确认 (主线程调用): 默认「否」; 无论装还是跳过都记一笔, 之后不再打扰。"""
+    from tkinter import messagebox as _mb
+    import deps as depmod
+    miss = [i for i in items if i.get('missing')]
+    can = [i for i in miss if i.get('inst')]
+    mark = {'result': 'error'}
+    try:
+        rep = depmod.text_report(items)
+        if can:
+            ok = _mb.askyesno('WgIme 依赖自检',
+                              '首次启动自检：发现 %d 项可选依赖缺失。\n\n%s\n\n'
+                              '这些都不影响输入法本身，只影响上面的对应功能。\n'
+                              '是否现在打开安装窗口？\n（装到 %s，不污染系统 Python）'
+                              % (len(miss), rep, depmod.site_dir(DATA_DIR)),
+                              default=_mb.NO)
+            mark = {'result': 'opened'} if ok else {'result': 'declined'}
+            if ok:
+                _deps_open_window(items)
+        else:
+            _mb.showinfo('WgIme 依赖自检',
+                         '发现 %d 项可选依赖缺失（体积大，需手工安装）：\n\n%s\n\n'
+                         '不影响输入法本身；装法见 AGENTS-DETAIL §D8.2。' % (len(miss), rep))
+            mark = {'result': 'reported'}
+    except Exception as ex:
+        _dfn('deps prompt err %r' % (ex,))
+    try:
+        depmod.mark_asked(DATA_DIR, **mark)
+    except Exception:
+        pass
+
+
+def _deferred_depcheck():
+    """首启可选依赖自检 (2s 档, 排在 poll/托盘/tools 之后; 只问一次)。"""
+    try:
+        import deps as depmod
+        if not depmod.should_ask(DATA_DIR):
+            return
+    except Exception as ex:
+        _dfn('deps: state read err %r' % (ex,))
+        return
+
+    def work():
+        try:
+            items = depmod.probe(DATA_DIR)
+        except Exception as ex:
+            _dfn('deps: probe err %r' % (ex,))
+            return
+        miss = [i for i in items if i.get('missing')]
+        _dfn_always('deps: first-run check, missing=%s'
+                    % (','.join(i['key'] for i in miss) or '(none)'))
+        if not miss:
+            depmod.mark_asked(DATA_DIR, result='all-present')
+            return
+        try:
+            root.after(0, lambda: _deps_prompt(items))
+        except Exception:
+            pass
+
+    _bg_plugin(work)                                  # §40⑤: 后台异常有统一出口
+
+
 # ---------- 主循环: 轮询钩子事件 ----------
 # 第四十轮: 下面三段"启动收尾"从主循环**之前**挪到主循环**之后**, 且按 30/150/600ms 分三档错开 ——
 #   ① 它们加起来实测 ~500ms (reload_plugins+load_py_plugins+load_appmodes ≈55ms、托盘 import ≈300ms、
@@ -2752,10 +2868,17 @@ def poll():
             pass
 
 
+try:                                     # 第八十二轮: 私有依赖目录挂 sys.path ——
+    import deps as _depsmod              # 必须在下面 30ms 的插件装载**之前** (插件模块级可能 import 可选件)
+    if _depsmod.ensure_site_on_path(DATA_DIR):
+        _dfn('deps: private site on sys.path = %s' % _depsmod.site_dir(DATA_DIR))
+except Exception as _e:
+    _dfn('deps: site path err %r' % (_e,))
 root.after(8, poll)
 root.after(30, _deferred_plugins)        # 30ms  : plugins/tools.txt/pastemode (~55ms)
 root.after(150, _deferred_tray)          # 150ms : 托盘对象 + 图标线程 (~300ms)
 root.after(600, _deferred_tools)         # 600ms : tools 懒装载 + 通知回调 (~150ms)
+root.after(2000, _deferred_depcheck)     # 2s    : 首启可选依赖自检 (第八十二轮; 只问一次)
 if is_tray_mode():
     _dfn('runmode=tray (no keyboard hook)')
 else:

@@ -28,13 +28,19 @@ def _add_embedded_zip():
     (Store Python 虚拟化则落到 `~/wgime-py/site/`); 都找不到就不管 —— 插件自己懒 import 时会报人话。
     """
     la = os.environ.get('LOCALAPPDATA', '')
-    cands = []
+    bases = []
     if la:
-        cands.append(os.path.join(la, 'wgime-py', 'site', 'thirdparty.zip'))
-    cands.append(os.path.join(os.path.expanduser('~'), 'wgime-py', 'site', 'thirdparty.zip'))
-    for zp in cands:
-        if os.path.isfile(zp) and zp not in sys.path:
-            sys.path.insert(0, zp)
+        bases.append(os.path.join(la, 'wgime-py'))
+    bases.append(os.path.join(os.path.expanduser('~'), 'wgime-py'))
+    for base in bases:
+        # site/ 下两样都挂: 内嵌第三方 zip + 第八十二轮"一键装依赖"装出来的私有目录 site/pip
+        hit = False
+        for p in (os.path.join(base, 'site', 'thirdparty.zip'),
+                  os.path.join(base, 'site', 'pip')):
+            if os.path.exists(p) and p not in sys.path:
+                sys.path.insert(0, p)
+                hit = True
+        if hit:
             return
 
 

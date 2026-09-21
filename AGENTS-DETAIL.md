@@ -1511,3 +1511,58 @@ tag 仍 `56f7ffe`）= 三个 zip 的 SHA256 与 stage 全同、body 无 `?` 且�
 按 `load_py_plugins` 同一套判据装载（`CODE` 非空 + `run` 可调用）、`run()` 真建出窗口（`max(winfo_width,
 winfo_reqwidth) >= 300`）、独立运行（子进程 + `WGIME_STANDALONE_AUTOEXIT_MS` + `LOCALAPPDATA` 隔离）、
 文档一致性（§8.8 存在且指向模板、写明目录差异）。
+## §D30 第八十二轮：首次启动自动检查依赖并安装（`deps.py` + 依赖自检窗口）
+
+### 1) 需求与边界
+
+用户要"首次启动时自动检查依赖并安装"。这个项目的依赖分三类，边界由此确定：
+
+| 类别 | 例子 | 处置 |
+|---|---|---|
+| 核心 | 宿主自身 | **零依赖不变**（单文件自带 pystray/pypdf），绝不因缺件拒绝启动 |
+| 可一键装的可选件 | `psutil` / `cryptography` / `argostranslate` | 探测 + 勾选安装 |
+| 重件 | `faster-whisper` / `sherpa-onnx` | **只报告**（几百 MB + 还要模型，见 §D8.2） |
+
+用户拍板的两条产品决定：**首次弹一次确认框、默认「否」**；**语音大件只报告不代装**。
+
+### 2) 为什么装到 `DATA_DIR\site\pip` 而不是 `--user` / `ensurepip`
+
+`pip install --target <私有目录>` + 把该目录挂到 `sys.path` 一次解决四个问题：
+①不污染用户 Python（卸载＝删目录）；②绕开 Store Python 把 `%LOCALAPPDATA%` 虚拟化到
+`Packages\...\LocalCache` 的坑（`DATA_DIR` 本身已经做过虚拟化探测）；③与既有内嵌 zip
+（`site/thirdparty.zip`）**同址**，心智模型一致；④C 扩展也能装（解开的目录，不是 zip）。
+代价：需要自己 `importlib.invalidate_caches()`，否则装完 `find_spec` 还看旧缓存（表现为"装好了还是缺"）。
+
+### 3) 接线里最容易错的一处
+
+`deps.ensure_site_on_path(DATA_DIR)` 必须在**那 30ms 的插件装载之前**跑完 —— 插件的模块级
+`import psutil` 之类在 `load_py_plugins()` 里就执行了，挂晚了插件根本看不见私有目录。
+自检本身排在 `root.after(2000, ...)`（poll/托盘/tools 之后），保证不抢"能不能打字"的时间。
+
+### 4) 测试怎么做到"不联网"
+
+`probe(finder=...)` 与 `install(runner=...)` 都做成可注入：回归 `tests\deps-test.py`（51 项）全程用假
+finder/runner，只验证**分类、命令行形态、失败翻译、状态文件、sys.path 幂等**。两条硬断言：
+`pip_argv` **不含 `--user`**；`read_state` 的值里**不带 `\r`**（§39 那个静默失效的老坑）。
+
+另有 4 项**几何审计**（依赖窗口是手工 `place()` 排版）：建出窗口后遍历子孙、累加父偏移算绝对坐标，
+越界即红。这里踩了两个自己的坑：①第一版 walk 一路走到 `root`，把窗口在屏幕上的位置也加进去了 ⇒ 假红
+（改成走到 `win` 为止）；②`dist` 的 `MODULES` 是一行超长 dict 字面量，正则窗口取 400 字符只够装下第一个
+value ⇒ 假红（改成整行匹配 `'deps':`）。两条都说明**报错先怀疑测试自己**。
+
+守卫自检（§43 的规矩：不会失败的测试等于没写）：把窗口高度 `+38` 故意改成 `+0`，几何审计如期变红
+（`bottom=506 H=480`），还原后 51/51。
+
+### 5) 验证链
+
+`py_compile -W error::SyntaxWarning` 0 / `undefined-globals.py` 24 文件 0 / `deps-test.py` **51/51** /
+`pure-state-harness.py` 全部通过(67) / `example-plugin-test.py` 24/24 / `standalone-plugin-test.py` 6/6 /
+`embedded-isolation-test.py` 14/14 / dist-sync `project modules embedded=12, mismatches=0`、
+`main.py embedded match: True`。重建 dist（`1136.1 KB`）+ `build-package.ps1`（`package\` 57.5 MB），
+之后按惯例跑 `%TEMP%\wg-runtime-cfg.py` 还原开发机活配置（sherpa/`stt_*`）。
+
+### 6) 本机实测（2026-09-21）
+
+present = `pypdf` / `psutil` / `cryptography` / `sherpa_onnx`；missing = `argostranslate`（可一键装）、
+`faster_whisper`（只报告）。也就是说这条链在开发机上是**真的会触发一次确认框**的。
+
