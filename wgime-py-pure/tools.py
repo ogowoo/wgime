@@ -1830,6 +1830,7 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
         if hasattr(p, 'CODE'):
             return {'name': getattr(p, 'NAME', getattr(p, 'CODE', '?')), 'code': getattr(p, 'CODE', '?'),
                     'kind': 'py', 'file': getattr(p, '__file__', None), 'perm': getattr(p, 'PERM', 'low'),
+                    'standalone': bool(getattr(p, 'STANDALONE', False)),
                     'desc': getattr(p, 'DESC', ''), 'ver': str(getattr(p, 'VERSION', '') or '')}
         return {'name': p.name or os.path.basename(p.path), 'code': p.code or '?', 'kind': p.kind,
                 'file': p.path, 'perm': getattr(p, 'perm', 'low'), 'desc': getattr(p, 'desc', ''),
@@ -1857,6 +1858,8 @@ def show_plugin_mgr(plugins, data_dir, reload_fn, run_file_fn=None, list_files_f
             for info in list_files_fn():
                 disd = info.get('file', '').lower() and os.path.basename(info['file']).lower() in dis
                 typ = {'py': 'py', 'csharp': 'C#', 'python': 'py块', 'steps': 'DSL'}.get(info.get('kind'), info.get('kind'))
+                if info.get('kind') == 'py' and info.get('standalone'):
+                    typ = 'py·双模'                  # 双模式插件: 既是插件, 也能 python 该文件独立运行 (第七十九轮)
                 state = '已禁用' if disd else '启用'
                 ver = (' v%s' % info['version']) if info.get('version') else ''
                 st = info.get('status') or ''

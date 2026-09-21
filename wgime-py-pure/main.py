@@ -2221,7 +2221,8 @@ def _py_plugin_meta_static(path):
         return mm.group(1) if mm else d
     return {'file': path, 'name': _get('NAME', m.group(1)), 'code': m.group(1), 'kind': 'py',
             'enabled': os.path.basename(path).lower() not in _read_disabled(), 'version': _get('VERSION'),
-            'perm': _get('PERM', 'low'), 'desc': _get('DESC')}
+            'perm': _get('PERM', 'low'), 'desc': _get('DESC'),
+            'standalone': bool(re.search(r'^\s*STANDALONE\s*=\s*(True|1)\b', text, re.M))}
 
 
 def _read_disabled():

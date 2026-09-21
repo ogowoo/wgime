@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """WGIME pure-Python plugin: clipboard translator."""
 
+# ---- 双模式 (第七十九轮): 独立运行 (`python 本文件.py`) 时, 先把宿主目录(上级)插进 sys.path ----
+if __name__ == '__main__':
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 CODE = "fy"
 NAME = "剪贴板翻译"
 DESC = "双击 Ctrl+C 自动读取剪贴板并翻译，支持多翻译通道与格式保留"
 VERSION = "2.2.0"
 AUTHOR = "Walt Liang"
 PERM = "network,run"
+STANDALONE = True            # 双模式标记 (插件管理器显示"双模", 机制见 _standalone.py)
 
 import ctypes
 from ctypes import wintypes
@@ -497,3 +503,9 @@ def run():
 
 if __name__ == "__main__" and CHILD_ARG in sys.argv:
     _window_main()
+
+
+# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)

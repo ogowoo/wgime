@@ -4,6 +4,11 @@
 数据存 %LOCALAPPDATA%\\wgime\\clock.cfg / pomodoro.txt (文件路径与格式与 C# 版完全兼容).
 入口 run() 在宿主 tkinter 主线程建窗 (ui.py 设计系统); 报时/闹钟守护线程经队列派发回主线程.
 """
+
+# ---- 双模式 (第七十九轮): 独立运行 (`python 本文件.py`) 时, 先把宿主目录(上级)插进 sys.path ----
+if __name__ == '__main__':
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import datetime
 import math
 import os
@@ -23,6 +28,7 @@ DESC = '现代风时钟: 秒环/闹钟/整点报时/倒计时圆环/预设/秒�
 VERSION = ''
 AUTHOR = ''
 PERM = 'low'
+STANDALONE = True            # 双模式标记 (插件管理器显示"双模", 机制见 _standalone.py)
 
 try:
     import winsound
@@ -1046,3 +1052,9 @@ def run():
 
     select(0)
     tick_id[0] = win.after(100, tick)
+
+
+# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)

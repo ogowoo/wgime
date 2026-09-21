@@ -149,3 +149,27 @@ txt 插件里的 `[csharp]` 块在纯 Python 版**仍然可用**：经 sidecar �
 ### 8.6 插件管理
 
 与 C# 版相同：输入 `plugins`（或 `cjgl`）唤出**插件管理窗体**——勾选启用/禁用（禁用名单存数据目录 `plugins-disabled.txt`）、重载。同样有意不进托盘菜单，只用编码唤出。
+
+### 8.7 双模式插件（第七十九轮）：既是插件，也能独立运行
+
+`plugins\*.py` 插件可以同时是**一个能 `python xxx.py` 直接跑起来的独立程序**。机制（三块都有才算数）：
+
+1. **文件头**（必须在第一个宿主 import 之前——`import ui` 等在模块级，不先修 sys.path 独立跑直接 ImportError）：
+
+   ```python
+   if __name__ == '__main__':
+       import os as _os, sys as _sys
+       _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+   ```
+
+2. **清单识别标记**：模块级 `STANDALONE = True`（插件管理器据此显示 `py·双模`；`main._py_plugin_meta_static` 用正则读它，不 import）。
+
+3. **文件尾**（共享引导层 `plugins\_standalone.py`；**名字以 `_` 开头是故意的**——装载器跳过它，不会当插件收）：
+
+   ```python
+   if __name__ == '__main__':
+       import _standalone
+       _standalone.standalone(run, NAME)
+   ```
+
+宿主装载时 `__name__` 是合成模块名（不是 `'__main__'`），三块都不执行，与装载行为零冲突。独立运行时引导层做：补 sys.path（宿主目录）→ 挂内嵌第三方 zip（`%LOCALAPPDATA%\wgime-py\site\thirdparty.zip`，pypdf 等）→ 建隐藏 Tk root → `run()` 建窗 → 窗口关即退出。回归：`python wgime-py-pure\tests\standalone-plugin-test.py`（真把每个插件当独立程序跑；`WGIME_STANDALONE_AUTOEXIT_MS` 是测试钩子，到点自动关窗）。

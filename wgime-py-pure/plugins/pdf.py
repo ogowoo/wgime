@@ -23,6 +23,11 @@
 安全约定: **绝不覆盖/修改原文件**。所有输出都写成新名字(`xxx_split.pdf`), 重名自动 `-2`/`-3`。
 重活全部丢后台线程, 只经 `win.after(0, ...)` 回主线程改控件 (Tk 不是线程安全的)。
 """
+
+# ---- 双模式 (第七十九轮): 独立运行 (`python 本文件.py`) 时, 先把宿主目录(上级)插进 sys.path ----
+if __name__ == '__main__':
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import collections
 import json
 import os
@@ -39,6 +44,7 @@ DESC = '合并/拆分/旋转/删页/提取文字/页面分析 · 纯 Python 引�
 VERSION = '1.0'
 AUTHOR = 'WgIme'
 PERM = 'low'
+STANDALONE = True            # 双模式标记 (插件管理器显示"双模", 机制见 _standalone.py)
 
 
 # ======================================================================
@@ -1383,3 +1389,9 @@ def _open_dir(log, pick_one):
         log('已打开 %s' % d)
     except Exception as ex:
         log('打开目录失败: %r' % (ex,))
+
+
+# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)

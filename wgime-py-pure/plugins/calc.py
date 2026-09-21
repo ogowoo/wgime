@@ -13,6 +13,11 @@
 (C# 键位里**没有** `%` 键, `%` 靠键盘直输; 所以 python 也要绑键盘直输, 否则取余根本用不上)。
 显示是两行: 小字 `表达式 =` + 大字(当前输入/结果/`Err`), 空串显示 `0`。
 """
+
+# ---- 双模式 (第七十九轮): 独立运行 (`python 本文件.py`) 时, 先把宿主目录(上级)插进 sys.path ----
+if __name__ == '__main__':
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import math
 import tkinter as tk
 
@@ -24,6 +29,7 @@ DESC = '迷你计算器: 四则/括号/取余, 全角符号兼容, 键盘直输�
 VERSION = '1.0'
 AUTHOR = 'ogowoo'
 PERM = 'low'
+STANDALONE = True            # 双模式标记 (插件管理器显示"双模", 机制见 _standalone.py)
 
 _INF = float('inf')
 _KEYS = '0123456789.+-*/%()'       # C# KeyPress 允许直输的字符
@@ -221,3 +227,9 @@ def run():
         win.after(0, focus)
     except Exception:
         pass
+
+
+# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)

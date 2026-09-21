@@ -2,6 +2,11 @@
 """纯 Python chat 插件 (relay + MQTT-over-WS, AES-256-CBC 加密, 与 itools-chat 互通).
 CODE='lt', NAME='聊天'. run() 在 tkinter 主线程建窗口, 网络走后台线程, UI 经队列回主线程.
 """
+
+# ---- 双模式 (第七十九轮): 独立运行 (`python 本文件.py`) 时, 先把宿主目录(上级)插进 sys.path ----
+if __name__ == '__main__':
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import hashlib
 import hmac
 import os
@@ -24,6 +29,7 @@ DESC = '与 itools-chat (PC/Android) 互通的在线聊天 (纯 Python)'
 VERSION = '2.0.0'
 AUTHOR = 'Walt Liang'
 PERM = 'network'
+STANDALONE = True            # 双模式标记 (插件管理器显示"双模", 机制见 _standalone.py)
 
 BROKERS = ['wss://chat.seee.uno', 'wss://broker.hivemq.com:8884', 'wss://broker.emqx.io:8084',
            'wss://test.mosquitto.org:8081', 'ws://broker.hivemq.com:8000']
@@ -522,3 +528,9 @@ def json_dumps(obj):
 def json_loads(s):
     import json
     return json.loads(s)
+
+
+# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)

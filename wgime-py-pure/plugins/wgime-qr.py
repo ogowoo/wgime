@@ -18,6 +18,11 @@ the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 UTF-8 + ECI 26; 默认 M 级纠错 (QR Model 2, version 1..10, byte mode).
 保存 PNG 为纯 Python 手工 PNG (zlib+struct); 复制图片走 ctypes CF_DIB 剪贴板.
 """
+
+# ---- 双模式 (第七十九轮): 独立运行 (`python 本文件.py`) 时, 先把宿主目录(上级)插进 sys.path ----
+if __name__ == '__main__':
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import math
 import struct
 import time
@@ -30,6 +35,7 @@ DESC = '完全离线生成二维码；简洁圆角细边框；支持上下方说
 VERSION = '2.5'
 AUTHOR = 'WgIme / Project Nayuki derived encoder'
 PERM = 'low'
+STANDALONE = True            # 双模式标记 (插件管理器显示"双模", 机制见 _standalone.py)
 
 
 # ======================================================================
@@ -792,3 +798,9 @@ def run():
     footer_box.bind('<Return>', lambda e: (make(), 'break')[1])
     win.after(0, input_box.focus_set)
     return win
+
+
+# ---- 双模式 (第七十九轮): 独立运行入口 (宿主装载时 __name__ != '__main__', 这里不执行) ----
+if __name__ == '__main__':
+    import _standalone
+    _standalone.standalone(run, NAME)
