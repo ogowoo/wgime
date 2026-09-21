@@ -11,7 +11,7 @@ import importlib.util
 import ctypes
 import re
 
-VERSION = '1.2.14-py'      # 单文件里唯一的版本标识: 写在启动 always-on 日志里, 方便确认"跑的是哪个文件"
+VERSION = '1.2.15-py'      # 单文件里唯一的版本标识: 写在启动 always-on 日志里, 方便确认"跑的是哪个文件"
                            # (第四十五轮: 用户机器上出现过"拿旧的 wgime-py.py 测新功能"的混乱)
 # 注意: tkinter **不在这里** import (第四十轮). 首次 import tkinter ≈70ms, 而"单实例 -> 读 config ->
 # 装键盘钩子"这一段完全用不到它; 挪到钩子装好之后 (见下面的"钩子之后才 import"段)。

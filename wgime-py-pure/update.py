@@ -80,14 +80,13 @@ def is_newer(latest, current):
 
 
 def local_version_from_file(path):
-    """从单文件里抠 `VERSION = '...'`。dist 里 main.py 是**转义过的字符串**, 所以引号前允许有反斜杠。"""
+    """从单文件里抠版本号(顶层明文 `WGIME_VERSION`, 旧文件退正则抠 `VERSION = '...'`)。"""
     try:
         with io.open(path, encoding='utf-8', errors='replace') as f:
             text = f.read()
     except OSError:
         return ''
-    m = re.search(r"VERSION\s*=\s*\\*['\"](\d+\.\d+[^'\"\\]*)", text)
-    return m.group(1) if m else ''
+    return version_in_text(text)
 
 
 def is_single_file(path):
@@ -105,10 +104,23 @@ def is_single_file(path):
 
 
 def version_in_text(text):
-    """抠 `VERSION = '...'`。**dist 里是嵌套转义**: `MODULES` 存的是 main.py 源码的 repr, 真实字节是
-    `VERSION = \\\\'1.2.14-py\\\\'` —— 反斜杠要允许**任意多个**(只写 `\\?` 在单文件上抠不到);
-    版本号还必须**以数字开头** —— 否则会先撞上 update.py 自己文档里那句 `VERSION = '...'`(实测踩过)。"""
-    m = re.search(r"VERSION\s*=\s*\\*['\"](\d+\.\d+[^'\"\\]*)", text or '')
+    """抠单文件自称的版本号。
+
+    **先认顶层明文 `WGIME_VERSION = '...'`**(第八十五轮补起构建期就会写这一行) —— 它是唯一
+    无歧义的判据。旧单文件没有这一行, 才退回去正则搜 `VERSION = '数字...'`。
+
+    为什么非要有这条明文(真事故, 别删): 老实现只做正则, 而 `MODULES` 里 update.py 自己的文档
+    就含一句 `VERSION = '<某个具体版本号>'` 这样的示例、且排在 main 之前 —— 于是下载到新版单文件
+    被读成**示例里那个旧版本**, `verify_source` 判"下载到的是旧版本"**直接拒绝更新**。
+    (所以本函数文档里也**不许**再写带数字的 `VERSION = ` 示例 —— 那会自己把自己带沟里。)
+    正则兜底那两条注释也是踩出来的: 反斜杠要允许**任意多个**(dist 里 main.py 是嵌套 repr, 只写
+    `\\?` 抠不到); 版本号必须**以数字开头** —— 否则会先撞上文档里那句 `VERSION = '...'`。
+    """
+    t = text or ''
+    m = re.search(r"WGIME_VERSION\s*=\s*['\"]([^'\"]+)", t)
+    if m:
+        return m.group(1)
+    m = re.search(r"VERSION\s*=\s*\\*['\"](\d+\.\d+[^'\"\\]*)", t)
     return m.group(1) if m else ''
 
 

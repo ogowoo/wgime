@@ -20,6 +20,7 @@ import http.server
 import io
 import json
 import os
+import re
 import shutil
 import socketserver
 import subprocess
@@ -49,12 +50,19 @@ def check(name, cond, extra=''):
 
 
 def fake_single(version='9.9.9-py', pad=210 * 1024):
-    """一个"长得像单文件"的假货: 三个标记 + VERSION + 能 compile + 体积过线。"""
+    """一个"长得像单文件"的假货: 三个标记 + 版本标记 + 能 compile + 体积过线。
+
+    第八十五轮补起**同时**写顶层明文 `WGIME_VERSION`(真单文件从这一版开始也有), 而且故意在它
+    **前面**放一句"像文档示例"的旧版本号 —— 复现真事故的形状: update.py 自己文档里那句
+    `VERSION = '旧版本'` 曾抢先被正则命中, 让"下载到新版"被判成旧版本、`verify_source` 拒绝更新。
+    若有人把 `version_in_text` 的"先认 WGIME_VERSION"去掉, 本函数的假文件立刻验不过。
+    """
     head = "# -*- coding: utf-8 -*-\n\"\"\"fake single file (update-test)\"\"\"\n"
-    core = ("VERSION = '%s'\nMODULES = {'win': 'x'}\nPLUGIN_SRC = {}\nTHIRD_ZIP_B64 = 'AAAA'\n"
-            % version)
+    decoy = "# 文档示例(不是真身份, 不许被抠出来): VERSION = '1.0.0-py'\n"
+    core = ("WGIME_VERSION = '%s'\nVERSION = '%s'\nMODULES = {'win': 'x'}\n"
+            "PLUGIN_SRC = {}\nTHIRD_ZIP_B64 = 'AAAA'\n" % (version, version))
     filler = '# ' + 'x' * 74 + '\n'
-    text = head + core
+    text = head + decoy + core
     while len(text.encode('utf-8')) < pad:
         text += filler
     return text.encode('utf-8')
@@ -134,6 +142,23 @@ open(_f1, 'wb').write(RAW_OK)
 check('is_single_file(带 MODULES 的文件)=True', u.is_single_file(_f1) is True)
 check('is_single_file(源码 main.py)=False', u.is_single_file(os.path.join(PURE, 'main.py')) is False)
 check('version_in_text 抠得出版本', u.version_in_text(RAW_OK.decode('utf-8')) == '9.9.9-py')
+check('文档里的旧版本号不会抢先命中(先认 WGIME_VERSION)',
+      u.version_in_text("# 示例: VERSION = '1.0.0-py'\nWGIME_VERSION = '2.0.0-py'\n") == '2.0.0-py',
+      repr(u.version_in_text("# 示例: VERSION = '1.0.0-py'\nWGIME_VERSION = '2.0.0-py'\n")))
+# 第八十五轮补(真事故回归): 拿**仓库里真那个 dist** 验 —— 光测假文件不够, 真文件里 update.py
+# 自己的文档就可能藏着一个"像版本号"的示例, 而它在 MODULES 里排在 main 之前。这条断言把
+# "单文件自称的版本" 钉死成 "main.py 里那一行", 任何一方改坏(或忘记跟着发版改)立刻红。
+_dist = os.path.join(PURE, 'dist', 'wgime-py.py')
+check('真 dist 存在(发版物之一, 必须入库)', os.path.exists(_dist), _dist)
+if os.path.exists(_dist):
+    _disttxt = open(_dist, encoding='utf-8', errors='replace').read()
+    _msrc = re.search(r"^VERSION\s*=\s*['\"]([^'\"]+)",
+                      open(os.path.join(PURE, 'main.py'), encoding='utf-8').read(), re.M)
+    _want = _msrc.group(1) if _msrc else ''
+    _got = u.version_in_text(_disttxt)
+    check('真 dist: is_single_file 为真', u.is_single_file(_dist) is True)
+    check('真 dist: 自称版本 == main.py 的 VERSION', _got == _want and bool(_want),
+          'dist=%r main=%r' % (_got, _want))
 _body = '| a | b | c |\n| `%s` | x | `%s` |\n' % (ASSET, 'A' * 64)
 check('从 release body 抠 sha256', u.sha256_from_body(_body, ASSET) == 'a' * 64)
 check('body 里没有该资产时不瞎猜', u.sha256_from_body('nothing here', ASSET) == '')

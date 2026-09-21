@@ -106,7 +106,11 @@ def main():
                       '%d B vs dist %d B' % (len(d), len(dist)))
                 # 第八十五轮: 单文件里的 VERSION 必须**正好是这个 tag 的版本** ——
                 # 自动更新拿它比对(见 wgime-py-pure/update.py), 写错了会让用户"更新完还是旧版"或反复提示有新版本。
-                m = re.search(r"VERSION\s*=\s*\\*['\"](\d+\.\d+[^'\"\\]*)", d.decode('utf-8', 'replace'))
+                # 第八十五轮补: 先认**顶层明文** `WGIME_VERSION`(唯一无歧义); 正则只作旧文件兜底 ——
+                # 曾经只做正则, 被 update.py 自己文档里的 `VERSION = \'1.2.14-py\'` 示例抢先命中(见 update.version_in_text)。
+                txt = d.decode('utf-8', 'replace')
+                m = re.search(r"WGIME_VERSION\s*=\s*['\"]([^'\"]+)", txt) \
+                    or re.search(r"VERSION\s*=\s*\\*['\"](\d+\.\d+[^'\"\\]*)", txt)
                 got = m.group(1) if m else ''
                 check('python: 单文件 VERSION == 发布的版本', got.split('-')[0] == a.version,
                       'VERSION=%r vs --version %s' % (got, a.version))

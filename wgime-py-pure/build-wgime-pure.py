@@ -9,6 +9,7 @@
 """
 import os
 import io
+import re
 import shutil
 import sys
 import base64
@@ -44,6 +45,16 @@ modsrc = {m: read(os.path.join(BASE, m + '.py')) for m in MODULES}
 # 保持 PLUGIN_SRC 为空 dict, 单文件体积更小, 插件改起来不用重打包.
 plugsrc = {}
 main_src = read(os.path.join(BASE, 'main.py'))
+# 第八十五轮补: 单文件的"我是谁"必须是**顶层明文**一行, 不能只靠去 repr 里正则抠。
+# 起因(真事故): update.version_in_text 原来是"全文搜第一个 `VERSION = '数字...'" —— 而 update.py
+# 自己的文档里就有一句示例 `VERSION = \\'1.2.14-py\\'`, 且它在 MODULES 里排在 main 之前,
+# 于是下载到 v1.2.15 的文件被读成 1.2.14 -> verify_source 判"是旧版本"直接拒绝更新。
+# 现在构建期把 main.VERSION 抽出来写成顶层明文 `WGIME_VERSION = '...'`(见 build 头部 out 段),
+# 抠版本一律先认它(见 update.version_in_text), 正则只作旧文件的兜底。
+_vm = re.search(r"^VERSION\s*=\s*['\"]([^'\"]+)", main_src, re.M)
+if not _vm:
+    raise SystemExit('build: main.py 里找不到顶层 VERSION 标记, 拒绝构建')
+MAIN_VERSION = _vm.group(1)
 
 
 # ---- 第三方库收集: 包 + 它们的**声明依赖** (纯 Python; 排除 test 子包) ----
@@ -217,6 +228,7 @@ except Exception as e:
 out = []
 out.append('# -*- coding: utf-8 -*-')
 out.append('# WgIme-Pure 单文件版 (项目模块 + 第三方库[含声明依赖] 内嵌). 免安装, 零 .NET, 零 pip.')
+out.append('WGIME_VERSION = ' + repr(MAIN_VERSION) + '   # 单文件身份(顶层明文): 自动更新/发布预检抠这一个, 见 update.version_in_text')
 out.append('import sys, types, os, base64')
 out.append('MODULES = ' + repr(modsrc))
 out.append('PLUGIN_SRC = ' + repr(plugsrc))
