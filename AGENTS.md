@@ -88,50 +88,87 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
 9. **自启**：程序**不自带**自启（无 -Install / 无计划任务 / 无菜单自启项）。用户自己挂任务/启动文件夹。
 10. **码表数据块 `###WGIME_DATA###`**：wgime.bat 的内置码表（原 5 段 here-string）已移到文件尾部的 `###WGIME_DATA###` 数据块（在 `###WGIME_DLL###` 之前），分段标记 `###PYDATA###`/`###WBDATA###`/`###ECDATA###`/`###PYWORDS###`/`###PYWFREQ###`。PS 引导层用 `Get-DictSeg` 按 `###NAME###` + 下一个 `\n###` 分段提取，码表**不参与 PS 脚本解析**（消除 Invoke-Expression 扫描大 here-string 的启动开销）。cmd bootstrap 用 `$j=$s.LastIndexOf('###WGIME_DATA###')` 截断 `$p`——**必须 LastIndexOf**（marker 也出现在 bootstrap 行本身和提取逻辑注释里，IndexOf 会定位错）。固化码表（`BakeTables`）用 `ReplaceDictSeg(bat,"PYDATA"/"WBDATA"/"ECDATA",…)` 写回数据块对应 segment；`build-wgime-dll.ps1` 用同名 `Get-DictSeg` 从数据块取码表。
 11. **遍历字典构建索引必须排序**：.NET `Dictionary` 的遍历顺序取决于键 hash + **插入顺序**；bake 的 `SerializeDict` 按 code 排序重写码表、改变插入顺序。凡是用 `foreach (var kv in <字典>)` 构建顺序敏感的索引/列表（`BuildCharPy`/`BuildAcro`/`BuildCharWb`/`BuildReverse`/`AddWubiWildcard`/`BuildRevWb`）必须改成 `.OrderBy(k => k.Key, StringComparer.Ordinal)`，否则 bake 前后多音字简拼 key、同频候选 tie-break 会不一致。
-12. **纯 Python 第三方库内嵌（零 pip 依赖）**：python 版（`wgime-py-pure`）进程内**不再** import `uiautomation`/`comtypes`（第四十四轮起 0 处；光标跟随改独立 Caret Helper 子进程，见 §17）。内嵌机制：`build-wgime-pure.py` 收集第三方源码打包 zip，运行时解压到 `%LOCALAPPDATA%\wgime-py\site` + `zipimport`。**收集时用 `m.ispkg` 区分**——包写 `__init__.py`、模块写 `.py`（`six` 就是单模块），否则同名模块+包（`comtypes._post_coinit`）会崩。**必须连同声明依赖一起收**（读 METADATA 的 `Requires-Dist`；`Pillow` 在排除表里）—— 漏了依赖时单文件的 import 会**回退到宿主 site-packages**，「构建机恰好装了」就把缺口盖住（第六十九轮 pystray→`six` ⇒ 干净机器上**整个托盘消失**，见 §D12b）。两个守卫: 构建期 `verify_thirdparty_isolation()`（`python -S -E` + 只挂那个 zip，失败**中止构建**）、回归 `python wgime-py-pure\tests\embedded-isolation-test.py`（改内嵌清单后必跑，会断言清单**正好**是什么）。**第七十一轮收紧**: roots 只剩 `pystray`（`comtypes`/`uiautomation` 已删 —— 单文件 898.8 → 573.0 KB）；依赖收集是**传递闭包**（BFS）；**C 扩展内嵌不了**（`.pyd` 与解释器 ABI 绑定：构建机 cp312、用户机可能 cp314），一律走"可用则用、不可用则明确降级"，清单在 `build-wgime-pure.py` 的 `_THIRD_SKIP`（每条写原因）。本机构建只需 `pip install pystray`（读源码内嵌）+ `pillow`（构建期画图标）+ **第七十七轮起的 `pypdf`**（`plugins/pdf.py` 用；base64 **+497KB** → 单文件 1.11MB；边界见 §D16），分发的单文件零依赖。
+12. **纯 Python 第三方库内嵌（零 pip 依赖）**：进程内**不再** import `uiautomation`/`comtypes`（光标跟随走 §17 helper）。
+    `build-wgime-pure.py` 收第三方**源码**打 zip → 运行时解压 `%LOCALAPPDATA%\wgime-py\site` + `zipimport`。规则：
+    ① 用 `m.ispkg` 区分「包 / 单模块」（否则同名模块+包会崩）；② 依赖收**传递闭包**（读 METADATA 的
+    `Requires-Dist`，BFS）—— 漏一个就会**回退到宿主 site-packages**、被「构建机恰好装了」盖住；③ roots 只留
+    `pystray`，`_THIRD_SKIP` 每条写原因；④ **C 扩展一律不内嵌**（`.pyd` 绑 ABI），只做「可用则用、不可用降级」。
+    两个守卫：构建期 `verify_thirdparty_isolation()`（`python -S -E` + 只挂那个 zip，失败**中止构建**）+
+    `tests\embedded-isolation-test.py`（改清单必跑，断言清单**正好**是什么）。本机构建 `pystray`+`pillow`+`pypdf`。
+    原文见 §D25，边界见 §D13 / §D16。
 13. **Store 版 Python 虚拟化 `%LOCALAPPDATA%`**：用户机器 `python` 若命中 Microsoft Store 版 Python（`...\Microsoft\WindowsApps\...PythonSoftwareFoundation...`，AppContainer 沙箱），它对 `%LOCALAPPDATA%` 的写入会被 Windows **重定向（虚拟化）** 到 `...\Packages\<pkg>\LocalCache\Local\`，导致真实 `%LOCALAPPDATA%\wgime-py` **不存在**、用户看不到/管不了词库、配置、导入码表。C# 版无此问题（非 Store 应用）。**修复**：`main.py` 启动时用探针（在 `%LOCALAPPDATA%\wgime-py` 建目录，看 `realpath` 是否含 `\packages\`+`\localcache\`）检测虚拟化，命中则把 `DATA_DIR` 切到 `os.path.expanduser('~')\wgime-py`（真实、不被虚拟化），并把虚拟化位置旧数据搬过去；`build-wgime-pure.py` 的单文件 preamble（`_third_dir`）同样处理。改数据目录逻辑时务必同步 `main.py`（DATA_DIR）与 `build-wgime-pure.py`（preamble `_third_dir`）两处，且检测判断（`\packages\`+`\localcache\`）保持一致。
 14. **字频(candidate 排序)保留 python 版逻辑，且已升级**：python 版候选排序用 `语料先验 word_freq + 学习词频 fb×learn_k + 近期热度 freq_recent×recent_k`（常见词靠前 + 主动选过的词上顶 + 最近常打的词靠前），比 C# 版（只按学习词频 `fb`）更优，是**有意保留**的决策，不要"对齐"成 C# 版。配套机制：① 只在"主动选择"(非默认第1位/非动态)时学全量词频 + LastPick 置顶，空格确认默认词不强化；④ `freq_recent` 滑动窗口（RE_CAP=500，上屏即计、溢出自动过期）；② 上屏词退格删除即 `unlearn` 回滚(词频/LastPick/近期窗口)；③ config.txt 的 `learnk`(默认5000)/`recentk`(默认200) 可调。learn/save 递增/上限/保存前20000/flush 与 C# 版一致。
 15. **候选条宽度上限（python 版）**：候选条最大宽度封顶 `max(240, min(屏幕工作区宽-24, 880px))`（不再铺满整屏；880 来自 `199f0bd` 修超屏的定论，用户明确嫌长，别改回 720 或铺满屏）；超上限时 `bar.show()` **逐级退化**（第四十五轮：每条都挂提示 → 只给选中那条挂 → 只挂译文 → 只剩词；**绝不把 `(imya)` 切成 `(imya…`**，只有"词"本身太长才截词 + `…`），全部候选仍可见、可数字键选。改 `bar.py` 的候选渲染时保持这一限制与这套退化次序。
-16. **插件 Manifest + 权限（wgime-py-pure）**：plugins/*.txt 头部支持 `code/name/desc/version/author/requires/perm`；plugins/*.py 模块级 `CODE/NAME/DESC/VERSION/AUTHOR/PERM`（+`STANDALONE = True`＝双模式/可独立运行，见规范 §8.7）。`plugins.py plugin_meta()` 统一读取（兼容两类）；`perm=network/run/registry/destructive` 的插件运行前 `main._confirm_plugin()` 弹确认，`run_steps` 对 `file-del/reg-set/reg-del/kill` 动词前强确认。旧插件无这些字段默认 `perm=low`，不弹确认。**插件 txt 的登记条件**（第二十一轮）：C# `LoadPlugins` 要求 `code`/`name` 非空**且 `body.Count > 0`** —— 只有头部的半成品**不算插件**（`error='no body'`，别当"解析失败"列出）；头部解析在第一个非头部行停止。别破坏这一权限模型。**③④ 隔离+JSON IPC**：`[python]` 块子进程运行（超时60s）+ JSON IPC 契约（`handle(ctx)->actions`，stdout `@wgime <json>` 行协议）；`run_steps` 的 `run`/`shell` 超时 120s、静默块 300s；别把 `[python]` 块改回同进程 `exec`（会拖垮宿主）。**插件禁用名单（`plugins-disabled.txt`）= 小写文件名**（对齐 C# `DisabledPlugins`）：`main.load_py_plugins` 按 `fn.lower() in disabled` 判定（内嵌插件无文件才退回 code，生产分发不内嵌插件）；`plugins.py load_plugins` 与 `main._read_disabled` 两侧都小写。插件管理器写的也是文件名——**别把装载器改回按 code 过滤，否则「启停」对 .py 插件无声失效**。
-17. **光标跟随 = 独立 Caret Helper 子进程（wgime-py-pure，对齐 testing v3）**：**第六十八轮起 `followcaret` 默认 0 并冻结** —— 默认不起 helper、`_caret_follow()` 是唯一读取点, 整条链一行没删, 改 1 或点托盘即恢复（细节/验证见 `AGENTS-DETAIL.md` §D10）。主进程**绝不**初始化 COM/UIA。`win.py` 把内嵌的 helper 源码（`_EMBEDDED_CARET_HELPER`，纯 ctypes 直调 `UIAutomationCore` vtable，无 comtypes/uiautomation）**经环境变量 `WGIME_CARET_HELPER_SRC` 交给子进程 —— 既不落盘 .py，也不进进程命令行**（第四十三轮先做成命令行内联 `-c <源码>`：不落盘了，但 7200 字符让"进程创建命令行"变成一条 7.4KB 的怪异 `-c`，而 EDR/任务管理器记的正是这条；第四十四轮改走环境块，命令行只剩 ~250 字符的 `_HELPER_BOOTSTRAP` 引导）。`ensure_caret_bg()` 启动时只 best-effort 删掉更早落盘的历史遗留文件（`%LOCALAPPDATA%\wgime-py\runtime\caret-helper\wgime-caret-helper-v3-stable-embedded.py`）。实测：子进程收到的源码 **sha256 逐字节一致**、helper 的 OS CommandLine **7427 → 287 字符**、继承环境块仅 5.4KB（+7.2KB 远低于上限，实测塞到 100KB 仍能创建进程）。引导脚本先剥掉 `sys.path` 里的 `''`/`.`/cwd（`-c` 下 `sys.path[0]` 是**当前工作目录**），维持"标准库不被抢占"的隔离；再 `os.environ.pop` 取走源码执行（不把 7KB 留在 helper 自己的环境里）。命令 `subprocess.Popen([sys.executable,'-u','-c',_HELPER_BOOTSTRAP], env=…)` + CREATE_NO_WINDOW 常驻，JSONL stdin/stdout IPC（`request_caret_refresh` → `{id,reason,hwnd}`，reader 线程校验 `hwnd==请求窗口==当前前台` 才写缓存，过期结果丢弃）。`bar.show()` 每键请求刷新；定位先读 `get_ipc_caret()`，无则按窗口锚点/可见位兜底，35/80ms 后 `_ipc_reposition` 贴精确位。`get_caret_pos()` 兜底链：UIA 缓存 → GUITI(rcCaret) → 聚焦框 → last → 前台原点；**鼠标兜底禁用**。改动时别把 UIA 改回进程内跑（helper 崩溃会拖垮键盘 hook 的教训），别恢复鼠标跟随。**`runtime\` 残留（第三十八 → 四十三轮，已根治）**：老机器 `runtime\` 残留 pythonnet 时代的 python38 整包（`.pyd`/`Lib`…），helper 以脚本目录为 `sys.path[0]` 时它们会抢占标准库 import → 起来就秒退（用户日志：5 次里 4 次 0.15-0.19s `IPC helper exited`，跟随静默失效 + 每键白 spawn 一个 python）。现在**环境变量传源码 + 引导脚本剥掉 cwd** —— **别再改回"落盘 + `Popen([...,path])`"，也别改回把源码塞进 `-c`**（那会让进程命令行变成 7.4KB）。`_start_helper` 保留**连续秒退 3 次后不再重试**（`_helper_fail`）。A/B 证据见 CHANGELOG 第三十八/四十三/四十四轮（带残留的 `runtime\` 起不来；内联 `-c` → ready 137ms；环境变量版 → 命令行 287 字符、源码 sha256 逐字节一致）。**定位的工作区选择别搞错**（第十五轮核对）：跟随用**光标所在显示器**（`win.workarea_at()` → `MonitorFromPoint(MONITOR_DEFAULTTONEAREST)`+`GetMonitorInfoW`），而带宽上限取**主屏**（`win.screen_workarea()` → `SPI_GETWORKAREA`）—— 与 C# 的 `Screen.FromPoint` / `Screen.PrimaryScreen` 一一对应；`y+h` 超下边界要翻到光标上方、x 要钳进工作区（几何断言见 CHANGELOG 第十五轮）。
+16. **插件 Manifest + 权限（wgime-py-pure）**：`.txt` 头部 / `.py` 模块级字段 `code/name/desc/version/author/requires/perm`
+    （`.py` 另加 `STANDALONE = True` ＝双模式，见规范 §8.7），`plugins.py plugin_meta()` 统一读取。`perm` 是**逗号多值表**
+    （`network,run` 这种），命中 `network/run/registry/destructive` 的插件运行前 `main._confirm_plugin()` 弹确认，
+    `run_steps` 对 `file-del/reg-set/reg-del/kill` 前强确认；缺字段默认 `perm=low` 不弹。**txt 登记条件**：
+    `code`/`name` 非空**且 `body.Count > 0`** —— 只有头部的半成品不算插件（`error='no body'`，别当解析失败列出），
+    头部解析遇第一个非头部行即停。**隔离**：`[python]` 块走**子进程 + JSON IPC**（60s；`handle(ctx)->actions`，
+    stdout `@wgime <json>`），`run`/`shell` 超时 120s、静默块 300s —— **别改回同进程 `exec`**（会拖垮宿主）。
+    **禁用名单 `plugins-disabled.txt` = 小写文件名**：`main.load_py_plugins`/`plugins.load_plugins`/`main._read_disabled`
+    三处都按小写比较，**别改成按 code 过滤**，否则「启停」对 .py 插件无声失效。原文见 §D24。
+17. **光标跟随 = 独立 Caret Helper 子进程（wgime-py-pure）**：**第六十八轮起 `followcaret` 默认 0 并冻结** ——
+    默认不起 helper、`_caret_follow()` 是唯一读取点, 整条链一行没删, 改 1 或点托盘即恢复（细节/验证见 §D10）。
+    主进程**绝不**初始化 COM/UIA（helper 崩溃会拖垮键盘 hook 的教训，别把 UIA 改回进程内跑，别恢复鼠标跟随）。
+    `win.py` 把内嵌的 helper 源码（`_EMBEDDED_CARET_HELPER`，纯 ctypes 直调 `UIAutomationCore` vtable）**经环境变量
+    `WGIME_CARET_HELPER_SRC` 交给子进程 —— 既不落盘 .py，也不进进程命令行**（**别再改回"落盘 + Popen([...,path])"
+    或把源码塞进 `-c`**：前者会被 `runtime\` 里 pythonnet 残留的 python38 整包抢占标准库 import（起来就秒退），
+    后者让进程命令行变成 7.4KB 的怪异 `-c`，EDR/任务管理器记的正是这条）。引导脚本先剥掉 `sys.path` 里的
+    `''`/`.`/cwd 再 `os.environ.pop` 取走源码执行；命令 `subprocess.Popen([sys.executable,'-u','-c',_HELPER_BOOTSTRAP], env=…)`
+    + CREATE_NO_WINDOW 常驻，JSONL stdin/stdout IPC（`request_caret_refresh` → `{id,reason,hwnd}`，reader 线程校验
+    `hwnd==请求窗口==当前前台` 才写缓存）。`bar.show()` 每键请求刷新；定位先读 `get_ipc_caret()`，无则按窗口锚点/
+    可见位兜底，35/80ms 后 `_ipc_reposition` 贴精确位。`get_caret_pos()` 兜底链：UIA 缓存 → GUITI(rcCaret) →
+    聚焦框 → last → 前台原点。**定位的工作区选择别搞错**：跟随用**光标所在显示器**（`win.workarea_at()`），
+    带宽上限取**主屏**（`win.screen_workarea()`）；`y+h` 超下边界要翻到光标上方、x 要钳进工作区。`_start_helper`
+    保留**连续秒退 3 次后不再重试**（`_helper_fail`）。实测数字/A/B 证据见 §D10 与 CHANGELOG 第三十八/四十三/四十四轮。
 18. **可配置快捷键 / 候选操作键（两版共用 config 键）**：`hotkey_toggle/mode/makeword/trad` + `key_first/pageup/pagedown/back/cancel/raw/pickfirst/picklast`。C# 侧在 `KeyBordHook`（`VkFromName`/`ParseHotkey`/`SetKeyConfig`/`MatchMods`，缺省见类字段）；**python 侧在 `hook.py`**（`vk_from_name`/`parse_hotkey`/`configure`/`_rebuild_swallow` + `HOTKEYS`/`KEYS` 状态），由 `main.apply_config()` 用 `CFG['hotkeys']`/`CFG['ckeys']` 安装（`engine.load_config` 只原样收下，缺省在 hook 里），`main.handle()` 的按键分派全部改读 `hook.KEYS`。语义要点：`none`=禁用(0)、无效值忽略保持缺省、`hotkey_toggle` 非 `shift_tap` 时 Shift 轻拍停用、热键在"输入法未激活"时也生效（C# 热键判定在 IsLocked 之前）、组字中吞的候选键 = 配置键 + PgUp/PgDn 常驻。改这块时别再把键位写死回 `VK['SPACE']` 之类。
 19. **单实例（wgime-py-pure）**：`win.single_instance('WgImePySingleInstance')`（ctypes 命名互斥体，句柄存 `main._SINGLETON` 保活）+ `win.message_box`（纯 Win32 弹窗，启动早期不建 tk）；已有实例则提示并 `sys.exit(0)`。名字带 `Py` 后缀，与 C# 的 `WgImeSingleInstance` 互不干扰；测试用 `WGIME_NO_SINGLETON=1` 跳过。
 20. **联想开关要真的生效**：`engine.assoc_enabled`（由 `main.apply_config` 从 `CFG['assoc']` 同步）同时管**学习**（`learn_assoc` 提前返回）与**显示**（`get_assoc` 返回空 + `main.show_assoc` 提前返回），对齐 C# `AssocEnabled`。以前只翻了托盘勾选、实际照学照显示，是 bug。
 21. **反查编码 (showcode) 的方向别搞反**：C# `CodeHint` = 五笔模式显**拼音**码、其余模式显**五笔**码（即"显示另一种码"）。python 侧用 `engine.build_rev_wb`（词→五笔码，按码 ordinal 升序扫、每词取最小码，同 C# `BuildRevWb`）+ `Engine.rev_wb_code()` **后台**建表（第三十四轮改：**首次用绝不同步建** —— `showcode=1` 是出厂默认值，同步建会让**每次启动的首键卡 1326ms**；没建好直接返回 `None`，`warm_rev_wb()` 起后台线程，`_invalidate_rev_wb()` 在 `_build()`/造词改 wb 时失效；详见 §6）。`main._with_code` 是唯一入口。
-22. **英汉表 (ec) 只在「词典」模式 (mode 3) 参与候选**（C# `AddTranslate`）：`engine.candidates` 的 mode 0/1 绝不能查 ec——实测拼音模式打 `no` 会串出"不/没有/无"并把"弄/浓/农"顶掉。词典模式的 EN 前缀匹配要给**每个命中词的全部释义**（C# `AddCands`），不是只取首个。**第十七轮核对结论（别再"修"）**：mode 3 的候选**集合**与 C# `AddTranslate` 逐条一致 —— EN 精确 + EN 前缀 + CN→EN 反查（`PyDict` 全拼 + `Acro` 简拼 → 每个中文词查 `ce`）；`ce`（CN→EN）由 `build_reverse` 建，与 C# `BuildReverse` 逐行一致（EN ordinal 升序、每词上限 8、去重），实测 **701531 键全等**；mode 3 用**合并**频率视图（`self.freq`，同 C# `fb = ... : Freq`）且**不做** LastPick 置顶（同 C# `lpb = null`）。**唯一差异是 python §14 的频率排序**（稳定排序，探针复算后与 engine 输出逐项相同），不是 bug。**第四十四/四十六轮**：词典模式先取消、又被用户加回（英中查询顺手），现在 `ime.mode` 0..3（`% 4`）；「译文」选项（`config trans`，默认开）另管 —— ① 非词典模式候选挂 `translate_hint` 译文；② **仅当本模式零候选**（`not cands and not exact_wubi and mode < 3`）才 `candidates(buf,3,py)` 兜底；③ 词典模式本身不挂 `→译文`（候选就是译文），反查码照旧。所以本条"有拼音候选绝不查 ec"照旧成立。
+22. **英汉表 (ec) 只在「词典」模式 (mode 3) 参与候选**：mode 0/1 **绝不能**查 ec（打 `no` 会串出「不/没有/无」
+    并把「弄/浓/农」顶掉）；词典模式的 EN 前缀要给**每个命中词的全部释义**，不是只取首个。**第十七轮核对过、
+    别再「修」**：mode 3 的候选**集合**与 C# `AddTranslate` 逐条一致（EN 精确 + 前缀 + CN→EN 反查；`ce` 同 C#
+    `BuildReverse`，701531 键全等），用**合并**频率视图、**不做** LastPick 置顶 —— **唯一差异**是 §14 的 python
+    频率排序，非 bug。「译文」选项（`config trans`，默认开）另管：非词典模式候选挂 `translate_hint`；**仅当本模式
+    零候选**（`not cands and not exact_wubi and mode < 3`）才 `candidates(buf,3,py)` 兜底；词典模式本身不挂 `→译文`。
+    台账见 §D23。
 23. **双拼 (shuangpin>0) 下的门控**（C# `if (Shuangpin == 0)`）：rq/sj/xq 动态候选、v 金额候选、**启动器候选**都不挂（两键即音节会撞码）；`digit_as_code()` 也要带 `CFG['shuangpin'] == 0`。另 `refresh()` 开头要有 C# 的两处面板复位：`sym_cat>0 && buf != 'vf'` 与 `shuangpin>0` 时清 `sym_cat`。
 24. **五笔唯一四码自动上屏**要排除启动器候选：`refresh()` 里条件含 `cands[0] != ime.app_cand`（对齐 C# `!appSet.Contains(cands[0])`），否则会"自动启动程序"。
 25. **状态反馈 = 托盘气泡（不是弹窗、也不是只写日志）**：C# 所有 `TrayTip`/`ShowBalloonTip` 调用点在 python 都有对应：`msg` 步骤、工具/插件执行结果（`开始执行…`/`完成`/`已取消`/失败）、per-app 上屏与 keyfix 切换结果、启动失败、[csharp] 插件编译/运行错误、造词剪贴板无汉字、钩子安装失败（`hook.start()` 同步返回成功与否 + `last_error()`，main 气泡）。python 侧统一走 `main._notify` → `TRAY.notify`（pystray），无托盘时退回 `tools._msgbox`；tools 层走 `tools._tip`。别再给这类结果提示写回 `_msgbox` 或只写 `_dfn`。
 26. **tools.txt / 插件 txt 的块标签集合要完整**：`plugins.py` 的 `_TOOL_BLOCK_TAGS` 必须含 **8 个开标签**（shell/cmd/powershell/ps/shellx/cmdx/powershellx/psx）**与 8 个闭标签**——原来正则漏了 `cmdx`/`powershellx`/`[/cmd]`/`[/ps]` 等，会把块标签建成假按钮、块内容错位。另外 `load_tools` 要认 `[button 名]` 前缀、`code = xx` 允许写在步骤之后（都对齐 C# `LoadTools`）。块标签在 steps 里保留原文，由 `run_steps` 执行期配对（闭标签必须与开标签对应：`[ps]` 只由 `[/ps]` 收尾，同 C#）。**第二十轮补齐的 tools.txt 结构规则别回退**（详见 CHANGELOG 第二十轮 11 组 fixtures）：① 默认标签 `工具` **按需创建**（只含注释的 tools.txt 必须返回**空列表**）；② **没有按钮的标签页要保留**；③ `[tab ]` 空名用 `"?"`；④ `code` 行判定是 C# 的 `t.StartsWith("code")`（大小写敏感）+ `ToolToks(t)[2]`；⑤ 步骤行尾不带 `\r`。
-27. **反向差异清单（python 有、C# 没有；别当成 bug 去"对齐"掉）**：`cnpunct` + Ctrl+. 全角标点切换、`F8` 硬开关、`Ctrl+Alt+Q` 退出、候选条主题（dark/light）、`learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴板上屏，C# 在那类 UI 里注入会失败）、tray 的整句/联想/全角标点开关、**「译文」选项（离线词典译文；与「词典」模式并存：模式管逐条翻看，选项管日常打字的提示/兜底）**、造词对话框（C# 是剪贴板直造）、**鼠标旁的状态提示点（`statedot`，第六十九轮，**默认关** —— 见 §D11.2）**。**要往 C# 补需要用户明确要求**：改 wgime.bat 得走 §3 的瘦 DLL + ps1 + 15 项测试整条链。C# 的 `inDialog`（自带模态框期间让按键直通）python 有意不跟进——python 的造词/导入框含文本框，需要输入法可用。
-    **第五十二轮登记的两处 hook 差异（用户已确认"保持现状"，别去"对齐"）**：① **Shift 轻拍更保守**：
-    Ctrl/Alt/Win 按住时不武装轻拍、且松键有 0.4s 时限（C# 是 `if (shiftTap) shiftArm = true;` 无修饰键门控、
-    `WM_KEYUP` 也无时限）；② **字母键判定排在空格/翻页之后**（C# 的 a-z 分支在前面）—— 于是 `config.txt`
-    写 `key_first = a` 时 python 把 `a` 当空格确认、C# 当字母入码。两条都更像"python 有意保守化"，
-    保持现状；**另外几处 python 有意比 C# 好的**：`_save_cfg`（写 config 失败弹气泡，C# `catch {}` 静默）、
-    `calc._to_long` 越界报 `Err`（C# unchecked 给 long.MinValue，`x%3` 算出垃圾值）、
-    `_write_config` 保持 config.txt 原有行尾（C# 也保持，但 python 修好了"LF 被改成 CRLF"）。
-    **第六十七轮登记**：`keyfix` 的"牺牲字符"python 用 **`U+200B` 零宽空格**（`win.QT_FIX_SENTINEL`），C# 用可见的 `'X'` —— python 有意分歧：牺牲字符一旦没被应用吸收、退格又没生效，可见字符会留在文档里（用户报的"联想时打标点显示 X"），零宽空格则**看不见**。别再改回 `ord('X')`；改这块跑 `%TEMP%\wg-r67-qtfix-probe.py`（16 项，直接查注入事件序列）。
-28. **用户可改的文本一律用 `engine.read_text()` 读**（`utf-8-sig` → `gbk` → `utf-8+replace`）：中文 Windows 下记事本/编辑器"另存为 ANSI(GBK)"会把 config.txt / tools.txt / plugins\*.txt / pastemode.txt / plugins-disabled.txt / userwords.txt / userdict_*.txt / lastpick_*.txt / assoc.txt 写成非 UTF-8 —— 用 `open(..., encoding='utf-8')` 会**抛 UnicodeDecodeError 直接崩启动**（C# 侧 `File.ReadAllLines(UTF8)` 是替换式解码, 不抛）。`read_text` 只以 OSError 表示不可读，编码问题一律降级；新增读取点照此办理（plugins.py 已 `import engine as engmod` 复用）。**便签文件也在名单里**（第二十三轮）：`notes\*.txt`（便签正文，用户最常拿记事本改）、`notes.txt`（旧版迁移源）、`notes-meta.txt`、`note-color.txt` —— 用严格 `open(..., encoding='utf-8')` 读会抛 `UnicodeDecodeError`，而那里的 `except OSError` 抓不到，结果是**便签窗口打不开/半死**（`_note_win[0]` 已置上，再点只是 deiconify 坏窗口），C# 的 `File.ReadAllText(UTF8)` 则是替换式解码永不抛。**码表与插件也在名单里**（第三十二轮）：`py.txt`/`wb.txt`/`ec.txt`/`trad.txt`/`import_*.txt`（`engine.parse_dict` —— 严格 utf-8 会让 GBK 码表**把启动直接打崩**，且 BOM 会让**第一行读不进来**，所以快路径用 `utf-8-sig`、失败退回 `read_text`）、用户手改过的 `import_*.txt`（`load_import_base`）、插件 `.py`（`main._py_plugin_meta_static`：GBK+coding 声明的插件 python 能跑，严格 utf-8 会让插件管理器列举时崩）。
-   **配套：写这些文件时行尾要跟 C# 对齐** —— C# 的 `ImportCodeTable` 写 `import_*.txt` 是 `WriteAllText(..., UTF8Encoding(false))` + `'\n'`（**裸 LF**），python 的 `open(..., 'w')` 在 Windows 上会翻成 CRLF（`import_*.txt` 是入库跟踪文件，被翻成 CRLF 就是整文件 diff）；所以 `engine.write_import_file` 必须带 `newline='\n'`。反之 `config.txt` 是 C# `WriteAllLines`（CRLF），python 默认写 CRLF 正好一致。
-   **读的那一侧注意**：`read_text` **不做 universal newlines**，行尾 `\r` 会进值 —— 见 §39。
+27. **反向差异清单（python 有、C# 没有；别当 bug 去「对齐」掉）**：`cnpunct`+Ctrl+.、`F8`、`Ctrl+Alt+Q`、候选条主题、
+    `learnk`/`recentk` 与近期热度排序（§14）、剪贴板「粘贴上屏」、`_CLIP_FORCE`（开始菜单/搜索强制剪贴上屏）、tray 的
+    整句/联想/全角标点开关、**「译文」选项**、造词对话框、**鼠标旁状态提示点 `statedot`（默认关，§D11.2）**。
+    **要往 C# 补需用户明确要求**（得走 §3 的瘦 DLL + ps1 + 15 项测试整条链）。C# 的 `inDialog` python 有意不跟进
+    （python 的造词/导入框含文本框，需要输入法可用）。
+    **第五十二轮登记、用户已确认「保持现状」**：① Shift 轻拍更保守（Ctrl/Alt/Win 按住不武装、松键 0.4s 时限）；
+    ② 字母键判定排在空格/翻页**之后**（`key_first = a` 时 python 当空格确认、C# 当字母入码）。**python 有意比 C# 好的**：
+    `_save_cfg` 写失败弹气泡、`calc._to_long` 越界报 `Err`、`_write_config` 保持 config.txt 原有行尾。
+    **第六十七轮**：`keyfix` 牺牲字符用 **`U+200B` 零宽空格**（`win.QT_FIX_SENTINEL`），C# 用可见的 `'X'` ——
+    **别再改回 `ord('X')`**；改这块跑 `%TEMP%\wg-r67-qtfix-probe.py`。原文见 §D21。
+28. **用户可改的文本一律用 `engine.read_text()` 读**（`utf-8-sig` → `gbk` → `utf-8+replace`）：记事本「另存为
+    ANSI(GBK)」之后再严格 `open(..., encoding='utf-8')` 会**抛 UnicodeDecodeError 崩启动**（C# 的
+    `File.ReadAllLines(UTF8)` 是替换式解码、不抛）。`read_text` 只以 OSError 表示不可读；新增读取点照此办理。
+    名单：`config.txt`/`tools.txt`/`plugins\*.txt`/`pastemode.txt`/`plugins-disabled.txt`/`userwords.txt`/
+    `userdict_*.txt`/`lastpick_*.txt`/`assoc.txt`；**便签**（`notes\*.txt`/`notes.txt`/`notes-meta.txt`/`note-color.txt`
+    —— 那里的 `except OSError` 抓不到解码错，结果是**便签窗半死**）；**码表与插件**（`py/wb/ec/trad/import_*.txt`
+    见 `engine.parse_dict`：快路径 `utf-8-sig`、失败退 `read_text`，BOM 会让**第一行读不进来**；`load_import_base`；
+    插件 `.py` 见 `main._py_plugin_meta_static`）。**写的一侧对齐 C# 行尾**：`write_import_file` 必须带
+    `newline='\n'`（C# 写裸 LF；`import_*.txt` 入库跟踪，翻成 CRLF 就是整文件 diff）；`config.txt` 是 CRLF 默认即可。
+    **读的一侧**：`read_text` 不做 universal newlines，`\r` 会进值 —— 见 §39。原文见 §D22。
 29. **未闭合的多行块整块丢弃**（对齐 C# `ParseToolSteps`/`LoadTools`：块只在遇到闭标签时才入 steps）：`plugins.run_steps` 若扫描到行尾仍没找到闭标签，记一条 `块未闭合…已跳过` 就 `continue`，**不要执行**半截块（否则会把后面的行当脚本体跑掉）。
-30. **改 `.py` 的脚本必须用二进制写**：python 文件在仓库里是 **LF**（只有 `wgime.bat` 走 `eol=crlf`）。用 `open(p, 'w', encoding='utf-8')` 在 Windows 上写会把 `\n` 自动翻成 `\r\n`，于是**整个文件变成"全部改动"**（曾造成 1885 行幽灵 diff，还得回滚重写）。脚本改文件时用 `open(p,'w',encoding='utf-8',newline='')` 或 `[IO.File]::WriteAllBytes` 写二进制；改完用 `CRLF=0` 自检（PowerShell 统计 `\r\n` 数），并确认 `git diff --stat` 的行数符合预期。`build-wgime-pure.py` 内嵌模块源码，**行尾变了要重新构建 dist** 否则 payload 与源码不一致。
-
-   **txt 的行尾要按各自的 blob 走（第三十六轮发现，别再制造整文件 diff）**：`core.autocrlf=false` 且没有 `text`
-   属性时，git 比较的是**字节**；仓库里一批 txt（根 `plugins\*.txt`、`tools.txt`…）**blob 是 LF 而工作区是 CRLF**
-   （历史遗留，靠 index 的 stat 缓存才显示"干净"），于是**用字节改写这类文件会让整文件报改动**（整文件 186 行）。
-   改这种 txt 的正确做法：先看 blob 的行尾（`git cat-file -p HEAD:<path>` 数 `\r\n`），按**blob 的行尾**写回，
-   再用 `git diff --numstat -- <path>` 校验只剩目标行（`--ignore-cr-at-eol` 可辅助判断"是否只是行尾差异"）。
-   注意行尾在仓库里并不统一：根 `plugins\wgtranslate.txt` 的 blob 是 **LF**，而 `release\plugins\wgtranslate.txt`
-   的 blob 是 **CRLF** —— 同一个文件在两处不同，**`sync-dist.ps1` 逐字节拷贝会让 release 侧整文件报改动**，
-   同步完要按 release 的 blob 行尾再写一次。
-   **`build-package.ps1` 不是可复现构建**：它内嵌的第三方 zip 带**当前时间戳**，所以**源码没改也会让
-   `wgime-py-pure\dist\wgime-py.py` 变脏**（只有一个 `THIRD_ZIP_B64` 行不同）。dist 内嵌 11 个项目模块 +
-   `main.py`（**不含插件**；第六十九轮起含 `dot`，见 §D11），所以只改插件（或任何不内嵌的文件）时，构建完应
-   `git checkout -- wgime-py-pure\dist\wgime-py.py` 把这条噪声回退掉，再用
-   `%TEMP%\wgime-dist-sync-check.py` 确认 dist 仍与磁盘逐字节一致。
-
+30. **改 `.py` 的脚本必须二进制写（LF）**：`.py` 在仓库里是 **LF**；`open(p,'w',encoding='utf-8')` 在 Windows 上会把
+    `\n` 翻成 `\r\n` → **整个文件变成「全部改动」**（曾造成 1885 行幽灵 diff）。用 `newline=''` 或
+    `[IO.File]::WriteAllBytes`；改完统计 `\r\n` 应为 0，并核对 `git diff --stat` 的行数。`build-wgime-pure.py`
+    内嵌模块源码，**行尾变了要重建 dist**，否则 payload 与源码不一致。
+    **txt 按各自 blob 的行尾走**：`core.autocrlf=false` 时 git 比的是**字节**，仓库里一批 txt 是 **blob LF + 工作区 CRLF**
+    （历史遗留），字节改写会让整文件报改动 → 先 `git cat-file -p HEAD:<path>` 看 blob 行尾、按它写回、再用
+    `git diff --numstat -- <path>` 校验只剩目标行。**行尾不统一**：根 `plugins\wgtranslate.txt` 的 blob 是 LF，
+    而 `release\plugins\wgtranslate.txt` 是 CRLF —— `sync-dist.ps1` 逐字节拷完要按 release 的 blob 再写一次。
+    **`build-package.ps1` 不可复现**（内嵌 zip 带当前时间戳，源码没改 dist 也会脏）：只改插件等**不内嵌**的文件时，
+    构建后 `git checkout -- wgime-py-pure\dist\wgime-py.py` 回退噪声，再跑 `%TEMP%\wgime-dist-sync-check.py`
+    确认 dist 与磁盘逐字节一致。原文见 §D20。
 31. **config 键的"取值语义"以 C# 为准，白/黑名单别搞混**（第十轮审计发现 `followcaret` 搞混了）：C# `LoadConfig`（wgime.bat 1663-1747）里 **白名单**（`v=="1"||v=="on"||v=="true"`，非法值一律判"关"）= `showcode`/`keyfix`/`followcaret`/`hideidle`/`trad`/`starton`；**黑名单**（`v!="0"&&v!="off"&&v!="false"`，非法值判"开"）= `sentence`/`assoc`。python 侧逐键照此（`engine.load_config`）；python 独有键 `cnpunct` 用黑名单。`paste`（on/always→1, off→2, key/unicode→3, 其余→0）、`shuangpin`（xiaohe/小鹤/flypy→1, ziranma/自然码/zrm→2, ms/微软/mspy→3, 其余→0）、`mode`（仅 `tray` 生效）、`fuzzy`（none/off/空→清空；一对都解析不出则保持缺省）也都与 C# 逐值对齐过（275 组用例）。**改 `load_config` 后要重建 dist + package**（dist 内嵌模块源码）。有意保留：非法 `hotkey_*`/`key_*` C# 保持当前字段、python 回缺省；python 多认单引号 `app =` 命令。
 
 32. **步骤 DSL（`plugins.py` `run_steps`/`_run_verb`）的动词语义对齐 C# `ExecToolStep`**（第十一轮审计）：① `confirm` 的 `title=`/`buttons=`/`default=` 三项必须**真的生效**（`_confirm_args(arg, confirm, **msgbox**)` —— `msgbox` 是参数，原来漏传导致 `buttons=ok` 直接 `NameError` 崩；`okcancel` 走 OK/Cancel，缺省按钮是"否"对齐 C# `MessageBoxDefaultButton.Button2`），回调签名 `confirm(text, title, buttons, default_no)`，保留单参数旧回调兼容；② `kill` 只看**第一个 token**（C# `tk[1]`），不是整行 rest；③ 缺参动词（`run` 无程序名、`reg-set` <4 token、`reg-del` 无键路径）必须**记一步失败**，不能静默成功（C# 是 `tk[n]` 越界抛异常）；④ 多行块控制台显示名按 C# 映射：`cmd→[shell]`、`shellx|cmdx→[shellx]`、`powershellx→[psx]`、`powershell|ps→[powershell]`。python 有意保留：破坏性动词执行前强确认（§16）、块开标签大小写不敏感、`file-del C:\*` 拒删（C# 会真删 C 盘根）。改完 `plugins.py`/`tools.py`/`main.py` 要重建 dist + package。
@@ -151,20 +188,15 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
     出现异常时先怀疑这类错误。
 
 36. **托盘图标"个别机器看不见"的根因 = 宿主没装 Pillow（第四十一/四十二轮，别再依赖 PIL）**：
-    python 版托盘以前**运行时**用 Pillow 画图标，而单文件只内嵌 comtypes/uiautomation/pystray，**没内嵌 Pillow**
-    （带 `_imaging.pyd`，ABI 绑定，内嵌源码跨版本没用）→ 没装 Pillow 的机器 `import PIL` 直接失败、**整个托盘消失**；
-    "`python wgime-py.py` 却正常"是因为 PATH 上的 python 恰好是**另一个装了 Pillow 的版本**（与双击用的解释器不同）。
-    现在：构建时渲染 9 个 ICO（`build-wgime-pure.py` → `TRAY_ICONS`，5.2 KB base64）内嵌，运行时
-    `win.icon_from_ico_bytes()` 写进 `runtime\icons\` 再 `LoadImageW` 成 HICON，**不再需要宿主 Pillow**；
+    托盘图标**构建时**渲染成 9 个 ICO 内嵌（`build-wgime-pure.py` → `TRAY_ICONS`），运行时
+    `win.icon_from_ico_bytes()` 写进 `runtime\icons\` 再 `LoadImageW` 成 HICON，**不再需要宿主 Pillow**
+    （PIL 带 `_imaging.pyd`，ABI 绑定，内嵌源码跨版本没用 —— 没装的机器 `import PIL` 失败 → **整个托盘消失**）；
     换图标走 `NIM_MODIFY|NIF_ICON`（看 `tray.NIM['modify_ok']`）；`HAS_PIL` 只作源码布局的回退路径。
-    诊断（第四十一轮，别删）：pystray 不检查 `Shell_NotifyIcon` 返回值、报错只走 `logging`→`sys.stderr`，
-    而 pythonw 下 `sys.stderr is None` → 收 `tray.LOGS`/`NIM['add_ok']`/`last_error`，`main._tray_selfcheck()`
-    写 **always-on** 日志并在真失败时**从后台线程**弹框（主线程弹会卡住 poll=打字停摆）。三个坑：
-    ① `Shell_NotifyIconGetRect` 不能当"登记上没有"的判据（`NIM_ADD=True` 时也可能回 E_FAIL，只反映在不在可见区）；
-    ② GetRect 的 uID 必须是 `id(icon)`；③ 判断"用户能不能看见"用 `win.tray_promoted()`
-    （`HKCU\...\NotifyIconSettings\<hash>\IsPromoted`，新机器/新 exe 默认隐藏进 `^`）。**同类坑第六十九轮又踩一次**（pystray 的 `six` 漏嵌，见 §12）—— 判据固定为: 用 `python -S -E` 跑一遍真成品，或跑 `tests\embedded-isolation-test.py`；`%TEMP%\wg-r70-clean-live.py` 是干净环境实机探针。
-    探针：`%TEMP%\wg-tray-selfcheck-probe.py`、`wg-nopil-tray-probe.py`（假 PIL + 真实 pythonw）、
-    `wg-nopil-switch-probe.py`（切模式换图标）、`wg-shellnotify-probe.py`。
+    诊断（别删）：pystray 报错只走 `logging`→`sys.stderr`，而 pythonw 下 `sys.stderr is None` → 收
+    `tray.LOGS`/`NIM['add_ok']`/`last_error`，`main._tray_selfcheck()` 写 **always-on** 日志并在真失败时
+    **从后台线程**弹框（主线程弹会卡住 poll=打字停摆）。三个坑：① `Shell_NotifyIconGetRect` 不能当
+    "登记上没有"的判据；② GetRect 的 uID 必须是 `id(icon)`；③ 判断"用户能不能看见"用 `win.tray_promoted()`。
+    判据固定为: 用 `python -S -E` 跑一遍真成品，或跑 `tests\embedded-isolation-test.py`；探针 `%TEMP%\wg-r70-clean-live.py`。
 
 37. **译文质量 = 英语常用词表（第四十五轮）**：`ce` 由 `ec.txt` 反建，旧代码取字母序第一个 →
     `测试→dvdram`/`你好→alohas`/`老师→dorina`（生僻词/人名/缩写，用户实测"不太妙"）。现在
@@ -172,148 +204,86 @@ python wgime-py-pure\tests\dot-mouse-test.py          # 状态提示点回归（
     **MIT**，随分发目录一起发）排序，**没有常用英语词的干脆不进 `ce`**（查不到就不挂）；表读不到就退回
     旧行为（stderr 说明）。`EN_HINT_MAX_RANK=50000` 可调；`en-freq.txt` 在 `CACHE_FILES` 里（换表 → 老缓存失效一次）。
 
-38. **语音输入（第四十七轮，python 独有）**：`voice.py` = waveIn 录音（纯 ctypes，VAD 静音自停，别用已移除的 `audioop`）
-    + 五种后端（`voice_engine`：`system` 系统离线引擎 System.Speech，走 `powershell -EncodedCommand` 内联脚本
-    **不落盘**、结果 base64 回传 / `http` Whisper 兼容 / `whisper` **常驻本地 faster-whisper 子进程**（第六十三轮）
-    / `sherpa` **常驻本地 sherpa-onnx**（第六十四轮，见本条第末）/ `cmd` 外部命令带 `{wav}` / `stream` **流式云端**（第七十五轮：OpenAI 兼容
-    `chat/completions` + SSE，文字**边说边出**；地址仍填 `stt_url/stt_key/stt_model`，两种 payload 按 URL
-    关键字自动选：含 `dashscope`/`aliyuncs` → `input_audio`(+`asr_options`)，否则 `audio_url`）。热键 `hotkey_voice`（Ctrl+Alt+V）
-    按住说话，hook 的 `WM_KEYUP` 报 `VK_VOICE_UP`，**只在 `VOICE_ON` 为真时吞键**；「语音」模式（`MODE_VOICE=4`）
-    里 `VOICE_MODE` 让钩子把按键**全部透传**（不组字），轻点热键 = 常录。结果默认进候选条等空格确认
-    （`voice_auto=1` 直接上屏；`voice_click=1` 则是**点击落点**：只进剪贴板 + 候选条提示
-    「点目标输入框粘贴」，用户点哪就往哪粘 —— 见 §D14），上屏走 `inject()` 但**不进词频学习**。麦克风隐私开关 Deny 时 `waveInOpen` 会 rc=1 →
-    必须报"去开 设置→隐私和安全性→麦克风→允许桌面应用访问麦克风"（`voice.mic_consent()`）。
-    **第四十八轮补的坑**：① `_write_config()` 以前在 `APP_DIR\config.txt` **不存在**时静默失败（`except OSError: pass`），
-    而 python 版可以不带 config.txt 跑 → **所有托盘开关都"点了不落盘"**；现在文件不存在就**新建**，返回 `True/False`，
-    失败写 always-on 日志。② hook 里 voice 热键的**按下**也要按 `VOICE_ON` 门控，否则"没开语音"时 Ctrl+Alt+V
-    被吞还弹"没打开"气泡（语音没开就该完全透传）。
-    **第四十九轮**：**切到「语音」模式 = 顺手打开语音功能**（`_voice_set_on`，幂等；否则模式菜单点了"没作用"）；
-    离开模式不关功能（热键随处可用）；**选项里关掉语音时若在语音模式则自动切回混合**；模式子菜单显示名
-    「语音模式」（`tray.MODE_MENU`），选项叫「语音输入 (总开关)」——别再两个都叫"语音"。
-    **第五十八~六十二轮（语音的一串真因；叙事/实测数字见 `AGENTS-DETAIL.md` §D12）—— 只留要照做的规则**：
-    ① **按住热键的自动重复必须丢掉**（Windows 每 ~33ms 补发 `WM_KEYDOWN`，`KBDLLHOOKSTRUCT` 里**没有**重复标志）：
-    `hook` 里 `if VOICE_DOWN[0]: return 1`，并在**修饰键已松开**的 V 按下处清 `VOICE_DOWN[0]`（防松键丢失后热键卡死）。
-    ② **录音期间要重画候选条**（`main._voice_tick()`，poll 里 ~4Hz；`voice_down` 把 `_VOICE_TICK[0]` 归零）——
-    否则条上那句 "(0s)" 是按下瞬间的**死字符串**。③ **VAD 阈值 `thr = min(clamp(floor*3.5,180,1200),
-    clamp(peak*0.25,180,600))`**（`floor` 取**最小** RMS，`peak` 每块 ×0.9 慢衰减）—— **别改回"只留 thr_abs"
-    或"头 500ms 取中位数/凑不够就兜底 300"**：说话声会被判成静音，1.2s 就自动停。代价是噪声大的房间不停
-    （要彻底关掉自动停就 `voice_silence = 0`）；全 0 PCM（`voice.peak() == 0`）报"麦克风给的是纯静音"。
-    ④ 每次录音/系统识别各留一行 **always-on** 诊断（`voice: rec … floor/thr/peak`、`voice: sys-rec segs/chars`）
-    —— 这类问题只能靠现场数字定位。⑤ `http` 统一走 `voice._http_post`（`stt_proxy`：auto=先代理后直连 /
-    `direct` / 指定代理 URL）：**每条路都要重建 `Request`**（`set_proxy()` 会**就地改 `req.host`**）、
-    **服务端回过话(HTTPError)就不换路/不重发**、把**每条路的原因**一起报出来。⑥ 系统引擎 `Recognize()`
-    **一次只返回一段**，必须循环收齐再拼（CJK 用 `''`、其它 `' '`）；流读完后**再调会抛 "No audio input is
-    supplied"**，循环内必须自己 try 住 break（否则已收到的段全丢）。**改 VAD 必须跑**
-    `python wgime-py-pure\tests\voice-vad-test.py`（31 项；改回旧写法会 10 条失败）；探针
-    `%TEMP%\wg-r58-voice-hold-probe.py`、`wg-r59-stt-proxy-probe.py`、`wg-r62-sysrec-probe.py`。
-    **第六十三轮（`voice_engine = whisper`）**：**别再让本地 whisper 每句新起进程** —— 实测每句 20s 里有 16s
-    是重付的 `import faster_whisper`(6.5s)+载模型(2~9s)，常驻后每句 3~5s。做法照 §17 helper（源码走环境变量 /
-    JSONL 走 stdio / **回包用 `ensure_ascii` JSON**，裸 UTF-8 在中文机会变 `?` / **父进程退出=stdin EOF=子进程自退**）。
-    **两个锁别合并**：`lock` 只管起杀（预热在主线程调它，绝不能等识别，否则打字停摆）、`rlock` 管一问一答。
-    预热两处：启动 +4s 后台（`stt_prewarm=0` 关）+ **按下热键那一刻**（与说话重叠）。键：`stt_model`/`stt_lang`/
-    `stt_prompt`/`stt_device`/`stt_compute`/`stt_beam`/`stt_python`。改这块**必须**跑
-    `python wgime-py-pure\tests\whisper-warm-test.py`（67 项，假 Popen 照抄真管道语义）。实测数字/两处真 bug/探针见 `AGENTS-DETAIL.md` §D6。
-    **第六十四轮（本地离线识别, 首选）**：`voice_engine = sherpa` + `stt_script` 指向 wrapper
-    （sherpa-onnx + SenseVoice-Small int8 228MB；**wrapper 的 stdout 只许打印识别文本, 常驻模式只许打印 JSON**）。
-    **常驻**（起 `stt_script --serve`；机制与第六十三轮 whisper **同一套** `_WarmSrv`，只是 `key/spawn/request_obj`
-    三个钩子不同）：每句 **0.08~0.16s**。`cmd` 是一次性（每句重付 1.31s 载模型 ≈1.5s/句），wrapper 不支持
-    `--serve` 时才用它。**key 的语义两边不同, 最容易写错**：sherpa 的 `itn`/`lang`/`threads`/`script` 是**建识别器**
-    的参数（改了要重启助手），whisper 的 `lang`/`prompt`/`beam` 是每次请求带的。**这套东西在仓库外、按机器各装一份**
-    —— 换机器要重装（Store Python 3.13 从头装一遍的步骤/实测/`--serve` 契约见 `AGENTS-DETAIL.md` §D8.2）。
-    **第六十五/六十六轮（坏网络）**：国内站 key 必须配 `api.siliconflow.cn`（`.com` 回 401、`.cn` 回 200）；
-    `stt_retry`（连接层同路重试，默认 3，**HTTPError 不重试**，免得白花额度）、`stt_timeout`（默认 15s）、
-    **记住可用路径**（哪条通下次优先）；`voice_fallback` = 第二引擎与主引擎**同时开跑、谁先成功用谁**
-    （不是"失败再回退"），两个都失败才报错（带两边原因），`http` 配了它时重试/超时收紧成 2×10s。
-    数字见 CHANGELOG 第六十四~六十六轮与 `AGENTS-DETAIL.md` §D7.1/§D8。
-
-39. **`read_text` 读来的行尾 `\r` 不能进值 —— 字符串比较会静默失效（第五十轮的真 bug）**：`read_text` 是
-    **二进制读 + 解码**（为了 GBK/ANSI 兼容，§28），**不做 universal newlines**，所以 CRLF 的 `\r` 会留在行尾。
-    `engine._load_freq` 读 `lastpick_*.txt` 时按 `'\n'` 切行后只 `rstrip('\n')`（**无效**，行早就按 `\n` 切了），
-    于是 `\r` 被当成词的一部分存进 `lastpick_m`；写盘时 text 模式又把 `\n` 翻成 `\r\n` →
-    **每轮"载入/存盘"长一个 `\r`**（用户现场 `%LOCALAPPDATA%\wgime-py\lastpick_mix.txt` =
-    `bm 出\r\r\r\r\r\r\r\r\r\r\r\r`，探针实测 17→19 字节/轮）。**真危害**：`candidates()` 的 LastPick 置顶是
-    `lp = lastpick_m[mode].get(keys); if lp and lp in cands` 的**比较** —— 值带 `\r` 永不相等，
-    "上次选的词置顶"**静默失效**（文件难看只是表征）。**规则**：按 `'\n'` 切行后第一件事 `line = line.rstrip('\r')`
-    （或像 `plugins.py` 那样 `rstrip('\r\n')`）；扫过的其它读取点（config/assoc/userwords/pastemode/tools/插件/便签）
-    都靠 `strip()` 侥幸躲过——**新写的解析点别省这一步**。写盘仍保持 CRLF（与 C# `File.WriteAllLines` 一致）；
-    脏文件在下次载入/存盘时自愈。永久回归：harness（`lastpick 值不带 \r` + `lastpick 仍置顶`），
-    探针 `%TEMP%\wg-r50-lastpick-probe.py`（修前 5/9 → 修后 11/11）。
-
-40. **全量审计的硬规则（第五十一轮）**：7 路 subagent 分模块审 + 横切 AST/不变量探针（56 条候选，
-    修掉 20 项；已修/未修明细见 CHANGELOG 第五十一轮与 `AGENTS-DETAIL.md` §D5）。要照做的：
-    ① **`_merge_user_words` 必须 py + wb + acro 三样都补**（C# 是 `MergeUserWords` → `MergeUserWordsWb`
-    → `BuildAcro`），且 `_init_state` 里三张派生表（char_wb/wb_by_len/word_freq）要在合并用户词**之前**就绪
-    （合并要用 `char_wb` 算五笔构词码）—— 只并拼音表的后果是"造的词重启后简拼/五笔查不到"；
-    ② **读用户文件要先读完再动内存**：`clock.load_cfg` 原来开头就 `ALARMS.clear()`，读失败（被独占/GBK/
-    读到 C# 写一半）就只剩"空"，紧接着一次无条件 `save_cfg` 把整份闹钟覆盖掉；
-    ③ **缓存/索引签名要覆盖它依赖的全部输入**（`userwords.txt` 曾漏 → 删词后出现删不掉的"幽灵词"）；
-    ④ **给 helper/子进程写管道必须非阻塞**（helper 串行读 stdin + 4KB 管道 ⇒ `stdin.write` 会把 Tk 主线程
-    永久阻塞，输入法卡死且不可自愈；改 `os.set_blocking(fd, False)` + `os.write`，满则丢弃这次刷新）；
-    ⑤ **后台线程里的异常必须兜住并报出来**（pythonw 下 `sys.stdout/stderr` 都是 None，裸线程抛异常完全无声，
-    用户只看到"点了没反应"）—— `main._bg_plugin` 是统一入口；
-    ⑥ 菜单/图标/模式表索引一律 `% len(表)`，不要写死数字（第四十九轮 `% 5`、第五十一轮托盘图标 `% 4`）；
+38. **语音输入（python 独有）**：`voice.py` = waveIn 录音（纯 ctypes，VAD 静音自停，**别用已移除的 `audioop`**）+
+    五后端（`voice_engine`：`system` 离线引擎（`powershell -EncodedCommand` 内联、不落盘、base64 回传）/ `http`
+    Whisper 兼容 / `whisper` 常驻 faster-whisper / `sherpa` 常驻 sherpa-onnx（首选）/ `cmd` 外部命令带 `{wav}` /
+    `stream` 流式云端（OpenAI 兼容 SSE；payload 按 URL 关键字选：含 `dashscope`/`aliyuncs` → `input_audio`(+`asr_options`)，
+    否则 `audio_url`））。热键 `hotkey_voice`（Ctrl+Alt+V）按住说话，`WM_KEYUP` 报 `VK_VOICE_UP`，**只在 `VOICE_ON`
+    为真时吞键**（按下也要门控）。`MODE_VOICE=4` 里钩子**全部透传**、轻点热键=常录；**切到语音模式 = 顺手开语音**
+    （`_voice_set_on`，幂等），离开不关；**选项里关语音时若在语音模式则自动切回混合**。结果默认进候选条等空格
+    （`voice_auto=1` 直接上屏；`voice_click=1` 点击落点＝只进剪贴板 + 提示，见 §D14），上屏走 `inject()` 但
+    **不进词频学习**。麦克风 Deny（`waveInOpen` rc=1）→ 提示去开「设置→隐私和安全性→麦克风」。`_write_config()`：
+    文件不存在要**新建**、返回 True/False（别静默失败）。
+    **硬规则**（叙事/数字/探针见 §D6 / §D7 / §D8 / §D12 / §D14）：① 按住热键的**自动重复必须丢**（`KBDLLHOOKSTRUCT`
+    里没有重复标志）：`if VOICE_DOWN[0]: return 1`，并在修饰键已松开处清标志；② 录音期间 ~4Hz 重画候选条
+    （`main._voice_tick()`）；③ VAD 阈值 `thr = min(clamp(floor*3.5,180,1200), clamp(peak*0.25,180,600))`
+    （`floor` 取**最小** RMS、`peak` 每块 ×0.9 慢衰减）—— **别改回「只留 thr_abs」或「头 500ms 取中位数」**；
+    关自动停用 `voice_silence = 0`；全 0 PCM 报「纯静音」；④ 每次录音/系统识别各留一行 **always-on** 诊断；
+    ⑤ `http` 统一走 `voice._http_post`（`stt_proxy`）：**每条路都重建 `Request`**、**服务端回过话(HTTPError)就不换路
+    不重发**、把**每条路的原因**一起报出来；⑥ 系统引擎 `Recognize()` **一次只返回一段**，循环收齐再拼（CJK `''`、
+    其它 `' '`），流读完**再调会抛**，循环内 try 住 break。改 VAD 必须跑 `voice-vad-test.py`（31 项）。
+    **常驻助手**（whisper/sherpa 同一套 `_WarmSrv`，只有 `key/spawn/request_obj` 三个钩子不同）：照 §17 helper 的套路
+    （源码走环境变量 / JSONL 走 stdio / **回包用 `ensure_ascii` JSON** / **父进程退出=stdin EOF=子进程自退**）。
+    **两个锁别合并**：`lock` 管起杀（预热在主线程调、绝不能等识别）、`rlock` 管一问一答；预热＝启动 +4s 后台
+    （`stt_prewarm=0` 关）+ **按下热键那一刻**。跑 `whisper-warm-test.py`（67）/ `sherpa-warm-test.py`（74）。
+    **key 语义两边不同**：sherpa 的 `itn`/`lang`/`threads`/`script` 是**建识别器**的参数（改了要重启助手），
+    whisper 的 `lang`/`prompt`/`beam` 每次请求带。这套东西**在仓库外、按机器各装一份**（见 §D8.2）。
+    **坏网络**：国内站 key 必须配 `api.siliconflow.cn`（`.com` 回 401）；`stt_retry`（同路默认 3，**HTTPError 不重试**）、
+    `stt_timeout`（默认 15s）、**记住可用路径**；`voice_fallback` = 两引擎**同时开跑、谁先成功用谁**，都失败才报错，
+    `http` 配了它时重试/超时收紧成 2×10s。原文见 §D27。
+39. **`read_text` 的行尾 `\r` 不能进值（第五十轮真 bug）**：`read_text` **不做 universal newlines**，CRLF 的 `\r`
+    会留在行尾、被当成词的一部分存进 `lastpick_m`；写盘时 text 模式又把 `\n` 翻成 `\r\n` → **每轮载入/存盘多一个 `\r`**。
+    **真危害**不是文件难看，而是 `candidates()` 的 LastPick 置顶靠**值比较**（`if lp and lp in cands`）—— 带 `\r`
+    的值永不相等，「上次选的词置顶」**静默失效**。**规则**：按 `'\n'` 切行后第一件事 `line = line.rstrip('\r')`
+    （或 `rstrip('\r\n')`）；**新写的解析点别省这一步**。写盘仍保持 CRLF（同 C# `File.WriteAllLines`），脏文件
+    下次载入自愈。永久回归：harness（`lastpick 值不带 \r` + `lastpick 仍置顶`）+ `%TEMP%\wg-r50-lastpick-probe.py`；
+    叙事见 §D4。
+40. **全量审计的硬规则（第五十一轮；明细见 CHANGELOG 第五十一轮与 §D5）**：
+    ① **`_merge_user_words` 必须 py + wb + acro 三样都补**，且 `_init_state` 里三张派生表（char_wb/wb_by_len/word_freq）
+    要在合并用户词**之前**就绪（合并要用 `char_wb` 算五笔构词码）；
+    ② **读用户文件要先读完再动内存**（别开头就 `ALARMS.clear()`，读失败就只剩"空"，紧接着的 `save_cfg` 会覆盖整份）；
+    ③ **缓存/索引签名要覆盖它依赖的全部输入**（漏了 `userwords.txt` 就会出现删不掉的"幽灵词"）；
+    ④ **给 helper/子进程写管道必须非阻塞**（helper 串行读 stdin + 4KB 管道 ⇒ `stdin.write` 会把 Tk 主线程永久阻塞；
+    改 `os.set_blocking(fd, False)` + `os.write`，满则丢弃这次刷新）；
+    ⑤ **后台线程里的异常必须兜住并报出来**（pythonw 下 `sys.stdout/stderr` 都是 None，裸线程抛异常完全无声）——
+    `main._bg_plugin` 是统一入口；
+    ⑥ 菜单/图标/模式表索引一律 `% len(表)`，不要写死数字；
     ⑦ `.py` 插件的"停用"判断要在 `exec_module` **之前**（否则被停用的插件每次启动仍执行模块级副作用）；
     ⑧ **权限是多值的**：`perm` 支持 `network,run` 这类逗号列表，判定要拆集合求交，别用整串 `in`。
 
-41. **`place()` 布局的子控件不会撑大父容器 —— Canvas 滚动区的 `inner` Frame 必须显式给尺寸（第五十三轮的真 bug）**：
-    `tools.py show_toolbox` 的磁贴区是 `Canvas` + `create_window(inner)`，而磁贴由 `ui.flat_button` 用 **`place()`** 摆。
-    **`place()` 不参与父容器的 requested size**，所以 `inner` 只有 **1x1**、`canvas.bbox('all')` = `(0,0,1,1)`、
-    window item `winsize=0x0` —— 磁贴**明明已经建出来、尺寸和坐标都对**（245x46 @ 14,14），却全被 Canvas 裁掉，
-    表现为"**标签页在、按钮一个都看不见**"（用户报的"工具箱里的配置都无法显示了"就是这个）。
-    修法：按磁贴行列算出真实尺寸，**三件事都要做** —— `inner.configure(width=, height=)`、
-    `create_window(..., width=, height=)`、`canvas.configure(scrollregion=(0,0,w,h))`（只设 scrollregion 不解决裁剪）。
-    **判据**：`canvas.bbox('all')` 若等于 `(0,0,1,1)` 就是中了这个坑。凡是"Canvas + place 子控件"的滚动区都照此办理。
-    **同一处还有两个连带坑（第五十三轮一并修掉）**：
-    ① **滚动条只在内容真的超出可视区时才 place**——原文无条件 `vsb.place(...)`，两个磁贴也挂一条滚动条
-    （`need_sb = inner_h > BODY_H`）。磁贴宽度两种情况下都用 `inner_w`，免得滚动条出现/消失时栅格跳动。
-    ② **挂在 `content` 上的控件必须按内容区高度算 y/height**——`ui.make_window` 的 `content` 是**标题栏下方**那块
-    （`y=38, height=h-38`），而日志框原先按**整窗高**算 `y=H-118` 却挂在 `content` 上，底边落到 456、超出内容区
-    (432) 整整 24px，最后几行被窗口边缘切掉。**统一用 `CH = H - 38` 推**（本窗：`LOG_H=132`、`BODY_H=CH-46-LOG_H-GAP-4=240`，
-    240 仍够放 4 行磁贴）。底部日志由 `ui.console_text` 建，第五十三轮给它补了**垂直滚动条 + 滚轮**
-    （工具箱/网络工具/聊天窗三处共用；以前光秃秃一个 `Text` + `wrap='none'` + `see('end')`，输出一多就只剩最后几行且无法回看）。
-
-42. **`ui.make_window` 的窗口高度必须把标题栏那 38px 算进去（第五十五轮，一次修了 5 个窗口）**：
-    `content` 只占 `h-38`，但这些窗口的 y/height 都是按"可用区"排的（例：剪贴板按钮 `y=348+30=378`），
-    窗口高度却按 380 给 → **底部控件被窗口边缘裁掉**。**规则：窗口高度 = 内容真正需要的高度 + 38**（再留 ~10px 边距）。
-    本轮审计出并修掉的：剪贴板 380→**452**、取色器 210→**246**、造词 200→**232**、用户词表 342→**378**、
-    插件管理 420→**452**。同一轮还修了：① 插件管理顶部按钮条总宽 `494+7*8=542 > bar 的 540`（最右「运行」
-    被右边缘切 2px）→ 起点改 0、间距 8→6（530）；② 剪贴板那句提示不限定宽度又放在 `x=390` → 右边缘冲到 606
-    （窗口才 520）→ 挪到按钮下方单独一行 + 显式 `width`。
-    **审计方法（别再靠肉眼）**：把窗口建出来，遍历子孙算绝对 `(x+w, y+h)` 与窗口宽高比，超出的即被裁 ——
-    探针 `%TEMP%\wg-window-audit2.py`（覆盖 10 个内置工具窗口）、`wg-window-audit3.py`（造词/用户词表用假 engine）。
-    **便签滚动条改成按需**：Text 的 `yscrollcommand` 里判断 `yview() == (0.0, 1.0)`（装得下）就 `place_forget`，
-    溢出才 `place`；**正文宽度保持不变**，免得滚动条出现/消失时文字左右重排。
-    **给 tk 窗口设 Win32 样式（不激活/穿透/透明/置顶）必须写"顶层外框"**：`winfo_id()` 给的是 **`TkChild` 子窗口**，
-    真正的外框是 `GetAncestor(GA_ROOT)`（`TkTopLevel`）—— 写到子窗口上 `GetWindowLong` 读得回来、但窗口管理器不看，
-    等于没生效（第六十九轮实机 dump 抓出来的真 bug，一行改动：`win.top_level_hwnd()`；细节见 `AGENTS-DETAIL.md` §D11）。
-
-43. **托盘图标的句柄时序（第五十六轮，两条都是真踩过的坑）**：
-    ① **图标还没登记上（`icon.visible` 为假）时绝不换图** —— `Tray.start()` 注入 h0 后由 `run_detached()` 的
-    **setup 线程**发 `NIM_ADD`，主线程紧接着的 `_refresh()` 若此时销毁 h0，shell 记住的就是**已销毁的句柄**
-    （表现：刚启动那一下托盘图标空白/乱）。第五十一轮那版"无条件 `_release_icon()`"就是这个回归。
+41. **`place()` 的子控件不撑大父容器 —— Canvas 滚动区的 `inner` 必须显式给尺寸（第五十三轮真 bug）**：
+    `tools.py show_toolbox` 用 `Canvas` + `create_window(inner)`，磁贴由 `ui.flat_button` 用 **`place()`** 摆；
+    `place()` 不进父容器的 requested size → `inner` 只有 **1x1**、`canvas.bbox('all')==(0,0,1,1)`、`winsize=0x0`，
+    磁贴**建出来了却全被裁掉**（「标签页在、按钮一个都看不见」）。修法**三件事都要做**：
+    `inner.configure(width=,height=)` + `create_window(...,width=,height=)` + `canvas.configure(scrollregion=(0,0,w,h))`
+    （只设 scrollregion 不解决裁剪）。**判据**：`bbox('all')==(0,0,1,1)` 即中招；凡「Canvas + place 子控件」照此办。
+    连带：① 滚动条**只在内容真超出可视区时** place（`need_sb = inner_h > BODY_H`），磁贴宽度恒用 `inner_w`；
+    ② 挂在 `content` 上的控件按**内容区**高度算 y/height（`content` 是标题栏下方那块：`y=38,height=h-38`），
+    统一用 `CH = H - 38` 推；底部日志 `ui.console_text` 要有**垂直滚动条 + 滚轮**（工具箱/网络工具/聊天窗共用）。
+    数字/探针见 §D19。
+42. **`ui.make_window` 的窗口高度 = 内容真正需要的高度 + 38（标题栏）（第五十五轮，一次修了 5 个窗口）**：
+    `content` 只占 `h-38`，按「可用区」排 y/height 却按整窗高给高度 → **底部控件被窗口边缘裁掉**（剪贴板/取色器/
+    造词/用户词表/插件管理都中过）。同轮还修：插件管理顶部按钮条总宽超出 bar（最右按钮被切）、剪贴板那句提示
+    不限定宽度又放在 `x=390`（右边缘冲出窗口）→ 挪到按钮下方单独一行 + 显式 `width`。**审计别靠肉眼**：把窗口建出来
+    遍历子孙算绝对 `(x+w,y+h)` 比窗口宽高 —— `%TEMP%\wg-window-audit2.py`（10 个内置工具窗）、`wg-window-audit3.py`
+    （造词/用户词表用假 engine）；数字见 §D26。**便签滚动条按需**：`yscrollcommand` 里判 `yview()==(0.0,1.0)`
+    （装得下）就 `place_forget`，溢出才 `place`，**正文宽度保持不变**。**给 tk 窗口设 Win32 样式必须写「顶层外框」**：
+    `winfo_id()` 是 `TkChild` 子窗口，真正的外框是 `GetAncestor(GA_ROOT)` → 用 `win.top_level_hwnd()`
+    （写子窗口上等于没生效，§D11.1）。
+43. **托盘图标的句柄时序（第五十六/五十七轮）**：
+    ① **图标还没登记上（`icon.visible` 为假）时绝不换图** —— 否则 shell 记住的是**已销毁的句柄**。
     ② **换图顺序:先注入新句柄 → `NIM_MODIFY` → shell 接受之后才 `DestroyIcon` 旧句柄**。pystray 的
-    `_release_icon()` 销毁的是**当前** `_icon_handle`（不是刚换下来的那个），要销毁旧句柄用 `win.destroy_icon()`；
+    `_release_icon()` 销毁的是**当前** `_icon_handle`（不是刚换下来的那个），销毁旧句柄用 `win.destroy_icon()`；
     同一张图（key 相同）重复刷新只 `update_menu()`，不重建 HICON、不惊动 shell。
-    ③ **图标要"早挂"**：词库加载是**主线程 join**（热 1.5-1.9s、冷建 7.8s），托盘原排在 join 之后的
-    `after(150)` 里 → 那段时间托盘里什么都没有。现在 `_boot_tray()` 在 join **之前**先挂最小菜单图标，
-    词库读完由 `_deferred_tray` 补完整菜单（`TRAY.api = _tray_api(); rebuild(); _refresh()`）。
-    **改启动顺序时别把 `_boot_tray()` 挪到 join 之后**；`tray.start(boot=True)` 用的是最小 api
-    （只有 toggle/is_active/get_mode/quit），**不要在 boot 分支里加需要 CFG/工具/插件的调用**。
-    实测（真成品冷启动）：boot icon @+0.76s，engine load @+5.19s（差 4.43s），完整菜单 @+5.40s。
-    ④ **换图"成没成"只能看 `NIM['modify_ok']`，绝不能看 `icon._message()` 的返回值**（第五十七轮的真 bug）：
-    pystray `_win32._message()` 只是调 `Shell_NotifyIcon(...)`、**没有 return** → `bool(...)` 恒为 False。
-    第五十六轮据此判定"换图失败"，于是 `_cur_key` 永不推进 → "同 key 只刷菜单"这条分支拿旧状态当
-    "图标已经是新的" → **从语音/词典切回混合、或按开关打开输入法时图标纹丝不动**（用户报"托盘图标都不会变了" /
-    "混合的模式切换不过去"：空闲隐藏下候选条不显示，图标是切模式**唯一**的反馈，所以看起来像"模式没切" ——
-    模式循环本身没问题，`%TEMP%\wg-r57-mode-cycle-probe.py` 21/21）；同时旧句柄永不销毁 → 每次刷新漏一个 HICON。
-    现在换图统一走 `Tray._notify_icon(h, key, old)`，状态拆两个：`_cur_key` = **pystray 当前句柄**对应的 key
-    （注入后立刻推进），`_shown_key`/`_shown_handle` = **shell 确认接受**过的 key/句柄（只有 `modify_ok is True`
-    才销毁旧的 `_shown_handle`；**shell 拒收时不谎报**，下次用**同一个句柄**补发 `NIM_MODIFY`，不重建、不漏）。
-    改这块**必须**跑 `python wgime-py-pure\tests\tray-swap-test.py`（42 项，假 icon 照抄真 pystray 的
-    "`_message` 无返回值"语义）—— 第五十三轮那个探针的假 icon `return True`，比现实宽松，因此漏掉了本回归：
-    **桩不能比真的更宽容**。该文件第五十七轮写完文档却**忘了提交**（2026-09-15 补齐），补时做了"守卫有效性"
-    自检：把 `_notify_icon` 临时改回第五十六轮那种 `bool(icon._message(...))` 写法 → 测试 **11 条失败**
-    （含 B7「返回 None 而状态仍推进」），还原后 **42/42** —— 记住：**一个不会失败的测试等于没写**。
+    ③ **图标要"早挂"**：词库加载是**主线程 join**，`_boot_tray()` 在 join **之前**先挂最小菜单图标，
+    词库读完由 `_deferred_tray` 补完整菜单；**别把 `_boot_tray()` 挪到 join 之后**；`tray.start(boot=True)`
+    用最小 api（只有 toggle/is_active/get_mode/quit），**不要在 boot 分支里加需要 CFG/工具/插件的调用**。
+    ④ **换图"成没成"只能看 `NIM['modify_ok']`，绝不能看 `icon._message()` 的返回值**（pystray `_win32._message()`
+    **没有 return** → `bool(...)` 恒为 False）。换图统一走 `Tray._notify_icon(h, key, old)`，状态拆两个：
+    `_cur_key` = pystray 当前句柄对应的 key（注入后立刻推进），`_shown_key`/`_shown_handle` = **shell 确认接受**过的
+    （只有 `modify_ok is True` 才销毁旧的；**shell 拒收时不谎报**，下次用同一个句柄补发）。改这块**必须**跑
+    `tray-swap-test.py`（42 项）—— **桩不能比真的更宽容**（假 icon `return True` 就漏掉了本回归）；记住：
+    **一个不会失败的测试等于没写**。故事/实测见 CHANGELOG 第五十六/五十七轮。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
