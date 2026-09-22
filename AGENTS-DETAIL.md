@@ -1904,3 +1904,70 @@ dist 里 version_in_text 正则的全部命中(修前):
 body 无 `?`、资产表三条 SHA256 对得上; **并以 `1.2.14-py` 的老用户身份真跑了一遍 `plan`+`stage`** ——
 下载 v1.2.15、四道校验通过(修 ① 之前这条必被拒)、落盘与本机 dist 逐字节同。记录见 §D28;
 `release-assets-check.py --version 1.2.15` **28/28**。
+
+## §D36 桌面宠物 widget（目标轮次 1）：全屏 / 鼠标穿透 / 不抢焦点 —— 可行性已实测, 语言与内核已定
+
+**需求**(用户原话, 场景 1/2/3): 一个**全屏、鼠标穿透**的小挂件; 主角随打字运球/空闲自由活动、
+回车投篮; 或驮挎包的小狗, 用游戏式快捷键呼出工具面板, 点工具就"从包里叼出来抛到屏幕中间展开"、
+展开的是**输入法插件**; 活动范围扩展到屏幕四边框(左右要爬树)、跟鼠标躲猫猫。
+**交付形态**: wgime-py 版的**独立插件**, "可以是 dll, 不能有 exe"。
+
+### 1) 结论: 纯 Python 就够, 不需要 DLL / EXE
+
+- wgime-py 的插件形态就是 `plugins\*.py`(见 `docs\WGIME_插件规范.md` §8.7/§8.8): 模块级 `CODE`/`NAME`/… +
+  可调用 `run()` + `STANDALONE = True`(双模式)。**DLL 与 EXE 都不需要**;
+  真要"独立运行"也只是 `python xxx.py`, 用的还是用户自己那个解释器。
+- 关键约束: **`run()` 跑在宿主 Tk 主线程且同步执行** ⇒ 一个长期活着的动画窗口必须照
+  `wgtranslate`/`clock` 那套**起 detached 子进程**(`CREATE_NO_WINDOW`, 子进程里自带消息循环)。
+  这正好也是我们想要的: widget 与输入法**进程隔离**, 它再卡也卡不到打字。
+- **不要用 tkinter 画这个浮层** —— 理由见下面 2) 的实测: Tk 建窗即 map, 激活已经发生, 抢焦点拦不住。
+
+### 2) 实测(本机 3840x2160, 单屏; 探针 `wgime-py-pure\testing\pet-probe-*.py`, 原型勿入库)
+
+| 做法 | 结果 |
+|---|---|
+| Tk:`overrideredirect` + `-transparentcolor` + `win.set_overlay_styles()` | 透明/穿透/四条样式都对, 4K 全屏 12 个精灵 **290fps**; 但**第一个窗口必抢前台**(实测 `stole=1`) |
+| Tk + 先 `withdraw` 再 `ShowWindow(SW_SHOWNOACTIVATE)` | **还是 `stole=1`** —— 因为 Tk 建 Toplevel 时就 map 了, withdraw 已经太晚 |
+| Tk + "抢了再 `SetForegroundWindow(prev)` 还回去" | `stole=0`, 能救, 但中间有 ~0.3s 抢着 ⇒ 正在打字时按键会**丢进我们的空窗口** |
+| **自己 `CreateWindowExW`, 创建时就带 `WS_EX_NOACTIVATE`** | **`stole=0` 且第一帧就不抢**, 从根上解决 |
+
+**最终内核配方**(探针 4/5, 全绿):
+```
+CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST,
+                WS_POPUP, 0,0, SW,SH)          # 尺寸用 SM_CXSCREEN/CYSCREEN(整屏, 不是工作区)
+SetLayeredWindowAttributes(hwnd, KEY_COLORREF, 0, LWA_COLORKEY)   # 键色透明
+ShowWindow(hwnd, SW_SHOWNOACTIVATE); SetWindowPos(HWND_TOPMOST, …, SWP_NOACTIVATE)
+```
+- 动画: **独立线程 + `timeBeginPeriod(1)` + `PostMessage(WM_APP+n)`**, 主线程 `GetMessage` 阻塞循环。
+  实测 **59.5fps**, wndproc 最慢 **1.45ms**。
+  **别用 `WM_TIMER` + 轮询 `sleep`**: 实测只有 **40fps**(消息队列被 sleep 饿住), 与渲染无关。
+- 重画只 `InvalidateRect(脏矩形)`(旧位+新位两块), 绝不用 `InvalidateRect(NULL)`。
+- 客观判据(别靠肉眼, 这几个都实测过):
+  ① `GetPixel(GetDC(NULL), 精灵处) == 球色` ⇒ **分层窗真的可见**; 有了这条, 下面这条才不是空转;
+  ② 同法取窗口内空白点, 显示前后**像素不变** ⇒ 键色**真透明**;
+  ③ `WindowFromPoint(x,y)` 返回的 root ≠ 本窗 ⇒ **真穿透**(连精灵上那点也穿透);
+  ④ `GetForegroundWindow()` 前后一致 ⇒ **没抢焦点**;
+  ⑤ `GetWindowLongPtrW(GWL_EXSTYLE)` 四条样式齐。
+
+### 3) 交互态(场景 2 点工具的关键性质, 已实测)
+
+平时 `WS_EX_TRANSPARENT` ⇒ 整屏穿透。要用户点工具时, **只去掉 `WS_EX_TRANSPARENT`**(保留 NOACTIVATE):
+- 画了面板的地方 `WindowFromPoint` **就是本窗** ⇒ 点得到工具;
+- 面板外的空白处**仍然穿透** —— 因为 `LWA_COLORKEY` 连**命中测试**也按键色透明;
+- **全程前台窗口不变** ⇒ 点工具**不会把输入框的焦点/光标弄丢**。这条是"输入法旁边挂件"最要紧的性质。
+
+### 4) 踩坑与硬规矩(写给后面的轮次)
+
+1. **样式必须创建时给**: 任何"先建窗再补 `WS_EX_NOACTIVATE`"的路线都已经激活过一次了。Tk 这条路走不通。
+2. **所有 Win32 函数都要声明 `argtypes`/`restype`** —— 64 位下句柄按默认 `c_int` 传会被**截断**
+   (探针第一版就靠这个才没崩: 显式声明后 `CreateWindowExW`/`SetWindowPos` 才正常)。
+3. `WS_EX_TOPMOST` 是**只读位**(`SetWindowLong` 设不上, 见 §D11.1/§42), 但 `CreateWindowExW` 的 `dwExStyle`
+   里给**有效**(实测读回来 `0x080800a8` 含 0x8); 要再压 Shell 层才走 `win.set_topmost()`。
+4. `WNDPROC` 的 `WINFUNCTYPE` 对象**必须保引用**, 否则被 GC ⇒ 回调进已释放内存。
+5. 键色选**精灵里绝不会出现的颜色**(沿用 `dot.py` 的 `#010203`); 颜色键是硬边(无逐像素 alpha),
+   所以美术走**像素风/扁平色块**最合适; 想要抗锯齿边缘再上 `UpdateLayeredWindow`(留作后续升级)。
+6. 全屏浮层一旦画错就是"整屏糊住"用户 ⇒ 先铺键色再画, 起窗失败/样式失败**立刻销毁退出**,
+   并且一定要有"到点自杀"的兜底(探针里就留着)。
+7. 目标轮次 1 只做到"把可行性证死 + 定内核"; **插件本体(三场景/角色/工具面板接插件)还没写**:
+   下一步 = `plugins\wgpet.py`(双模式) + `wgime-py-pure\tests\pet-overlay-test.py`(把 2) 那 5 条客观判据
+   与 3) 的交互态固化成常驻回归; 无桌面 SKIP, 与 `dot-mouse-test.py`/`plugin-window-test.py` 同款。
