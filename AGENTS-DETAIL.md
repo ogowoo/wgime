@@ -1968,6 +1968,59 @@ ShowWindow(hwnd, SW_SHOWNOACTIVATE); SetWindowPos(HWND_TOPMOST, …, SWP_NOACTIV
    所以美术走**像素风/扁平色块**最合适; 想要抗锯齿边缘再上 `UpdateLayeredWindow`(留作后续升级)。
 6. 全屏浮层一旦画错就是"整屏糊住"用户 ⇒ 先铺键色再画, 起窗失败/样式失败**立刻销毁退出**,
    并且一定要有"到点自杀"的兜底(探针里就留着)。
-7. 目标轮次 1 只做到"把可行性证死 + 定内核"; **插件本体(三场景/角色/工具面板接插件)还没写**:
-   下一步 = `plugins\wgpet.py`(双模式) + `wgime-py-pure\tests\pet-overlay-test.py`(把 2) 那 5 条客观判据
-   与 3) 的交互态固化成常驻回归; 无桌面 SKIP, 与 `dot-mouse-test.py`/`plugin-window-test.py` 同款。
+7. 目标轮次 1 只做到"把可行性证死 + 定内核"; 插件本体见 **§D37**(已完成: `plugins\wgpet.py` +
+   `tests\pet-overlay-test.py` 47 项 + 变异自检 4/4); 场景 1(篮球)与 3(四边框攀爬/躲猫猫)还没做。
+
+## §D37 目标轮次 2：桌面宠物插件本体（场景 2 跑通）+ 47 项客观回归 + 变异自检
+
+**这一轮做了什么**: `wgime-py-pure\plugins\wgpet.py`(双模式插件, 约 47KB, 纯 ctypes+Win32, **不用 Tk**)
++ `wgime-py-pure\tests\pet-overlay-test.py`(47 项, 无桌面只跑 S 段)。
+
+**结构**(后面几轮照着加场景就行):
+| 部件 | 说明 |
+|---|---|
+| `PetWindow` | 自建分层窗 + 消息循环 + 脏矩形; `_style()` 一行决定"穿透 or 交互" |
+| `Gfx` | 一帧的笔刷/画笔/字体缓存 + 圆角/椭圆/多边形/线段/文字; **删对象前先把系统对象选回 DC**(否则 DeleteObject 失败=GDI 句柄泄漏, 每秒 60 帧会堆起来) |
+| `DogScene` | 主角状态机: `walk`(自己溜达)/`alert`(你在打字就站住抬头竖耳朵)/`sit`(开了面板); 走路用 `sin(phase)` 摆腿+上下颠 |
+| `discover_tools()` | 挎包里的工具 = 你自己的插件, **现读插件目录**(复用宿主 `plugins.py` 解析 `.txt`, 正则静态读 `.py` 的 CODE/NAME/PERM) |
+| `run_tool()` | 在**本进程后台线程**里跑工具: `.py` 走 `importlib` + `run()`; `.txt` 走宿主 `plugins.run_steps`(自带 `msgbox(title,text)` / `confirm(text,title,buttons,default_no)` 两个回调, 签名与宿主一致)。非 low 权限照 §16 先 `MessageBoxW` 确认 |
+
+**三条设计决定(别改回去)**:
+1. **不改宿主一行代码**: 宠物是独立进程, 工具由它自己执行 —— 所以不需要 IPC、不需要给 `main.py` 加钩子,
+   也就不需要重建 dist(插件本来就不进 dist)。
+2. **打字的感知用 `GetAsyncKeyState` 轮询, 不装键盘钩子**: 钩子哪怕只观察也有拖慢/吞键的风险, 而挂件只要
+   "知道你在打字"就够了。回车单独判, 用来触发叫/投篮。
+3. **呼出用 `RegisterHotKey`(Ctrl+Alt+P)而不是钩子**: 不抢焦点、不吞键、键被别的程序占了也只记一行日志。
+   另外"直接点狗"也能开面板(平时穿透, 点得到就说明点在它身上)。
+
+**唯一一处偏离插件规范**: 规范 §8.7 的双模式尾块是 `import _standalone; _standalone.standalone(run, NAME)`,
+本插件**没走它** —— 因为 `_standalone` 是给 **Tk 插件**用的(建隐藏 Tk root + 监视 `win.winfo_exists()`),
+而宠物是纯 Win32 消息循环, 用它会白建一个 Tk root 且根本监视不到这个窗口。取而代之: 自己实现同样的**契约**
+(`STANDALONE-OK` 标记 + `WGIME_STANDALONE_AUTOEXIT_MS` 自动退出), 所以 `standalone-plugin-test.py` 照样通过。
+
+**47 项回归**(`python wgime-py-pure\tests\pet-overlay-test.py`)—— 全是**客观量**, 没有一条靠肉眼:
+* S 段(无桌面也跑): 清单契约 / `_py_meta` 缺 CODE 或缺 run() 就不算插件 / 工具按 code 去重(实测真的出现过
+  重复: 同一个插件在两个插件目录里各有一份)/ 清单不含宠物自己 / **模块导入不建窗**(§8.8 陷阱 1)/
+  **入口只有一个 `__main__` 块**(§45)/ 独立运行契约齐。
+* L 段(真起浮层, 无桌面 SKIP): 五条扩展样式齐 / 起窗前后 `GetForegroundWindow` 不变 / `WindowFromPoint`
+  在屏幕中部不是本窗 / 屏幕中部像素没被糊住 / **在狗身上扫到毛色**(证明真画上去了)/ 帧率 >=30fps /
+  狗位置真的在变 / 呼出后面板开 + `TRANSPARENT` 去掉 + `NOACTIVATE` 仍在 + 面板处 `WindowFromPoint` **就是本窗**
+  + 面板**扫得到底色** + 面板外仍穿透 + 前台不变 / 点格子 -> 记录"叼出去"的是**点的那个**工具 + 面板收起
+  + 抛到中间后**触发了执行**(`WGIME_PET_NO_LAUNCH=1` 让它只记不跑, 免得测试里真开出工具窗)/ 到点自己退出 rc=0 /
+  终版 dump 写出 / 窗口已销毁 / 没留下我们的窗口。
+* 测试钩子(都在插件里, 生产环境无副作用): `WGIME_PET_SELFTEST_MS`/`WGIME_STANDALONE_AUTOEXIT_MS`(自动退出)、
+  `WGIME_PET_DUMP`(退出时写状态)、**`WGIME_PET_DUMP_LIVE`(每 0.4s 写一次, 让回归能在它运行时断言)**、
+  `WGIME_PET_NO_LAUNCH`(只记不跑)、`WGIME_PET_OPEN_PALETTE`、`WGIME_PET_SCENE`。
+* **变异自检 4/4**(`%TEMP%\wg-pet-mutate.py`, 改坏->跑->还原, 探针脚本没入库):
+  `_style` 永不加 TRANSPARENT → 红 1; 工具改回按 path 去重 → 红 1; 创建时去掉 NOACTIVATE → 红 2;
+  面板开合不切样式 → 红 2(含"面板处点不到")。
+  **一个诚实的注脚**: "创建时不带 NOACTIVATE"那次**没有**红掉"起窗后没抢焦点"那条 —— 在这个 spawn 路径下
+  (测试进程拉起的 detached 子进程)Windows 没把前台给它。也就是说**真正兜底的是样式断言**(GWL_EXSTYLE),
+  "前台没变"只是端到端旁证; 别因为后者绿了就以为前者可以不查。
+
+**实测数字**: 帧率 **58.5~58.7fps**(独立线程 + timeBeginPeriod(1) + PostMessage); 单帧 wndproc 无异常;
+本机列出 8 个工具(jsq/lt/sz/pdf/qrcode/fy 六个 .py + qls/qping 两个 .txt)。
+
+**下一步(目标轮次 3+)**: 场景 1(篮球: 打字运球/回车投篮/呼出时把球砸向屏幕中间炸开)、场景 3(活动范围扩到
+四边框 + 左右攀爬 + 跟鼠标躲猫猫); 还有"挎包盖打开后工具图标从包里冒出来"的细节, 以及 `config.txt` 里
+`pet_scene` 的登记(sync-dist + release 模板)。
