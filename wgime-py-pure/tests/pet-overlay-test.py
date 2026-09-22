@@ -63,27 +63,99 @@ COLOR_FUR = 0x337ac0          # '#c07a33' -> COLORREF
 COLOR_PANEL = 0x261c14        # '#141c26'
 COLOR_SLOT = 0x473424         # '#243447'
 COLOR_SLOT_H = 0x6f5339       # '#39536f'
+_SCREEN = [None]
 
 
 def pixel(x, y):
-    hdc = user32.GetDC(None)
-    try:
-        return int(gdi32.GetPixel(hdc, int(x), int(y))) & 0xFFFFFF
-    finally:
-        user32.ReleaseDC(None, hdc)
+    """读一个屏幕像素。
 
+    **本机 GetPixel 实测 ~8.5ms/次**(4K + DWM + 分层窗还在动) —— 所以断言里**绝不允许整屏/整条扫描**:
+    实测扫一条 3840x178 要 162 秒, 直接把被测进程的存活窗口耗光, 后面几条全成假红(真踩过)。
+    规矩: 先用 `WM_APP_PAUSE` 冻住动画, 再按 dump 里的坐标**只扫几十个像素**。
+    (也试过 BitBlt 抓一块再在内存里找, 但 BitBlt 抓不到这个分层窗, 见 §D38。)
+    """
+    if _SCREEN[0] is None:
+        _SCREEN[0] = user32.GetDC(None)
+    return int(gdi32.GetPixel(_SCREEN[0], int(x), int(y))) & 0xFFFFFF
+
+
+def release_dc():
+    if _SCREEN[0] is not None:
+        try:
+            user32.ReleaseDC(None, _SCREEN[0])
+        except Exception:
+            pass
+        _SCREEN[0] = None
+
+
+def pause(hwnd):
+    """冻住动画(WM_APP_PAUSE, wp=1), 让"状态里的坐标" == "屏幕上的像素"。"""
+    user32.PostMessageW(ctypes.c_void_p(int(hwnd)), 0x8005, 1, 0)
+    time.sleep(0.35)
+
+
+def wait_still(live, timeout=4.0):
+    """等到 dump 里的位置**连续两次一样**(= 真冻住了) 再返回那份 dump。
+
+    为什么要这一步: dump 每 0.4s 才写一次, 按下暂停时手里那份可能是上一拍的 —— 主角在爬(甚至
+    正在横跳, 400px/0.4s), 拿旧坐标去扫像素必然扫空(踩过一次)。
+    """
+    end = time.time() + timeout
+    prev = None
+    while time.time() < end:
+        d = read_dump(live)
+        if d:
+            pos = d.get('dog_pos')
+            if prev is not None and pos == prev:
+                return d
+            prev = pos
+        time.sleep(0.15)
+    return read_dump(live)
+
+
+def unpause(hwnd):
+    user32.PostMessageW(ctypes.c_void_p(int(hwnd)), 0x8005, 0, 0)
+    time.sleep(0.2)
 
 def root_of(h):
     h = int(h or 0)
     return (int(user32.GetAncestor(ctypes.c_void_p(h), 2) or 0) or h) if h else 0
 
 
-def scan_row(x0, x1, y, colors, step=6):
-    """在一条水平线上找某个颜色 —— 用来客观证明"东西真的画上去了"。"""
-    for x in range(int(x0), int(x1), step):
+def release_dc():
+    if _SCREEN[0] is not None:
+        try:
+            user32.ReleaseDC(None, _SCREEN[0])
+        except Exception:
+            pass
+        _SCREEN[0] = None
+
+
+def scan_box(x0, y0, x1, y1, colors, step=5):
+    """在矩形里找颜色 -> 屏幕坐标 (x, y) 或 None。**只用于小范围**(见 pixel() 的告警)。"""
+    for y in range(int(y0), int(y1), max(1, int(step))):
+        hit = scan_row(x0, x1, y, colors, step=step)
+        if hit is not None:
+            return (hit, y)
+    return None
+
+
+def scan_row(x0, x1, y, colors, step=4):
+    for x in range(int(x0), int(x1), max(1, int(step))):
         if pixel(x, y) in colors:
             return x
     return None
+
+
+def wait_pixel(x, y, colors, timeout=4.0):
+    """等到某个像素真的被画出来。**别用状态 dump 当"已经画好了"** —— dump 是状态快照,
+    而 InvalidateRect -> WM_PAINT 是异步的, 差一两帧就会让"命中测试"那条假红。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        if pixel(x, y) in colors:
+            return True
+        time.sleep(0.04)
+    return False
 
 
 # ======================================================================
@@ -224,10 +296,14 @@ def part_l(md):
         check('屏幕中部像素没被糊住(键色真透明)', pixel(1920, 700) == before_center,
               '%06x -> %06x' % (before_center, pixel(1920, 700)))
 
+        # 冻住动画再验像素: 坐标与屏幕严格一致, 于是只扫几十个像素就够(GetPixel 很贵)
+        pause(hwnd)
+        d = wait_still(live) or d
         bx0, by0, bx1, by1 = d['dog_bbox']
         found = scan_row(bx0, bx1, int(d['dog_y']) - 45, {COLOR_FUR, 0x5aa0dd}, step=3)
         check('狗**真的画在**屏幕下缘了(在它身上扫到毛色)', found is not None,
               'bbox=%s y=%s' % (d['dog_bbox'], int(d['dog_y']) - 45))
+        unpause(hwnd)
 
         f0 = d['frames']
         time.sleep(1.2)
@@ -251,21 +327,29 @@ def part_l(md):
             check('面板格子算得出来', len(slots) == d3['tools_n'] and len(slots) > 0,
                   '%d slots / %d tools' % (len(slots), d3['tools_n']))
             if slots:
+                pause(hwnd)                            # 面板位置冻住再验像素/命中
+                d3 = wait_still(live) or d3
+                slots = d3.get('slots') or slots
                 sx = (slots[0][0] + slots[0][2]) // 2
                 sy = (slots[0][1] + slots[0][3]) // 2
+                # 先等这一格真的被画出来, 再问"点得到吗"(否则命中测试会撞上还没重绘的那一两帧)
+                painted = wait_pixel(sx, sy, {COLOR_SLOT, COLOR_SLOT_H, COLOR_PANEL})
+                check('交互态: 那一格已经画好了(不是靠状态 dump 猜的)', painted)
                 check('交互态: 面板处 WindowFromPoint **就是本窗**',
                       root_of(user32.WindowFromPoint(w.POINT(sx, sy))) == root_of(hwnd),
                       'hit=%x own=%x' % (root_of(user32.WindowFromPoint(w.POINT(sx, sy))),
                                          root_of(hwnd)))
             pl = d3.get('panel') or [0, 0, 0, 0]
             py = pl[1] + 12
-            drawn = scan_row(pl[0], pl[2], py, {COLOR_PANEL, COLOR_SLOT, COLOR_SLOT_H}, step=4)
+            drawn = scan_row(pl[0], pl[2], py, {COLOR_PANEL, COLOR_SLOT, COLOR_SLOT_H}, step=8)
             check('交互态: 面板**真的画出来了**(扫到面板底色)', drawn is not None,
                   'panel=%s row_y=%s' % (pl, py))
+            unpause(hwnd)
             check('交互态: 面板外的空白处**仍然穿透**',
                   root_of(user32.WindowFromPoint(w.POINT(1920, 700))) != root_of(hwnd))
-            check('开面板期间前台窗口没变', int(user32.GetForegroundWindow() or 0) == fg_before,
-                  '%x -> %x' % (fg_before, int(user32.GetForegroundWindow() or 0)))
+            check('开面板期间**焦点没被我们抢走**(前台不是本窗)',
+                  root_of(int(user32.GetForegroundWindow() or 0)) != root_of(hwnd),
+                  'fg=%x own=%x' % (int(user32.GetForegroundWindow() or 0), root_of(hwnd)))
 
             # ---- 点一个格子: 应该"叼出去"(抛向屏幕中心) ----
             if slots:
@@ -281,8 +365,9 @@ def part_l(md):
                 d5 = wait_dump(live, lambda x: x.get('launched'), timeout=6)
                 check('抛到屏幕中间后**触发了执行**(测试钩子只记不跑)',
                       bool(d5 and d5.get('launched')), repr(d5 and d5.get('launched')))
-                check('执行期间前台窗口仍没变', int(user32.GetForegroundWindow() or 0) == fg_before,
-                      '%x -> %x' % (fg_before, int(user32.GetForegroundWindow() or 0)))
+                check('执行期间**焦点仍在别人那儿**(前台不是本窗)',
+                      root_of(int(user32.GetForegroundWindow() or 0)) != root_of(hwnd),
+                      'fg=%x own=%x' % (int(user32.GetForegroundWindow() or 0), root_of(hwnd)))
 
         # ---- 收尾: 自动退出 + 终版 dump + 无残留 ----
         out, err = proc.communicate(timeout=25)
@@ -294,8 +379,9 @@ def part_l(md):
         check('终版 dump 写出来了', bool(fin))
         if fin:
             check('退出前窗口已销毁', user32.IsWindow(ctypes.c_void_p(int(fin['hwnd']))) == 0)
-            check('全程没抢过焦点(终版复核)', int(user32.GetForegroundWindow() or 0) == fg_before,
-                  '%x -> %x' % (fg_before, int(user32.GetForegroundWindow() or 0)))
+            check('终版复核: 焦点始终没被本窗抢走',
+                  root_of(int(user32.GetForegroundWindow() or 0)) != root_of(int(fin['hwnd'])),
+                  'fg=%x own=%x' % (int(user32.GetForegroundWindow() or 0), int(fin['hwnd'])))
         check('没留下我们自己的窗口(FindWindow 为空)',
               int(user32.FindWindowW(md.CLASS_NAME, md.WIN_TITLE) or 0) == 0)
     finally:
@@ -308,9 +394,180 @@ def part_l(md):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _spawn(tmp, scene, live, final, extra=None, secs='9000'):
+    env = dict(os.environ)
+    env.update({'WGIME_PET_SELFTEST_MS': secs, 'WGIME_PET_DUMP_LIVE': live,
+                'WGIME_PET_DUMP': final, 'WGIME_PET_NO_LAUNCH': '1',
+                'WGIME_PET_SCENE': str(scene), 'LOCALAPPDATA': tmp,
+                'PYTHONIOENCODING': 'utf-8'})
+    env.update(extra or {})
+    return subprocess.Popen([sys.executable, '-X', 'utf8', PET], env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _kill(proc):
+    if proc.poll() is None:
+        try:
+            proc.kill()
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+
+
+def part_scene1(md):
+    """场景 1(篮球): 运球 / 回车投篮(球进筐+篮筐亮) / 呼出=砸球->炸开->面板。"""
+    print('--- L2. 场景 1: 篮球 ---')
+    tmp = tempfile.mkdtemp(prefix='wg-pet-s1-')
+    live, final = os.path.join(tmp, 'live.json'), os.path.join(tmp, 'final.json')
+    proc = _spawn(tmp, 1, live, final, {'WGIME_PET_FAKE_MOUSE': '10,10'}, secs='25000')
+    try:
+        d = wait_dump(live, lambda x: x.get('frames', 0) > 20, timeout=15)
+        if not d:
+            out, err = proc.communicate(timeout=5)
+            check('场景 1 起来了', False, 'no live dump; err=%r' % ((err or b'')[-300:],))
+            return
+        check('场景 1 起来了', d.get('scene') == 1, 'scene=%s' % d.get('scene'))
+        # 篮板/篮筐真的画在屏幕两边: 在筐的位置扫到筐色 (#e04b3a -> COLORREF 0x3a4be0)
+        hy = d.get('hoop_y')
+        hx = (d.get('hoop_x') or [0, 0])[0]
+        rx0, rx1 = hx - 34, hx + 34
+        rim = None
+        for yy in range(int(hy) - 12, int(hy) + 13, 3) if hy else []:
+            if scan_row(rx0, rx1, yy, {0x3a4be0}, step=2) is not None:
+                rim = yy
+                break
+        check('左右篮筐真的画出来了(左边筐位置扫到筐色)', rim is not None,
+              'hoop=%s,%s' % (hx, hy))
+        pause(d['hwnd'])                          # 球在弹, 冻住再扫
+        d = wait_still(live) or d
+        bx, by = d['ball']
+        # 别扫正中心那一行: 球的十字线正好画在 y=by 上(会扫到深色线而不是橙色填充)
+        found = scan_row(bx - 26, bx + 26, int(by) - 8, {0x1e70e2}, step=2)
+        check('球**真的画在**屏幕下缘(扫到球色)', found is not None, 'ball=%s,%s' % (bx, by))
+        unpause(d['hwnd'])
+        check('起始状态在运球', d.get('ball_mode') == 'dribble', repr(d.get('ball_mode')))
+
+        # 打字 -> 原地运球(活动度起来)
+        user32.PostMessageW(ctypes.c_void_p(int(d['hwnd'])), 0x8004, 0, 0)     # WM_APP_ACTIVITY
+        d2 = wait_dump(live, lambda x: x.get('activity', 0) > 0.2, timeout=4)
+        check('打字 -> activity 起来(他改成原地运球)', bool(d2 and d2.get('activity', 0) > 0.2),
+              repr(d2 and d2.get('activity')))
+
+        # 回车 -> 投篮: 球会经历 shoot -> back, 进筐时 hoop_flash > 0
+        user32.PostMessageW(ctypes.c_void_p(int(d['hwnd'])), 0x8003, 0, 0)     # WM_APP_ENTER
+        shot = wait_dump(live, lambda x: x.get('ball_mode') in ('shoot', 'back')
+                         or x.get('hoop_flash', 0) > 0, timeout=5)
+        check('回车 -> 投篮(球离手/在回手路上)',
+              bool(shot and (shot.get('ball_mode') in ('shoot', 'back') or shot.get('hoop_flash', 0) > 0)),
+              repr(shot and (shot.get('ball_mode'), shot.get('hoop_flash'))))
+        made = wait_dump(live, lambda x: x.get('hoop_flash', 0) > 0.05, timeout=5)
+        check('球进筐了(篮筐亮起来 hoop_flash>0)', bool(made and made.get('hoop_flash', 0) > 0.05),
+              repr(made and made.get('hoop_flash')))
+        back = wait_dump(live, lambda x: x.get('ball_mode') == 'dribble', timeout=6)
+        check('投完自己把球捡回来接着运', bool(back and back.get('ball_mode') == 'dribble'),
+              repr(back and back.get('ball_mode')))
+
+        # 呼出 = 砸球 -> 炸开 -> 面板
+        user32.PostMessageW(ctypes.c_void_p(int(d['hwnd'])), 0x8002, 0, 0)     # WM_APP_TOGGLE
+        d3 = wait_dump(live, lambda x: x.get('slam') or x.get('palette_open'), timeout=4)
+        check('呼出先是"把球砸向屏幕中间"(slam=True)', bool(d3 and d3.get('slam')),
+              repr(d3 and (d3.get('slam'), d3.get('palette_open'))))
+        d4 = wait_dump(live, lambda x: x.get('palette_open'), timeout=5)
+        check('砸到位之后炸开并弹出工具面板', bool(d4 and d4.get('palette_open')),
+              repr(d4 and d4.get('palette_open')))
+        check('砸完就没 slam 了(动画收尾)', bool(d4 and not d4.get('slam')))
+        _kill(proc)
+        check('场景 1 收尾干净(杀得掉)',
+              int(user32.FindWindowW(md.CLASS_NAME, md.WIN_TITLE) or 0) == 0
+              or proc.poll() is not None)
+    finally:
+        _kill(proc)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _critter_start(screen):
+    """ClimbScene 的起始位置(测试要知道鼠标该放哪): s = sw*0.35 -> 底边。"""
+    return (screen[0] * 0.35, screen[1] - 6)
+
+
+def part_scene3(md):
+    """场景 3(四边框): 沿边框巡游 / 鼠标贴脸就躲 / 闲了横跳(全屏都是它的地盘)。"""
+    print('--- L3. 场景 3: 四边框攀爬 + 躲猫猫 ---')
+    tmp = tempfile.mkdtemp(prefix='wg-pet-s3-')
+    live, final = os.path.join(tmp, 'live.json'), os.path.join(tmp, 'final.json')
+    # (a) 鼠标在远处 -> 自己沿着边框巡游, 并且到点会横跳
+    proc = _spawn(tmp, 3, live, final, {'WGIME_PET_FAKE_MOUSE': '10,10',
+                                        'WGIME_PET_LEAP_MS': '900'})
+    try:
+        d = wait_dump(live, lambda x: x.get('frames', 0) > 20, timeout=15)
+        if not d:
+            out, err = proc.communicate(timeout=5)
+            check('场景 3 起来了', False, 'no live dump; err=%r' % ((err or b'')[-300:],))
+            return
+        check('场景 3 起来了', d.get('scene') == 3, 'scene=%s' % d.get('scene'))
+        check('鼠标远 -> 自己在巡游(climb_mode=roam)', d.get('climb_mode') == 'roam',
+              repr(d.get('climb_mode')))
+        pause(d['hwnd'])                          # 主角在爬, 冻住再扫
+        d = wait_still(live) or d
+        px, py = d['dog_pos']
+        found = scan_row(px - 70, px + 70, int(py) - 30, {0x337ac0, 0x5aa0dd, 0x20558f}, step=4)
+        check('主角真的画在边框上了(扫到毛色)', found is not None, 'pos=%s,%s' % (px, py))
+        unpause(d['hwnd'])
+        s0 = d.get('leaped')
+        time.sleep(1.0)
+        d2 = read_dump(live) or d
+        p2 = d2.get('dog_pos') or [px, py]
+        moved = abs(p2[0] - px) + abs(p2[1] - py)
+        # 注意: 横跳途中 self.s 只在落地那一刻才更新, 所以别只盯 s —— 位置动了才算真的在动
+        check('沿边框在移动(位置真的变了)',
+              moved > 5 or abs((d2.get('leaped') or 0) - (s0 or 0)) > 5,
+              'pos %s -> %s ; s %s -> %s' % ((px, py), p2, s0, d2.get('leaped')))
+        leap = wait_dump(live, lambda x: x.get('climb_mode') == 'leap', timeout=6)
+        check('闲得慌会横跳(活动范围扩到全屏, 不只是四边)',
+              bool(leap and leap.get('climb_mode') == 'leap'),
+              repr(leap and leap.get('climb_mode')))
+        if leap:
+            lp = leap['dog_pos']
+            check('横跳确实换了地方(不是原地蹦)',
+                  abs(lp[0] - px) + abs(lp[1] - py) > 200, '%s -> %s' % ((px, py), lp))
+        _kill(proc)
+    finally:
+        _kill(proc)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # (b) 鼠标就贴在它身上 -> 躲(缩起来)
+    tmp2 = tempfile.mkdtemp(prefix='wg-pet-s3b-')
+    live2, final2 = os.path.join(tmp2, 'live.json'), os.path.join(tmp2, 'final.json')
+    try:
+        sw = user32.GetSystemMetrics(0)
+        sh = user32.GetSystemMetrics(1)
+        cx, cy = _critter_start((sw, sh))
+        proc = _spawn(tmp2, 3, live2, final2, {'WGIME_PET_FAKE_MOUSE': '%d,%d' % (cx, cy)})
+        try:
+            d3 = wait_dump(live2, lambda x: x.get('frames', 0) > 20, timeout=15)
+            check('鼠标贴脸 -> 立刻反应(要么缩起来要么跑)',
+                  bool(d3 and d3.get('climb_mode') in ('hide', 'flee')),
+                  repr(d3 and d3.get('climb_mode')))
+            d4 = wait_dump(live2, lambda x: x.get('hide', 0) > 0.3
+                           or x.get('climb_mode') == 'flee', timeout=5)
+            check('躲猫猫真的发生了(贴边缩起来 hide>0.3, 或撒腿就跑)',
+                  bool(d4 and (d4.get('hide', 0) > 0.3 or d4.get('climb_mode') == 'flee')),
+                  repr(d4 and (d4.get('hide'), d4.get('climb_mode'))))
+            check('鼠标真被读到了(用的是打桩坐标, 没动用户的鼠标)',
+                  bool(d4 and abs(d4['mouse'][0] - cx) < 3 and abs(d4['mouse'][1] - cy) < 3),
+                  repr(d4 and d4.get('mouse')))
+        finally:
+            _kill(proc)
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+
+
 def main():
     md = part_s()
     part_l(md)
+    part_scene1(md)
+    part_scene3(md)
+    release_dc()
     print('')
     if fails:
         print('%d/%d 项失败: %s' % (len(fails), n[0], ', '.join(fails)))

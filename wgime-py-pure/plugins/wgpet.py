@@ -25,6 +25,7 @@ import ctypes.wintypes as w
 import json
 import math
 import os
+import random
 import sys
 import threading
 import time
@@ -53,7 +54,8 @@ LWA_COLORKEY = 0x1
 WM_PAINT, WM_DESTROY, WM_CLOSE, WM_ERASEBKGND, WM_QUIT = 0x000F, 0x0002, 0x0010, 0x0014, 0x0012
 WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MOUSEMOVE = 0x0201, 0x0204, 0x0200
 WM_HOTKEY = 0x0312
-WM_APP_TICK, WM_APP_TOGGLE = 0x8001, 0x8002
+WM_APP_TICK, WM_APP_TOGGLE, WM_APP_ENTER, WM_APP_ACTIVITY, WM_APP_PAUSE = \
+    0x8001, 0x8002, 0x8003, 0x8004, 0x8005
 PM_REMOVE = 1
 MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x1, 0x2, 0x4000
 DT_CENTER, DT_VCENTER, DT_SINGLELINE = 0x1, 0x4, 0x20
@@ -484,6 +486,26 @@ PAL = {
 GROUND_PAD = 8
 
 
+def _fake_mouse():
+    """测试钩子: `WGIME_PET_FAKE_MOUSE="x,y"` —— 不真去动用户的鼠标也能测"躲猫猫"(§4 的规矩:
+    被测代码读**真实输入**时必须能打桩, 否则屏幕前的人一动鼠标就假红)。"""
+    v = os.environ.get('WGIME_PET_FAKE_MOUSE') or ''
+    if ',' in v:
+        try:
+            a, b = v.split(',', 1)
+            return (float(a), float(b))
+        except ValueError:
+            return None
+    return None
+
+
+def _mouse_pos():
+    pt = w.POINT()
+    if user32.GetCursorPos(ctypes.byref(pt)):
+        return (float(pt.x), float(pt.y))
+    return (0.0, 0.0)
+
+
 # ======================================================================
 # 场景 2: 驮挎包的小狗 (活动范围 = 屏幕下方一条带)
 # ======================================================================
@@ -502,7 +524,7 @@ class DogScene(object):
         self.flap = 0.0
         self.palette_open = False
 
-    def tick(self, dt, activity, hit_enter):
+    def tick(self, dt, activity, hit_enter, mouse=None):
         self.state_t += dt
         if hit_enter:
             self.bark = 0.8
@@ -534,6 +556,10 @@ class DogScene(object):
 
     def mouth(self):
         return (self.x + self.face * 58, self.y - 62)
+
+    def panel_anchor(self):
+        """面板挂在主角上方: 用脚下的位置算。"""
+        return (self.x, self.y)
 
     def bbox(self):
         return (self.x - 74, self.y - 100, self.x + 80, self.y + 6)
@@ -592,6 +618,430 @@ class DogScene(object):
 
 
 # ======================================================================
+# 场景 1: 篮球运动员 (屏幕下缘活动; 左右各一块篮板; 打字运球, 回车投篮)
+# ======================================================================
+HUMAN = {'skin': '#e8b48a', 'skin_d': '#c98f66', 'hair': '#2b2118', 'vest': '#2f6fd0',
+         'vest_d': '#24559f', 'shorts': '#e8e8ef', 'shoe': '#e04b3a', 'ball': '#e2701e',
+         'ball_d': '#8a3f10', 'hoop': '#e8e8ef', 'rim': '#e04b3a', 'net': '#cfd6e0'}
+HOOP_Y_ABOVE = 430                 # 篮筐离地高度(px)
+
+
+class BallScene(object):
+    """场景 1: 篮球运动员。
+
+    - 屏幕下缘自己溜达; **你打字他就原地运球**(随机换手 = 胯下运球那种感觉);
+    - **回车 = 投篮**: 球划弧飞向最近那块篮板, 进筐时篮筐亮一下, 再把球捡回来;
+    - 呼出工具时(见 PetWindow.request_palette)由 PetWindow 把**球**砸向屏幕中间炸开。
+    """
+
+    def __init__(self, sw, sh):
+        self.sw, self.sh = sw, sh
+        self.ground = sh - GROUND_PAD
+        self.x = sw * 0.5
+        self.vx = -1.2
+        self.face = -1
+        self.phase = 0.0
+        self.state = 'walk'                     # walk / dribble / shoot / celebrate
+        self.state_t = 0.0
+        self.palette_open = False
+        self.rng = random.Random()
+        self.hand = 1                           # 球在身体哪一侧(+1 右 / -1 左)
+        self.hand_t = 0.0
+        self.hoop_flash = 0.0
+        self.ball = {'x': self.x, 'y': self.ground - 30}
+        self.mode = 'dribble'                   # dribble / shoot / back
+        self.shot = None                        # {'from','to','t0','dur','hoop'}
+        self.ba = 0.0                           # 球在手里的颠球相位
+
+    # ---- 篮板/篮筐位置 ----
+    def hoop_x(self, side):
+        return 106 if side < 0 else self.sw - 106
+
+    def hoop_y(self):
+        return self.ground - HOOP_Y_ABOVE
+
+    def nearest_side(self):
+        return -1 if self.ball['x'] < self.sw / 2.0 else 1
+
+    def mouth(self):
+        """工具从哪儿抛出去(场景 1 用球的位置, 呼应"砸球呼出")。"""
+        return (self.ball['x'], self.ball['y'])
+
+    def origin(self):
+        return self.mouth()
+
+    def panel_anchor(self):
+        return (self.x, self.ground)
+
+    def bbox(self):
+        x0 = min(self.x - 60, self.ball['x'] - 40)
+        x1 = max(self.x + 60, self.ball['x'] + 40)
+        y0 = min(self.ground - 190, self.ball['y'] - 40)
+        y1 = self.ground + 6
+        if self.mode == 'shoot' or self.hoop_flash > 0:
+            for side in (-1, 1):                # 投篮/进球时把篮筐也算进脏区
+                hx = self.hoop_x(side)
+                x0, x1 = min(x0, hx - 70), max(x1, hx + 70)
+                y0, y1 = min(y0, self.hoop_y() - 110), max(y1, self.hoop_y() + 90)
+        return (x0, y0, x1, y1)
+
+    # ---- 状态机 ----
+    def tick(self, dt, activity, hit_enter, mouse=None):
+        self.state_t += dt
+        self.hoop_flash = max(0.0, self.hoop_flash - dt * 1.6)
+        self.hand_t += dt
+
+        if hit_enter and self.mode == 'dribble':            # 回车 = 投篮
+            side = self.nearest_side()
+            self.mode = 'shoot'
+            self.state = 'shoot'
+            self.state_t = 0.0
+            self.shot = {'from': (self.ball['x'], self.ball['y']),
+                         'to': (self.hoop_x(side), self.hoop_y()),
+                         't0': time.perf_counter(), 'dur': 0.95, 'hoop': side}
+
+        if self.palette_open:
+            self.state, self.vx = 'dribble', 0.0
+        elif self.mode == 'shoot':
+            self.vx = 0.0
+        elif activity > 0.15:                                # 打字: 原地运球
+            self.state, self.state_t, self.vx = 'dribble', 0.0, 0.0
+        elif self.state == 'shoot' and self.state_t > 1.5:
+            self.state, self.vx = 'walk', (-1.2 if self.face < 0 else 1.2)
+        elif self.state in ('dribble',) and activity <= 0.15 and self.mode == 'dribble':
+            if self.state_t > 0.6:
+                self.state = 'walk'
+                self.vx = 1.2 if self.face > 0 else -1.2
+
+        if self.state == 'walk':
+            self.phase += dt * abs(self.vx) * 3.4
+            self.x += self.vx * dt * 60.0
+            lo, hi = self.sw * 0.10, self.sw * 0.90
+            if self.x < lo:
+                self.x, self.vx, self.face = lo, abs(self.vx), 1
+            elif self.x > hi:
+                self.x, self.vx, self.face = hi, -abs(self.vx), -1
+        else:
+            self.phase += dt * 2.2
+
+        if self.mode == 'dribble':
+            # 随机换手(胯下运球的感觉): 1~2 秒换一次
+            if self.hand_t > self.rng.uniform(0.9, 2.0):
+                self.hand_t = 0.0
+                self.hand = -self.hand
+            self.face = self.hand                       # 面向球那一侧
+            self.ba += dt * (7.5 if activity > 0.15 else 4.2)
+            hx = self.x + self.hand * 26
+            by = self.ground - 22 - abs(math.sin(self.ba)) * 96
+            self.ball['x'] += (hx - self.ball['x']) * min(1.0, dt * 9.0)
+            self.ball['y'] = by
+        elif self.mode == 'shoot':
+            p = min(1.0, (time.perf_counter() - self.shot['t0']) / self.shot['dur'])
+            (x0, y0), (x1, y1) = self.shot['from'], self.shot['to']
+            self.ball['x'] = x0 + (x1 - x0) * p
+            self.ball['y'] = y0 + (y1 - y0) * p - 300 * p * (1 - p)
+            if p >= 1.0:
+                self.hoop_flash = 1.0
+                self.mode = 'back'
+                self.shot = {'from': (x1, y1 + 30), 'to': (self.x + self.hand * 26, self.ground - 40),
+                             't0': time.perf_counter(), 'dur': 0.55}
+                self.state = 'celebrate'
+        elif self.mode == 'back':
+            p = min(1.0, (time.perf_counter() - self.shot['t0']) / self.shot['dur'])
+            self.ball['x'] += (self.shot['to'][0] - self.ball['x']) * min(1.0, dt * 8.0)
+            self.ball['y'] = self.shot['from'][1] + (self.shot['to'][1] - self.shot['from'][1]) * p
+            if p >= 1.0:
+                self.mode, self.state, self.ba = 'dribble', 'dribble', 0.0
+        if self.state == 'celebrate' and self.state_t > 1.2:
+            self.state = 'walk'
+
+    # ---- 绘制 ----
+    def draw(self, g):
+        for side in (-1, 1):
+            self._draw_hoop(g, side)
+        self._draw_player(g)
+        self._draw_ball(g)
+
+    def _draw_hoop(self, g, side):
+        hx, hy = self.hoop_x(side), self.hoop_y()
+        board_x = 62 if side < 0 else self.sw - 62
+        g.rect(board_x - 9, hy - 78, board_x + 9, hy + 44, fill=HUMAN['hoop'],
+               outline='#9aa4b2', width=2)
+        g.rect(board_x - 5, hy - 40, board_x + 5, hy + 8, fill=None, outline=HUMAN['rim'], width=2)
+        g.line(board_x, hy + 44, board_x, hy + 150, '#8d97a5', 6)          # 立柱
+        rim_r = 26 if side < 0 else 26
+        rx = hx + (rim_r - 10 if side < 0 else 10 - rim_r)
+        flash = self.hoop_flash
+        g.ell(hx - rim_r, hy - 9, hx + rim_r, hy + 9, fill=None,
+              outline=HUMAN['rim'], width=4 if flash > 0.1 else 3)
+        for i in range(4):                                                  # 网
+            nx = hx - rim_r + 8 + i * (rim_r * 2 - 16) / 3.0
+            g.line(nx, hy + 7, hx + (nx - hx) * 0.45, hy + 40 + (10 if flash > 0.1 else 0),
+                   HUMAN['net'], 1)
+        if flash > 0.1:
+            for i in range(3):
+                rr = 34 + i * 12
+                g.ell(hx - rr, hy - rr * 0.5, hx + rr, hy + rr * 0.5, fill=None,
+                      outline=PAL['accent'], width=2)
+
+    def _draw_player(self, g):
+        x, y, f = self.x, self.ground, self.face
+        swing = math.sin(self.phase) * 7.0 if self.state == 'walk' else 0.0
+        bob = -abs(math.sin(self.phase)) * 2.0 if self.state == 'walk' else 0.0
+        hip = y - 52 + bob
+        # 影子
+        g.ell(x - 30, y - 7, x + 30, y + 7, fill=PAL['shadow'])
+        # 腿 (+ 鞋)
+        for lx, sw in ((-9, swing), (9, -swing)):
+            g.rect(x + lx - 6, hip, x + lx + 6, y - 8, fill=HUMAN['skin_d'])
+            g.rect(x + lx - 8, y - 10, x + lx + 9, y - 2, fill=HUMAN['shoe'])
+        # 短裤
+        g.rrect(x - 19, hip - 16, x + 19, hip + 8, r=5, fill=HUMAN['shorts'])
+        # 躯干(球衣)
+        g.rrect(x - 17, hip - 56, x + 17, hip - 12, r=7, fill=HUMAN['vest'])
+        g.rect(x - 3, hip - 56, x + 3, hip - 12, fill=HUMAN['vest_d'])
+        # 手臂: 运球时一只手跟着球, 投篮时双手举起
+        if self.state == 'shoot' or self.state == 'celebrate':
+            for s in (-1, 1):
+                g.line(x + s * 12, hip - 52, x + s * 26, hip - 78, HUMAN['skin'], 6)
+            g.ell(x + f * 22 - 7, hip - 92, x + f * 22 + 7, hip - 78, fill=HUMAN['ball'])
+        else:
+            g.line(x - 13, hip - 50, x - 20, hip - 18, HUMAN['skin'], 6)      # 左臂垂着
+            hand_x = self.ball['x'] - f * 6
+            hand_y = max(hip - 40, self.ball['y'] - 26)
+            g.line(x + f * 13, hip - 50, hand_x, hand_y, HUMAN['skin'], 6)
+            g.ell(hand_x - 6, hand_y - 6, hand_x + 6, hand_y + 6, fill=HUMAN['skin'])
+        # 头 + 头发 + 眼睛
+        hy = hip - 74
+        g.ell(x - 14, hy - 14, x + 14, hy + 14, fill=HUMAN['skin'])
+        g.ell(x - 15, hy - 17, x + 15, hy + 2, fill=HUMAN['hair'])
+        g.ell(x + f * 5 - 2, hy - 3, x + f * 5 + 3, hy + 3, fill='#2b2118')
+
+    def _draw_ball(self, g):
+        bx, by = self.ball['x'], self.ball['y']
+        r = 17
+        # 轨迹残影(投篮/砸球时)
+        if self.mode in ('shoot', 'back'):
+            for k in (1, 2, 3):
+                q = dict(self.shot)
+                if q:
+                    rx = bx - (bx - q['from'][0]) * 0.06 * k
+                    g.ell(rx - 9, by - 9 + k * 5, rx + 9, by + 9 + k * 5, fill='#b06a2a')
+        g.ell(bx - r, by - r, bx + r, by + r, fill=HUMAN['ball'], outline=HUMAN['ball_d'], width=2)
+        g.line(bx - r, by, bx + r, by, HUMAN['ball_d'], 1)
+        g.line(bx, by - r, bx, by + r, HUMAN['ball_d'], 1)
+
+
+# ======================================================================
+# 场景 3: 沿屏幕四边框活动 + 跟鼠标躲猫猫
+# ======================================================================
+class ClimbScene(object):
+    """场景 3: 主角沿**屏幕四边框**活动, 左右边框是攀爬, 上方是倒挂/天空。
+
+    实现取巧但很稳: 把整圈**周长参数化成一条一维路径** `s`(0=左下角向右), 于是"绕四边跑"就只是
+    `s += v*dt`; `_place()` 把 s 映射回 (x, y, 边, 朝向)。躲猫猫只要在这条线上"往离鼠标远的那头跑",
+    被逼到角落就**横跳(leap)**到屏幕另一边的边框 —— 顺带满足"扩展到全屏都能成为活动范围"。
+    """
+
+    def __init__(self, sw, sh):
+        self.sw, self.sh = sw, sh
+        self.per = 2.0 * (sw + sh)
+        self.s = sw * 0.35
+        self.v = 120.0
+        self.phase = 0.0
+        self.palette_open = False
+        self.rng = random.Random(3)
+        self.mode = 'roam'                 # roam / flee / hide / leap
+        self.mode_t = 0.0
+        self.hide = 0.0                    # 0..1 贴边缩起来
+        self.leap = None                   # {'from','to','t0','dur'}
+        self.leap_cool = 0.0
+        self.safe_t = 0.0
+        # 测试钩子: 让"闲得慌就横跳"在固定时间后发生(否则要等 7~16 秒, 回归等不起)
+        try:
+            self.leap_after = float(os.environ.get('WGIME_PET_LEAP_MS') or 0) / 1000.0 or None
+        except ValueError:
+            self.leap_after = None
+        self._last_mouse = (0, 0)
+
+    # ---- s <-> 屏幕 ----
+    def _place(self, s=None):
+        s = (self.s if s is None else s) % self.per
+        W, H = float(self.sw), float(self.sh)
+        if s < W:
+            return s, H - 6, 'bottom', 1
+        s -= W
+        if s < H:
+            return W - 6, H - s, 'right', -1
+        s -= H
+        if s < W:
+            return W - s, 6, 'top', -1
+        s -= W
+        return 6, s, 'left', 1
+
+    def pos(self):
+        if self.leap and self.mode == 'leap':
+            p = min(1.0, (time.perf_counter() - self.leap['t0']) / self.leap['dur'])
+            (x0, y0), (x1, y1) = self.leap['from'], self.leap['to']
+            return (x0 + (x1 - x0) * p, y0 + (y1 - y0) * p - 220 * p * (1 - p), 'air', 1)
+        return self._place()
+
+    def mouth(self):
+        x, y, _edge, _f = self.pos()
+        return (x, y)
+
+    origin = mouth
+
+    def panel_anchor(self):
+        x, y, _edge, _f = self.pos()
+        return (x, max(y, self.sh * 0.35))      # 面板别贴到屏幕最上边(那儿挂不住)
+
+    def bbox(self):
+        x, y, edge, _f = self.pos()
+        pad = 86
+        return (x - pad, y - pad, x + pad, y + pad)
+
+    # ---- 状态机(躲猫猫) ----
+    def tick(self, dt, activity, hit_enter, mouse=None):
+        self.mode_t += dt
+        self.phase += dt * (6.0 if self.mode in ('flee', 'leap') else 2.4)
+        self.leap_cool = max(0.0, self.leap_cool - dt)
+        if mouse:
+            self._last_mouse = mouse
+        mx, my = self._last_mouse
+
+        if self.palette_open:
+            self.mode, self.v = 'roam', 0.0
+            self.hide += (0.0 - self.hide) * min(1.0, dt * 6.0)
+            x, y, edge, _f = self.pos()
+            return
+
+        if self.mode == 'leap':
+            p = (time.perf_counter() - self.leap['t0']) / self.leap['dur']
+            if p >= 1.0:
+                self.s = self.leap['to_s']
+                self.mode, self.mode_t, self.leap = 'roam', 0.0, None
+                x, y, edge, _f = self._place()
+            else:
+                self.hide += (0.0 - self.hide) * min(1.0, dt * 6.0)
+                return
+        else:
+            x, y, edge, _f = self._place()
+
+        d = math.hypot(mx - x, my - y)
+        near = 300.0                                   # 靠近就躲
+        touch = 105.0                                  # 快贴上了就缩起来
+        if d < touch:
+            self.mode = 'hide'
+            self.mode_t = 0.0
+        elif d < near:
+            self.mode = 'flee'
+            self.mode_t = 0.0
+
+        if self.mode == 'hide':
+            self.hide += (1.0 - self.hide) * min(1.0, dt * 8.0)
+            self.v = 0.0
+            if d > touch * 1.35:                       # 走了就接着跑
+                self.mode, self.mode_t = 'flee', 0.0
+        elif self.mode == 'flee':
+            self.hide += (0.0 - self.hide) * min(1.0, dt * 8.0)
+            self.v = 430.0
+            ahead, behind = self._place(self.s + 90), self._place(self.s - 90)
+            da = math.hypot(mx - ahead[0], my - ahead[1])
+            db = math.hypot(mx - behind[0], my - behind[1])
+            self.s += (90.0 if da >= db else -90.0) * dt * (self.v / 90.0)
+            # 被逼住(前面也不比后面远) + 冷却到了 => 横跳走人
+            if da < near * 0.8 and self.leap_cool <= 0:
+                self._start_leap(mx, my)
+            if d > near * 1.6:
+                self.mode, self.mode_t = 'roam', 0.0
+        else:                                          # roam
+            self.hide += (0.0 - self.hide) * min(1.0, dt * 6.0)
+            if activity > 0.15:
+                self.v = 0.0                           # 你在打字: 它停下来看你
+            else:
+                self.v = 110.0
+                self.s += self.v * dt
+                if self.mode_t > (self.leap_after or self.rng.uniform(7.0, 16.0)) \
+                        and self.leap_cool <= 0:
+                    self._start_leap(mx, my)           # 闲得慌就横跳一下(全屏都是它的地盘)
+        if self.safe_t >= 0:
+            pass
+
+    def _start_leap(self, mx, my):
+        """跳到"离鼠标最远"的那段边框 —— 顺带把活动范围铺满整屏。"""
+        cand = []
+        for k in range(12):
+            s = self.per * (k / 12.0)
+            x, y, _e, _f = self._place(s)
+            cand.append((math.hypot(mx - x, my - y), s))
+        _d, best = max(cand)
+        x, y, _e, _f = self._place()
+        tx, ty, _e2, _f2 = self._place(best)
+        self.leap = {'from': (x, y), 'to': (tx, ty), 'to_s': best,
+                     't0': time.perf_counter(), 'dur': 0.75}
+        self.mode, self.mode_t, self.leap_cool = 'leap', 0.0, 2.5
+
+    # ---- 绘制 ----
+    def draw(self, g):
+        x, y, edge, f = self.pos()
+        h = self.hide * 0.55                            # 贴边缩起来的程度
+        # 影/挂点
+        if edge == 'bottom':
+            g.ell(x - 26, y - 6, x + 26, y + 6, fill=PAL['shadow'])
+        elif edge == 'top':
+            g.line(x, 0, x, y - 34, '#6b5a3a', 3)       # 从"天空"垂下来的藤/绳
+        # 身体(按所在边框摆姿势): 朝屏幕里面的方向伸手脚
+        bw, bh = 26, 30
+        if edge == 'air':
+            g.ell(x - 24, y - 24, x + 24, y + 24, fill=PAL['fur'])
+            for a in (-0.9, -0.3, 0.3, 0.9):            # 四肢张开
+                g.line(x, y, x + math.cos(a) * 40, y + math.sin(a) * 40, PAL['fur_d'], 5)
+            g.ell(x - 15, y - 34, x + 15, y - 8, fill=PAL['fur'])
+            g.ell(x - 3, y - 24, x + 3, y - 18, fill=PAL['dark'])
+            return
+        if edge == 'top':
+            cy = y + 30 + h * 14
+        else:
+            cy = y - 34 - h * 10
+        g.ell(x - bw, cy - bh, x + bw, cy + bh, fill=PAL['fur'])
+        g.ell(x - bw + 8, cy - bh + 8, x + bw - 12, cy + bh - 8, fill=PAL['fur_l'])
+        # 尾巴(在屏幕内侧那一边甩)
+        tx, ty = (x + f * 26, cy) if edge in ('bottom', 'top') else (x, cy + f * 26)
+        g.line(tx, ty, tx + f * 20, ty - 16, PAL['fur_d'], 5)
+        # 头(朝边框外/内都看得清)
+        hx = x + (f * 8 if edge in ('bottom', 'top') else 0)
+        hy = cy - bh - 12 if edge != 'top' else cy + bh + 12
+        g.ell(hx - 19, hy - 17, hx + 19, hy + 17, fill=PAL['fur'])
+        g.poly([(hx - 12, hy - 14), (hx - 22, hy - 30), (hx - 2, hy - 20)],
+               fill=PAL['fur_d'], outline=PAL['dark'])
+        g.ell(hx + f * 6 - 3, hy - 4, hx + f * 6 + 4, hy + 4, fill=PAL['dark'])
+        g.ell(hx + f * 12 - 4, hy + 6, hx + f * 12 + 4, hy + 12, fill=PAL['fur_l'])
+        # 四肢: 攀爬时一上一下交替(这就是"爬树"的观感)
+        sw = math.sin(self.phase * 2.2) * (18 if edge in ('left', 'right') else 12)
+        if edge == 'bottom':
+            for lx in (-14, 14):
+                g.line(x + lx, cy + bh - 6, x + lx + sw * (1 if lx > 0 else -1), y - 2,
+                       PAL['fur_d'], 5)
+        elif edge in ('left', 'right'):
+            toward = -1 if edge == 'right' else 1
+            for k, ly in enumerate((-16, 16)):          # 两只手交替抓墙
+                g.line(x + toward * 12, cy + ly, x + toward * (34 + (sw if k == 0 else -sw)),
+                       cy + ly - (10 if k == 0 else -10), PAL['fur_d'], 5)
+        else:                                            # top: 倒挂着伸手
+            for lx in (-14, 14):
+                g.line(x + lx, cy - bh + 6, x + lx + sw * 0.4, 4, PAL['fur_d'], 5)
+
+
+def _make_scene(scene_no, sw, sh):
+    if scene_no == 1:
+        return BallScene(sw, sh)
+    if scene_no == 3:
+        return ClimbScene(sw, sh)
+    return DogScene(sw, sh)
+
+
+# ======================================================================
 # 浮层窗口
 # ======================================================================
 class PetWindow(object):
@@ -613,7 +1063,15 @@ class PetWindow(object):
         self.launched = []                 # 真正执行过的工具 code
         self._live_dump = os.environ.get('WGIME_PET_DUMP_LIVE') or ''
         self._live_last = 0.0
-        self.dog = DogScene(self.sw, self.sh)
+        self._live_err = 0
+        self.dog = _make_scene(self.scene_no, self.sw, self.sh)   # 主角(按 pet_scene 选场景)
+        self.slam = None                  # 场景 1: 呼出时"把球砸向屏幕中间"
+        self.pending_palette = False
+        self.mouse = (0.0, 0.0)
+        self.fake_mouse = _fake_mouse()   # 测试钩子: 不真动用户鼠标也能测躲猫猫
+        self.force_enter = False
+        self.force_activity = 0.0
+        self.paused = False                # 测试钩子(WM_APP_PAUSE) 用
         self.prev_rect = None
         self.keys_down = set()
         self.activity = 0.0
@@ -683,8 +1141,10 @@ class PetWindow(object):
         rows = (n + cols - 1) // cols
         w = cols * size + (cols - 1) * gap
         h = rows * size + (rows - 1) * gap
-        cx = min(max(self.dog.x, w / 2.0 + 24), self.sw - w / 2.0 - 24)
-        top = max(24, self.dog.y - 210 - h)
+        ax, ay = self.dog.panel_anchor() if hasattr(self.dog, 'panel_anchor') else (self.sw / 2.0,
+                                                                                    self.sh - 8)
+        cx = min(max(ax, w / 2.0 + 24), self.sw - w / 2.0 - 24)
+        top = max(24, min(ay - 210 - h, self.sh - h - 60))
         left = cx - w / 2.0
         out = []
         for i in range(n):
@@ -714,8 +1174,20 @@ class PetWindow(object):
         self.hover = -1
         self._style()
 
+    def request_palette(self):
+        """呼出工具面板。场景 1 是"先把球砸向屏幕中间、炸开、再弹面板"(用户要的那个手感)。"""
+        if self.palette_open:
+            self.close_palette()
+            return
+        if self.scene_no == 1:
+            self.slam = {'t0': time.perf_counter(), 'dur': 0.55,
+                         'from': self.dog.mouth(), 'to': (self.sw / 2.0, self.sh / 2.0)}
+            self.pending_palette = True
+        else:
+            self.open_palette()
+
     def toggle_palette(self):
-        self.close_palette() if self.palette_open else self.open_palette()
+        self.close_palette() if self.palette_open else self.request_palette()
 
     def on_click(self, sx, sy):
         if self.palette_open:
@@ -727,7 +1199,7 @@ class PetWindow(object):
             return
         bx0, by0, bx1, by1 = self.dog.bbox()
         if bx0 <= sx <= bx1 and by0 <= sy <= by1:
-            self.open_palette()                   # 点狗 = 开面板
+            self.request_palette()                # 点主角 = 开面板
 
     def start_throw(self, i):
         tool = self.tools[i]
@@ -745,6 +1217,9 @@ class PetWindow(object):
         if self.throw:
             tx, ty = self._throw_pos(self.throw)
             parts.append((tx - 40, ty - 40, tx + 40, ty + 40))
+        if self.slam:
+            sx, sy = self._slam_pos(self.slam)
+            parts.append((sx - 46, sy - 46, sx + 46, sy + 46))
         if self.burst:
             ax, ay = self.burst['at']
             parts.append((ax - 280, ay - 170, ax + 280, ay + 170))
@@ -760,14 +1235,39 @@ class PetWindow(object):
         (x0, y0), (x1, y1) = th['from'], th['to']
         return (x0 + (x1 - x0) * p, y0 + (y1 - y0) * p - 260 * p * (1 - p))
 
+    @staticmethod
+    def _slam_pos(th):
+        """场景 1 呼出: 球从手里砸向屏幕中间(弧比工具抛得低一点, 像"砸"过去)。"""
+        p = min(1.0, max(0.0, (time.perf_counter() - th['t0']) / th['dur']))
+        (x0, y0), (x1, y1) = th['from'], th['to']
+        return (x0 + (x1 - x0) * p, y0 + (y1 - y0) * p - 150 * p * (1 - p))
+
     def tick(self):
         now = time.perf_counter()
         dt = min(0.1, now - self._last)
         self._last = now
+        if self.paused:
+            # 测试钩子(WM_APP_PAUSE): 冻住动画但仍出帧/仍写 dump —— 这样"状态里的坐标"和
+            # "屏幕上的像素"严格一致, 回归就能只扫几十个像素(本机 GetPixel 要 8.5ms/次)。
+            dt = 0.0
         act, enter = self._sample_keys()
+        if self.force_activity > 0:            # 测试钩子(WM_APP_ACTIVITY): 假装在打字
+            act = max(act, self.force_activity)
+        if self.force_enter:                   # 测试钩子(WM_APP_ENTER): 假装按了回车
+            enter = True
+            self.force_enter = False
         self.activity = max(act, self.activity - dt * 2.2)
-        self.dog.tick(dt, self.activity, enter)
+        self.mouse = self.fake_mouse or _mouse_pos()
+        self.dog.tick(dt, self.activity, enter, mouse=self.mouse)
         self.frames += 1
+        if self.slam and now - self.slam['t0'] >= self.slam['dur']:
+            self.burst = {'t0': now, 'at': self.slam['to'], 'text': ''}
+            self.slam = None
+            if self.pending_palette:
+                self.pending_palette = False
+                self.open_palette()
+                if self.burst:
+                    self.burst['text'] = '%d 个工具' % len(self.tools)
         if self.force_open and not self.palette_open:
             self.force_open = False
             self.open_palette()
@@ -789,8 +1289,12 @@ class PetWindow(object):
         try:
             with open(self._live_dump, 'w', encoding='utf-8') as f:
                 json.dump(self.dump(), f, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            # **别静默吞**: 这里吞掉过一个真 bug —— dump() 引用了只有某个场景才有的字段,
+            # 结果 live dump 一直是 0 字节, 回归只报"起不来", 查了半天。第一次失败一定写日志。
+            self._live_err += 1
+            if self._live_err in (1, 20, 100):
+                vlog('pet: live dump failed (#%d) %r' % (self._live_err, e))
 
     def _sample_keys(self):
         """轮询按键(不装钩子 => 绝不干扰输入法)。回车单独算, 其余字母/空格算"打字"。"""
@@ -836,13 +1340,25 @@ class PetWindow(object):
             g.free()
 
     def _draw_scene(self, g):
-        self.dog.draw(g)                       # 场景 1/2/3 共用这只主角, 第 3 轮再换外形
+        self.dog.draw(g)
         if self.palette_open and self.tools:
             self._draw_palette(g)
+        if self.slam:
+            self._draw_slam(g)
         if self.throw:
             self._draw_throw(g)
         if self.burst:
             self._draw_burst(g)
+
+    def _draw_slam(self, g):
+        x, y = self._slam_pos(self.slam)
+        for k in (2, 1):
+            ghost = dict(self.slam, t0=self.slam['t0'] - k * 0.06)
+            qx, qy = self._slam_pos(ghost)
+            g.ell(qx - 10, qy - 10, qx + 10, qy + 10, fill='#b06a2a')
+        g.ell(x - 20, y - 20, x + 20, y + 20, fill=HUMAN['ball'], outline=HUMAN['ball_d'], width=2)
+        g.line(x - 20, y, x + 20, y, HUMAN['ball_d'], 2)
+        g.line(x, y - 20, x, y + 20, HUMAN['ball_d'], 2)
 
     def _draw_palette(self, g):
         px0, py0, px1, py1 = self._panel or (0, 0, 0, 0)
@@ -925,6 +1441,15 @@ class PetWindow(object):
             if msg == WM_APP_TOGGLE:
                 self.toggle_palette()
                 return 0
+            if msg == WM_APP_ENTER:            # 测试钩子: 等价于"按了回车"(投篮/叫)
+                self.force_enter = True
+                return 0
+            if msg == WM_APP_ACTIVITY:         # 测试钩子: 等价于"正在打字"
+                self.force_activity = 1.0
+                return 0
+            if msg == WM_APP_PAUSE:            # 测试钩子: 冻住动画(wp=1)/解冻(wp=0)
+                self.paused = bool(wp)         # **显式指定, 不用 toggle** —— 多处调用时 toggle 会错位
+                return 0
             if msg == WM_CLOSE:
                 user32.DestroyWindow(ctypes.c_void_p(int(hwnd)))
                 return 0
@@ -991,6 +1516,7 @@ class PetWindow(object):
 
     def dump(self):
         ex = int(user32.GetWindowLongPtrW(ctypes.c_void_p(int(self.hwnd)), GWL_EXSTYLE))
+        anchor = self.dog.panel_anchor() if hasattr(self.dog, 'panel_anchor') else (0.0, 0.0)
         return {'hwnd': int(self.hwnd), 'frames': self.frames,
                 'elapsed': round(time.perf_counter() - self.t0, 3),
                 'scene': self.scene_no, 'tools': [t.get('code') for t in self.tools],
@@ -1000,13 +1526,29 @@ class PetWindow(object):
                 'noactivate': bool(ex & EX_NOACTIVATE),
                 'layered': bool(ex & EX_LAYERED), 'toolwindow': bool(ex & EX_TOOLWINDOW),
                 'topmost': bool(ex & EX_TOPMOST),
-                'dog_x': round(self.dog.x, 2), 'dog_y': round(self.dog.y, 2),
-                'dog_state': self.dog.state, 'dog_bbox': [round(v, 1) for v in self.dog.bbox()],
+                'dog_x': round(anchor[0], 2), 'dog_y': round(anchor[1], 2),
+                'dog_state': getattr(self.dog, 'state', None),
+                'dog_bbox': [round(v, 1) for v in self.dog.bbox()],
                 'activity': round(self.activity, 3),
                 'threw': list(self.threw), 'launched': list(self.launched),
                 'slots': [[round(v) for v in r] for r in (self.slots() if self.tools else [])],
                 'panel': [round(v) for v in self._panel] if self._panel else None,
-                'screen': [self.sw, self.sh], 'key': KEY_HEX}
+                'screen': [self.sw, self.sh], 'key': KEY_HEX,
+                # 场景相关(测试要看):
+                'mouse': [round(self.mouse[0]), round(self.mouse[1])],
+                'slam': bool(self.slam), 'pending_palette': self.pending_palette,
+                'dog_pos': [round(v, 1) for v in self.dog.mouth()],
+                'ball': ([round(self.dog.ball['x']), round(self.dog.ball['y'])]
+                         if hasattr(self.dog, 'ball') else None),
+                'ball_mode': getattr(self.dog, 'mode', None),
+                'hoop_flash': round(getattr(self.dog, 'hoop_flash', 0.0), 3),
+                'hoop_y': (round(self.dog.hoop_y()) if self.scene_no == 1 else None),
+                'hoop_x': ([round(self.dog.hoop_x(-1)), round(self.dog.hoop_x(1))]
+                           if self.scene_no == 1 else None),
+                'edge': getattr(self.dog, 'mode', None) if self.scene_no == 3 else None,
+                'climb_mode': getattr(self.dog, 'mode', None) if self.scene_no == 3 else None,
+                'hide': round(getattr(self.dog, 'hide', 0.0), 3),
+                'leaped': round(getattr(self.dog, 's', 0.0), 1) if self.scene_no == 3 else None}
 
 
 def _ticker(win, stop, fps=60):
