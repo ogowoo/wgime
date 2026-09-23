@@ -7,15 +7,17 @@
 //! 鼠标点不穿; 唯一能强制穿透的 `SetWindowRgn` 又会把 DComp 内容一起裁掉
 //! (实测: 装空区域后精灵像素变成背景色, 关掉立刻回来)。
 //! `UpdateLayeredWindow` 的分层窗则是**逐像素按 alpha 做命中测试**: 没画到的像素
-//! (alpha=0) 鼠标直接穿过去, 画到的像素才挡鼠标 —— 这正是桌面宠物要的语义,
-//! 而且没有区域裁剪的副作用。抗锯齿/逐像素半透明由 D2D 负责, 与 DComp 路线完全同级。
+//! (alpha=0) 鼠标直接穿过去, 画到的像素才挡鼠标 —— 这正是桌面宠物要的语义。
 //!
-//! 窗口刻意做成**精灵大小**并跟着角色移动: 全屏窗 + 手算脏矩形那一整类残影 bug
-//! 由此天然不存在(每帧整块重画, 无脏矩形可算错), 每帧要合成的像素也只有几百乘几百。
+//! 两个窗: `main` 装角色(开百宝袋时变大), `fx` 是飞行物/爆开效果的载体。
+//! 为什么飞行物要单独一个窗: 它要飞到屏幕正中, 而角色窗只有几百像素宽 ——
+//! 把角色窗撑到半个屏幕, 每帧要提交的像素会涨到几 MB(120fps 下就是几百 MB/s)。
+//! 小窗跟着飞行物走, 每帧只需几十 KB。
 
 #![allow(non_snake_case)]
 
 mod art;
+mod palette;
 
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -35,33 +37,41 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 // ---------------------------------------------------------------- 常量
 
-/// 改动 ABI 就 +1; 宿主先问这个再决定要不要用本 DLL。
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 
-/// 窗口尺寸 = 角色外接框 + 余量(含抬脚/摆尾/软阴影)。窗越小每帧提交的像素越少。
-const WIN_W: i32 = 300;
-const WIN_H: i32 = 280;
-/// 角色"脚底中心"在窗口里的位置
-const ANCHOR_X: f32 = WIN_W as f32 * 0.52;
-const ANCHOR_Y: f32 = WIN_H as f32 - 40.0;
-/// 角色整体缩放
+/// 关着百宝袋时的窗口(只装角色) / 打开时(角色 + 面板)
+const SMALL: (i32, i32) = (300, 280);
+const BIG: (i32, i32) = (palette::WIN_W as i32, palette::WIN_H as i32);
+/// DIB 一律按最大尺寸分配, 提交时只交当前需要的那块(psize 允许是 DIB 的子矩形)
+const MAX_W: i32 = BIG.0;
+const MAX_H: i32 = BIG.1;
+/// 飞行物窗口
+const FX: i32 = 220;
+
+const ANCHOR_X_SMALL: f32 = 156.0;
+const ANCHOR_Y_SMALL: f32 = 240.0;
+/// 脚底离窗口底边的距离(开面板时窗口变高, 用"离底边"算才能让角色原地不动)
+const ANCHOR_BOTTOM: f32 = 34.0;
 const DOG_SCALE: f32 = 1.15;
+
 /// 一个完整步态周期对应的前进距离(像素) —— 步态相位按走过的距离推进, 脚不会打滑
 const GAIT_CYCLE_PX: f32 = 74.0;
-/// 走 / 跑 速度(像素/秒)
 const WALK_SPEED: f32 = 96.0;
 const RUN_SPEED: f32 = 340.0;
-/// 见到鼠标就跑开的水平距离
 const FLEE_DIST: f32 = 130.0;
-/// 看鼠标的距离
 const LOOK_DIST: f32 = 460.0;
-/// 活动范围(屏幕宽度的比例)
 const RANGE_LO: f32 = 0.06;
 const RANGE_HI: f32 = 0.94;
 
 /// 帧率上限。UpdateLayeredWindow **不做 vsync 节流**(实测不设上限能跑到 2085fps,
 /// 纯烧 CPU), 所以必须自己限速。
 const FPS_CAP: f32 = 120.0;
+
+/// 掏工具的动作时间线(秒): [0,PULL) 从挎包里抽出来 → [PULL,FLY) 抛物线飞向屏幕正中
+/// → 到达即回宿主启动工具, 并在落点炸一下
+const T_PULL: f32 = 0.22;
+const T_FLY: f32 = 0.62;
+const T_BURST: f32 = 0.38;
 
 #[link(name = "winmm")]
 unsafe extern "system" {
@@ -76,8 +86,15 @@ static FRAMES: AtomicU64 = AtomicU64::new(0);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static LAST_ERR: Mutex<Option<String>> = Mutex::new(None);
 static DBG: Mutex<String> = Mutex::new(String::new());
-/// 探针标定点(窗口坐标 + 预期颜色/alpha), 由渲染帧写入
 static PROBE: Mutex<[[f32; 6]; PROBE_N]> = Mutex::new([[0.0; 6]; PROBE_N]);
+static TOOLS: Mutex<Vec<palette::Item>> = Mutex::new(Vec::new());
+static CLICK: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+static LAST_LAUNCHED: Mutex<String> = Mutex::new(String::new());
+/// 宿主给的回调: 点中工具时把 code 交回去, 由宿主启动(插件不许自己跑插件, 见 AGENTS §5 规则 51)
+type ToolCb = unsafe extern "C" fn(*const u8, usize);
+static LAUNCH_CB: AtomicIsize = AtomicIsize::new(0);
+/// fx 窗的当前位置与可见性, 给探针用
+static FX_STATE: Mutex<[f32; 3]> = Mutex::new([0.0, 0.0, 0.0]);
 
 const PROBE_N: usize = 2;
 
@@ -172,36 +189,21 @@ pub extern "C" fn wgime_pet_pause(on: i32) -> i32 {
     0
 }
 
-/// 被动(=1, 默认)整窗鼠标穿透; 交互(=0)只摘 `WS_EX_TRANSPARENT`,
-/// 于是只有画到的像素挡鼠标, 面板外空白照旧穿透, 前台全程不变。
+/// 被动(=1, 默认)整窗鼠标穿透; 交互(=0)只有画到的像素挡鼠标, 空白照旧穿透。
+/// 开百宝袋时 DLL 会自己切到交互态, 不用宿主操心。
 #[no_mangle]
 pub extern "C" fn wgime_pet_set_passthrough(on: i32) -> i32 {
-    guard(|| unsafe {
-        let h = HWND(HWND_MAIN.load(Ordering::SeqCst) as *mut c_void);
-        if h.0.is_null() {
+    guard(|| {
+        let h = HWND_MAIN.load(Ordering::SeqCst);
+        if h == 0 {
             return -1;
         }
-        let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
-        let new = if on != 0 {
-            ex | WS_EX_TRANSPARENT.0
-        } else {
-            ex & !(WS_EX_TRANSPARENT.0)
-        };
-        SetWindowLongW(h, GWL_EXSTYLE, new as i32);
-        let _ = SetWindowPos(
-            h,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
+        unsafe { set_passthrough(HWND(h as *mut c_void), on != 0) };
         0
     })
 }
 
-/// 把角色直接放到屏幕上的某个 x(采像素/演示用), 并可选地钉住朝向。返回 0。
+/// 把角色钉在屏幕某个 x(测试/演示用), face≠0 时同时钉朝向, 并停止自动漫游。
 #[no_mangle]
 pub extern "C" fn wgime_pet_set_x(x: i32, face: i32) -> i32 {
     guard(|| {
@@ -229,7 +231,7 @@ pub extern "C" fn wgime_pet_hold(off: i32) -> i32 {
     })
 }
 
-/// 测试/看画用: 钉住步态相位(0..1)并冻住动画。返回 0。
+/// 钉住步态相位(0..1)并冻住动画(看画/测试用)
 #[no_mangle]
 pub extern "C" fn wgime_pet_set_gait(gait: f32) -> i32 {
     guard(|| {
@@ -243,13 +245,166 @@ pub extern "C" fn wgime_pet_set_gait(gait: f32) -> i32 {
     })
 }
 
-/// 标定点个数
+/// 开/关百宝袋
+#[no_mangle]
+pub extern "C" fn wgime_pet_palette(on: i32) -> i32 {
+    guard(|| {
+        if let Ok(mut g) = PET.lock() {
+            g.palette = on != 0;
+            g.hover = -1;
+        }
+        0
+    })
+}
+
+/// 灌工具清单: 每行 `code\tname\tkind`(UTF-8, 不要求结尾换行)。返回装入条数。
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_set_tools(buf: *const u8, len: usize) -> i32 {
+    guard(|| {
+        if buf.is_null() {
+            return -1;
+        }
+        let bytes = std::slice::from_raw_parts(buf, len);
+        let text = match std::str::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => return -2,
+        };
+        let mut v = Vec::new();
+        for line in text.split('\n') {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                continue;
+            }
+            let mut f = line.split('\t');
+            let code = f.next().unwrap_or("").trim().to_string();
+            if code.is_empty() {
+                continue;
+            }
+            v.push(palette::Item {
+                code,
+                name: f.next().unwrap_or("").trim().to_string(),
+                kind: f.next().unwrap_or("").trim().to_string(),
+            });
+        }
+        let n = v.len() as i32;
+        if let Ok(mut g) = TOOLS.lock() {
+            *g = v;
+        }
+        n
+    })
+}
+
+/// 宿主登记"点中工具"的回调(把 code 交回宿主启动)
+#[no_mangle]
+pub extern "C" fn wgime_pet_set_launcher(cb: usize) -> i32 {
+    LAUNCH_CB.store(cb as isize, Ordering::SeqCst);
+    0
+}
+
+/// 模拟一次点击(屏幕坐标; 测试用)。返回点中的工具下标, -1 = 没点中。
+#[no_mangle]
+pub extern "C" fn wgime_pet_click(sx: i32, sy: i32) -> i32 {
+    guard(|| {
+        let h = HWND_MAIN.load(Ordering::SeqCst);
+        if h == 0 {
+            return -1;
+        }
+        if let Ok(mut c) = CLICK.lock() {
+            *c = Some((sx, sy));
+        }
+        // 等渲染线程处理完(最多 500ms)
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_millis(500) {
+            if CLICK.lock().map(|c| c.is_none()).unwrap_or(false) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        LAST_IDX.load(Ordering::SeqCst) as i32
+    })
+}
+
+static LAST_IDX: AtomicIsize = AtomicIsize::new(-1);
+
+/// 上一次真的交给宿主启动的 code(UTF-8)。buf=NULL 返回长度。
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_last_launched(buf: *mut u8, cap: usize) -> usize {
+    let s = LAST_LAUNCHED.lock().map(|g| g.clone()).unwrap_or_default();
+    copy_out(s.as_bytes(), buf, cap)
+}
+
+/// 面板矩形(屏幕坐标): [x, y, w, h]。没开面板时 w=0。
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_panel_rect(out: *mut f32) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    let (w, flip, open, r) = geom_snapshot();
+    if !open {
+        let z = [0.0f32; 4];
+        std::ptr::copy_nonoverlapping(z.as_ptr(), out, 4);
+        return 0;
+    }
+    let l = palette::layout(TOOLS.lock().map(|g| g.len()).unwrap_or(0), flip);
+    let v = [
+        (r.0 as f32 + l.panel.0),
+        (r.1 as f32 + l.panel.1),
+        l.panel.2,
+        l.panel.3,
+    ];
+    let _ = w;
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
+    0
+}
+
+/// 第 i 个工具格的矩形(屏幕坐标): [x, y, w, h]
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_item_rect(i: i32, out: *mut f32) -> i32 {
+    if out.is_null() || i < 0 {
+        return -1;
+    }
+    let (_w, flip, open, r) = geom_snapshot();
+    if !open {
+        return -1;
+    }
+    let l = palette::layout(TOOLS.lock().map(|g| g.len()).unwrap_or(0), flip);
+    let idx = i as usize;
+    if idx >= l.items.len() {
+        return -1;
+    }
+    let it = l.items[idx];
+    let v = [r.0 as f32 + it.0, r.1 as f32 + it.1, it.2, it.3];
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
+    0
+}
+
+/// 当前高亮的工具下标(-1 = 没高亮)
+#[no_mangle]
+pub extern "C" fn wgime_pet_hover() -> i32 {
+    PET.lock().map(|g| g.hover).unwrap_or(-1)
+}
+
+/// 飞行物状态: [屏幕x, 屏幕y, 可见(0/1)]
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_fx(out: *mut f32) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    match FX_STATE.lock() {
+        Ok(g) => {
+            std::ptr::copy_nonoverlapping(g.as_ptr(), out, 3);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn wgime_pet_probe_count() -> i32 {
     PROBE_N as i32
 }
 
-/// 取第 i 个标定点: 写入 [窗口x, 窗口y, r, g, b, a]。
+/// 取第 i 个标定点: [窗口x, 窗口y, r, g, b, a]
 #[no_mangle]
 pub unsafe extern "C" fn wgime_pet_probe(i: i32, out: *mut f32) -> i32 {
     if out.is_null() || i < 0 || i as usize >= PROBE_N {
@@ -287,27 +442,30 @@ unsafe fn copy_out(bytes: &[u8], buf: *mut u8, cap: usize) -> usize {
 
 // ---------------------------------------------------------------- 状态机
 
-/// 宠物在屏幕坐标里的状态。绘制只读它, 交互只改它。
 struct Pet {
-    /// 屏幕坐标: 角色脚底中心的 x
     x: f32,
-    /// 当前速度(带符号)
     v: f32,
     face: f32,
-    /// 步态相位 0..1
     gait: f32,
-    /// 尾巴 / 耳朵 的摆动时间
     t: f32,
-    /// 本次"待机/走动"剩余时间
     hold_t: f32,
-    /// 下一次眨眼剩余时间
     blink_t: f32,
     blink: f32,
     look: f32,
-    /// 是不是"跑"
     running: bool,
-    /// 测试用: 钉住不动
     hold: bool,
+    /// 百宝袋开着
+    palette: bool,
+    /// 开场动画 0..1
+    anim: f32,
+    hover: i32,
+    flip: bool,
+    /// 掏工具动作进度: None = 没在掏
+    throw_t: Option<f32>,
+    throw_idx: i32,
+    /// fx 落点爆开剩余时间
+    burst: f32,
+    fx_on: bool,
 }
 
 static PET: Mutex<Pet> = Mutex::new(Pet {
@@ -322,9 +480,16 @@ static PET: Mutex<Pet> = Mutex::new(Pet {
     look: 0.0,
     running: false,
     hold: false,
+    palette: false,
+    anim: 0.0,
+    hover: -1,
+    flip: false,
+    throw_t: None,
+    throw_idx: -1,
+    burst: 0.0,
+    fx_on: false,
 });
 
-/// 便宜的随机数(xorshift), 免得引依赖
 fn rnd(seed: &mut u32) -> f32 {
     let mut x = *seed;
     x ^= x << 13;
@@ -335,22 +500,18 @@ fn rnd(seed: &mut u32) -> f32 {
 }
 
 impl Pet {
-    fn step(&mut self, dt: f32, sw: f32, mouse: (f32, f32), seed: &mut u32) {
+    fn step(&mut self, dt: f32, sw: f32, ground: f32, mouse: (f32, f32), seed: &mut u32) {
         self.t += dt;
-        let lo = sw * RANGE_LO;
-        let hi = sw * RANGE_HI;
-        if !self.hold {
-            // 躲鼠标: 鼠标贴到身边就朝反方向跑
+        // 面板开着的时候站住不动(不然面板跟着角色满屏跑, 鼠标追不上)
+        let want_hold = self.hold || self.palette || self.throw_t.is_some();
+        if !want_hold {
             let d = mouse.0 - self.x;
-            if d.abs() < FLEE_DIST
-                && (mouse.1 - ANCHOR_Y_SCREEN.load(Ordering::Relaxed) as f32).abs() < 260.0
-            {
+            if d.abs() < FLEE_DIST && (mouse.1 - ground).abs() < 260.0 {
                 self.face = if d > 0.0 { -1.0 } else { 1.0 };
                 self.v = self.face * RUN_SPEED;
                 self.running = true;
                 self.hold_t = 1.2;
             } else if self.hold_t <= 0.0 {
-                // 换一段行为: 走 或 站住歇一会儿
                 if rnd(seed) < 0.72 {
                     self.running = rnd(seed) < 0.25;
                     self.v = self.face * if self.running { RUN_SPEED } else { WALK_SPEED };
@@ -364,6 +525,7 @@ impl Pet {
                 self.hold_t -= dt;
             }
             self.x += self.v * dt;
+            let (lo, hi) = (sw * RANGE_LO, sw * RANGE_HI);
             if self.x < lo {
                 self.x = lo;
                 self.face = 1.0;
@@ -377,29 +539,73 @@ impl Pet {
             }
         } else {
             self.hold_t = 0.0;
+            self.v = 0.0;
         }
-        // 步态按"走过的距离"推进: 快走快倒腿, 站住就不动, 脚不打滑
         self.gait = (self.gait + self.v.abs() * dt / GAIT_CYCLE_PX).fract();
 
-        // 眨眼
         self.blink_t -= dt;
         if self.blink_t <= 0.0 {
             self.blink_t = 2.0 + rnd(seed) * 4.0;
         }
-        let phase = self.blink_t;
-        self.blink = if phase > 0.86 { ((phase - 0.86) / 0.14).min(1.0) } else { 0.0 };
+        self.blink = if self.blink_t > 0.86 {
+            ((self.blink_t - 0.86) / 0.14).min(1.0)
+        } else {
+            0.0
+        };
 
-        // 看鼠标
         let want = ((mouse.0 - self.x) / LOOK_DIST).clamp(-1.0, 1.0);
         self.look += (want - self.look) * (dt * 4.0).min(1.0);
+
+        // 面板开场动画
+        let target = if self.palette { 1.0 } else { 0.0 };
+        let sp = (dt / 0.16).min(1.0);
+        self.anim += (target - self.anim) * sp;
+
+        // 面板在角色左边还是右边: 角色靠屏幕右缘就翻到左边
+        self.flip = self.x > sw * 0.6;
+
+        // 掏工具: 抽 → 抛 → 爆
+        if let Some(t) = self.throw_t {
+            let nt = t + dt;
+            if t < T_PULL && nt >= T_PULL {
+                dbg(format!("throw: pull done -> fly (tool {})", self.throw_idx));
+            }
+            if nt >= T_PULL + T_FLY && t < T_PULL + T_FLY {
+                // 到落点: 交给宿主启动(插件不许自己跑插件)
+                let code = TOOLS
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(self.throw_idx.max(0) as usize).map(|i| i.code.clone()))
+                    .unwrap_or_default();
+                if !code.is_empty() {
+                    if let Ok(mut g) = LAST_LAUNCHED.lock() {
+                        *g = code.clone();
+                    }
+                    let cb = LAUNCH_CB.load(Ordering::SeqCst);
+                    if cb != 0 {
+                        let f: ToolCb = unsafe { std::mem::transmute(cb) };
+                        unsafe { f(code.as_ptr(), code.len()) };
+                    }
+                }
+                self.burst = T_BURST;
+            }
+            if nt >= T_PULL + T_FLY + T_BURST {
+                self.throw_t = None;
+            } else {
+                self.throw_t = Some(nt);
+            }
+        }
+        if self.burst > 0.0 {
+            self.burst = (self.burst - dt).max(0.0);
+        }
     }
 
-    fn pose(&self) -> art::Pose {
+    fn pose(&self, anchor_x: f32, anchor_y: f32) -> art::Pose {
         let run = self.running as i32 as f32;
         let moving = self.v.abs() > 1.0;
         art::Pose {
-            x: ANCHOR_X,
-            ground: ANCHOR_Y,
+            x: anchor_x,
+            ground: anchor_y,
             face: self.face,
             scale: DOG_SCALE,
             gait: self.gait,
@@ -412,18 +618,75 @@ impl Pet {
             blink: self.blink,
             look: self.look,
             up: 1.0,
-            alert: if self.v.abs() > 200.0 { 0.35 } else { 0.0 },
+            alert: if self.throw_t.is_some() {
+                0.9
+            } else if self.v.abs() > 200.0 {
+                0.35
+            } else {
+                0.0
+            },
         }
     }
 }
 
-/// 屏幕 y 的缓存(给"鼠标是否在宠物那一带"用)
-static ANCHOR_Y_SCREEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+// ---------------------------------------------------------------- 几何
+
+fn win_size(open: bool) -> (i32, i32) {
+    if open {
+        BIG
+    } else {
+        SMALL
+    }
+}
+
+fn anchor(open: bool, flip: bool) -> (f32, f32) {
+    if open {
+        (palette::anchor_x(flip, 1.0), palette::WIN_H - ANCHOR_BOTTOM)
+    } else {
+        (ANCHOR_X_SMALL, ANCHOR_Y_SMALL)
+    }
+}
+
+fn window_rect(h: HWND) -> (i32, i32) {
+    let mut r = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(h, &mut r);
+    }
+    (r.left, r.top)
+}
+
+/// 给导出用的快照: (窗口宽, 是否翻到左边, 面板是否开着, 窗口左上角)
+fn geom_snapshot() -> (i32, bool, bool, (i32, i32)) {
+    let (open, flip) = PET
+        .lock()
+        .map(|g| (g.palette && g.anim > 0.02, g.flip))
+        .unwrap_or((false, false));
+    let h = HWND_MAIN.load(Ordering::SeqCst);
+    let r = if h == 0 {
+        (0, 0)
+    } else {
+        window_rect(HWND(h as *mut c_void))
+    };
+    (win_size(open).0, flip, open, r)
+}
 
 // ---------------------------------------------------------------- 窗口与渲染
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_LBUTTONDOWN => {
+            // 统一成**屏幕坐标**: 命中测试与 wgime_pet_click 注入都按屏幕坐标算,
+            // 免得两条路各用一套坐标系(客户端 vs 屏幕)而错位
+            let mut p = POINT {
+                x: (lp.0 & 0xFFFF) as i16 as i32,
+                y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32,
+            };
+            let _ = ClientToScreen(hwnd, &mut p);
+            if let Ok(mut c) = CLICK.lock() {
+                *c = Some((p.x, p.y));
+            }
+            LRESULT(0)
+        }
         WM_CLOSE => {
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
@@ -442,11 +705,15 @@ struct Surface {
     memdc: HDC,
     hbmp: HBITMAP,
     old: HGDIOBJ,
+    w: i32,
+    h: i32,
     d2d: ID2D1DCRenderTarget,
     rt: ID2D1RenderTarget,
     _factory: ID2D1Factory,
     stroke: ID2D1StrokeStyle,
     b: art::Brushes,
+    text: art::Text,
+    pb: palette::Brushes,
 }
 
 unsafe impl Send for Surface {}
@@ -485,23 +752,33 @@ fn render_thread() -> Result<()> {
             | WS_EX_TOPMOST;
         let sw = GetSystemMetrics(SM_CXSCREEN);
         let sh = GetSystemMetrics(SM_CYSCREEN);
-        let y = sh - WIN_H - 20;
-        ANCHOR_Y_SCREEN.store(y + ANCHOR_Y as i32, Ordering::SeqCst);
+        // 站在**工作区**底边上(不是屏幕底边): 否则角色会陷进任务栏里 ——
+        // 半透明任务栏会透出底下的东西, 看起来像"脚被切了", 标定点读数也会偏(真踩过)
+        let mut work = RECT::default();
+        let _ = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut work as *mut _ as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        let work_bottom = if work.bottom > 0 { work.bottom } else { sh };
+        let ground = work_bottom - 6;
         {
             let mut g = PET.lock().map_err(|_| Error::from(E_FAIL))?;
             g.x = sw as f32 * 0.5;
             g.face = 1.0;
             g.v = WALK_SPEED;
         }
+        let (a0x, a0y) = anchor(false, false);
         let hwnd = CreateWindowExW(
             ex,
             PCWSTR(cls_name.as_ptr()),
             PCWSTR(wide("wgpet · 桌面宠物").as_ptr()),
             WS_POPUP,
-            (sw - WIN_W) / 2,
-            y,
-            WIN_W,
-            WIN_H,
+            (g0x(sw, a0x)) as i32,
+            ground - a0y as i32,
+            SMALL.0,
+            SMALL.1,
             None,
             None,
             hinst,
@@ -509,9 +786,32 @@ fn render_thread() -> Result<()> {
         )?;
         HWND_MAIN.store(hwnd.0 as isize, Ordering::SeqCst);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        dbg(format!("window ok hwnd=0x{:X} {}x{}", hwnd.0 as isize, WIN_W, WIN_H));
 
-        let surf = create_surface()?;
+        // 飞行物窗: 常驻但平时藏着(创建/销毁每次都动窗口管理器, 没必要)
+        let fx = CreateWindowExW(
+            ex,
+            PCWSTR(cls_name.as_ptr()),
+            PCWSTR(wide("wgpet · 投掷物").as_ptr()),
+            WS_POPUP,
+            0,
+            0,
+            FX,
+            FX,
+            None,
+            None,
+            hinst,
+            None,
+        )?;
+        dbg(format!(
+            "windows ok main=0x{:X} fx=0x{:X} {}x{}",
+            hwnd.0 as isize,
+            fx.0 as isize,
+            SMALL.0,
+            SMALL.1
+        ));
+
+        let surf = create_surface(MAX_W, MAX_H)?;
+        let fxs = create_surface(FX, FX)?;
         let screen_dc = GetDC(None);
         timeBeginPeriod(1);
         READY.store(true, Ordering::SeqCst);
@@ -522,6 +822,8 @@ fn render_thread() -> Result<()> {
         let mut prev = Instant::now();
         let mut msg = MSG::default();
         let mut seed: u32 = 0x1234_5678;
+        let mut interactive = false;
+        let mut fx_shown = false;
         'outer: loop {
             if STOP.load(Ordering::SeqCst) {
                 break;
@@ -540,20 +842,129 @@ fn render_thread() -> Result<()> {
 
             let mut m = POINT { x: 0, y: 0 };
             let _ = GetCursorPos(&mut m);
-            let (wx, pose) = {
+            let click = CLICK.lock().ok().and_then(|mut c| c.take());
+
+            let (open, flip, ax, ay, pose, thrown, fx_pos, fx_vis, burst, fx_letter) = {
                 let mut g = match PET.lock() {
                     Ok(g) => g,
                     Err(_) => break,
                 };
                 if !frozen {
-                    g.step(dt, sw as f32, (m.x as f32, m.y as f32), &mut seed);
+                    g.step(dt, sw as f32, ground as f32, (m.x as f32, m.y as f32), &mut seed);
                 }
-                ((g.x - ANCHOR_X).round() as i32, g.pose())
+                let open = g.palette && g.anim > 0.02;
+                let (ax, ay) = anchor(open, g.flip);
+                // 命中测试: 光标 → 窗口坐标 → 面板格子
+                let wr = window_rect(hwnd);
+                let (lx, ly) = ((m.x - wr.0) as f32, (m.y - wr.1) as f32);
+                let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
+                let l = palette::layout(n, g.flip);
+                let mut hover = -1;
+                if open && g.throw_t.is_none() {
+                    for (i, it) in l.items.iter().enumerate() {
+                        if lx >= it.0 && lx <= it.0 + it.2 && ly >= it.1 && ly <= it.1 + it.3 {
+                            hover = i as i32;
+                            break;
+                        }
+                    }
+                }
+                g.hover = hover;
+                // 点击(真实 WM_LBUTTONDOWN 或 wgime_pet_click 注入)
+                if let Some((cx, cy)) = click {
+                    let idx = if open && g.throw_t.is_none() {
+                        let mut hit = -1;
+                        for (i, it) in l.items.iter().enumerate() {
+                            let (fx0, fy0) = (it.0 + wr.0 as f32, it.1 + wr.1 as f32);
+                            if cx as f32 >= fx0
+                                && (cx as f32) <= fx0 + it.2
+                                && cy as f32 >= fy0
+                                && (cy as f32) <= fy0 + it.3
+                            {
+                                hit = i as i32;
+                                break;
+                            }
+                        }
+                        hit
+                    } else {
+                        -1
+                    };
+                    LAST_IDX.store(idx as isize, Ordering::SeqCst);
+                    if idx >= 0 {
+                        g.throw_idx = idx;
+                        g.throw_t = Some(0.0);
+                    }
+                }
+                // 面板格子的屏幕矩形(命中测试用真实窗口坐标, 所以这里再取一次)
+                let _ = l;
+                let letter: String = TOOLS
+                    .lock()
+                    .ok()
+                    .and_then(|t| {
+                        t.get(g.throw_idx.max(0) as usize).map(|i| {
+                            i.code
+                                .chars()
+                                .next()
+                                .map(|ch| ch.to_uppercase().to_string())
+                                .unwrap_or_default()
+                        })
+                    })
+                    .unwrap_or_default();
+                let thrown = g.throw_t;
+                let (mut fx_x, mut fx_y, mut fx_vis) = (0.0f32, 0.0f32, false);
+                if let Some(t) = thrown {
+                    // 从挎包飞到屏幕正中; 抛物线 + 自转
+                    let (bx, by) = (g.x - 8.0 * DOG_SCALE, ground as f32 - 62.0 * DOG_SCALE);
+                    let (ex_, ey_) = (sw as f32 * 0.5, sh as f32 * 0.5);
+                    let k = ((t - T_PULL) / T_FLY).clamp(0.0, 1.0);
+                    let arc = (k * std::f32::consts::PI).sin() * 150.0;
+                    fx_x = bx + (ex_ - bx) * k;
+                    fx_y = by + (ey_ - by) * k - arc;
+                    fx_vis = t >= 0.0;
+                }
+                (open, g.flip, ax, ay, g.pose(ax, ay), thrown, (fx_x, fx_y), fx_vis, g.burst, letter)
             };
-            draw(&surf, &pose)?;
-            present(hwnd, screen_dc, &surf, wx, y)?;
-            FRAMES.fetch_add(1, Ordering::SeqCst);
 
+            // 窗口尺寸/位置随面板开合变化(保持脚底在屏幕上的位置不动)
+            let want = win_size(open);
+            let wx = (state_x() - ax).round() as i32;
+            let wy = ground - ay.round() as i32;
+            draw(&surf, &pose, open, flip, want, &thrown)?;
+            present(hwnd, screen_dc, &surf, wx, wy, want.0, want.1)?;
+
+            // 交互态切换: 面板开着才需要点得到
+            if interactive != open {
+                set_passthrough(hwnd, !open);
+                interactive = open;
+            }
+
+            // 飞行物
+            if fx_vis && thrown.is_some() {
+                if !fx_shown {
+                    let _ = ShowWindow(fx, SW_SHOWNOACTIVATE);
+                    fx_shown = true;
+                }
+                draw_fx(&fxs, &thrown, burst, &fx_letter)?;
+                present(
+                    fx,
+                    screen_dc,
+                    &fxs,
+                    fx_pos.0.round() as i32 - FX / 2,
+                    fx_pos.1.round() as i32 - FX / 2,
+                    FX,
+                    FX,
+                )?;
+                if let Ok(mut s) = FX_STATE.lock() {
+                    *s = [fx_pos.0, fx_pos.1, 1.0];
+                }
+            } else if fx_shown && burst <= 0.0 {
+                let _ = ShowWindow(fx, SW_HIDE);
+                fx_shown = false;
+                if let Ok(mut s) = FX_STATE.lock() {
+                    *s = [0.0, 0.0, 0.0];
+                }
+            }
+
+            FRAMES.fetch_add(1, Ordering::SeqCst);
             next += period;
             let now = Instant::now();
             if next > now {
@@ -565,20 +976,48 @@ fn render_thread() -> Result<()> {
         timeEndPeriod(1);
 
         let _ = ReleaseDC(None, screen_dc);
+        let _ = DestroyWindow(fx);
         let _ = DestroyWindow(hwnd);
         HWND_MAIN.store(0, Ordering::SeqCst);
         Ok(())
     }
 }
 
-unsafe fn create_surface() -> Result<Surface> {
+fn g0x(sw: i32, ax: f32) -> f32 {
+    sw as f32 * 0.5 - ax
+}
+
+fn state_x() -> f32 {
+    PET.lock().map(|g| g.x).unwrap_or(0.0)
+}
+
+unsafe fn set_passthrough(h: HWND, on: bool) {
+    let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+    let new = if on {
+        ex | WS_EX_TRANSPARENT.0
+    } else {
+        ex & !(WS_EX_TRANSPARENT.0)
+    };
+    SetWindowLongW(h, GWL_EXSTYLE, new as i32);
+    let _ = SetWindowPos(
+        h,
+        None,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
+}
+
+unsafe fn create_surface(w: i32, h: i32) -> Result<Surface> {
     let screen_dc = GetDC(None);
     let memdc = CreateCompatibleDC(screen_dc);
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: WIN_W,
-            biHeight: -WIN_H,
+            biWidth: w,
+            biHeight: -h,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
@@ -590,7 +1029,6 @@ unsafe fn create_surface() -> Result<Surface> {
     let hbmp = CreateDIBSection(memdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
     let old = SelectObject(memdc, HGDIOBJ(hbmp.0));
     ReleaseDC(None, screen_dc);
-    dbg("DIB section ok (32bpp, premultiplied)".into());
 
     let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
     let props = D2D1_RENDER_TARGET_PROPERTIES {
@@ -620,43 +1058,188 @@ unsafe fn create_surface() -> Result<Surface> {
         None,
     )?;
     let b = art::Brushes::new(&rt)?;
-    dbg("D2D DC render target ok".into());
+    let text = art::Text::new()?;
+    let pb = palette::Brushes::new(&rt)?;
 
     Ok(Surface {
         memdc,
         hbmp,
         old,
+        w,
+        h,
         d2d,
         rt,
         _factory: factory,
         stroke,
         b,
+        text,
+        pb,
     })
 }
 
-unsafe fn draw(s: &Surface, pose: &art::Pose) -> Result<()> {
-    let rc = RECT { left: 0, top: 0, right: WIN_W, bottom: WIN_H };
+unsafe fn begin(s: &Surface, w: i32, h: i32) -> Result<()> {
+    let rc = RECT {
+        left: 0,
+        top: 0,
+        right: w,
+        bottom: h,
+    };
     s.d2d.BindDC(s.memdc, &rc)?;
     s.rt.BeginDraw();
-    s.rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+    s.rt.Clear(Some(&D2D1_COLOR_F {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    }));
+    Ok(())
+}
 
-    let ctx = art::Ctx { rt: &s.rt, b: &s.b, stroke: &s.stroke };
+unsafe fn draw(
+    s: &Surface,
+    pose: &art::Pose,
+    open: bool,
+    flip: bool,
+    size: (i32, i32),
+    thrown: &Option<f32>,
+) -> Result<()> {
+    begin(s, size.0, size.1)?;
+    let ctx = art::Ctx {
+        rt: &s.rt,
+        b: &s.b,
+        stroke: &s.stroke,
+    };
     let probe = art::draw_dog(&ctx, pose);
+
+    if open {
+        let items = TOOLS.lock().map(|g| g.clone()).unwrap_or_default();
+        let anim = PET.lock().map(|g| g.anim).unwrap_or(1.0);
+        let l = palette::layout(items.len(), flip);
+        let hover = if thrown.is_some() {
+            PET.lock().map(|g| g.throw_idx).unwrap_or(-1)
+        } else {
+            PET.lock().map(|g| g.hover).unwrap_or(-1)
+        };
+        // "掏出来"那一拍: 被点中的格子朝角色滑出去
+        let pull = thrown.map(|t| {
+            let idx = PET.lock().map(|g| g.throw_idx.max(0) as usize).unwrap_or(0);
+            (idx, (t / T_PULL).clamp(0.0, 1.0))
+        });
+        palette::draw_panel(&ctx, &s.pb, &s.text, &items, &l, hover, anim, pull);
+    }
 
     if let Ok(mut g) = PROBE.lock() {
         let (r, gg, b) = art::SHADOW_TINT;
-        g[0] = [probe.shadow.0, probe.shadow.1, r, gg, b, art::SHADOW_TOTAL_ALPHA];
+        g[0] = [
+            probe.shadow.0,
+            probe.shadow.1,
+            r,
+            gg,
+            b,
+            art::SHADOW_TOTAL_ALPHA,
+        ];
         let f = art::FUR;
         g[1] = [probe.body.0, probe.body.1, f.r, f.g, f.b, f.a];
     }
-
     s.rt.EndDraw(None, None)?;
     Ok(())
 }
 
-unsafe fn present(hwnd: HWND, screen_dc: HDC, s: &Surface, x: i32, y: i32) -> Result<()> {
+/// 飞行物: 旋转的圆角方块(取工具 code 的首字) + 落点爆开的圈
+unsafe fn draw_fx(s: &Surface, thrown: &Option<f32>, burst: f32, letter: &str) -> Result<()> {
+    begin(s, FX, FX)?;
+    let ctx = art::Ctx {
+        rt: &s.rt,
+        b: &s.b,
+        stroke: &s.stroke,
+    };
+    let c = FX as f32 * 0.5;
+    if let Some(&t) = thrown.as_ref() {
+        if t < T_PULL + T_FLY {
+            let k = ((t - T_PULL) / T_FLY).clamp(0.0, 1.0);
+            // 拖影: 往回画三个越来越淡的影子
+            for i in (1..=3).rev() {
+                let kk = (k - i as f32 * 0.035).max(0.0);
+                let wob = (kk * 6.0) * 0.9;
+                let r = 17.0 - i as f32 * 1.5;
+                ctx.rot_at(wob, (c, c), |ctx| {
+                    let _ = ctx.rt.FillRoundedRectangle(
+                        &art::rounded(c - r, c - r, r * 2.0, r * 2.0, 6.0),
+                        &s.pb.icons[1],
+                    );
+                });
+            }
+            let _ = s.rt.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+            ctx.rot_at(k * 9.0, (c, c), |ctx| {
+                let _ = ctx.rt.FillRoundedRectangle(
+                    &art::rounded(c - 19.0, c - 19.0, 38.0, 38.0, 8.0),
+                    &s.b.outline,
+                );
+                let _ = ctx.rt.FillRoundedRectangle(
+                    &art::rounded(c - 16.0, c - 16.0, 32.0, 32.0, 6.0),
+                    &s.pb.icons[0],
+                );
+            });
+            let _ = s.rt.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+            s.text.draw(
+                &s.rt,
+                &letter,
+                c - 19.0,
+                c - 19.0,
+                38.0,
+                38.0,
+                &s.pb.white,
+                &s.text.bold,
+                1,
+                1,
+            );
+        }
+    }
+    if burst > 0.0 {
+        let k = 1.0 - (burst / T_BURST);
+        for i in 0..3 {
+            let r = 26.0 + k * 70.0 + i as f32 * 16.0;
+            let a = (1.0 - k) * (0.55 - i as f32 * 0.15);
+            if a <= 0.0 {
+                continue;
+            }
+            // 用现成的暖黄笔刷, 不再每帧新建(爆开只有 0.38 秒, 但 120fps 下也是每帧 3 个 COM 对象)
+            let ring = s.rt.CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: 1.0,
+                    g: 0.85,
+                    b: 0.45,
+                    a,
+                },
+                None,
+            )?;
+            let _ = s.rt.DrawEllipse(
+                &D2D1_ELLIPSE {
+                    point: D2D_POINT_2F { x: c, y: c },
+                    radiusX: r,
+                    radiusY: r,
+                },
+                &ring,
+                4.0,
+                None,
+            );
+        }
+    }
+    s.rt.EndDraw(None, None)?;
+    Ok(())
+}
+
+unsafe fn present(
+    hwnd: HWND,
+    screen_dc: HDC,
+    s: &Surface,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<()> {
     let dst = POINT { x, y };
-    let size = SIZE { cx: WIN_W, cy: WIN_H };
+    let size = SIZE { cx: w, cy: h };
     let src = POINT { x: 0, y: 0 };
     let blend = BLENDFUNCTION {
         BlendOp: AC_SRC_OVER as u8,
@@ -664,6 +1247,7 @@ unsafe fn present(hwnd: HWND, screen_dc: HDC, s: &Surface, x: i32, y: i32) -> Re
         SourceConstantAlpha: 255,
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
+    let _ = (s.w, s.h);
     UpdateLayeredWindow(
         hwnd,
         screen_dc,

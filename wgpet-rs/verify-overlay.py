@@ -175,7 +175,7 @@ def main():
     lib.wgime_pet_debug.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
     lib.wgime_pet_debug.restype = ctypes.c_size_t
 
-    chk('ABI 版本可读', lib.wgime_pet_abi_version() == 1, 'abi=%d' % lib.wgime_pet_abi_version())
+    chk('ABI 版本可读', lib.wgime_pet_abi_version() >= 1, 'abi=%d' % lib.wgime_pet_abi_version())
 
     hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
     sw, sh = u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)

@@ -214,22 +214,22 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    unsafe fn limb(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn limb(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
         let _ = self.rt.DrawLine(pt(a), pt(c), brush, w, Some(self.stroke));
     }
-    unsafe fn disc(&self, p: Pt, r: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn disc(&self, p: Pt, r: f32, brush: &ID2D1SolidColorBrush) {
         let _ = self.rt.FillEllipse(&ell(p.0, p.1, r, r), brush);
     }
-    unsafe fn oval(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn oval(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush) {
         let _ = self.rt.FillEllipse(&ell(p.0, p.1, rx, ry), brush);
     }
     /// 带描边的椭圆: 先画大一圈的深色, 再画本色
-    unsafe fn oval_out(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush, w: f32) {
+    pub(crate) unsafe fn oval_out(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush, w: f32) {
         self.oval(p, rx + w, ry + w, &self.b.outline);
         self.oval(p, rx, ry, brush);
     }
     /// 绕 (cx,cy) 旋转 angle 弧度后执行 f(与外层变换**相乘**, 不是替换)
-    unsafe fn rot_at<F: FnOnce(&Self)>(&self, angle: f32, c: Pt, f: F) {
+    pub(crate) unsafe fn rot_at<F: FnOnce(&Self)>(&self, angle: f32, c: Pt, f: F) {
         let mut cur = Matrix3x2::default();
         self.rt.GetTransform(&mut cur);
         let _ = self
@@ -238,9 +238,14 @@ impl<'a> Ctx<'a> {
         f(self);
         let _ = self.rt.SetTransform(&cur);
     }
-    unsafe fn line_w(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn line_w(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
         let _ = self.rt.DrawLine(pt(a), pt(c), brush, w, None);
     }
+}
+
+/// 给外面用的圆角矩形构造(面板模块用)
+pub(crate) fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> D2D1_ROUNDED_RECT {
+    rr(x, y, w, h, r, r)
 }
 
 /// 一条腿: 髋/肩 → 膝/肘 → 爪, 带描边
@@ -455,4 +460,78 @@ fn feet(p: &Pose, phase: f32, front_x: f32, rear_x: f32) -> (Pt, Pt) {
         (x, -lift)
     };
     (foot(front_x, phase), foot(rear_x, phase + 0.5))
+}
+
+// ---------------------------------------------------------------- 文字
+
+use windows::Win32::Graphics::DirectWrite::*;
+
+/// DirectWrite 文字: 面板上的工具名要显示中文, 所以走 DWrite 的文本布局。
+pub struct Text {
+    factory: IDWriteFactory,
+    pub normal: IDWriteTextFormat,
+    pub bold: IDWriteTextFormat,
+    pub small: IDWriteTextFormat,
+}
+
+fn fmt(f: &IDWriteFactory, size: f32, weight: DWRITE_FONT_WEIGHT) -> Result<IDWriteTextFormat> {
+    unsafe {
+        f.CreateTextFormat(
+            PCWSTR(wide("Microsoft YaHei UI").as_ptr()),
+            None,
+            weight,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            PCWSTR(wide("zh-cn").as_ptr()),
+        )
+    }
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+impl Text {
+    pub fn new() -> Result<Self> {
+        let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+        Ok(Self {
+            normal: fmt(&factory, 14.5, DWRITE_FONT_WEIGHT_NORMAL)?,
+            bold: fmt(&factory, 16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+            small: fmt(&factory, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+            factory,
+        })
+    }
+
+    /// 在 (x,y) 处、给定宽高内画一段文字。`halign` 0=左 1=中 2=右, `valign` 0=上 1=中。
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn draw(
+        &self,
+        rt: &ID2D1RenderTarget,
+        s: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        brush: &ID2D1SolidColorBrush,
+        format: &IDWriteTextFormat,
+        halign: i32,
+        valign: i32,
+    ) {
+        let u: Vec<u16> = s.encode_utf16().collect();
+        let Ok(lay) = self.factory.CreateTextLayout(&u, format, w, h) else {
+            return;
+        };
+        let _ = lay.SetTextAlignment(match halign {
+            1 => DWRITE_TEXT_ALIGNMENT_CENTER,
+            2 => DWRITE_TEXT_ALIGNMENT_TRAILING,
+            _ => DWRITE_TEXT_ALIGNMENT_LEADING,
+        });
+        let _ = lay.SetParagraphAlignment(if valign == 1 {
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+        } else {
+            DWRITE_PARAGRAPH_ALIGNMENT_NEAR
+        });
+        rt.DrawTextLayout(D2D_POINT_2F { x, y }, &lay, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    }
 }

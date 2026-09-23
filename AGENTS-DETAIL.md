@@ -2259,5 +2259,29 @@ D2D 软件光栅在这个尺寸上完全不是瓶颈。
 `Result`(用 `.ok()` 转); `DCompositionCreateDevice` / `D2D1CreateFactory` 是**泛型**返回(要写
 `let d: IDCompositionDevice = DCompositionCreateDevice(&dev)?`); `SelectObject` 要显式 `HGDIOBJ(hbmp.0)`
 (泛型推断不出来); `ID2D1DeviceContext::SetUnitMode` 只存在于 DeviceContext(不在 RenderTarget 上),
-而 `ID2D1DCRenderTarget` 没有这个方法 —— DC 渲染目标靠 dpi 96 保证 1:1。
+而 `ID2D1DCRenderTarget` 没有这个方法 —— DC 渲染目标靠 dpi 96 保证 1:1;
+`IDWriteFactory::CreateTextLayout(&[u16], format, w, h)` **直接返回布局**(不是 out 参数);
+`Matrix3x2::rotation(angle, x, y)` 的 (x,y) 是**旋转中心**, 且 `Matrix3x2` 有 `Mul`;
+`ID2D1RenderTarget::GetTransform(&mut m)` 是 out 参数。
+
+### 6) ABI 2: 百宝袋(工具面板)+ 掏出来扔向屏幕中间
+
+- **面板与角色共用一个窗**: 关着 300x280, 开着 620x320。**脚底在屏幕上的位置不变**这个约束是靠
+  "锚点按离窗口**底边**的距离算"满足的(`ANCHOR_BOTTOM=34`), 用离顶边的距离会让角色在开面板瞬间下跳 46px。
+- **`UpdateLayeredWindow` 的 psize 允许小于 DIB**: DIB 按最大尺寸(620x320)一次分配, 提交时只交当前需要的那块,
+  于是不必在开合面板时重建 DIB/render target。
+- **`layout()` 是唯一的布局出处**: 绘制、命中测试、给探针的矩形全用它算出来的那一份 —— 三处各算一遍迟早错位。
+- **点击坐标统一成屏幕坐标**: `WM_LBUTTONDOWN` 给的是**客户端**坐标(要 `ClientToScreen`), 而
+  `wgime_pet_click` 注入的是屏幕坐标; 两条路混用坐标系时命中测试会整体偏移(真踩过)。
+- **飞行物必须单独一个窗**(`fx`, 220x220, 平时 `SW_HIDE`): 它要飞到屏幕正中, 把角色窗撑到半个屏幕的话,
+  每帧要提交的像素会涨到几 MB(120fps 就是几百 MB/s)。小窗跟着飞行物走, 每帧几十 KB。
+- **`ground` 取工作区底边**(`SystemParametersInfoW(SPI_GETWORKAREA)`), **不是屏幕底边**: 屏幕底边 40px 处
+  已经在任务栏里, 半透明任务栏会透出底下的东西, 观感像"脚被切了", 而且标定点读数会偏 1 个通道
+  (实测 (176,145,177) vs 期望 (177,6,178), 查了一轮才发现是脚下那块不是纯色背景)。
+- 动作时间线(秒): `T_PULL=0.22` 从挎包抽出来(被点中那格朝角色滑出并缩小) → `T_FLY=0.62` 抛物线
+  (弧高 150px、自转)飞到屏幕正中 → 到位**才**回调宿主启动工具, 并在落点炸 0.38s 的圈。
+  `wgime_pet_fx()` 报飞行物屏幕坐标给探针, `wgime_pet_last_launched()` / 回调收到的 code 用来断言。
+- 实测(探针 `%TEMP%\wg-rustpet-palette.py`): 面板 rect 与 6 个格子 rect 正确、悬停命中 hover=0、
+  点击 → `idx=0` → 飞行物从 (1191,2049) 沿抛物线到 (1920,1080) → 回调收到 `jsq`。
+
 
