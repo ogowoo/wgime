@@ -63,6 +63,13 @@ const LOOK_DIST: f32 = 460.0;
 const RANGE_LO: f32 = 0.06;
 const RANGE_HI: f32 = 0.94;
 
+/// 与 python 版宠物同一套契约的消息(宿主/子进程之间转发用):
+/// `WM_APP_TOGGLE` 再拉一次插件 = 开合百宝袋; `WM_APP_ENTER` = 让狗把工具甩出去;
+/// `WM_APP_ACTIVITY` = 用户打字了, 让狗精神一下(摇尾/小跑一段)
+const WM_APP_TOGGLE: u32 = 0x8002;
+const WM_APP_ENTER: u32 = 0x8003;
+const WM_APP_ACTIVITY: u32 = 0x8004;
+
 /// 帧率上限。UpdateLayeredWindow **不做 vsync 节流**(实测不设上限能跑到 2085fps,
 /// 纯烧 CPU), 所以必须自己限速。
 const FPS_CAP: f32 = 120.0;
@@ -797,6 +804,46 @@ fn geom_snapshot() -> (i32, bool, bool, (i32, i32)) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        // 宿主/子进程转发过来的动作(契约见 WM_APP_* 常量)
+        WM_APP_TOGGLE => {
+            if let Ok(mut g) = PET.lock() {
+                g.palette = !g.palette;
+                g.hover = -1;
+            }
+            LRESULT(0)
+        }
+        WM_APP_ACTIVITY => {
+            // 打字了: 精神一下(小跑一段 + 竖耳)
+            if let Ok(mut g) = PET.lock() {
+                g.hold_t = 0.0;
+                g.running = true;
+                g.v = g.face * RUN_SPEED;
+            }
+            LRESULT(0)
+        }
+        WM_APP_ENTER => {
+            // 把第一格(或当前高亮那格)工具甩出去
+            let idx = {
+                let g = PET.lock().ok();
+                match g {
+                    Some(g) if g.palette && g.throw_t.is_none() => {
+                        if g.hover >= 0 {
+                            g.hover
+                        } else {
+                            0
+                        }
+                    }
+                    _ => -1,
+                }
+            };
+            if idx >= 0 {
+                if let Ok(mut g) = PET.lock() {
+                    g.throw_idx = idx;
+                    g.throw_t = Some(0.0);
+                }
+            }
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
             // 统一成**屏幕坐标**: 命中测试与 wgime_pet_click 注入都按屏幕坐标算,
             // 免得两条路各用一套坐标系(客户端 vs 屏幕)而错位

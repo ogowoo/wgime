@@ -41,6 +41,7 @@ STANDALONE = True                 # 双模式标记 (插件管理器显示"双�
 
 CHILD_ARG = '--wgime-pet-window'
 WIN_TITLE = 'wgpet · 桌面宠物'     # 含文件名主干 wgpet => 插件管理器「结束窗口」认得出(§46)
+DLL_NAME = 'wgpet.dll'            # Rust 浮层(第八十七轮)。有它就用它, 没有就退回下面这套 Python 实现
 CLASS_NAME = 'WgImePetOverlayWnd'
 
 # ---------------- Win32 常量 ----------------
@@ -468,8 +469,71 @@ def _host_file():
     return ''
 
 
+def _dll_path():
+    """wgpet.dll 跟插件放一起(兼容几种布局)。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    up = os.path.dirname(here)
+    cands = [os.path.join(here, DLL_NAME), os.path.join(up, DLL_NAME)]
+    app = _find_app_dir()
+    if app:
+        cands.append(os.path.join(app, 'plugins', DLL_NAME))
+    for p in cands:
+        if os.path.exists(p):
+            return p
+    return ''
+
+
+def _load_pet_dll():
+    """载入 Rust 浮层 wgpet.dll。任何一步不对就返回 None —— 调用方退回 Python 实现。
+
+    有 DLL 就用 DLL 是**刻意的**: 逐像素 alpha 分层窗 + D2D 抗锯齿 + 2 骨 IK 步态都在里面,
+    Python 那套是 LWA_COLORKEY 的旧实现(边缘锯齿、没有半透明), 只在 DLL 缺失/ABI 不对时兜底。
+    """
+    if sys.platform != 'win32':
+        return None
+    p = _dll_path()
+    if not p:
+        vlog('pet: 没找到 %s, 用 Python 实现' % DLL_NAME)
+        return None
+    try:
+        lib = ctypes.WinDLL(p)
+        ver = int(lib.wgime_pet_abi_version())
+        if ver < 1:
+            vlog('pet: %s abi=%d 太旧, 用 Python 实现' % (DLL_NAME, ver))
+            return None
+        lib.wgime_pet_start.restype = ctypes.c_int
+        lib.wgime_pet_stop.restype = ctypes.c_int
+        lib.wgime_pet_hwnd.restype = ctypes.c_ssize_t
+        lib.wgime_pet_palette.argtypes = [ctypes.c_int]
+        lib.wgime_pet_set_tools.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+        lib.wgime_pet_set_tools.restype = ctypes.c_ssize_t
+        lib.wgime_pet_set_launcher.argtypes = [ctypes.c_void_p]
+        lib.wgime_pet_debug.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+        lib.wgime_pet_debug.restype = ctypes.c_size_t
+        vlog('pet: 用 Rust 浮层 %s (abi=%d)' % (os.path.basename(p), ver))
+        return lib
+    except Exception as e:
+        vlog('pet: 载入 %s 失败 %r, 用 Python 实现' % (DLL_NAME, e))
+        return None
+
+
+def _find_overlay():
+    """找已经开着的浮层窗口。DLL 版与 Python 版**标题相同**, 所以先按标题找, 再退回老的类名。"""
+    for cls, title in ((None, WIN_TITLE), (CLASS_NAME, WIN_TITLE), (CLASS_NAME, None)):
+        try:
+            h = user32.FindWindowW(cls, title)
+        except Exception:
+            h = 0
+        if h:
+            return int(h)
+    return 0
+
+
+_TOOLCALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_size_t)
+
+
 def _api_call(args, timeout=30):
-    """调宿主 API(一次性进程, 它把结果打成一行 JSON) -> dict | None。**显式按 UTF-8 解**。"""
+    """调宿主 API(一次性进程, 它把结果打出一行 JSON) -> dict | None。**显式按 UTF-8 解**。"""
     host = _host_file()
     if not host:
         vlog('pet: 找不到宿主本体, API 不可用')
@@ -2070,18 +2134,91 @@ def _selftest_ms():
     return 0
 
 
+def _window_main_dll(lib, standalone=False):
+    """DLL 模式: 渲染/动画/命中测试/面板全在 DLL 里(它自带窗口与渲染线程),
+    这里只负责: 喂工具清单、把点中的工具交回宿主启动、看门(窗口关了本进程就退)。
+
+    看门这一条不能省: 插件管理器「结束窗口」是给窗口发 WM_CLOSE, 窗口没了但本进程还活着
+    就是一个永远睡着的孤儿进程(§46 的收尾逻辑只杀"还有窗口"的进程)。
+    """
+    h = _find_overlay()
+    if h:
+        # 已经有一只了 => 这次的"再拉一次插件"读作"开合百宝袋"(与 Python 版同一套游戏式热键)
+        user32.PostMessageW(ctypes.c_void_p(h), WM_APP_TOGGLE, 0, 0)
+        vlog('pet(dll): 已有浮层 hwnd=%s, 转发开合消息后退出' % h)
+        return 0
+
+    tools = discover_tools()
+    _feed_tools(lib, tools)
+    refresh_tools_async(lambda items: _feed_tools(lib, items))
+
+    def _on_tool(p, n):
+        code = ctypes.string_at(p, n).decode('utf-8', 'replace')
+        vlog('pet(dll): tool %s -> 交给宿主 API 启动' % code)
+        _api_call(['run-plugin', code], timeout=15)
+
+    cb = _TOOLCALLBACK(_on_tool)          # 必须保引用, 否则被 GC 掉就是野指针
+    lib.wgime_pet_set_launcher(ctypes.cast(cb, ctypes.c_void_p))
+
+    rc = int(lib.wgime_pet_start())
+    if rc != 0:
+        vlog('pet(dll): start rc=%d, 退回 Python 实现' % rc)
+        return rc
+    if standalone:
+        print('STANDALONE-OK', flush=True)
+    if os.environ.get('WGIME_PET_OPEN_PALETTE'):
+        time.sleep(0.3)
+        lib.wgime_pet_palette(1)
+    vlog('pet(dll): started tools=%d hwnd=%s' % (len(tools), lib.wgime_pet_hwnd()))
+
+    ms = _selftest_ms()
+    t0 = time.perf_counter()
+    while True:
+        time.sleep(0.35)
+        if int(lib.wgime_pet_hwnd()) == 0:
+            vlog('pet(dll): 窗口已关, 退出')
+            break
+        if ms and (time.perf_counter() - t0) * 1000.0 >= ms:
+            vlog('pet(dll): 自检到点, 关闭')
+            lib.wgime_pet_stop()
+            break
+    return 0
+
+
+def _feed_tools(lib, items):
+    """把工具清单灌进 DLL(格式: 每行 `code\\tname\\tkind`, UTF-8)。"""
+    try:
+        rows = [(t.get('code') or '', t.get('name') or '', t.get('kind') or '')
+                for t in sorted(items, key=_tool_rank)]
+        rows = [r for r in rows if r[0]]
+        text = '\n'.join('%s\t%s\t%s' % r for r in rows)
+        n = int(lib.wgime_pet_set_tools(text.encode('utf-8'), len(text.encode('utf-8'))))
+        vlog('pet(dll): 装入 %d 个工具' % n)
+        return n
+    except Exception as e:
+        vlog('pet(dll): 灌工具失败 %r' % (e,))
+        return 0
+
+
 def _window_main(standalone=False):
     """浮层进程真正干活的地方(被插件 detached 拉起, 或独立运行)。"""
     if sys.platform != 'win32':
         raise SystemExit('Windows only')
     _ensure_paths()
+    # 首选 Rust 浮层(wgpet.dll); 起不来才用下面这套 Python 实现
+    lib = _load_pet_dll()
+    if lib is not None:
+        rc = _window_main_dll(lib, standalone=standalone)
+        if rc == 0 or standalone:
+            return rc
+        vlog('pet: DLL 模式失败(rc=%d), 改用 Python 实现' % rc)
     inst = None if os.environ.get('WGIME_PET_SHOT') else \
         kernel32.CreateMutexW(None, 0, 'WgImePetOverlayMutex')
     if inst and kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-        h = user32.FindWindowW(CLASS_NAME, WIN_TITLE)      # 已在跑: 把"开合"转给它, 自己退出
+        h = _find_overlay()                                # 已在跑: 把"开合"转给它, 自己退出
         if h:
             try:
-                user32.PostMessageW(ctypes.c_void_p(int(h)), WM_APP_TOGGLE, 0, 0)
+                user32.PostMessageW(ctypes.c_void_p(h), WM_APP_TOGGLE, 0, 0)
                 return 0
             except Exception:
                 pass

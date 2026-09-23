@@ -46,6 +46,8 @@ Get-ChildItem (Join-Path $src 'plugins\*.txt') -ErrorAction SilentlyContinue | F
 }
 # 纯 Python 插件 (.py) 也拷进 package\plugins: 生产环境外部插件目录 (load_py_plugins 扫 APP_DIR/plugins)
 Copy-Item (Join-Path $here 'plugins\*.py') $pd -Force -ErrorAction SilentlyContinue
+# 桌面宠物的 Rust 浮层 wgpet.dll: 插件就在自己旁边找它(_dll_path); 少了会退回旧的 Python 实现(画面差一截)
+Copy-Item (Join-Path $here 'plugins\*.dll') $pd -Force -ErrorAction SilentlyContinue
 
 $size = [math]::Round((Get-ChildItem -Recurse $pkg | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host ('package ready: ' + $pkg + ' (' + $size + ' MB)')

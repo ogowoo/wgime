@@ -2357,6 +2357,27 @@ D2D 软件光栅在这个尺寸上完全不是瓶颈。
 - **教训: 判断形象不要在 3 倍放大图上判断, 要按它在屏幕上的**真实大小**看那个外轮廓** ——
   细节在 170px 高的时候全没了, 决定"像不像"的只有剪影比例。这几轮我一直在放大图上看, 反而走偏。
 
+### 11) 接进插件体系: `wgpet.py` 优先用 `wgpet.dll`
+
+- **交付形态**: `wgime-py-pure\plugins\wgpet.dll`(1.71MB) 跟插件放一起, **入库跟踪**;
+  `build-package.ps1` 多了一句 `Copy-Item plugins\*.dll`(否则安装布局里没有它, 画面会退回旧的 Python 实现)。
+  `plugins\*.dll` 不参与插件扫描(`load_py_plugins` 只认 `*.py`), 放那儿不打扰任何东西。
+- **分派**: `_window_main()` 开头 `lib = _load_pet_dll()`, 拿到就走 `_window_main_dll()`, 拿不到/起不来就**退回原来的 Python 实现**
+  (降级路径保留: 用户机器上 DLL 缺失/被杀软删/ABI 不对时仍然有宠物, 只是画面是旧的 LWA_COLORKEY 版)。
+  `_load_pet_dll()` 逐步把关: 文件在不在 → 能不能 `WinDLL` → `wgime_pet_abi_version() >= 1`, 任一步不对都返回 None 并写日志。
+- **游戏式热键沿用同一套契约**: 宿主再拉一次插件 = 新进程 → `_find_overlay()`(`FindWindowW(None, WIN_TITLE)`, 因为
+  DLL 版与 Python 版**标题相同**)找到已有窗口 → `PostMessage(WM_APP_TOGGLE)` → 自己退出。
+  DLL 侧相应加了 `WM_APP_TOGGLE(0x8002)` 开合面板、`WM_APP_ENTER(0x8003)` 甩出选中工具、`WM_APP_ACTIVITY(0x8004)` 打字了精神一下。
+- **看门这条不能省**: 插件管理器「结束窗口」是发 WM_CLOSE, 窗口没了但那个 Python 子进程还睡着 → 就是孤儿进程
+  (§46 的收尾只杀"还有窗口"的进程)。所以 `_window_main_dll` 每 0.35s 查一次 `wgime_pet_hwnd()`, 归零就退出。
+- **点工具仍走宿主 API**: DLL 只把 code 通过回调交回 Python, 由 Python 调 `--api run-plugin <code>` 启动
+  (守 §5 规则 51: 插件不许自己跑插件)。回调是 `CFUNCTYPE`, **必须保引用**, 否则被 GC 就是野指针。
+- **回归** `tests\pet-dll-plugin-test.py` **22 项**: S 段(DLL 在插件旁边 / 能载入 / abi>=1 / 导出符号齐 /
+  `_load_pet_dll()` 真能拿到库 / 清单没被改坏 / `_feed_tools` 的排序与 `code\tname\tkind` 编码),
+  L 段(宿主 API 拉起 → 窗口 300x280 → 再拉一次变 620x376 → 第三次收起 → WM_CLOSE 后窗口消失**且子进程退出**)。
+  真机实测全绿; 用户已有宠物窗口时 L 段 SKIP(不动用户的窗口)。
+
+
 
 
 

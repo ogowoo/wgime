@@ -69,6 +69,7 @@ python wgime-py-pure\tests\translate-window-test.py  # 翻译插件"关窗即退
 python wgime-py-pure\tests\plugin-window-test.py     # 插件管理器「结束窗口」：找窗口/关/强杀/不误伤（23 项，无桌面只跑 S，§46）
 python wgime-py-pure\tests\update-test.py            # 自动更新：检查/下载/四道校验/真替换助手 + 真 dist 版本自洽（36 项，假 GitHub，§47）
 python wgime-py-pure\tests\pet-overlay-test.py       # 桌面宠物浮层：穿透/不抢焦点/真透明/交互态点工具 + 三场景 + 宿主 API 路径（72 项，无桌面只跑 S，§49/§D37/§D38/§D39）
+python wgime-py-pure\tests\pet-dll-plugin-test.py    # 宠物 Rust 浮层(wgpet.dll)接入: DLL 在插件旁边/ABI/导出符号/工具编码 + 真机"拉插件→再拉开合面板→关窗不留孤儿"（22 项，无桌面只跑 S，§D40）
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
