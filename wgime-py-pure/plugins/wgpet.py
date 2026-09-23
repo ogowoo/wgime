@@ -1192,7 +1192,7 @@ def _critter(g, x, y, pose, phase, face=1, hide=0.0, look=0.0):
     if pose == 'stand':
         bx, by = x, y - bh - GAP
     elif pose == 'climb':
-        bx, by = x - face * (bw + GAP), y
+        bx, by = x + face * (bw + GAP), y      # face 指向屏幕里侧 -> 身体往里挪, 四肢才够得着墙
     elif pose == 'hang':
         bx, by = x, y + bh + GAP
     else:
@@ -1272,6 +1272,15 @@ class ClimbScene(object):
         self.sw, self.sh = sw, sh
         self.per = 2.0 * (sw + sh)
         self.s = sw * 0.35
+        _edge0 = (os.environ.get('WGIME_PET_EDGE') or '').lower()   # 测试钩子: 从哪条边开始
+        if _edge0 == 'right':
+            self.s = sw + sh * 0.5
+        elif _edge0 == 'top':
+            self.s = sw + sh + sw * 0.5
+        elif _edge0 == 'left':
+            self.s = sw + sh + sw + sh * 0.5
+        elif _edge0 == 'bottom':
+            self.s = sw * 0.35
         self.v = 120.0
         self.phase = 0.0
         self.palette_open = False
@@ -1470,7 +1479,9 @@ class PetWindow(object):
         self.force_activity = 0.0
         self.paused = False                # 测试钩子(WM_APP_PAUSE) 用
         # 测试钩子: 截图模式 —— 普通不透明窗 + 浅灰底, 让 BitBlt/CopyFromScreen 抓得到
-        self.shot = bool(os.environ.get('WGIME_PET_SHOT'))
+        _shot = (os.environ.get('WGIME_PET_SHOT') or '')
+        self.shot = bool(_shot)
+        self.shot_full = (_shot.lower() == 'full')
         self.shot_y = 0
         self.prev_rect = None
         self.keys_down = set()
@@ -1500,11 +1511,11 @@ class PetWindow(object):
         if not user32.RegisterClassExW(ctypes.byref(c)) and kernel32.GetLastError() != 1410:
             vlog('pet: RegisterClassExW failed err=%s' % kernel32.GetLastError())
         if self.shot:
-            self.shot_y = max(0, self.sh - 470)
+            self.shot_y = 0 if self.shot_full else max(0, self.sh - 470)
             ex = int(EX_NOACTIVATE | EX_TOOLWINDOW | EX_TOPMOST)
+            _h = self.sh if self.shot_full else self.sh - self.shot_y
             self.hwnd = user32.CreateWindowExW(ex, CLASS_NAME, WIN_TITLE, WS_POPUP, 0, self.shot_y,
-                                               self.sw, self.sh - self.shot_y,
-                                               None, None, hinst, None)
+                                               self.sw, _h, None, None, hinst, None)
         else:
             ex = int(EX_LAYERED | EX_TRANSPARENT | EX_NOACTIVATE | EX_TOOLWINDOW | EX_TOPMOST)
             self.hwnd = user32.CreateWindowExW(ex, CLASS_NAME, WIN_TITLE, WS_POPUP, 0, 0,
