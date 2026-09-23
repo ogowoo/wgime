@@ -199,8 +199,9 @@ def vlog(text):
 # GDI: 一帧的笔刷/画笔/字体缓存 (用完把系统对象选回去再删, 否则 DeleteObject 失败=泄漏)
 # ======================================================================
 class Gfx(object):
-    def __init__(self, hdc):
+    def __init__(self, hdc, oy=0):
         self.hdc = hdc
+        self.oy = int(oy)          # 画布原点相对屏幕的 y 偏移(截图模式: 窗口只盖住底部一条)
         self._objs = []
 
     def _brush(self, col):
@@ -219,14 +220,13 @@ class Gfx(object):
         self._objs.append(f)
         return f
 
-    @staticmethod
-    def _n(x0, y0, x1, y1):
-        """坐标归一化: 朝向翻转会让 x0>x1, 直接传给 GDI 画不出来。"""
+    def _n(self, x0, y0, x1, y1):
+        """坐标归一化(朝向翻转会让 x0>x1) + 平移到客户区。"""
         if x0 > x1:
             x0, x1 = x1, x0
         if y0 > y1:
             y0, y1 = y1, y0
-        return int(x0), int(y0), int(x1), int(y1)
+        return int(x0), int(y0) - self.oy, int(x1), int(y1) - self.oy
 
     def rect(self, x0, y0, x1, y1, fill=None, outline=None, width=1):
         x0, y0, x1, y1 = self._n(x0, y0, x1, y1)
@@ -249,13 +249,13 @@ class Gfx(object):
     def line(self, x0, y0, x1, y1, col, width=2):
         gdi32.SelectObject(self.hdc, NULL_BRUSH)
         gdi32.SelectObject(self.hdc, self._pen(col, width))
-        gdi32.MoveToEx(self.hdc, int(x0), int(y0), None)
-        gdi32.LineTo(self.hdc, int(x1), int(y1))
+        gdi32.MoveToEx(self.hdc, int(x0), int(y0) - self.oy, None)
+        gdi32.LineTo(self.hdc, int(x1), int(y1) - self.oy)
 
     def poly(self, pts, fill=None, outline=None, width=1):
         gdi32.SelectObject(self.hdc, self._brush(fill) if fill else NULL_BRUSH)
         gdi32.SelectObject(self.hdc, self._pen(outline, width) if outline else NULL_PEN)
-        arr = (w.POINT * len(pts))(*[w.POINT(int(x), int(y)) for (x, y) in pts])
+        arr = (w.POINT * len(pts))(*[w.POINT(int(x), int(y) - self.oy) for (x, y) in pts])
         gdi32.Polygon(self.hdc, arr, len(pts))
 
     def text(self, x0, y0, x1, y1, s, col, size=14, bold=False):
@@ -282,6 +282,55 @@ class Gfx(object):
             except Exception:
                 pass
         self._objs = []
+
+
+class ScaledGfx(object):
+    """把画的东西整体放大/平移的适配器 —— 主角按屏幕尺寸放大, 但不用改 draw() 里那堆常数。
+
+    缩放是**绕 (ox, oy) 这一点**做的(主角脚下), 所以它在原地长大, 不会跑偏。
+    """
+
+    def __init__(self, g, scale=1.0, ox=0.0, oy=0.0):
+        self.g = g
+        self.s = float(scale)
+        self.ox, self.oy = float(ox), float(oy)
+
+    def _x(self, v):
+        return self.ox + (float(v) - self.ox) * self.s
+
+    def _y(self, v):
+        return self.oy + (float(v) - self.oy) * self.s
+
+    def _w(self, v):
+        return float(v) * self.s
+
+    def rect(self, x0, y0, x1, y1, **kw):
+        self.g.rect(self._x(x0), self._y(y0), self._x(x1), self._y(y1),
+                    **self._kw(kw))
+
+    def rrect(self, x0, y0, x1, y1, r=8, **kw):
+        self.g.rrect(self._x(x0), self._y(y0), self._x(x1), self._y(y1),
+                     r=max(1, int(self._w(r))), **self._kw(kw))
+
+    def ell(self, x0, y0, x1, y1, **kw):
+        self.g.ell(self._x(x0), self._y(y0), self._x(x1), self._y(y1), **self._kw(kw))
+
+    def line(self, x0, y0, x1, y1, col, width=2):
+        self.g.line(self._x(x0), self._y(y0), self._x(x1), self._y(y1), col,
+                    max(1, int(self._w(width))))
+
+    def poly(self, pts, **kw):
+        self.g.poly([(self._x(x), self._y(y)) for (x, y) in pts], **self._kw(kw))
+
+    def text(self, x0, y0, x1, y1, txt, col, size=14, bold=False):
+        self.g.text(self._x(x0), self._y(y0), self._x(x1), self._y(y1), txt, col,
+                    size=max(8, int(self._w(size))), bold=bold)
+
+    def _kw(self, kw):
+        if 'width' in kw:
+            kw = dict(kw)
+            kw['width'] = max(1, int(self._w(kw['width'])))
+        return kw
 
 
 # ======================================================================
@@ -355,55 +404,146 @@ def _py_meta(path):
             'perm': grab('PERM') or 'low'}
 
 
-def discover_tools():
-    """挎包里的工具 = 你自己的插件。
+def _save_scene(scene_no):
+    """把 pet_scene 写回 config.txt: **只动这一行**, 保留原文件的行尾与其它内容; 失败只记日志。
 
-    `.py` 双模式插件扫两处(本插件所在 plugins / APP_DIR\\plugins), `.txt` 步骤插件只扫
-    APP_DIR\\plugins —— 与宿主 `main.load_py_plugins()` / `plugins.load_plugins()` 一致
-    (docs\\WGIME_插件规范.md §8.8 那个"两个目录不一样"的注)。
+    (用户改过的 config.txt 很娇气 —— 见 AGENTS.md §30/§28; 所以这里二进制读、按原来的行尾写。)
     """
-    tools, seen = {}, set()
+    try:
+        path = os.path.join(_find_app_dir(), 'config.txt')
+        if not os.path.exists(path):
+            return
+        with open(path, 'rb') as f:
+            raw = f.read()
+        try:
+            txt = raw.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            txt = raw.decode('gbk', 'replace')
+        eol = '\r\n' if '\r\n' in txt else '\n'
+        lines = txt.split('\n')
+        hit = False
+        for k, ln in enumerate(lines):
+            if ln.strip().lower().startswith('pet_scene'):
+                lines[k] = 'pet_scene = %d' % scene_no
+                hit = True
+                break
+        if not hit:
+            lines.append('pet_scene = %d' % scene_no)
+        out = eol.join(lines)
+        with open(path, 'wb') as f:
+            f.write(out.encode('utf-8'))
+        vlog('pet: pet_scene=%d 已写进 %s' % (scene_no, path))
+    except Exception as e:
+        vlog('pet: 写 pet_scene 失败(不影响使用): %r' % (e,))
+
+
+def _host_file():
+    """宿主本体在哪 —— **跑插件必须由它来跑**(发行版是单文件, ui/win 只存在于它的 sys.modules 里)。
+
+    发行版: `<package>\\wgime-py.py` (插件在 `<package>\\plugins`)
+    源码版: `<wgime-py-pure>\\main.py` (插件在 `<wgime-py-pure>\\plugins`)
+    """
+    here = os.path.dirname(os.path.abspath(__file__))          # .../plugins
+    up = os.path.dirname(here)
+    for p in (os.path.join(up, 'wgime-py.py'), os.path.join(here, 'wgime-py.py'),
+              os.path.join(up, 'main.py')):
+        if os.path.exists(p):
+            return p
+    return ''
+
+
+def _api_call(args, timeout=30):
+    """调宿主 API(一次性进程, 它把结果打成一行 JSON) -> dict | None。**显式按 UTF-8 解**。"""
+    host = _host_file()
+    if not host:
+        vlog('pet: 找不到宿主本体, API 不可用')
+        return None
+    import subprocess
+    try:
+        r = subprocess.run([sys.executable or 'python', '-X', 'utf8', host, '--api'] + list(args),
+                           capture_output=True, timeout=timeout,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000))
+    except Exception as e:
+        vlog('pet: api %r failed %r' % (list(args)[:1], e))
+        return None
+    txt = (r.stdout or b'').decode('utf-8', 'replace')
+    for line in reversed(txt.strip().splitlines()):
+        line = line.strip()
+        if line.startswith('{'):
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+    vlog('pet: api %r bad output %r' % (list(args)[:1], txt[-200:]))
+    return None
+
+
+def _local_scan():
+    """本地**静态**扫一遍(只读文件, 不起进程) —— 面板要立刻出得来, 不能等宿主进程启动。"""
+    import re
+    out, seen = [], set()
     here = os.path.dirname(os.path.abspath(__file__))
     app = _find_app_dir()
-    me_path = os.path.abspath(__file__)
-    me_name = os.path.basename(me_path).lower()          # 自己别出现在自己的挎包里
+    me_name = os.path.basename(os.path.abspath(__file__)).lower()      # 自己别进自己的挎包
     for d in (here, os.path.join(app, 'plugins')):
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
-            if not fn.endswith('.py') or fn.startswith('_') or fn.lower() == me_name:
+            if fn.startswith('_') or fn.lower() == me_name:
                 continue
-            path = os.path.join(d, fn)
-            if os.path.abspath(path) == me_path or path.lower() in seen:
+            low = fn.lower()
+            if low.endswith('.py'):
+                kind = 'py'
+            elif low.endswith('.txt'):
+                kind = 'txt'
+            else:
                 continue
-            meta = _py_meta(path)
-            if not meta:
+            txt = _read_text(os.path.join(d, fn))
+            if kind == 'py' and not re.search(r'^def\s+run\s*\(', txt, re.M):
                 continue
-            seen.add(path.lower())
-            meta.update({'kind': 'py', 'path': path})
-            tools.setdefault(meta['code'].lower(), meta)      # 同一个 code 只留一份
-    try:
-        _ensure_paths()
-        import plugins as host_plugins
-        for d in (os.path.join(app, 'plugins'),):
-            if not os.path.isdir(d):
+
+            def g(key, _t=txt):
+                m = re.search(r'^\s*%s\s*[:=]\s*[\'"]?([^\'"\r\n;]*)' % key, _t, re.M)
+                return (m.group(1) if m else '').strip()
+            code = g('code') or g('CODE')
+            if not code or code.lower() in seen:
                 continue
-            items, _disabled = host_plugins.load_plugins(d, app)
-            for p in items:
-                if p.path.lower() in seen:
-                    continue
-                seen.add(p.path.lower())
-                m = host_plugins.plugin_meta(p)
-                code = (m.get('code') or '').lower()
-                if not code:
-                    continue
-                # 与 .py 同 code 的 .txt 不重复登记 —— 纯 Python 版的同功能插件以 .py 为准
-                tools.setdefault(code, {'kind': 'txt', 'path': p.path, 'obj': p,
-                                        'code': m.get('code') or '', 'name': m.get('name') or '',
-                                        'desc': m.get('desc') or '', 'perm': m.get('perm') or 'low'})
-    except Exception as e:
-        vlog('discover .txt tools failed: %r' % (e,))
-    return list(tools.values())
+            seen.add(code.lower())
+            out.append({'code': code, 'name': (g('name') or g('NAME') or code), 'kind': kind,
+                        'perm': (g('perm') or g('PERM') or 'low'), 'path': os.path.join(d, fn)})
+    return out
+
+
+def discover_tools():
+    """挎包里的工具 = 你自己的插件。先本地静态扫(立刻能显示), 随后**后台问宿主要权威清单**替换。
+
+    为什么不能只自己扫: 发行版下 `import plugins` 会撞到**同名的目录**(命名空间包),
+    于是 `.txt` 插件被静默丢掉 —— 实测面板里少了两个工具。
+    """
+    return sorted(_local_scan(), key=_tool_rank)
+
+
+def refresh_tools_async(on_done):
+    """后台问宿主 `--api list-plugins`, 拿到就回调(参数是 list)。"""
+    def _bg():
+        try:
+            d = _api_call(['list-plugins'], timeout=40)
+            items = (d or {}).get('plugins') if isinstance(d, dict) else None
+            if items:
+                on_done(items)
+        except Exception as e:
+            vlog('pet: refresh tools failed %r' % (e,))
+    threading.Thread(target=_bg, name='wgpet-tools', daemon=True).start()
+
+
+def _tool_rank(t):
+    """面板排序: 风险低的在前, 同风险 .py 在前, 再按 code 名。"""
+    perm = (t.get('perm') or 'low').lower()
+    risk = 0
+    for k, w in (('network', 1), ('run', 1), ('registry', 2), ('destructive', 3)):
+        if k in perm:
+            risk = max(risk, w)
+    return (risk, 0 if t.get('kind') == 'py' else 1, (t.get('code') or '').lower())
 
 
 _HIGH_PERM = (('network', '联网'), ('run', '执行命令'), ('registry', '修改注册表'),
@@ -435,53 +575,75 @@ def _confirm_perm(tool):
 
 
 def run_tool(tool, on_log=None):
-    """在本进程后台线程里执行一个工具 -> (ok, 说明)。"""
-    def log(s):
-        if on_log:
-            try:
-                on_log(str(s))
-            except Exception:
-                pass
-        vlog('tool %s: %s' % (tool.get('code'), s))
+    """**交给宿主跑**这个工具 -> (ok, 说明)。
 
+    为什么不在宠物进程里跑(真事故): 发行版是单文件, 插件的 `run()` 要 `import ui`/`win`/`wspy`,
+    而它们**只存在于宿主进程的 sys.modules 里** —— 子进程 import 不到, 用户点工具的结果是
+    `ModuleNotFoundError: No module named 'ui'`, 工具一个都起不来。
+    现在走宿主 API `--api run-plugin <code>`: 宿主起一个进程、建 Tk root、跑 run(), 窗口自己活着。
+    """
+    code = tool.get('code') or ''
     if not _confirm_perm(tool):
         return False, '已取消(权限确认)'
+    host = _host_file()
+    if not host or not code:
+        return False, '找不到宿主本体(没法运行插件)'
+    import subprocess
+    import tempfile
+    flags = (getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)
+             | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200)
+             | getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000))
+    out_f = tempfile.TemporaryFile()          # 用文件而不是管道: 工具活下来以后管道塞满会把工具卡死
     try:
-        _ensure_paths()
-        if tool.get('kind') == 'py':
-            import importlib.util
-            name = 'wgpet_tool_%d' % (abs(hash(tool['path'])) & 0xFFFFFF)
-            spec = importlib.util.spec_from_file_location(name, tool['path'])
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)          # 模块级副作用在这里发生(与宿主装载同规矩)
-            fn = getattr(mod, 'run', None)
-            if not callable(fn):
-                return False, '没有可调用的 run()'
-            fn()
-            return True, '已启动 %s' % (tool.get('name') or tool.get('code'))
-        if tool.get('kind') == 'txt':
-            import plugins as host_plugins
-            body = getattr(tool['obj'], 'body', None) or []
-            host_plugins.run_steps(body, log,
-                                   lambda title, text: _mb(text, title),
-                                   lambda text, title='', buttons='ok', default_no=False:
-                                   _mb(text, title, 'okcancel' if buttons == 'okcancel' else 'yesno',
-                                       default_no) in (IDYES, IDOK))
-            return True, '完成 %s' % (tool.get('name') or tool.get('code'))
+        p = subprocess.Popen([sys.executable or 'python', '-X', 'utf8', host, '--api',
+                              'run-plugin', code],
+                             stdin=subprocess.DEVNULL, stdout=out_f, stderr=subprocess.STDOUT,
+                             creationflags=flags, close_fds=True)
     except Exception as e:
+        out_f.close()
         return False, '%s: %s' % (type(e).__name__, e)
-    return False, '不认识的工具类型'
+    # 1.2s 内就退的 = 起不来; 把它的 JSON/错误尾巴捞出来给人看
+    try:
+        p.wait(timeout=1.2)
+    except subprocess.TimeoutExpired:
+        pass
+    if p.poll() is not None:
+        try:
+            out_f.seek(0)
+            txt = out_f.read().decode('utf-8', 'replace')
+        except Exception:
+            txt = ''
+        out_f.close()
+        for line in reversed(txt.strip().splitlines()):
+            if line.strip().startswith('{'):
+                try:
+                    d = json.loads(line)
+                    if d.get('ok'):
+                        return True, '已启动 %s' % (tool.get('name') or code)
+                    return False, '失败: %s' % (d.get('error') or '?')
+                except ValueError:
+                    pass
+        tail = (txt.strip().splitlines() or ['起不来'])[-1][:90]
+        vlog('pet: tool %s 起不来: %s' % (code, tail))
+        return False, '失败: %s' % tail
+    vlog('pet: tool %s -> 交给宿主 API (pid %s)' % (code, p.pid))
+    if on_log:
+        try:
+            on_log('已交给输入法本体启动: %s' % code)
+        except Exception:
+            pass
+    return True, '已启动 %s' % (tool.get('name') or code)
 
 
 # ======================================================================
 # 配色
 # ======================================================================
 PAL = {
-    'fur': '#c07a33', 'fur_d': '#8f5520', 'fur_l': '#dda05a', 'dark': '#3a2716',
-    'bag': '#a8703c', 'bag_d': '#7d5027', 'strap': '#5d3a1c', 'eye': '#241a10',
+    'fur': '#d98b3f', 'fur_d': '#a9631f', 'fur_l': '#f0c48a', 'dark': '#3a2716',
+    'bag': '#8a4f1c', 'bag_d': '#5f3512', 'strap': '#4a2a10', 'eye': '#241a10',
     'panel': '#141c26', 'panel_e': '#3d5878', 'slot': '#243447', 'slot_h': '#39536f',
     'txt': '#eaf2ff', 'txt_d': '#9fb4cc', 'accent': '#ffcc4d', 'ball': '#e2701e',
-    'shadow': '#0d1219',
+    'shadow': '#0d1219', 'paw': '#f2e3c9', 'ear_in': '#df9d86', 'rope': '#6b5a3a', 'rope_d': '#8a7a52',
 }
 GROUND_PAD = 8
 
@@ -510,111 +672,277 @@ def _mouse_pos():
 # 场景 2: 驮挎包的小狗 (活动范围 = 屏幕下方一条带)
 # ======================================================================
 class DogScene(object):
+    """主角: 驮着挎包的小狗(活动范围 = 屏幕下缘, 但跑得快、会跳、会坐会睡会叫)。
+
+    形象: 描边 + 双色明暗 + 像样的比例; 动作: 四拍走/跑/坐/睡/叫/跳, 尾巴一直在摇, 会眨眼。
+    跟鼠标: 靠近 240px 就**看你**(头朝光标偏), 贴到 110px 以内就**躲开**(掉头小跑)。
+    """
+
+    RUN_SPEED = 360.0
+    WALK_SPEED = 150.0
+
     def __init__(self, screen_w, screen_h):
         self.sw, self.sh = screen_w, screen_h
-        self.x = screen_w * 0.28
-        self.y = screen_h - GROUND_PAD
-        self.vx = -0.9
-        self.face = -1                    # -1 朝左, +1 朝右
+        self.ground = screen_h - GROUND_PAD
+        self.x = screen_w * 0.5
+        self.vx = -self.WALK_SPEED
+        self.face = -1
         self.phase = 0.0
-        self.state = 'walk'
+        self.state = 'walk'            # walk / run / alert / sit / sleep / flee
         self.state_t = 0.0
-        self.ear = 0.0
+        self.idle_t = 0.0
+        self.ear = 0.0                 # 耳朵竖起(受惊/打字)
         self.bark = 0.0
-        self.flap = 0.0
+        self.blink = 0.0
+        self.blink_t = self.rng_uniform(1.5, 4.0)
+        self.tail = 0.0
+        self.flap = 0.0                # 挎包盖 0..1
         self.palette_open = False
+        self.hop = 0.0                 # 0..1 跳跃进度(0 = 落地)
+        self.run_t = 0.0               # 这一趟快跑还剩多久
+        self.look = 0.0                # 看向鼠标 -1..1
+        self.mouse = (0.0, 0.0)
+        self.rng = random.Random()
 
+    def rng_uniform(self, a, b):
+        return random.uniform(a, b)
+
+    # ---- 状态机 ----
     def tick(self, dt, activity, hit_enter, mouse=None):
         self.state_t += dt
+        if mouse:
+            self.mouse = mouse
         if hit_enter:
-            self.bark = 0.8
+            self.bark = 0.9
             self.ear = 1.0
-        self.ear = max(0.0, self.ear - dt * 0.9)
+            if self.hop <= 0.0 and self.state not in ('sleep',):
+                self.hop = 1e-6
+        self.ear = max(0.0, self.ear - dt * 0.8)
         self.bark = max(0.0, self.bark - dt * 1.5)
         self.flap += ((1.0 if self.palette_open else 0.0) - self.flap) * min(1.0, dt * 9.0)
+        self.blink_t -= dt
+        if self.blink_t <= 0:                      # 眨眼: 0.12s 闭眼, 然后 1.5~4.5s 后再眨
+            self.blink = 0.12
+            self.blink_t = self.rng_uniform(1.5, 4.5)
+        self.blink = max(0.0, self.blink - dt)
+        self.run_t = max(0.0, self.run_t - dt)
+        if self.hop > 0.0:                          # 跳跃走一个 0.55s 的抛物线
+            self.hop = min(1.0, self.hop + dt / 0.55)
+            if self.hop >= 1.0:
+                self.hop = 0.0
+
+        # 鼠标: 先"看你", 太近就"躲"
+        mx, my = self.mouse
+        dx, dy = mx - self.x, my - (self.ground - 40)
+        dist = (dx * dx + dy * dy) ** 0.5
+        look_want = 0.0
+        if dist < 420:
+            look_want = 1.0 if dx > 0 else -1.0
+        self.look += (look_want - self.look) * min(1.0, dt * 5.0)
 
         if self.palette_open:
             self.state, self.vx = 'sit', 0.0
-        elif activity > 0.15:                      # 在打字: 站住抬头, 耳朵竖起
+            self.idle_t = 0.0
+        elif dist < 110 and my > self.sh * 0.55:    # 贴脸了 -> 掉头小跑
+            self.state = 'flee'
+            self.state_t = 0.0
+            self.face = -1 if dx > 0 else 1
+            self.vx = self.face * self.RUN_SPEED * 1.05
+            self.ear = 1.0
+        elif activity > 0.15:                       # 你在打字: 站住抬头看你
             self.state, self.state_t = 'alert', 0.0
-            self.ear = min(1.0, self.ear + dt * 5.0)
+            self.idle_t = 0.0
             self.vx = 0.0
-        elif self.state == 'alert' and self.state_t > 0.5:
+            self.ear = min(1.0, self.ear + dt * 4.0)
+        elif self.state == 'flee':
             self.state = 'walk'
-            self.vx = 0.9 if self.face > 0 else -0.9
+            self.vx = self.face * self.WALK_SPEED
+        elif self.idle_t > 24.0 and self.state not in ('sleep',):
+            self.state, self.state_t = 'sleep', 0.0
+            self.vx = 0.0
+        elif self.idle_t > 7.0 and self.state not in ('sit', 'sleep'):
+            self.state, self.state_t = 'sit', 0.0
+            self.vx = 0.0
+        elif self.state in ('sit', 'sleep') and self.idle_t < 0.2:
+            self.state = 'walk'
+            self.vx = self.face * self.WALK_SPEED
+        elif self.state == 'alert' and self.state_t > 0.6:
+            self.state = 'walk'
+            self.vx = self.face * self.WALK_SPEED
 
-        if self.state == 'walk':
-            self.phase += dt * abs(self.vx) * 3.6
-            self.x += self.vx * dt * 60.0
-            lo, hi = self.sw * 0.06, self.sw * 0.94
-            if self.x < lo:
-                self.x, self.vx, self.face = lo, abs(self.vx), 1
-            elif self.x > hi:
-                self.x, self.vx, self.face = hi, -abs(self.vx), -1
+        if activity > 0.15 or self.palette_open or dist < 420:
+            self.idle_t = 0.0
         else:
-            self.phase += dt * 1.1
+            self.idle_t += dt
+
+        # 偶尔来一趟快跑(闲不住)
+        if self.state == 'walk' and self.run_t <= 0 and self.rng.random() < dt * 0.25:
+            self.run_t = self.rng.uniform(0.8, 2.2)
+        speed = self.WALK_SPEED
+        if self.run_t > 0 and self.state == 'walk':
+            speed = self.RUN_SPEED
+
+        if self.state in ('walk', 'flee'):
+            self.vx = self.face * speed
+            self.phase += dt * (speed / 26.0)
+            self.x += self.vx * dt
+            lo, hi = self.sw * 0.05, self.sw * 0.95
+            if self.x < lo:
+                self.x, self.face = lo, 1
+            elif self.x > hi:
+                self.x, self.face = hi, -1
+        else:
+            self.phase += dt * 1.6
+        self.tail += dt * (7.5 if self.state in ('alert', 'sit', 'flee') else 3.2)
+
+    # ---- 几何 ----
+    def feet(self):
+        return (self.x, self.ground)
 
     def mouth(self):
-        return (self.x + self.face * 58, self.y - 62)
+        """工具从嘴边抛出去。"""
+        return (self.x + self.face * 62, self.ground - 66)
+
+    def origin(self):
+        return self.mouth()
 
     def panel_anchor(self):
-        """面板挂在主角上方: 用脚下的位置算。"""
-        return (self.x, self.y)
+        return (self.x, self.ground)
 
     def bbox(self):
-        return (self.x - 74, self.y - 100, self.x + 80, self.y + 6)
+        return (self.x - 92, self.ground - 132, self.x + 96, self.ground + 14)
 
-    # ---- 绘制 ----
+    # ---- 绘制: 描边 + 双色明暗 + 像样的比例 ----
+    SCALE = 2.05                       # 4K 屏上不放大就是个小点
+
     def draw(self, g):
-        x, y, f = self.x, self.y, self.face
-        bob = -abs(math.sin(self.phase)) * 2.0 if self.state == 'walk' else 0.0
-        swing = math.sin(self.phase) * 5.0 if self.state == 'walk' else 0.0
+        import math
+        g = ScaledGfx(g, self.SCALE * (self.sh / 2160.0 * 1.0 + 0.0) if False else self.SCALE,
+                      self.x, self.ground)
+        x, face = self.x, self.face
+        hop_y = 62.0 * 4 * self.hop * (1 - self.hop) if self.hop else 0.0
+        y = self.ground - hop_y
+        walking = self.state in ('walk', 'flee')
+        running = walking and self.run_t > 0
+        swing = math.sin(self.phase) * (12.0 if running else 8.0) if walking else 0.0
+        bob = (-abs(math.sin(self.phase)) * (3.0 if running else 2.0)) if walking else 0.0
+        sit = self.state in ('sit', 'sleep')
+        OL = PAL['dark']
 
         def P(dx, dy):
-            return (x + f * dx, y + dy + bob)
+            return (x + face * dx, y + dy + bob)
 
-        g.ell(x - 46, y - 7, x + 46, y + 7, fill=PAL['shadow'])          # 影子
-        for lx, sw in ((-26, swing), (20, -swing)):                      # 四条腿
-            px, py = P(lx, 0)
-            g.rrect(px - 5, py - 26, px + 5, py, r=4, fill=PAL['fur_d'])
-        tx0, ty0 = P(-40, -46)                                           # 尾巴
-        tx1, ty1 = P(-58 - (4 if self.bark > 0 else 0), -58 - (12 if self.bark > 0 else 0))
-        g.line(tx0, ty0, tx1, ty1, PAL['fur_d'], 5)
-        b0, b1 = P(-44, -60), P(32, -18)                                 # 身体
-        g.ell(b0[0], b0[1], b1[0], b1[1], fill=PAL['fur'])
-        g.ell(b0[0] + (10 if f > 0 else -10), b0[1] + 9, b1[0] - (16 if f > 0 else -16), b1[1] - 5,
-              fill=PAL['fur_l'])
-        s0, s1 = P(-6, -58), P(8, -24)                                   # 挎包背带
-        g.line(s0[0], s0[1], s1[0], s1[1], PAL['strap'], 4)
-        q0, q1 = P(-14, -46), P(18, -12)                                 # 挎包
-        g.rrect(q0[0], q0[1], q1[0], q1[1], r=6, fill=PAL['bag'],
-                outline=PAL['bag_d'], width=2)
-        gx0, gx1 = min(q0[0], q1[0]), max(q0[0], q1[0])
-        if self.flap < 0.95:
-            fh = (q1[1] - q0[1]) * 0.34 * (1.0 - self.flap)
-            g.rrect(gx0 - 2, q0[1] - 5, gx1 + 2, q0[1] + fh, r=5,
-                    fill=PAL['bag_d'], outline=PAL['strap'])
+        # 影子: 跳起来变小
+        lift = min(1.0, hop_y / 60.0)
+        sw_ = 48 - 16 * lift
+        g.ell(x - sw_, self.ground - 9, x + sw_, self.ground + 9, fill=PAL['shadow'])
+        g.ell(x - sw_ * 0.62, self.ground - 6, x + sw_ * 0.62, self.ground + 6, fill='#0a0e13')
+
+        # 腿: 四拍(前近/前远/后近/后远), 坐着时收起来
+        if sit:
+            legs = [(-30, 0.0, 24), (28, 0.0, 26)]
         else:
-            for i in range(3):                                           # 全开: 露出工具
-                ix = gx0 + 6 + i * 9
-                g.rect(ix, q0[1] + 5, ix + 6, q0[1] + 14, fill=PAL['accent'])
-        h0, h1 = P(16, -78), P(60, -38)                                  # 头
+            legs = [(-38, swing, 34), (-26, -swing, 34), (22, -swing, 34), (34, swing, 34)]
+        for lx, sw, hgt in legs:
+            px, py = P(lx + sw * 0.4, 0)
+            g.rrect(px - 7, py - hgt, px + 7, py, r=5, fill=PAL['fur_d'], outline=OL, width=2)
+            g.rrect(px - 8, py - 9, px + 10, py + 1, r=4, fill=PAL['paw'], outline=OL, width=2)
+
+        # 尾巴: 三段 + 摇
+        wag = math.sin(self.tail) * (0.6 if self.state in ('alert', 'sit', 'flee') else 0.34)
+        b0 = P(-52, -72)
+        b1 = (b0[0] - face * 22, b0[1] - 16 + wag * 10)
+        b2 = (b1[0] - face * 15, b1[1] - 20 - wag * 18)
+        g.line(b0[0], b0[1], b1[0], b1[1], OL, 11)
+        g.line(b1[0], b1[1], b2[0], b2[1], OL, 9)
+        g.line(b0[0], b0[1], b1[0], b1[1], PAL['fur'], 7)
+        g.line(b1[0], b1[1], b2[0], b2[1], PAL['fur_l'], 5)
+
+        # 身体: 描边 -> 主色 -> 肚皮亮面 -> 背脊高光
+        b0, b1 = P(-52, -96), P(40, -34)
+        g.ell(b0[0] - 3, b0[1] - 3, b1[0] + 3, b1[1] + 3, fill=OL)
+        g.ell(b0[0], b0[1], b1[0], b1[1], fill=PAL['fur'])
+        g.ell(b0[0] + 16, b0[1] + 22, b1[0] - 12, b1[1] - 4, fill=PAL['fur_l'])
+        g.line(b0[0] + 14, b0[1] + 10, b1[0] - 18, b1[1] - 24, PAL['fur_l'], 4)
+
+        # 挎包: 背带(斜跨胸口) + 深棕包体 + 盖 + 亮扣; 打开时露出工具
+        s0, s1 = P(30, -92), P(-2, -60)
+        g.line(s0[0], s0[1], s1[0], s1[1], OL, 9)
+        g.line(s0[0], s0[1], s1[0], s1[1], PAL['strap'], 5)
+        q0, q1 = P(-16, -74), P(22, -36)
+        g.rrect(q0[0] - 3, q0[1] - 3, q1[0] + 3, q1[1] + 3, r=8, fill=OL)
+        g.rrect(q0[0], q0[1], q1[0], q1[1], r=7, fill=PAL['bag'])
+        qx0, qx1 = min(q0[0], q1[0]), max(q0[0], q1[0])
+        if self.flap < 0.9:
+            fh = (q1[1] - q0[1]) * 0.5 * (1.0 - self.flap)
+            g.rrect(qx0 - 4, q0[1] - 5, qx1 + 4, q0[1] + fh, r=6, fill=PAL['bag_d'],
+                    outline=OL, width=2)
+        else:
+            for k in range(3):
+                ix = qx0 + 9 + k * 13
+                g.rrect(ix, q0[1] + 7, ix + 10, q0[1] + 22, r=3, fill=PAL['accent'],
+                        outline=OL, width=2)
+        g.ell((qx0 + qx1) * 0.5 - 5, q0[1] + 16, (qx0 + qx1) * 0.5 + 5, q0[1] + 26,
+              fill=PAL['accent'], outline=OL, width=2)
+
+        # 头: 描边 -> 主色 -> 额头亮面
+        drop = 18 if self.state == 'sleep' else 0
+        hx = 44 + self.look * 5
+        h0, h1 = P(hx - 29, -136 + drop), P(hx + 29, -78 + drop)
+        g.ell(h0[0] - 3, h0[1] - 3, h1[0] + 3, h1[1] + 3, fill=OL)
         g.ell(h0[0], h0[1], h1[0], h1[1], fill=PAL['fur'])
-        e0, e1, e2 = P(26, -72), P(38 - 7 * self.ear, -94 - 7 * self.ear), P(52, -68)
-        g.poly([e0, e1, e2], fill=PAL['fur_d'], outline=PAL['dark'])     # 耳朵
-        n0, n1 = P(44, -62), P(72, -46)                                  # 口鼻
+        g.ell(h0[0] + 10, h0[1] + 8, h1[0] - 26, h1[1] - 26, fill=PAL['fur_l'])
+
+        # 垂耳: 挂在头后上方, 受惊时竖起(ear -> 1)
+        up = self.ear
+        # 小三角垂耳: 底边贴头后上缘, 尖端斜下挂; 受惊时尖端抬起来
+        e0 = P(hx - 4, -136 + drop)
+        e1 = P(hx - 30, -128 + drop)
+        e2 = P(hx - 34, -100 + drop - 30 * up)
+        g.poly([e0, e1, e2], fill=OL)
+        g.poly([(e0[0] + 2, e0[1] + 3), (e1[0] + 5, e1[1] + 4), (e2[0] + 4, e2[1] - 2)],
+               fill=PAL['fur_d'])
+        g.poly([(e0[0] + 4, e0[1] + 6), (e1[0] + 7, e1[1] + 6), (e2[0] + 6, e2[1] + 1)],
+               fill=PAL['ear_in'])
+
+        # 口鼻: 亮色吻部 + 黑鼻头 + 嘴(叫的时候张开)
+        n0, n1 = P(hx + 16, -114 + drop), P(hx + 56, -88 + drop)
+        g.ell(n0[0] - 2, n0[1] - 2, n1[0] + 2, n1[1] + 2, fill=OL)
         g.ell(n0[0], n0[1], n1[0], n1[1], fill=PAL['fur_l'])
-        nose = 3.0
-        g.ell(n1[0] - 9 - nose, n1[1] - 10 - nose, n1[0] - 9 + nose, n1[1] - 10 + nose,
-              fill=PAL['dark'])
-        er = 3.2 + 1.6 * self.ear                                        # 眼睛(受惊睁大)
-        ex, ey = P(42, -66)
-        g.ell(ex - er, ey - er, ex + er, ey + er, fill=PAL['eye'])
-        if self.bark > 0.05:                                             # 叫: 三道声波
-            for i in range(3):
-                rr = 12 + i * 10
-                mx, my = P(78 + rr * 0.5, -66)
-                g.line(mx, my - rr * 0.35, mx + 7, my - rr * 0.55 - 5, PAL['accent'], 2)
+        g.ell(n1[0] - 14, n1[1] - 14, n1[0] - 1, n1[1] - 3, fill=PAL['dark'])
+        g.ell(n1[0] - 12, n1[1] - 12, n1[0] - 7, n1[1] - 8, fill='#ffffff')
+        if self.bark > 0.1:
+            m0, m1 = P(hx + 28, -102 + drop), P(hx + 58, -84 + drop)
+            g.ell(m0[0], m0[1], m1[0], m1[1], fill='#8c2f2f', outline=OL, width=2)
+            g.ell(m0[0] + 6, m1[1] - 8, m0[0] + 18, m1[1] + 2, fill='#e2726f')
+        else:
+            g.line(n1[0] - 16, n1[1] - 2, n1[0] - 4, n1[1] - 2, OL, 2)
+
+        # 眼睛: 眼白 + 瞳孔 + 高光; 眨眼/睡觉是一条线
+        er = 6.0 + 1.6 * self.ear
+        ex, ey = P(hx + 8, -120 + drop)
+        if self.blink > 0 or self.state == 'sleep':
+            g.line(ex - er - 1, ey, ex + er + 1, ey, OL, 3)
+        else:
+            g.ell(ex - er - 1, ey - er - 1, ex + er + 1, ey + er + 1, fill=OL)
+            g.ell(ex - er, ey - er, ex + er, ey + er, fill='#ffffff')
+            px_ = ex + self.look * 2.0
+            g.ell(px_ - er * 0.62, ey - er * 0.62, px_ + er * 0.62, ey + er * 0.62,
+                  fill=PAL['eye'])
+            g.ell(px_ - er * 0.5, ey - er * 0.6, px_ - er * 0.1, ey - er * 0.2, fill='#ffffff')
+
+        # 叫: 三道声波
+        if self.bark > 0.05:
+            for k in range(3):
+                rr = 16 + k * 12
+                mx, my = P(hx + 60 + rr * 0.5, -110 + drop)
+                g.line(mx, my - rr * 0.35, mx + 9, my - rr * 0.6 - 6, PAL['accent'], 3)
+        # 睡觉: Zzz
+        if self.state == 'sleep':
+            for k, ch in enumerate('zzz'):
+                zx, zy = P(hx + 34 + k * 15, -146 + drop - k * 17)
+                g.text(zx - 11, zy - 11, zx + 11, zy + 11, ch, PAL['txt_d'], size=14 + k * 3,
+                       bold=True)
 
 
 # ======================================================================
@@ -784,7 +1112,10 @@ class BallScene(object):
                 g.ell(hx - rr, hy - rr * 0.5, hx + rr, hy + rr * 0.5, fill=None,
                       outline=PAL['accent'], width=2)
 
+    SCALE = 1.9
+
     def _draw_player(self, g):
+        g = ScaledGfx(g, self.SCALE, self.x, self.ground)
         x, y, f = self.x, self.ground, self.face
         swing = math.sin(self.phase) * 7.0 if self.state == 'walk' else 0.0
         bob = -abs(math.sin(self.phase)) * 2.0 if self.state == 'walk' else 0.0
@@ -793,13 +1124,17 @@ class BallScene(object):
         g.ell(x - 30, y - 7, x + 30, y + 7, fill=PAL['shadow'])
         # 腿 (+ 鞋)
         for lx, sw in ((-9, swing), (9, -swing)):
-            g.rect(x + lx - 6, hip, x + lx + 6, y - 8, fill=HUMAN['skin_d'])
-            g.rect(x + lx - 8, y - 10, x + lx + 9, y - 2, fill=HUMAN['shoe'])
+            g.rect(x + lx - 6, hip, x + lx + 6, y - 9, fill=HUMAN['skin_d'])
+            g.rrect(x + lx - 9, y - 12, x + lx + 10, y - 3, r=3, fill=HUMAN['shoe'],
+                    outline='#8f2f22', width=2)
+            g.rect(x + lx - 9, y - 5, x + lx + 10, y - 3, fill='#f2f2f2')
         # 短裤
         g.rrect(x - 19, hip - 16, x + 19, hip + 8, r=5, fill=HUMAN['shorts'])
-        # 躯干(球衣)
-        g.rrect(x - 17, hip - 56, x + 17, hip - 12, r=7, fill=HUMAN['vest'])
-        g.rect(x - 3, hip - 56, x + 3, hip - 12, fill=HUMAN['vest_d'])
+        # 躯干(球衣) + 号码
+        g.rrect(x - 19, hip - 58, x + 19, hip - 12, r=7, fill=HUMAN['vest'],
+                outline='#1d3f7a', width=2)
+        g.rect(x - 3, hip - 58, x + 3, hip - 12, fill=HUMAN['vest_d'])
+        g.text(x - 14, hip - 50, x + 14, hip - 30, '23', '#eaf2ff', size=11, bold=True)
         # 手臂: 运球时一只手跟着球, 投篮时双手举起
         if self.state == 'shoot' or self.state == 'celebrate':
             for s in (-1, 1):
@@ -815,9 +1150,14 @@ class BallScene(object):
         hy = hip - 74
         g.ell(x - 14, hy - 14, x + 14, hy + 14, fill=HUMAN['skin'])
         g.ell(x - 15, hy - 17, x + 15, hy + 2, fill=HUMAN['hair'])
-        g.ell(x + f * 5 - 2, hy - 3, x + f * 5 + 3, hy + 3, fill='#2b2118')
+        for sgn in (-1, 1):                      # 两只眼 + 眉毛
+            ex = x + sgn * 6
+            g.ell(ex - 2, hy - 4, ex + 3, hy + 2, fill='#2b2118')
+            g.line(ex - 3, hy - 8, ex + 3, hy - 9, HUMAN['hair'], 2)
+        g.line(x - 3, hy + 7, x + 4, hy + 7, '#a4603f', 2)
 
     def _draw_ball(self, g):
+        g = ScaledGfx(g, 1.5, self.ball['x'], self.ball['y'])
         bx, by = self.ball['x'], self.ball['y']
         r = 17
         # 轨迹残影(投篮/砸球时)
@@ -835,6 +1175,91 @@ class BallScene(object):
 # ======================================================================
 # 场景 3: 沿屏幕四边框活动 + 跟鼠标躲猫猫
 # ======================================================================
+def _critter(g, x, y, pose, phase, face=1, hide=0.0, look=0.0):
+    """场景 3 的主角(和狗同一套形象)。**注意 (x, y) 是"与边框的接触点"**, 身体要朝屏幕里侧偏开
+    —— 直接把身体画在接触点上, 半个身子就在屏幕外了(实测底边只露出一个头)。
+
+    pose: stand(底边走) / climb(左右攀爬, 四肢抓墙) / hang(顶边倒挂, 四肢勾住上缘) / air(横跳)
+    hide: 0..1 贴边缩起来(躲猫猫): 身体压扁、四肢收拢、眼睛眯起来
+    """
+    import math
+    OL = PAL['dark']
+    squash = 1.0 - 0.35 * hide
+    swing = math.sin(phase * 2.2)
+    wag = math.sin(phase * 1.7) * 6.0
+    bw, bh = 26, 30 * squash
+    GAP = 14                                   # 身体离边框留一点, 免得压线
+    if pose == 'stand':
+        bx, by = x, y - bh - GAP
+    elif pose == 'climb':
+        bx, by = x - face * (bw + GAP), y
+    elif pose == 'hang':
+        bx, by = x, y + bh + GAP
+    else:
+        bx, by = x, y
+
+    # 尾巴(朝屏幕里侧甩)
+    tx, ty = bx - face * (bw - 4) if pose == 'climb' else bx - face * (bw - 2), by + 4
+    if pose == 'hang':
+        ty = by + bh - 10
+    g.line(tx, ty, tx - face * 18, ty + (14 + wag * 0.4), OL, 9)
+    g.line(tx, ty, tx - face * 18, ty + (14 + wag * 0.4), PAL['fur_d'], 6)
+
+    # 身体
+    g.ell(bx - bw - 3, by - bh - 3, bx + bw + 3, by + bh + 3, fill=OL)
+    g.ell(bx - bw, by - bh, bx + bw, by + bh, fill=PAL['fur'])
+    g.ell(bx - bw + 9, by - bh + 9, bx + bw - 13, by + bh - 8, fill=PAL['fur_l'])
+
+    # 头: 大多在身体"朝屏幕里侧"那一头; 倒挂时在下面
+    if pose == 'hang':
+        hcy = by + bh + 18
+    else:
+        hcy = by - bh - 18
+    hx0, hy0, hx1, hy1 = bx - 22, hcy - 22, bx + 22, hcy + 22
+    g.ell(hx0 - 3, hy0 - 3, hx1 + 3, hy1 + 3, fill=OL)
+    g.ell(hx0, hy0, hx1, hy1, fill=PAL['fur'])
+    g.ell(hx0 + 8, hy0 + 6, hx1 - 20, hy1 - 20, fill=PAL['fur_l'])
+    ear_dn = 1 if pose in ('hang', 'stand') else 0
+    for sgn in (-1, 1):
+        e0 = (bx + sgn * 15, hcy - 18)
+        e1 = (bx + sgn * 31, hcy - 10 + 22 * ear_dn)
+        e2 = (bx + sgn * 27, hcy + 8 + 26 * ear_dn)
+        g.poly([e0, e1, e2], fill=PAL['fur_d'], outline=OL)
+    ex, ey = bx + face * 6, hcy + (-4 if pose != 'hang' else 4)
+    if hide > 0.45:
+        g.line(ex - 5, ey, ex + 5, ey, OL, 3)
+    else:
+        g.ell(ex - 6, ey - 6, ex + 6, ey + 6, fill=OL)
+        g.ell(ex - 5, ey - 5, ex + 5, ey + 5, fill='#ffffff')
+        g.ell(ex - 2 + look * 2, ey - 2, ex + 3 + look * 2, ey + 3, fill=PAL['eye'])
+    nx, ny = bx + face * 11, hcy + (0 if pose != 'hang' else 6)
+    g.ell(nx - 4, ny - 3, nx + 4, ny + 4, fill=PAL['dark'])
+
+    # 四肢: 一律画在"接触点那一侧", 让脚掌/手爪真的贴上边框
+    def limb(a0, a1):
+        g.line(a0[0], a0[1], a1[0], a1[1], OL, 9)
+        g.line(a0[0], a0[1], a1[0], a1[1], PAL['fur_d'], 6)
+        g.ell(a1[0] - 6, a1[1] - 6, a1[0] + 6, a1[1] + 6, fill=PAL['paw'], outline=OL, width=2)
+
+    if pose == 'climb':
+        for k, dy in enumerate((-14, 14)):
+            sw = swing * (9 if k == 0 else -9)
+            limb((bx + face * (bw - 6), by + dy), (x, by + dy + sw))
+    elif pose == 'hang':
+        for k, dx in enumerate((-14, 14)):
+            sw = swing * (9 if k == 0 else -9)
+            limb((bx + dx, by - bh + 4), (bx + dx + sw, y))
+    elif pose == 'air':
+        for a in (-2.5, -1.4, -0.7, 0.4):
+            limb((bx, by), (bx + math.cos(a) * 34, by + math.sin(a) * 34))
+    else:                                       # stand: 四条腿踩地
+        for k, (dx, sw) in enumerate(((-15, swing), (11, -swing))):
+            lx = bx + dx
+            g.rrect(lx - 6, by + bh - 14, lx + 6 + sw * 0.3, y - 2, r=4,
+                    fill=PAL['fur_d'], outline=OL, width=2)
+            g.rrect(lx - 7, y - 9, lx + 9, y + 1, r=3, fill=PAL['paw'], outline=OL, width=2)
+
+
 class ClimbScene(object):
     """场景 3: 主角沿**屏幕四边框**活动, 左右边框是攀爬, 上方是倒挂/天空。
 
@@ -984,53 +1409,25 @@ class ClimbScene(object):
 
     # ---- 绘制 ----
     def draw(self, g):
-        x, y, edge, f = self.pos()
-        h = self.hide * 0.55                            # 贴边缩起来的程度
-        # 影/挂点
-        if edge == 'bottom':
-            g.ell(x - 26, y - 6, x + 26, y + 6, fill=PAL['shadow'])
-        elif edge == 'top':
-            g.line(x, 0, x, y - 34, '#6b5a3a', 3)       # 从"天空"垂下来的藤/绳
-        # 身体(按所在边框摆姿势): 朝屏幕里面的方向伸手脚
-        bw, bh = 26, 30
-        if edge == 'air':
-            g.ell(x - 24, y - 24, x + 24, y + 24, fill=PAL['fur'])
-            for a in (-0.9, -0.3, 0.3, 0.9):            # 四肢张开
-                g.line(x, y, x + math.cos(a) * 40, y + math.sin(a) * 40, PAL['fur_d'], 5)
-            g.ell(x - 15, y - 34, x + 15, y - 8, fill=PAL['fur'])
-            g.ell(x - 3, y - 24, x + 3, y - 18, fill=PAL['dark'])
-            return
+        x, y, edge, face = self.pos()
+        # 上边框先画"从天空垂下来的藤", 它不参与缩放
         if edge == 'top':
-            cy = y + 30 + h * 14
-        else:
-            cy = y - 34 - h * 10
-        g.ell(x - bw, cy - bh, x + bw, cy + bh, fill=PAL['fur'])
-        g.ell(x - bw + 8, cy - bh + 8, x + bw - 12, cy + bh - 8, fill=PAL['fur_l'])
-        # 尾巴(在屏幕内侧那一边甩)
-        tx, ty = (x + f * 26, cy) if edge in ('bottom', 'top') else (x, cy + f * 26)
-        g.line(tx, ty, tx + f * 20, ty - 16, PAL['fur_d'], 5)
-        # 头(朝边框外/内都看得清)
-        hx = x + (f * 8 if edge in ('bottom', 'top') else 0)
-        hy = cy - bh - 12 if edge != 'top' else cy + bh + 12
-        g.ell(hx - 19, hy - 17, hx + 19, hy + 17, fill=PAL['fur'])
-        g.poly([(hx - 12, hy - 14), (hx - 22, hy - 30), (hx - 2, hy - 20)],
-               fill=PAL['fur_d'], outline=PAL['dark'])
-        g.ell(hx + f * 6 - 3, hy - 4, hx + f * 6 + 4, hy + 4, fill=PAL['dark'])
-        g.ell(hx + f * 12 - 4, hy + 6, hx + f * 12 + 4, hy + 12, fill=PAL['fur_l'])
-        # 四肢: 攀爬时一上一下交替(这就是"爬树"的观感)
-        sw = math.sin(self.phase * 2.2) * (18 if edge in ('left', 'right') else 12)
-        if edge == 'bottom':
-            for lx in (-14, 14):
-                g.line(x + lx, cy + bh - 6, x + lx + sw * (1 if lx > 0 else -1), y - 2,
-                       PAL['fur_d'], 5)
-        elif edge in ('left', 'right'):
-            toward = -1 if edge == 'right' else 1
-            for k, ly in enumerate((-16, 16)):          # 两只手交替抓墙
-                g.line(x + toward * 12, cy + ly, x + toward * (34 + (sw if k == 0 else -sw)),
-                       cy + ly - (10 if k == 0 else -10), PAL['fur_d'], 5)
-        else:                                            # top: 倒挂着伸手
-            for lx in (-14, 14):
-                g.line(x + lx, cy - bh + 6, x + lx + sw * 0.4, 4, PAL['fur_d'], 5)
+            g.line(x, 0, x, y - 30, PAL['rope'], 3)
+            g.ell(x - 5, y - 36, x + 5, y - 26, fill=PAL['rope_d'])
+        pose = {'bottom': 'stand', 'top': 'hang', 'left': 'climb', 'right': 'climb',
+                'air': 'air'}.get(edge, 'stand')
+        _critter(ScaledGfx(g, 1.85, x, y), x, y, pose, self.phase, face=face,
+                 hide=self.hide, look=self._look())
+        # 躲起来时头顶冒几根"紧张线"
+        if self.hide > 0.5:
+            for k in range(3):
+                g.line(x - 12 + k * 12, y - 78, x - 16 + k * 12, y - 96, PAL['txt_d'], 2)
+
+    def _look(self):
+        """看向鼠标的方向(-1..1), 只用来偏移眼珠。"""
+        mx, _my = self._last_mouse
+        return 1.0 if mx > self.pos()[0] else -1.0
+
 
 
 def _make_scene(scene_no, sw, sh):
@@ -1072,6 +1469,9 @@ class PetWindow(object):
         self.force_enter = False
         self.force_activity = 0.0
         self.paused = False                # 测试钩子(WM_APP_PAUSE) 用
+        # 测试钩子: 截图模式 —— 普通不透明窗 + 浅灰底, 让 BitBlt/CopyFromScreen 抓得到
+        self.shot = bool(os.environ.get('WGIME_PET_SHOT'))
+        self.shot_y = 0
         self.prev_rect = None
         self.keys_down = set()
         self.activity = 0.0
@@ -1099,15 +1499,24 @@ class PetWindow(object):
         self._cls = c
         if not user32.RegisterClassExW(ctypes.byref(c)) and kernel32.GetLastError() != 1410:
             vlog('pet: RegisterClassExW failed err=%s' % kernel32.GetLastError())
-        ex = int(EX_LAYERED | EX_TRANSPARENT | EX_NOACTIVATE | EX_TOOLWINDOW | EX_TOPMOST)
-        self.hwnd = user32.CreateWindowExW(ex, CLASS_NAME, WIN_TITLE, WS_POPUP, 0, 0, self.sw, self.sh,
-                                           None, None, hinst, None)
+        if self.shot:
+            self.shot_y = max(0, self.sh - 470)
+            ex = int(EX_NOACTIVATE | EX_TOOLWINDOW | EX_TOPMOST)
+            self.hwnd = user32.CreateWindowExW(ex, CLASS_NAME, WIN_TITLE, WS_POPUP, 0, self.shot_y,
+                                               self.sw, self.sh - self.shot_y,
+                                               None, None, hinst, None)
+        else:
+            ex = int(EX_LAYERED | EX_TRANSPARENT | EX_NOACTIVATE | EX_TOOLWINDOW | EX_TOPMOST)
+            self.hwnd = user32.CreateWindowExW(ex, CLASS_NAME, WIN_TITLE, WS_POPUP, 0, 0,
+                                               self.sw, self.sh, None, None, hinst, None)
+            if not self.hwnd:
+                raise RuntimeError('CreateWindowExW failed err=%s' % kernel32.GetLastError())
+            if not user32.SetLayeredWindowAttributes(ctypes.c_void_p(int(self.hwnd)), rgb(KEY_HEX), 0,
+                                                     LWA_COLORKEY):
+                user32.DestroyWindow(ctypes.c_void_p(int(self.hwnd)))
+                raise RuntimeError('SetLayeredWindowAttributes 失败(键色透明不可用)')
         if not self.hwnd:
             raise RuntimeError('CreateWindowExW failed err=%s' % kernel32.GetLastError())
-        if not user32.SetLayeredWindowAttributes(ctypes.c_void_p(int(self.hwnd)), rgb(KEY_HEX), 0,
-                                                 LWA_COLORKEY):
-            user32.DestroyWindow(ctypes.c_void_p(int(self.hwnd)))
-            raise RuntimeError('SetLayeredWindowAttributes 失败(键色透明不可用)')
         self._style()
         user32.ShowWindow(ctypes.c_void_p(int(self.hwnd)), SW_SHOWNOACTIVATE)
         user32.UpdateWindow(ctypes.c_void_p(int(self.hwnd)))
@@ -1117,6 +1526,8 @@ class PetWindow(object):
 
     def _style(self):
         """把扩展样式写成"当前该有的样子": 平时穿透, 面板开着时交互(但永不 NOACTIVATE)。"""
+        if self.shot:
+            return                      # 截图模式是普通窗, 别再加 LAYERED(加了没设属性 = 隐形)
         h = ctypes.c_void_p(int(self.hwnd))
         cur = int(user32.GetWindowLongPtrW(h, GWL_EXSTYLE))
         want = cur | EX_LAYERED | EX_NOACTIVATE | EX_TOOLWINDOW
@@ -1129,9 +1540,30 @@ class PetWindow(object):
     # ---------- 工具面板 ----------
     def load_tools(self):
         if not self.tools:
-            self.tools = discover_tools()
-            vlog('pet: %d tools' % len(self.tools))
+            self.tools = discover_tools()                    # 本地静态扫: 面板立刻出得来
+            vlog('pet: %d tools (local scan)' % len(self.tools))
+            refresh_tools_async(self._on_tools_refreshed)     # 后台问宿主要权威清单
         return self.tools
+
+    def _on_tools_refreshed(self, items):
+        """宿主 API 给的权威清单(后台线程回调): 换掉本地扫的结果。"""
+        try:
+            seen, out = set(), []
+            for t in items:
+                c = (t.get('code') or '')
+                if not c or c.lower() in seen or c.lower() == CODE.lower():
+                    continue                                          # 去重 + 不列自己
+                seen.add(c.lower())
+                out.append(t)
+            if not out:
+                return
+            self.tools = sorted(out, key=_tool_rank)
+            self._panel = None                                    # 面板按新格子数重算
+            if self.palette_open:
+                self.slots()
+            vlog('pet: tools from host API: %d' % len(out))
+        except Exception as e:
+            vlog('pet: tools refresh cb err %r' % (e,))
 
     def slots(self):
         """工具面板格子矩形(屏幕坐标); 顺手把整块面板矩形记到 self._panel。"""
@@ -1188,6 +1620,17 @@ class PetWindow(object):
 
     def toggle_palette(self):
         self.close_palette() if self.palette_open else self.request_palette()
+
+    def cycle_scene(self):
+        """右键点主角: 换下一个场景(1->2->3->1), 换完记进 config.txt 的 pet_scene。"""
+        self.scene_no = 1 if self.scene_no >= 3 else self.scene_no + 1
+        self.dog = _make_scene(self.scene_no, self.sw, self.sh)
+        self.dog.palette_open = self.palette_open
+        self._panel = None
+        self.prev_rect = None
+        self.invalidate()
+        _save_scene(self.scene_no)
+        vlog('pet: scene -> %d (右键切换)' % self.scene_no)
 
     def on_click(self, sx, sy):
         if self.palette_open:
@@ -1327,9 +1770,9 @@ class PetWindow(object):
 
     # ---------- 绘制 ----------
     def paint(self, hdc, rc):
-        g = Gfx(hdc)
+        g = Gfx(hdc, oy=(self.shot_y if self.shot else 0))
         try:
-            br = gdi32.CreateSolidBrush(rgb(KEY_HEX))
+            br = gdi32.CreateSolidBrush(rgb('#e9edf2' if self.shot else KEY_HEX))
             try:
                 rr = RECT(rc.left, rc.top, rc.right, rc.bottom)
                 user32.FillRect(hdc, ctypes.byref(rr), br)     # 铺键色 = 透明
@@ -1434,9 +1877,12 @@ class PetWindow(object):
                 x, y = self._xy(lp)
                 self._on_move(x, y)
                 return 0
-            if msg in (WM_LBUTTONDOWN, WM_RBUTTONDOWN):
+            if msg == WM_LBUTTONDOWN:
                 x, y = self._xy(lp)
                 self.on_click(x, y)
+                return 0
+            if msg == WM_RBUTTONDOWN:
+                self.cycle_scene()          # 右键 = 换下一个场景(1->2->3->1)
                 return 0
             if msg == WM_APP_TOGGLE:
                 self.toggle_palette()
@@ -1585,7 +2031,8 @@ def _window_main(standalone=False):
     if sys.platform != 'win32':
         raise SystemExit('Windows only')
     _ensure_paths()
-    inst = kernel32.CreateMutexW(None, 0, 'WgImePetOverlayMutex')
+    inst = None if os.environ.get('WGIME_PET_SHOT') else \
+        kernel32.CreateMutexW(None, 0, 'WgImePetOverlayMutex')
     if inst and kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
         h = user32.FindWindowW(CLASS_NAME, WIN_TITLE)      # 已在跑: 把"开合"转给它, 自己退出
         if h:

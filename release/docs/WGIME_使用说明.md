@@ -366,6 +366,31 @@ stt_prompt = 以下是普通话的句子。
 **失败怎么办**：pip 不存在（Store 版 Python 常见）会提示 `python -m ensurepip --upgrade`；网络不通会明确报出来，
 核心功能不受影响。窗口里的「复制命令」给出可直接粘贴执行的完整命令（含 `--target` 私有目录）。
 
+## 13. 自动更新（第八十五轮，Python 版）
+
+- 服务器就是本项目的 **GitHub Releases**；**只更新纯 Python 单文件** `wgime-py.py`，
+  `config.txt` / 词库（`dicts/`、`%LOCALAPPDATA%\wgime-py`）/ 插件都**不会**被动。
+- **怎么用**: 启动 7 秒后它会在后台查一次新版本（6 小时内不重复查）。查到就发一条托盘气泡，
+  托盘菜单「这个程序 → 更新到 vX.Y.Z…」点一下 → 确认 → 下载校验 → 自动重启完成。
+  想看有没有新版也可以点「这个程序 → 检查更新」。
+- **它怎么保证不出事**: 下载到的东西必须"长得像我们的单文件"（三个标记 + 能编译 + 体积过线）、
+  里面的版本号必须比当前新、发行包那条路还会核对 release 说明里写的 SHA256；
+  替换前把旧文件备份成 `wgime-py.py.bak-<旧版本>`（想回滚就改回文件名），失败一律只弹气泡、旧文件原样保留。
+- **国内网络**: 默认先直连 GitHub；连不上会自动换 PowerShell 通道。若你常年连不上，可在 `config.txt` 里加镜像前缀：
+  `update_mirror = https://ghproxy.net/`（任何"前缀拼接式"的 GitHub 镜像都行）。
+- **相关配置**（`config.txt`）:
+
+  | 键 | 默认 | 说明 |
+  |---|---|---|
+  | `update_auto` | `1` | 启动时后台查一次；设 `0` 就只在你点「检查更新」时查 |
+  | `update_repo` | `ogowoo/wgime` | 换仓库（自己 fork 的话） |
+  | `update_api` | `https://api.github.com` | Releases API 基址 |
+  | `update_mirror` | 空 | 下载 URL 的前缀镜像 |
+  | `update_source` | `raw` | `raw`=取仓库里的单文件（约 1.1MB，快）；`asset`=取发行包（约 25MB，带 SHA256 校验） |
+  | `update_timeout` | `15` | 单次请求超时（秒） |
+
+- 日志在 `%LOCALAPPDATA%\wgime-py\update.log`；更新失败时把它发出来就能定位。
+
 ## 附录：第三方数据与许可
 
 - **`en-freq.txt`**（英语常用词表：5 万词 + 频次）：来自 **Hermit Dave 的 FrequencyWords** 项目

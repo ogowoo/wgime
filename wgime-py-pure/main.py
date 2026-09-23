@@ -198,7 +198,24 @@ def _api_run_plugin(code):
             p = _plug.parse_plugin(hit['path'])
             if p.error:
                 raise ValueError('parse: %s' % p.error)
-            raise ValueError('v1 暂不支持 .txt 步骤插件 (kind=%s)' % p.kind)
+            if p.kind in ('csharp', 'python'):
+                raise ValueError('这个 .txt 插件是 [%s] 块, API 还不支持(先用输入法里的启动编码)'
+                                 % p.kind)
+
+            def _mb_api(title, text):
+                ctypes.windll.user32.MessageBoxW(None, str(text), str(title or 'WgIme'), 0x40)
+
+            def _cf_api(text, title='', buttons='ok', default_no=False):
+                fl = 0x1 if buttons == 'okcancel' else 0x4          # OKCANCEL / YESNO
+                if default_no:
+                    fl |= 0x100                                     # DEFBUTTON2
+                fl |= 0x40000 | 0x10000                             # TOPMOST | SETFOREGROUND
+                r = ctypes.windll.user32.MessageBoxW(None, str(text), str(title or 'WgIme'), fl)
+                return r in (1, 6)                                  # IDOK / IDYES
+            print(_json_api.dumps({'ok': True, 'code': code, 'name': hit['name']},
+                                  ensure_ascii=False), flush=True)
+            _plug.run_steps(p.body, lambda s: print('[step] %s' % s), _mb_api, _cf_api)
+            return 0
         root = tk.Tk()
         root.withdraw()
         fn()                                          # 宿主同一套: run() 在 Tk 主线程里同步跑

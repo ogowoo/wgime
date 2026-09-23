@@ -2086,3 +2086,77 @@ BitBlt 400x300 + GetDIBits  9.86 ms/次      <- 一次读 12 万像素(但见下
 
 **还没做**: `config.txt` 里的 `pet_scene` 还没登记进仓库模板(要跑 sync-dist + release 模板, 等插件定型再一起做);
 场景 1/3 的美术仍是"色块级"(够用但不算精致); 挎包打开时工具图标从包里冒出来的细节没做。
+
+## §D39 目标轮次 4：宿主 API(给插件用的正式入口) + 宠物形象与动作重做
+
+### 1) 用户报的四件事, 逐条查实
+
+| 用户说的 | 真相 |
+|---|---|
+| 「点工具没看到小工具运行」 | **真 bug**。用户机器上的 pet 日志: `tool qrcode -> ok=False ModuleNotFoundError: No module named 'ui'` / `tool lt -> ok=False ... 'wspy'`。发行版是单文件, 插件的 `run()` 要 `import ui/win/wspy`, 而这些只在**宿主进程的 sys.modules** 里 -> 子进程(宠物)永远 import 不到 |
+| 「狗的运动范围太小」 | 真的小: 54px/s, 3840 宽的屏横穿要 70 秒, 而且一打字就站住 -> 看着几乎不动 |
+| 「实现非常难看」 | 真的难看: 色块级 GDI, 比例差、无对比、耳朵画成一根刺、挎包和身体同色看不见 |
+| 「避开鼠标没实现」 | **写在了场景 3**(四边框躲猫猫), 而默认是场景 2; 更糟的是 `pet_scene` **没登记进 config.txt 模板** -> 用户根本没法发现怎么换场景 |
+
+> 我第 2 轮"验证工具能跑"是**在源码目录**做的(那里 `ui.py` 就在旁边, 探针拿到 `ok=True`),
+> 当成了通用结论 —— 这是验证漏洞。教训已写进 §5 规则 50/51: **工具启动必须在发行版布局下验**。
+
+### 2) 宿主 API(第八十六轮, `main.py`)
+
+```
+<宿主文件> --api list-plugins        -> 一行 JSON: 可用插件(code/name/kind/perm/path)
+<宿主文件> --api run-plugin <code>   -> 建 Tk root -> 按 code 加载插件 -> run() -> mainloop
+```
+* **为什么必须做在 main.py 里**: 单文件发行版下 `ui`/`win`/`wspy` 不是磁盘文件, 只有 main.py 自己的
+  exec 环境里有 —— 任何"单独一个 api.py"的方案在发行版下都拿不到这些模块。
+* **两个插入位置约束**(都踩过): ①`_relaunch_if_console_python()` 那条调用要加
+  `if '--api' not in sys.argv` —— 否则 python.exe 启动会被**重启成 pythonw 并 detach**, CLI 的 stdout 直接丢;
+  ②API 函数体要放在 `APP_DIR = ...` **之后**(插件目录从 BASE/APP_DIR 推), 而分发(`sys.exit(_api_main(...))`)
+  就放在同一段后面。
+* `run-plugin` 细节: `.py` 走 importlib(与宿主 `_run_py_file_once` 同款) + 权限确认; `.txt` 走 `plugins.run_steps`
+  (msgbox/confirm 用 MessageBoxW 现造; `[csharp]`/`[python]` 块明确报"不支持, 用输入法里的启动编码");
+  跑完看有没有 Toplevel 决定是否 mainloop(翻译那种自己 spawn 独立窗口的别干等)。
+* 顺手修掉一个静默 bug: 宠物里 `import plugins` 在发行版下撞到**同名的目录**(命名空间包),
+  `plugins.load_plugins` 不存在 -> 两个 `.txt` 插件被无声丢掉(用户面板只有 6 个, 少 2 个)。
+  现在由宿主 `--api list-plugins` 说了算。
+
+### 3) 宠物改成"让宿主跑工具"
+
+* `_host_file()`: 发行版 `<package>\wgime-py.py`, 源码版 `<wgime-py-pure>\main.py`。
+* `discover_tools()`: **先本地静态扫**(读 `.py` 的 CODE/NAME/PERM 与 `.txt` 的头部)让面板立刻出得来,
+  再后台 `refresh_tools_async()` 问宿主, 拿到就替换(宿主口径唯一)。
+* `run_tool()`: `Popen([python, host, '--api', 'run-plugin', code])` —— **stdout 落临时文件而不是管道**
+  (工具活下来后管道塞满会把工具卡死); 1.2s 内就退的说明起不来, 把它的 JSON 错误捞出来给人看。
+* 面板排序 `_tool_rank()`: 风险低/`.py` 的排前面, `destructive` 排最后 —— 实测(未排序时)面板第一个格子
+  就是「清空回收站」, 一点先弹权限确认, 很吓人。
+
+### 4) 形象与动作重做(用户主要诉求)
+
+* **新增 `ScaledGfx`**(缩放适配器): 主角按屏幕放大而不用改 draw() 里那堆常数; 缩放**绕脚下那一点**做,
+  所以它原地长大不跑偏。
+* **狗**: 描边 + 双色明暗 + 像样比例; 四条腿**四拍走**(前后错相)+ 抬脚掌; 尾巴三段摆动;
+  **会眨眼**(1.5~4.5s 随机, 0.12s 闭合); 状态机 `walk/run/alert/sit/sleep/flee`; 回车**叫**(张嘴+三道声波+小跳);
+  闲 7s 坐下、24s 睡着(冒 zzz); 挎包深棕 + 亮扣 + 背带, 打开时露出三个彩色工具。
+* **鼠标**: 240px 内**看你**(头与眼珠朝光标偏), 110px 内**掉头小跑躲开**。
+* **运动**: 走 150px/s、**偶尔自动快跑 360px/s(0.8~2.2s)**、活动范围 5%~95% 全宽、还会小跳。
+* **篮球**: 球衣号码 23、五官、双色球鞋、躯干加宽; 运球时手跟着球; 回车投篮(弧线 + 进筐亮起 + 声波)。
+* **四边框**: 主角与狗同一套形象(身体/头/垂耳/脚掌/尾巴), 按所在边框摆姿势
+  `stand/climb/hang/air`; **锚点按"接触点"处理**(身体朝屏幕里侧偏) —— 直接画在接触点上会半个身子在屏幕外(实测只露一个头)。
+* **右键点主角 = 换场景**(1→2→3→1) 并就地改 config.txt 的 `pet_scene`(只动这一行, 保留原行尾, 二进制读写);
+  `pet_scene` 也写进了仓库 config.txt 模板(注释说明 1/2/3)。
+
+### 5) 视觉验证的方法(值得复用)
+
+分层窗 **BitBlt/CopyFromScreen 抓不到**(实测整片空白), 而肉眼没法在 CI 里看 —— 于是加了测试钩子
+`WGIME_PET_SHOT=1`: 改成**普通不透明窗** + 铺浅灰底(模拟桌面) + 只盖屏幕底部一条, 这样
+`CopyFromScreen` 抓得到, 我就能真的看图改图(改一轮看一轮)。`Gfx` 因此加了 `oy` 偏移
+(画布原点相对屏幕的 y), 否则绝对屏幕坐标全落到窗外面 —— 第一版截图整张灰就是这个原因。
+另外这一轮两次栽在同一个坑: **用字符串判断"改没改成功"** —— `if "'paw'" not in 文件` 被*画图代码里*
+的 `PAL['paw']` 骗过, 于是补配色的补丁被跳过、`KeyError('paw')` 刷屏。改成 **import 模块后查 `md.PAL`** 才靠谱。
+
+### 6) 回归
+
+`pet-overlay-test.py` **69 → 72 项**全绿: 新增"宠物找得到宿主本体"、"宿主 API 通(list-plugins 返回插件清单)"、
+"API 清单里有工具" —— 就是这次真事故的守卫。`standalone-plugin-test.py` 7/7。
+真机(发行版布局)端到端另验过: 宠物从 `package\plugins\` 起, 点第一个工具 -> 日志
+`tool jsq -> 交给宿主 API (pid ...)` + `ok=True 已启动 计算器`, 且 EnumWindows 真看到新窗口。

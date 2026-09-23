@@ -59,7 +59,7 @@ gdi32.GetPixel.restype, gdi32.GetPixel.argtypes = w.DWORD, [ctypes.c_void_p, cty
 GWL_EXSTYLE = -20
 EX_LAYERED, EX_TRANSPARENT, EX_NOACTIVATE, EX_TOOLWINDOW, EX_TOPMOST = 0x80000, 0x20, 0x8000000, 0x80, 0x8
 WM_LBUTTONDOWN, WM_APP_TOGGLE = 0x0201, 0x8002
-COLOR_FUR = 0x337ac0          # '#c07a33' -> COLORREF
+COLOR_FUR = 0x3f8bd9          # '#d98b3f' -> COLORREF(新配色)
 COLOR_PANEL = 0x261c14        # '#141c26'
 COLOR_SLOT = 0x473424         # '#243447'
 COLOR_SLOT_H = 0x6f5339       # '#39536f'
@@ -221,6 +221,16 @@ def part_s():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    # 宠物自己那条 API 路径(第八十六轮"点工具没反应"的守卫):
+    # 发行版是单文件, 插件的 run() 要 import ui/win, 子进程 import 不到 -> 必须由宿主本体来跑。
+    host = md._host_file()
+    check('宠物找得到宿主本体(跑插件只能由它跑)', bool(host) and os.path.exists(host), repr(host))
+    api = md._api_call(['list-plugins'], timeout=60)
+    check('宿主 API 通(list-plugins 返回插件清单)', bool(api and api.get('plugins')),
+          repr(api)[:140])
+    if api and api.get('plugins'):
+        codes = [p.get('code') for p in api['plugins']]
+        check('API 清单里有工具(不只是它自己)', len(codes) >= 2, repr(codes))
     app = md._find_app_dir()
     check('_find_app_dir 找到码表目录(插件目录靠它定位)', os.path.exists(os.path.join(app, 'py.txt'))
           or os.path.exists(os.path.join(app, 'dicts', 'py.txt')), app)
@@ -300,7 +310,7 @@ def part_l(md):
         pause(hwnd)
         d = wait_still(live) or d
         bx0, by0, bx1, by1 = d['dog_bbox']
-        found = scan_row(bx0, bx1, int(d['dog_y']) - 45, {COLOR_FUR, 0x5aa0dd}, step=3)
+        found = scan_row(bx0, bx1, int(d['dog_y']) - 45, {COLOR_FUR, 0x8ac4f0, 0x1f63a9}, step=3)
         check('狗**真的画在**屏幕下缘了(在它身上扫到毛色)', found is not None,
               'bbox=%s y=%s' % (d['dog_bbox'], int(d['dog_y']) - 45))
         unpause(hwnd)
@@ -510,7 +520,7 @@ def part_scene3(md):
         pause(d['hwnd'])                          # 主角在爬, 冻住再扫
         d = wait_still(live) or d
         px, py = d['dog_pos']
-        found = scan_row(px - 70, px + 70, int(py) - 30, {0x337ac0, 0x5aa0dd, 0x20558f}, step=4)
+        found = scan_row(px - 70, px + 70, int(py) - 30, {0x3f8bd9, 0x8ac4f0, 0x1f63a9}, step=4)
         check('主角真的画在边框上了(扫到毛色)', found is not None, 'pos=%s,%s' % (px, py))
         unpause(d['hwnd'])
         s0 = d.get('leaped')

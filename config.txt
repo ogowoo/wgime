@@ -185,3 +185,9 @@ update_api = https://api.github.com
 update_mirror =
 update_source = raw
 update_timeout = 15
+
+; ---------- 桌面宠物 (插件 wgpet, 打启动编码 pet 呼出) ----------
+; 场景: 1 = 篮球运动员(打字运球/回车投篮)  2 = 驮挎包的小狗(包里是你的插件工具)
+;       3 = 沿屏幕四边框攀爬 + 跟鼠标躲猫猫
+; 也可以**右键点主角**直接换场景 —— 它会自动把这一行改掉。
+pet_scene = 2
