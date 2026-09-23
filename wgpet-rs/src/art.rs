@@ -32,9 +32,12 @@ const URAJIRO_DIM: D2D1_COLOR_F = rgb(0.878, 0.851, 0.827, 1.0);
 const FUR_SHADE: D2D1_COLOR_F = rgb(0.702, 0.435, 0.208, 1.0);
 /// 描边: 卡通角色有没有这一圈差别很大(浅色/深色背景上都立得住)
 const OUTLINE: D2D1_COLOR_F = rgb(0.353, 0.216, 0.114, 1.0);
-const EAR_IN: D2D1_COLOR_F = rgb(0.804, 0.549, 0.451, 1.0);
+const EAR_IN: D2D1_COLOR_F = rgb(0.878, 0.639, 0.612, 1.0);
 const NOSE: D2D1_COLOR_F = rgb(0.196, 0.157, 0.176, 1.0);
 const EYE: D2D1_COLOR_F = rgb(0.106, 0.090, 0.125, 1.0);
+/// 张嘴的暗部与舌头: 参考图里"张着嘴笑"是萌点的主力, 只画一条嘴线是不够的
+const MOUTH: D2D1_COLOR_F = rgb(0.451, 0.176, 0.196, 1.0);
+const TONGUE: D2D1_COLOR_F = rgb(0.933, 0.502, 0.545, 1.0);
 const EYE_HI: D2D1_COLOR_F = rgb(1.0, 1.0, 1.0, 0.95);
 const STRAP: D2D1_COLOR_F = rgb(0.408, 0.259, 0.169, 1.0);
 const BAG: D2D1_COLOR_F = rgb(0.769, 0.396, 0.231, 1.0);
@@ -67,6 +70,8 @@ pub struct Brushes {
     pub nose: ID2D1SolidColorBrush,
     pub eye: ID2D1SolidColorBrush,
     pub eye_hi: ID2D1SolidColorBrush,
+    pub mouth: ID2D1SolidColorBrush,
+    pub tongue: ID2D1SolidColorBrush,
     pub strap: ID2D1SolidColorBrush,
     pub bag: ID2D1SolidColorBrush,
     pub bag_dark: ID2D1SolidColorBrush,
@@ -94,6 +99,8 @@ impl Brushes {
             nose: mk(NOSE)?,
             eye: mk(EYE)?,
             eye_hi: mk(EYE_HI)?,
+            mouth: mk(MOUTH)?,
+            tongue: mk(TONGUE)?,
             strap: mk(STRAP)?,
             bag: mk(BAG)?,
             bag_dark: mk(BAG_DARK)?,
@@ -593,6 +600,13 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     let neck = (36.0, body_y - 24.0);
     c.rot_at(0.42, neck, |c| {
         c.oval(neck, 13.0, 12.0, &c.b.fur);
+        // 项圈(参考图里那条深色皮带): 做得**细一点** —— 6.8 单位宽时在屏幕上就是一条黑围巾,
+        // 和头的轮廓糊在一起(按真实大小看才发现的)
+        let _ = c
+            .rt
+            .FillRoundedRectangle(&rr(neck.0 - 13.0, neck.1 + 1.0, 26.0, 4.4, 2.2, 2.2), &c.b.bag_dark);
+        c.disc((neck.0 - 3.0, neck.1 + 9.0), 3.0, &c.b.outline);
+        c.disc((neck.0 - 3.0, neck.1 + 9.0), 2.2, &c.b.metal);
     });
 
     // ---- 头: 用**一条狗头侧面轮廓**(颅顶圆 → 前伸吻部 → 下巴)而不是两个椭圆拼。
@@ -605,32 +619,33 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         ear(c, (-9.0, -17.0), -0.18, p.ear * 0.5, p.alert, true);
         // 头
         c.place(&c.shapes.head, (0.0, 0.0), 0.0, 1.0, 1.0, Some(&c.b.fur), 2.6);
-        // 里白: 吻部+下颊一小片 + 两眼之间一小道白 —— **别铺太大**, 铺满整张脸就成狐狸/白狗了
-        c.oval((22.0, 4.5), 10.5, 6.5, &c.b.urajiro);
-        c.oval((5.0, -4.0), 4.2, 6.5, &c.b.urajiro);
-        // 眉上两个白点(眉斑) —— 柴犬最好认的记号。位置有讲究:
-        // ①落在**赤毛**上(白鼻梁不能铺到额头, 否则白点画在白底上等于没画);
-        // ②比耳根低, 否则被耳朵盖住(两个坑都真踩过)
+        // 里白: **大面罩**(参考图的萌点之一) —— 吻+下颊+鼻梁一直连到两眼之间,
+        // 赤色只剩头顶/眼周那一圈"帽子"。铺太大成白狗, 铺太小成狐狸, 参考图给的就是这个比例
+        c.oval((18.0, 6.0), 15.5, 9.5, &c.b.urajiro);
+        c.oval((5.0, -6.0), 5.5, 9.0, &c.b.urajiro);
+        // 眉上两个白点(眉斑) —— 位置: ①落在赤毛上 ②比耳根低
         c.oval((-5.0, -13.0), 3.7, 2.9, &c.b.urajiro);
         c.oval((7.0, -16.0), 3.5, 2.7, &c.b.urajiro);
-        // 鼻头(短吻, 黑鼻)
-        c.oval((31.5, 1.5), 4.6, 3.9, &c.b.outline);
-        c.oval((31.5, 1.5), 3.5, 2.8, &c.b.nose);
-        // 嘴(从鼻下往后收的弧)
-        c.line_w((28.5, 6.5), (20.0, 9.0), 1.6, &c.b.outline);
-        // 眼: 杏形、外眼角略上挑, 眼圈深色
+        // 张嘴 + 吐舌(参考图里最抓眼的那个表情): 位置在鼻子下方偏后, 舌头略探出下颚
+        c.oval((21.5, 6.0), 5.4, 4.2, &c.b.outline);
+        c.oval((21.5, 6.0), 4.2, 3.2, &c.b.mouth);
+        c.oval((20.5, 9.0), 3.3, 2.5, &c.b.tongue);
+        // 鼻头(黑鼻)
+        c.oval((31.5, 1.5), 5.0, 4.2, &c.b.outline);
+        c.oval((31.5, 1.5), 3.9, 3.1, &c.b.nose);
+        // 眼: 大一点、双高光(一大一小) —— 参考图的眼神全靠这个
         let k = (1.0 - p.blink).max(0.07);
-        let eh = 4.8 * k;
+        let eh = 5.2 * k;
         for (e, tilt) in [
-            ((-1.0 + p.look * 1.5, -8.5), -0.20f32),
-            ((11.5 + p.look * 1.5, -10.5), -0.24f32),
+            ((-2.0 + p.look * 1.5, -9.5), -0.16f32),
+            ((11.0 + p.look * 1.5, -11.5), -0.20f32),
         ] {
             c.rot_at(tilt, e, |c| {
-                c.oval(e, 4.1, eh + 0.5, &c.b.outline);
-                c.oval(e, 3.3, eh * 0.88, &c.b.eye);
+                c.oval(e, 4.6, eh + 0.5, &c.b.outline);
+                c.oval(e, 3.8, eh * 0.9, &c.b.eye);
             });
-            // 高光必须跟着眼皮一起缩, 否则眨眼时白点比眼睛还大(像戴墨镜)
-            c.disc((e.0 + 1.2, e.1 - 1.2 * k), 1.35 * k, &c.b.eye_hi);
+            c.disc((e.0 - 0.9, e.1 - 1.6 * k), 1.9 * k, &c.b.eye_hi);
+            c.disc((e.0 + 1.3, e.1 + 1.2 * k), 1.0 * k, &c.b.eye_hi);
         }
         // 近侧耳(小三角, 前倾; 两耳靠近)
         ear(c, (2.0, -22.0), 0.26, -p.ear * 0.5, p.alert, false);
