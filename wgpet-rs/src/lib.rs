@@ -984,6 +984,8 @@ impl Pet {
             head_drop: drop,
             head_tilt: tilt,
             yawn,
+            // 挎包只在场景 2(百宝袋)背; 参考图里的柴犬不背包
+            bag: if self.scene == 2 { 1.0 } else { 0.0 },
         }
     }
 }

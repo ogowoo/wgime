@@ -165,6 +165,9 @@ pub struct Pose {
     pub head_tilt: f32,
     /// 打哈欠 0..1: 嘴张到最大、舌头伸出来
     pub yawn: f32,
+    /// 挎包 0..1: 只有场景 2(百宝袋)需要它。参考图里的柴犬**不背包** ——
+    /// 背包会把整个身体挡住, 读起来就是"一个头 + 一个包"(用户原话"什么都不像")
+    pub bag: f32,
 }
 
 impl Default for Pose {
@@ -191,6 +194,7 @@ impl Default for Pose {
             head_drop: 0.0,
             head_tilt: 0.0,
             yawn: 0.0,
+            bag: 0.0,
         }
     }
 }
@@ -449,8 +453,8 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
     let mut right = [(0.0f32, 0.0f32); N + 1];
     for i in 0..=N {
         let t = i as f32 / N as f32;
-        // 中段最蓬松(柴犬尾很厚), 尖端收
-        let w = 5.0 + 3.7 * (t * PI * 0.95).sin();
+        // 中段最蓬松(参考图里那条尾巴又粗又蓬, 快赶上身子了)
+        let w = 6.6 + 5.2 * (t * PI * 0.95).sin();
         let (dx, dy) = if i == 0 {
             (spine[1].0 - spine[0].0, spine[1].1 - spine[0].1)
         } else {
@@ -599,15 +603,15 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     tail(c, body_y, (p.tail * std::f32::consts::TAU).sin(), p.alert, up);
 
     // ---- 身体: 用**轮廓路径**(背线平直 + 深胸 + 收腰), 不是一个大椭圆。
-    // V3：身体更短更圆，头脸保持参考图的大头团子比例。
+    // 比例对齐参考图那张表: 身体放大到 1.06(之前 0.90 配上 1.58 的大头 = "大头娃娃")
     c.rot_at(body_rot, (0.0, body_y), |c| {
         let dy = body_y + 58.0;
         c.place(
             &c.shapes.body,
             (0.0, dy),
             0.0,
-            0.90,
-            0.90 * (0.82 + 0.18 * up),
+            1.06,
+            1.06 * (0.82 + 0.18 * up),
             Some(&c.b.fur),
             3.4,
         );
@@ -620,21 +624,22 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         c.oval((2.0, body_y + 23.0), 20.0, 5.5, &c.b.urajiro);
     });
 
-    // ---- 挎包(骑在身体上)
-    c.rot_at(body_rot, (0.0, body_y), |c| {
-        satchel(c, -7.0, body_y + 6.0, p.bob, 3);
-    });
+    // ---- 挎包(骑在身体上)。**只有场景 2 背**: 它会把身体整个盖住(见 Pose.bag 的注释)
+    if p.bag > 0.01 {
+        c.rot_at(body_rot, (0.0, body_y), |c| {
+            satchel(c, -7.0, body_y + 6.0, p.bob, 3);
+        });
+    }
 
-    // ---- 近侧两条腿(比之前粗一点: 柴犬是壮实的小型犬, 不是细腿)。
-    // 坐姿时后腿折到身子底下(脚往前收 + 微微离地)
+    // ---- 近侧两条腿: 柴犬是壮实的小型犬, 腿要**短而粗**(细杆腿是"不像"的主因之一)
     let (nf, nr) = feet(p, 0.0, 36.0, -26.0 + sit * 16.0, p.arm);
-    leg(c, (32.0, body_y + 18.0), (nf.0, nf.1), -1.0, 9.6, false);
+    leg(c, (32.0, body_y + 18.0), (nf.0, nf.1), -1.0, 12.6, false);
     leg(
         c,
         (-22.0, body_y + 20.0),
         (nr.0, nr.1),
         if sit > 0.4 { -0.5 } else { 1.0 },
-        10.4,
+        13.4,
         false,
     );
 
@@ -665,8 +670,8 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     let yaw = look * 0.10;
     let hx = 38.5 + look * 3.8 + (1.0 - up) * -11.0;
     let hy = body_y - 31.5 - up * 3.0 + (1.0 - up) * 9.0 + p.head_drop * 26.0;
-    let head_sx = 1.58 * (1.0 - look.abs() * 0.035);
-    let head_sy = 1.58;
+    let head_sx = 1.22 * (1.0 - look.abs() * 0.035);
+    let head_sy = 1.22;
 
     c.at_scaled((hx, hy), body_rot * 0.65 + yaw + p.head_tilt, 1.0, |c| {
         // 远耳：向头顶中心收，避免“耳朵长在脸两边”。
