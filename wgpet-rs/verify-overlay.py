@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""wgpet.dll 客观验收(探针, 不入库)。全靠像素/句柄, 不靠肉眼。
+"""wgpet.dll 客观验收(随 crate 一起入库; 不靠肉眼)。
 
-  1) 逐像素 alpha —— 精灵不同半径叠在纯品红背景上, 必须是真半透明过渡
-  2) 抗锯齿      —— 本体边缘要有中间色, 不是硬跳变
-  3) 鼠标穿透    —— 没画到的地方(alpha=0)WindowFromPoint 必须跳过本窗
-  4) 不抢焦点    —— 起浮层前后 GetForegroundWindow 不变
-  5) 真帧率 + 动画在动 + 能干净关闭
-  6) 上下方向    —— 眼睛画在中心上方, 采到眼睛色即证明 DIB 没被翻转
+靠的是"渲染器自己报标定点 + 抓屏读像素":
+  1) 逐像素 alpha —— 渲染器报出阴影核心点(合成 alpha 0.337)与本体点(alpha 1),
+     探针把它们与**纯色背景**做叠加算术, 要求**逐通道整数吻合**;
+  2) 抗锯齿 —— 窗内不同颜色数必须够多(硬边渲染只会有那十几个平坦色);
+  3) 透明 —— 窗内没画到的地方必须还是纯背景色;
+  4) 穿透 —— 被动态整窗穿透; 交互态只有画到的像素挡鼠标;
+  5) 不抢焦点 / 真帧率 / 能干净关闭。
+  另有一道**环境闸门**: 屏幕前的人一按截图, 遮罩层会把整块读数压暗 -> 先确认背景干净再断言,
+  否则报"环境不干净"而不是假装是代码 bug(真踩过, 8 条断言集体假红)。
 
-用法: python wg-rustpet-verify.py <wgpet.dll>
+用法: python verify-overlay.py [wgpet.dll]
+默认 dll 路径: <本文件目录>/target/release/wgpet.dll
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -20,22 +24,20 @@ u32 = ctypes.WinDLL('user32', use_last_error=True)
 g32 = ctypes.WinDLL('gdi32', use_last_error=True)
 
 MAGENTA = (255, 0, 255)
-BODY = (250, 158, 51)
-GLOW1 = (255, 199, 89)      # alpha 0.35
-GLOW2 = (255, 230, 153)     # alpha 0.18
-EYE = (26, 23, 31)
+# 硬边渲染: 一堆平坦色 + 边框, 窗内不同颜色数会明显偏少。实测带抗锯齿时远高于此。
+MIN_DISTINCT = 60
 
 SEEN = []
 
 
 def chk(name, ok, detail=''):
     SEEN.append((name, bool(ok), detail))
-    print('%-4s %-40s %s' % ('ok' if ok else 'FAIL', name, detail), flush=True)
+    print('%-4s %-42s %s' % ('ok' if ok else 'FAIL', name, detail), flush=True)
     return ok
 
 
 def info(tag, detail):
-    print('     %-40s %s' % (tag, detail), flush=True)
+    print('     %-42s %s' % (tag, detail), flush=True)
 
 
 def blend(src, alpha, dst):
@@ -138,33 +140,38 @@ def grab(x, y, w, h):
     hbmp = g32.CreateDIBSection(sdc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
     old = g32.SelectObject(mdc, hbmp)
     g32.BitBlt(mdc, 0, 0, w, h, sdc, x, y, SRCCOPY)
-    buf = ctypes.string_at(bits, w * h * 4)
+    raw = ctypes.string_at(bits, w * h * 4)
+    g32.SelectObject(mdc, old)
+    g32.DeleteObject(hbmp)
+    g32.DeleteDC(mdc)
+    u32.ReleaseDC(None, sdc)
     out = {}
     for j in range(h):
         row = j * w * 4
         for i in range(w):
             o = row + i * 4
-            out[(x + i, y + j)] = (buf[o + 2], buf[o + 1], buf[o])
-    g32.SelectObject(mdc, old)
-    g32.DeleteObject(hbmp)
-    g32.DeleteDC(mdc)
-    u32.ReleaseDC(None, sdc)
+            out[(x + i, y + j)] = (raw[o + 2], raw[o + 1], raw[o])
     return out
 
 
 def main():
-    dll = os.path.abspath(sys.argv[1])
+    here = os.path.dirname(os.path.abspath(__file__))
+    dll = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(
+        here, 'target', 'release', 'wgpet.dll')
+    if not os.path.exists(dll):
+        print('SKIP: 找不到 %s (先 cargo build --release)' % dll)
+        return 0
     print('dll :', dll)
     u32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 
     lib = ctypes.WinDLL(dll)
     lib.wgime_pet_abi_version.restype = ctypes.c_uint32
-    lib.wgime_pet_spike_start.restype = ctypes.c_int
-    lib.wgime_pet_spike_stop.restype = ctypes.c_int
-    lib.wgime_pet_spike_hwnd.restype = ctypes.c_ssize_t
-    lib.wgime_pet_spike_frames.restype = ctypes.c_uint64
-    lib.wgime_pet_spike_pause.argtypes = [ctypes.c_int]
-    lib.wgime_pet_spike_sprite.argtypes = [ctypes.POINTER(ctypes.c_float)]
+    for f in ('wgime_pet_start', 'wgime_pet_stop', 'wgime_pet_hwnd', 'wgime_pet_frames',
+              'wgime_pet_pause', 'wgime_pet_set_passthrough', 'wgime_pet_set_x',
+              'wgime_pet_hold', 'wgime_pet_probe_count'):
+        getattr(lib, f).restype = ctypes.c_ssize_t
+    lib.wgime_pet_set_gait.argtypes = [ctypes.c_float]
+    lib.wgime_pet_probe.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
     lib.wgime_pet_debug.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
     lib.wgime_pet_debug.restype = ctypes.c_size_t
 
@@ -172,10 +179,6 @@ def main():
 
     hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
     sw, sh = u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)
-
-    # 背景: 纯品红, 铺满浮层会经过的整条底部带(避免碰到任务栏)
-    bx, by = 0, sh - 580
-    bw, bh = sw, 520
 
     def wndproc(h, m, wp, lp):
         return u32.DefWindowProcW(h, m, wp, lp)
@@ -192,14 +195,14 @@ def main():
     if not u32.RegisterClassExW(ctypes.byref(wc)):
         print('backdrop register failed', ctypes.get_last_error())
         return 2
-    back = u32.CreateWindowExW(0, cls, cls, 0x80000000, bx, by, bw, bh, None, None, hinst, None)
-    chk('背景窗建出来', bool(back), 'rect=%d,%d %dx%d' % (bx, by, bw, bh))
+    back = u32.CreateWindowExW(0, cls, cls, 0x80000000, 0, sh - 460, sw, 480, None, None, hinst, None)
+    chk('背景窗建出来', bool(back), 'rect=0,%d %s' % (sh - 460, '%dx480' % sw))
     u32.ShowWindow(back, 5)
     u32.UpdateWindow(back)
     pump(250)
     fg_before = u32.GetForegroundWindow()
 
-    rc = lib.wgime_pet_spike_start()
+    rc = lib.wgime_pet_start()
     chk('浮层启动成功', rc == 0, 'rc=%d' % rc)
     if rc != 0:
         n = lib.wgime_pet_last_error(None, 0)
@@ -207,9 +210,9 @@ def main():
         lib.wgime_pet_last_error(b, n)
         print('   last_error:', b.value.decode('utf-8', 'replace'))
         return 2
-    hwnd = lib.wgime_pet_spike_hwnd()
+    hwnd = lib.wgime_pet_hwnd()
     chk('拿到窗口句柄', hwnd != 0, 'hwnd=0x%X' % hwnd)
-    pump(150)
+    pump(200)
 
     ex = u32.GetWindowLongW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF
     want = {'LAYERED': WS_EX_LAYERED, 'NOACTIVATE': WS_EX_NOACTIVATE, 'TRANSPARENT': WS_EX_TRANSPARENT,
@@ -219,121 +222,98 @@ def main():
     chk('没抢前台焦点', u32.GetForegroundWindow() == fg_before,
         'before=0x%X after=0x%X' % (fg_before, u32.GetForegroundWindow()))
 
-    f0 = lib.wgime_pet_spike_frames()
+    f0 = lib.wgime_pet_frames()
     time.sleep(2.0)
-    f1 = lib.wgime_pet_spike_frames()
+    f1 = lib.wgime_pet_frames()
     chk('真帧率 >= 50', (f1 - f0) / 2.0 >= 50, '%.1f fps' % ((f1 - f0) / 2.0))
 
-    # 冻住动画 + 等几何连续三拍一致再采像素(AGENTS §5 规则 50)
-    lib.wgime_pet_spike_pause(1)
-    buf = (ctypes.c_float * 5)()
-    prev, same = None, 0
-    for _ in range(60):
-        lib.wgime_pet_spike_sprite(buf)
-        cur = tuple(round(v, 3) for v in buf)
-        same = same + 1 if cur == prev else 0
-        if same >= 3:
-            break
-        prev = cur
-        time.sleep(0.05)
-    chk('冻结后几何稳定', same >= 3, 'sprite=%s' % ([round(v, 1) for v in buf],))
-    time.sleep(0.25)
+    # 钉住位置/步态再采像素(AGENTS §5 规则 50: 必须冻住动画)
+    lib.wgime_pet_set_x(int(sw * 0.4), 1)
+    lib.wgime_pet_set_gait(0.25)
+    pump(300)
     rcr = wt.RECT()
     u32.GetWindowRect(hwnd, ctypes.byref(rcr))
-    cx, cy, rb, rg1, rg2 = list(buf)
-    icx, icy = rcr.left + int(round(cx)), rcr.top + int(round(cy))
-    w, h = rcr.right - rcr.left, rcr.bottom - rcr.top
-    info('窗口', 'rect=%d,%d %dx%d 精灵中心=(%d,%d) r=%.1f/%.1f/%.1f'
-         % (rcr.left, rcr.top, w, h, icx, icy, rb, rg1, rg2))
+    W, H = rcr.right - rcr.left, rcr.bottom - rcr.top
+    info('窗口', 'rect=%d,%d %dx%d' % (rcr.left, rcr.top, W, H))
 
-    # 环境闸门: 屏幕前的人一按截图/开个半透明窗, 整块读数就变成 40% 品红 (真踩过)。
-    # 采像素前先确认背景色是干净的纯品红, 干净了才往下断言 —— 否则是假红不是真 bug。
-    clean = False
+    # 环境闸门: 背景必须是干净的纯品红(否则是屏幕上有遮罩层在压暗, 属于假红)
+    clean, corner = False, None
     for attempt in range(30):
-        p = grab(rcr.left + 1, rcr.top + 1, 3, 3)[(rcr.left + 2, rcr.top + 2)]
-        if near(p, MAGENTA, 2):
+        corner = grab(rcr.left + 1, rcr.top + 1, 3, 3)[(rcr.left + 2, rcr.top + 2)]
+        if near(corner, MAGENTA, 2):
             clean = True
             break
         if attempt == 0:
-            info('环境闸门', '角点读数 %s != %s, 等待屏幕恢复(把截图遮罩/悬浮层关掉)' % (p, MAGENTA))
+            info('环境闸门', '角点 %s != %s, 等屏幕恢复(关掉截图遮罩)' % (corner, MAGENTA))
         time.sleep(1.0)
-    chk('采样环境干净(没有遮罩层盖住屏幕)', clean,
-        'attempts=%d corner=%s fg=0x%X' % (attempt + 1, p, u32.GetForegroundWindow()))
+    chk('采样环境干净(无遮罩层盖住屏幕)', clean,
+        'attempts=%d corner=%s fg=0x%X' % (attempt + 1, corner, u32.GetForegroundWindow()))
 
-    shot = grab(rcr.left, rcr.top, w, h)
+    shot = grab(rcr.left, rcr.top, W, H)
 
-    def at(dx, dy):
-        return shot[(icx + dx, icy + dy)]
+    def px(x, y):
+        return shot[(rcr.left + int(round(x)), rcr.top + int(round(y)))]
 
     corner = shot[(rcr.left + 3, rcr.top + 3)]
     chk('窗内空白 = 纯背景色(真透明, 非不透明黑底)', near(corner, MAGENTA, 2),
         'corner=%s want=%s' % (corner, MAGENTA))
-    core = at(0, 0)
-    chk('本体核心 = 本体色', near(core, BODY, 10), 'core=%s want≈%s' % (core, BODY))
-    g1 = at(0, -int(rg1 * 0.8))
-    # 注意这里叠了**两层**: 内光晕压在(外光晕压过品红)之上
-    a1 = blend(GLOW1, 0.35, blend(GLOW2, 0.18, MAGENTA))
-    chk('内光晕 = 35%% 叠在(18%% 外光晕+品红)上(三层 alpha 逐通道吻合)', near(g1, a1, 8),
-        'pix=%s want≈%s' % (g1, a1))
-    g2 = at(0, -int((rg1 + rg2) / 2))
-    a2 = blend(GLOW2, 0.18, MAGENTA)
-    chk('外光晕 = 18%% 叠加', near(g2, a2, 16), 'pix=%s want≈%s' % (g2, a2))
-    # 抗锯齿: 沿半径方向扫过"本体→内光晕→外光晕→背景"三层边界,
-    # 硬边渲染只会有 4 种平坦色; 有中间色才说明真的抗锯齿
-    flat = [BODY, a1, a2, MAGENTA]
-    prof = [at(dx, 0) for dx in range(int(rb) - 6, int(rg2) + 8)]
-    # 容差取 2: 期望值是自己按整数四舍五入算的, 与渲染差 ±1 属正常;
-    # 取太大(=6)会把真正的边缘过渡像素也当成平坦色而漏掉。
-    aa = [c for c in prof if not any(near(c, f, 2) for f in flat)]
-    chk('三层边界都有中间色(真抗锯齿)', len(aa) >= 3,
-        'aa=%s' % (aa,))
-    eye = at(int(rb * 0.32), -5)
-    chk('眼睛在上方(证明 DIB 没被上下翻转)', near(eye, EYE, 26), 'pix=%s want≈%s' % (eye, EYE))
 
-    # 穿透: 没画到的地方必须放过鼠标; 实测 WS_EX_TRANSPARENT+分层窗连本体也放过(整窗穿透)
-    for tag, pt in (('透明处', (rcr.left + 3, rcr.top + 3)), ('本体处', (icx, icy)),
-                    ('光晕处', (icx, icy - int(rg1)))):
+    n_probe = lib.wgime_pet_probe_count()
+    chk('渲染器报了标定点', n_probe >= 2, 'probe_count=%d' % n_probe)
+    buf = (ctypes.c_float * 6)()
+    body_pt = (W // 2, H // 2)
+    for i in range(min(n_probe, 2)):
+        lib.wgime_pet_probe(i, buf)
+        x, y, cr, cg, cb, ca = list(buf)
+        if i == 1:
+            body_pt = (int(round(x)), int(round(y)))
+        want_c = blend((cr * 255, cg * 255, cb * 255), ca, MAGENTA)
+        got = px(x, y)
+        chk('标定点%d 逐通道吻合 alpha=%.3f' % (i, ca), near(got, want_c, 1),
+            'at(%.0f,%.0f) 实测=%s 期望=%s' % (x, y, got, want_c))
+
+    distinct = len({c for c in shot.values()})
+    chk('窗内颜色数够多(带抗锯齿; 硬边会明显偏少)', distinct >= MIN_DISTINCT,
+        'distinct=%d (阈值 %d)' % (distinct, MIN_DISTINCT))
+
+    # 穿透: 被动态整窗穿透(含本体)。本体位置用渲染器报的标定点, 别拿窗口正中 —— 那里是空的
+    body_scr = (rcr.left + body_pt[0], rcr.top + body_pt[1])
+    for tag, pt in (('透明处', (rcr.left + 3, rcr.top + 3)), ('本体处', body_scr)):
         wfp = u32.WindowFromPoint(wt.POINT(*pt))
-        chk('%s鼠标穿透' % tag, wfp != hwnd, 'wfp=0x%X self=0x%X' % (wfp, hwnd))
+        chk('被动态%s鼠标穿透' % tag, wfp != hwnd, 'wfp=0x%X self=0x%X' % (wfp, hwnd))
 
-    # 交互态: 摘掉 WS_EX_TRANSPARENT -> 只有画到的像素挡鼠标, 空白照旧穿透
-    lib.wgime_pet_spike_interactive.argtypes = [ctypes.c_int]
-    lib.wgime_pet_spike_interactive(1)
-    pump(150)
-    hit_body = u32.WindowFromPoint(wt.POINT(icx, icy))
+    # 交互态: 只摘 WS_EX_TRANSPARENT -> 只有画到的像素挡鼠标, 空白仍穿透, 前台不变
+    lib.wgime_pet_set_passthrough(0)
+    pump(200)
+    hit_body = u32.WindowFromPoint(wt.POINT(*body_scr))
     chk('交互态: 本体可点(命中本窗)', hit_body == hwnd, 'wfp=0x%X self=0x%X' % (hit_body, hwnd))
     hit_blank = u32.WindowFromPoint(wt.POINT(rcr.left + 3, rcr.top + 3))
     chk('交互态: 空白处仍穿透', hit_blank != hwnd, 'wfp=0x%X self=0x%X' % (hit_blank, hwnd))
     chk('交互态: 仍没抢焦点', u32.GetForegroundWindow() == fg_before,
         'fg=0x%X' % u32.GetForegroundWindow())
-    lib.wgime_pet_spike_interactive(0)
-    pump(150)
-    chk('回到被动态: 整窗又穿透', u32.WindowFromPoint(wt.POINT(icx, icy)) != hwnd,
-        'wfp=0x%X' % u32.WindowFromPoint(wt.POINT(icx, icy)))
+    lib.wgime_pet_set_passthrough(1)
+    pump(200)
+    chk('回到被动态: 整窗又穿透', u32.WindowFromPoint(wt.POINT(*body_scr)) != hwnd)
 
-    # 动画: 必须按**各自的窗口矩形**抓(窗口在横移, 拿旧矩形去抓只会抓到背景)
+    # 动画: 解冻后两拍像素必须有差异(窗口在移动, 所以按各自窗口矩形比)
+    lib.wgime_pet_hold(0)
+    lib.wgime_pet_pause(0)
+
     def local_grab():
         r = wt.RECT()
         u32.GetWindowRect(hwnd, ctypes.byref(r))
-        ww, hh = r.right - r.left, r.bottom - r.top
-        raw = grab(r.left, r.top, ww, hh)
+        raw = grab(r.left, r.top, r.right - r.left, r.bottom - r.top)
         return {(sx - r.left, sy - r.top): c for (sx, sy), c in raw.items()}, r
 
-    lib.wgime_pet_spike_pause(0)
-    time.sleep(0.35)
+    time.sleep(0.45)
     a_img, a_rc = local_grab()
-    a_sp = tuple(buf)
-    time.sleep(0.4)
+    time.sleep(0.45)
     b_img, b_rc = local_grab()
-    lib.wgime_pet_spike_sprite(buf)
-    b_sp = tuple(buf)
     diff = sum(1 for k in a_img if a_img[k] != b_img.get(k))
-    chk('动画在动(精灵几何在变)', a_sp[:3] != b_sp[:3],
-        'a=%s b=%s' % ([round(v, 1) for v in a_sp[:3]], [round(v, 1) for v in b_sp[:3]]))
     chk('动画在动(两拍像素有差异)', diff > 200,
-        'diff_pixels=%d  a_rect=%d,%d b_rect=%d,%d' % (diff, a_rc.left, a_rc.top, b_rc.left, b_rc.top))
+        'diff_pixels=%d  a_rect=%d b_rect=%d' % (diff, a_rc.left, b_rc.left))
 
-    rc2 = lib.wgime_pet_spike_stop()
+    rc2 = lib.wgime_pet_stop()
     pump(400)
     chk('能正常关闭', rc2 == 0 and u32.IsWindow(hwnd) == 0,
         'rc=%d IsWindow=%d' % (rc2, u32.IsWindow(hwnd)))

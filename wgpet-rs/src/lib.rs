@@ -3,17 +3,19 @@
 //! 渲染路径: **D2D 画到 32bpp 预乘 alpha 的 DIB, 再用 UpdateLayeredWindow 提交**。
 //!
 //! 为什么不是 DirectComposition(第八十六轮实测结论, 别走回头路):
-//! DComp 的合成窗内容**不做按 alpha 的命中测试** —— WindowFromPoint 照样命中整块窗外框,
+//! DComp 的合成窗内容**不做按 alpha 的命中测试** —— `WindowFromPoint` 照样命中整块窗外框,
 //! 鼠标点不穿; 唯一能强制穿透的 `SetWindowRgn` 又会把 DComp 内容一起裁掉
-//! (实测: 装空区域后精灵像素变成背景色, 关掉区域立刻回来)。
+//! (实测: 装空区域后精灵像素变成背景色, 关掉立刻回来)。
 //! `UpdateLayeredWindow` 的分层窗则是**逐像素按 alpha 做命中测试**: 没画到的像素
-//! (alpha=0) 鼠标直接穿过去, 画到的像素才挡鼠标 —— 这正好是桌面宠物要的语义,
+//! (alpha=0) 鼠标直接穿过去, 画到的像素才挡鼠标 —— 这正是桌面宠物要的语义,
 //! 而且没有区域裁剪的副作用。抗锯齿/逐像素半透明由 D2D 负责, 与 DComp 路线完全同级。
 //!
 //! 窗口刻意做成**精灵大小**并跟着角色移动: 全屏窗 + 手算脏矩形那一整类残影 bug
 //! 由此天然不存在(每帧整块重画, 无脏矩形可算错), 每帧要合成的像素也只有几百乘几百。
 
 #![allow(non_snake_case)]
+
+mod art;
 
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -31,23 +33,31 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-// ---------------------------------------------------------------- 导出契约
+// ---------------------------------------------------------------- 常量
 
 /// 改动 ABI 就 +1; 宿主先问这个再决定要不要用本 DLL。
 const ABI_VERSION: u32 = 1;
 
-/// 窗口尺寸 = 精灵外接框(含发光) + 余量。窗越小每帧要合成/提交的像素越少。
-const WIN_W: i32 = 260;
-const WIN_H: i32 = 260;
-/// 精灵中心在窗口里的位置
-const CX: f32 = WIN_W as f32 * 0.5;
-const CY: f32 = WIN_H as f32 * 0.5;
-
-static STOP: AtomicBool = AtomicBool::new(false);
-static HWND_MAIN: AtomicIsize = AtomicIsize::new(0);
-static READY: AtomicBool = AtomicBool::new(false);
-static FRAMES: AtomicU64 = AtomicU64::new(0);
-static PAUSED: AtomicBool = AtomicBool::new(false);
+/// 窗口尺寸 = 角色外接框 + 余量(含抬脚/摆尾/软阴影)。窗越小每帧提交的像素越少。
+const WIN_W: i32 = 300;
+const WIN_H: i32 = 280;
+/// 角色"脚底中心"在窗口里的位置
+const ANCHOR_X: f32 = WIN_W as f32 * 0.52;
+const ANCHOR_Y: f32 = WIN_H as f32 - 40.0;
+/// 角色整体缩放
+const DOG_SCALE: f32 = 1.15;
+/// 一个完整步态周期对应的前进距离(像素) —— 步态相位按走过的距离推进, 脚不会打滑
+const GAIT_CYCLE_PX: f32 = 74.0;
+/// 走 / 跑 速度(像素/秒)
+const WALK_SPEED: f32 = 96.0;
+const RUN_SPEED: f32 = 340.0;
+/// 见到鼠标就跑开的水平距离
+const FLEE_DIST: f32 = 130.0;
+/// 看鼠标的距离
+const LOOK_DIST: f32 = 460.0;
+/// 活动范围(屏幕宽度的比例)
+const RANGE_LO: f32 = 0.06;
+const RANGE_HI: f32 = 0.94;
 
 /// 帧率上限。UpdateLayeredWindow **不做 vsync 节流**(实测不设上限能跑到 2085fps,
 /// 纯烧 CPU), 所以必须自己限速。
@@ -59,17 +69,22 @@ unsafe extern "system" {
     fn timeEndPeriod(uperiod: u32) -> u32;
 }
 
+static STOP: AtomicBool = AtomicBool::new(false);
+static HWND_MAIN: AtomicIsize = AtomicIsize::new(0);
+static READY: AtomicBool = AtomicBool::new(false);
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+static PAUSED: AtomicBool = AtomicBool::new(false);
 static LAST_ERR: Mutex<Option<String>> = Mutex::new(None);
-/// 最近一帧的精灵几何 [cx, cy, r_body, r_glow1, r_glow2](窗口坐标), 给宿主验收探针用
-static SPRITE: Mutex<[f32; 5]> = Mutex::new([0.0; 5]);
-/// 初始化逐步日志 —— 出问题先看它, 别猜
 static DBG: Mutex<String> = Mutex::new(String::new());
+/// 探针标定点(窗口坐标 + 预期颜色/alpha), 由渲染帧写入
+static PROBE: Mutex<[[f32; 6]; PROBE_N]> = Mutex::new([[0.0; 6]; PROBE_N]);
+
+const PROBE_N: usize = 2;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 把 panic 挡在 FFI 边界内: 绝不让展开跨过 DLL 边界把宿主(输入法)带走。
 fn guard<F: FnOnce() -> i32>(f: F) -> i32 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(rc) => rc,
@@ -90,15 +105,16 @@ fn dbg(s: String) {
     }
 }
 
+// ---------------------------------------------------------------- 导出
+
 #[no_mangle]
 pub extern "C" fn wgime_pet_abi_version() -> u32 {
     ABI_VERSION
 }
 
-/// 起浮层(尖刺版: 一个会呼吸/横移的发光团)。返回 0 成功。
-/// -1 已在跑, -2 建窗超时, -3 起线程失败, -99 内部 panic
+/// 起浮层。返回 0 成功; -1 已在跑, -2 建窗超时, -3 起线程失败, -99 内部 panic
 #[no_mangle]
-pub extern "C" fn wgime_pet_spike_start() -> i32 {
+pub extern "C" fn wgime_pet_start() -> i32 {
     guard(|| {
         if READY.load(Ordering::SeqCst) {
             return -1;
@@ -126,7 +142,7 @@ pub extern "C" fn wgime_pet_spike_start() -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn wgime_pet_spike_stop() -> i32 {
+pub extern "C" fn wgime_pet_stop() -> i32 {
     guard(|| {
         STOP.store(true, Ordering::SeqCst);
         let h = HWND_MAIN.load(Ordering::SeqCst);
@@ -139,11 +155,27 @@ pub extern "C" fn wgime_pet_spike_stop() -> i32 {
     })
 }
 
-/// 被动/交互切换。被动(默认)=整窗穿透, 桌面上点什么都不会被宠物吃掉;
-/// 交互=摘掉 `WS_EX_TRANSPARENT`, 于是**只有画到的像素**(alpha>0)才挡鼠标,
-/// 面板外的空白照旧穿透 —— 点工具不会丢输入框焦点。
 #[no_mangle]
-pub extern "C" fn wgime_pet_spike_interactive(on: i32) -> i32 {
+pub extern "C" fn wgime_pet_hwnd() -> isize {
+    HWND_MAIN.load(Ordering::SeqCst)
+}
+
+#[no_mangle]
+pub extern "C" fn wgime_pet_frames() -> u64 {
+    FRAMES.load(Ordering::SeqCst)
+}
+
+/// 冻结/解冻动画(采像素前必须冻住 —— AGENTS §5 规则 50)。`on` 显式给 1/0。
+#[no_mangle]
+pub extern "C" fn wgime_pet_pause(on: i32) -> i32 {
+    PAUSED.store(on != 0, Ordering::SeqCst);
+    0
+}
+
+/// 被动(=1, 默认)整窗鼠标穿透; 交互(=0)只摘 `WS_EX_TRANSPARENT`,
+/// 于是只有画到的像素挡鼠标, 面板外空白照旧穿透, 前台全程不变。
+#[no_mangle]
+pub extern "C" fn wgime_pet_set_passthrough(on: i32) -> i32 {
     guard(|| unsafe {
         let h = HWND(HWND_MAIN.load(Ordering::SeqCst) as *mut c_void);
         if h.0.is_null() {
@@ -151,9 +183,9 @@ pub extern "C" fn wgime_pet_spike_interactive(on: i32) -> i32 {
         }
         let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
         let new = if on != 0 {
-            ex & !(WS_EX_TRANSPARENT.0)
-        } else {
             ex | WS_EX_TRANSPARENT.0
+        } else {
+            ex & !(WS_EX_TRANSPARENT.0)
         };
         SetWindowLongW(h, GWL_EXSTYLE, new as i32);
         let _ = SetWindowPos(
@@ -169,49 +201,75 @@ pub extern "C" fn wgime_pet_spike_interactive(on: i32) -> i32 {
     })
 }
 
-/// 浮层窗口句柄(0 = 还没建出来)
+/// 把角色直接放到屏幕上的某个 x(采像素/演示用), 并可选地钉住朝向。返回 0。
 #[no_mangle]
-pub extern "C" fn wgime_pet_spike_hwnd() -> isize {
-    HWND_MAIN.load(Ordering::SeqCst)
+pub extern "C" fn wgime_pet_set_x(x: i32, face: i32) -> i32 {
+    guard(|| {
+        let mut g = match PET.lock() {
+            Ok(g) => g,
+            Err(_) => return -1,
+        };
+        g.x = x as f32;
+        g.v = 0.0;
+        if face != 0 {
+            g.face = if face > 0 { 1.0 } else { -1.0 };
+        }
+        g.hold = true;
+        0
+    })
 }
 
-/// 已提交的帧数。宿主隔一段时间取两次差就知道真帧率。
 #[no_mangle]
-pub extern "C" fn wgime_pet_spike_frames() -> u64 {
-    FRAMES.load(Ordering::SeqCst)
+pub extern "C" fn wgime_pet_hold(off: i32) -> i32 {
+    guard(|| {
+        if let Ok(mut g) = PET.lock() {
+            g.hold = off == 0;
+        }
+        0
+    })
 }
 
-/// 冻结/解冻动画(采像素前必须冻住, 否则拿到的是动着的坐标 —— AGENTS §5 规则 50)。
-/// `on` 显式给 1/0, 不做 toggle。
+/// 测试/看画用: 钉住步态相位(0..1)并冻住动画。返回 0。
 #[no_mangle]
-pub extern "C" fn wgime_pet_spike_pause(on: i32) -> i32 {
-    PAUSED.store(on != 0, Ordering::SeqCst);
-    0
+pub extern "C" fn wgime_pet_set_gait(gait: f32) -> i32 {
+    guard(|| {
+        if let Ok(mut g) = PET.lock() {
+            g.gait = gait.rem_euclid(1.0);
+            g.v = 0.0;
+            g.hold = true;
+        }
+        PAUSED.store(true, Ordering::SeqCst);
+        0
+    })
 }
 
-/// 当前精灵几何(窗口坐标): [cx, cy, r_body, r_glow1, r_glow2]。宿主靠它知道该采哪几个像素。
+/// 标定点个数
 #[no_mangle]
-pub unsafe extern "C" fn wgime_pet_spike_sprite(out: *mut f32) -> i32 {
-    if out.is_null() {
+pub extern "C" fn wgime_pet_probe_count() -> i32 {
+    PROBE_N as i32
+}
+
+/// 取第 i 个标定点: 写入 [窗口x, 窗口y, r, g, b, a]。
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_probe(i: i32, out: *mut f32) -> i32 {
+    if out.is_null() || i < 0 || i as usize >= PROBE_N {
         return -1;
     }
-    match SPRITE.lock() {
+    match PROBE.lock() {
         Ok(g) => {
-            std::ptr::copy_nonoverlapping(g.as_ptr(), out, 5);
+            std::ptr::copy_nonoverlapping(g[i as usize].as_ptr(), out, 6);
             0
         }
         Err(_) => -1,
     }
 }
 
-/// 取最近一次错误(UTF-8)。buf=NULL 返回所需字节数。
 #[no_mangle]
 pub unsafe extern "C" fn wgime_pet_last_error(buf: *mut u8, cap: usize) -> usize {
     let s = LAST_ERR.lock().ok().and_then(|g| g.clone()).unwrap_or_default();
     copy_out(s.as_bytes(), buf, cap)
 }
 
-/// 取初始化日志(UTF-8)。buf=NULL 返回所需字节数。
 #[no_mangle]
 pub unsafe extern "C" fn wgime_pet_debug(buf: *mut u8, cap: usize) -> usize {
     let s = DBG.lock().map(|g| g.clone()).unwrap_or_default();
@@ -227,12 +285,145 @@ unsafe fn copy_out(bytes: &[u8], buf: *mut u8, cap: usize) -> usize {
     n
 }
 
-// ---------------------------------------------------------------- 窗口
+// ---------------------------------------------------------------- 状态机
+
+/// 宠物在屏幕坐标里的状态。绘制只读它, 交互只改它。
+struct Pet {
+    /// 屏幕坐标: 角色脚底中心的 x
+    x: f32,
+    /// 当前速度(带符号)
+    v: f32,
+    face: f32,
+    /// 步态相位 0..1
+    gait: f32,
+    /// 尾巴 / 耳朵 的摆动时间
+    t: f32,
+    /// 本次"待机/走动"剩余时间
+    hold_t: f32,
+    /// 下一次眨眼剩余时间
+    blink_t: f32,
+    blink: f32,
+    look: f32,
+    /// 是不是"跑"
+    running: bool,
+    /// 测试用: 钉住不动
+    hold: bool,
+}
+
+static PET: Mutex<Pet> = Mutex::new(Pet {
+    x: 0.0,
+    v: WALK_SPEED,
+    face: 1.0,
+    gait: 0.0,
+    t: 0.0,
+    hold_t: 0.0,
+    blink_t: 2.0,
+    blink: 0.0,
+    look: 0.0,
+    running: false,
+    hold: false,
+});
+
+/// 便宜的随机数(xorshift), 免得引依赖
+fn rnd(seed: &mut u32) -> f32 {
+    let mut x = *seed;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *seed = x;
+    (x >> 8) as f32 / 16777216.0
+}
+
+impl Pet {
+    fn step(&mut self, dt: f32, sw: f32, mouse: (f32, f32), seed: &mut u32) {
+        self.t += dt;
+        let lo = sw * RANGE_LO;
+        let hi = sw * RANGE_HI;
+        if !self.hold {
+            // 躲鼠标: 鼠标贴到身边就朝反方向跑
+            let d = mouse.0 - self.x;
+            if d.abs() < FLEE_DIST
+                && (mouse.1 - ANCHOR_Y_SCREEN.load(Ordering::Relaxed) as f32).abs() < 260.0
+            {
+                self.face = if d > 0.0 { -1.0 } else { 1.0 };
+                self.v = self.face * RUN_SPEED;
+                self.running = true;
+                self.hold_t = 1.2;
+            } else if self.hold_t <= 0.0 {
+                // 换一段行为: 走 或 站住歇一会儿
+                if rnd(seed) < 0.72 {
+                    self.running = rnd(seed) < 0.25;
+                    self.v = self.face * if self.running { RUN_SPEED } else { WALK_SPEED };
+                    self.hold_t = 1.2 + rnd(seed) * 2.6;
+                } else {
+                    self.v = 0.0;
+                    self.running = false;
+                    self.hold_t = 0.7 + rnd(seed) * 2.2;
+                }
+            } else {
+                self.hold_t -= dt;
+            }
+            self.x += self.v * dt;
+            if self.x < lo {
+                self.x = lo;
+                self.face = 1.0;
+                self.v = self.v.abs();
+                self.hold_t = 0.2;
+            } else if self.x > hi {
+                self.x = hi;
+                self.face = -1.0;
+                self.v = -self.v.abs();
+                self.hold_t = 0.2;
+            }
+        } else {
+            self.hold_t = 0.0;
+        }
+        // 步态按"走过的距离"推进: 快走快倒腿, 站住就不动, 脚不打滑
+        self.gait = (self.gait + self.v.abs() * dt / GAIT_CYCLE_PX).fract();
+
+        // 眨眼
+        self.blink_t -= dt;
+        if self.blink_t <= 0.0 {
+            self.blink_t = 2.0 + rnd(seed) * 4.0;
+        }
+        let phase = self.blink_t;
+        self.blink = if phase > 0.86 { ((phase - 0.86) / 0.14).min(1.0) } else { 0.0 };
+
+        // 看鼠标
+        let want = ((mouse.0 - self.x) / LOOK_DIST).clamp(-1.0, 1.0);
+        self.look += (want - self.look) * (dt * 4.0).min(1.0);
+    }
+
+    fn pose(&self) -> art::Pose {
+        let run = self.running as i32 as f32;
+        let moving = self.v.abs() > 1.0;
+        art::Pose {
+            x: ANCHOR_X,
+            ground: ANCHOR_Y,
+            face: self.face,
+            scale: DOG_SCALE,
+            gait: self.gait,
+            stride: if moving { 24.0 + run * 9.0 } else { 0.0 },
+            lift: if moving { 8.5 + run * 4.0 } else { 0.0 },
+            lean: self.v * 0.00035,
+            bob: -((self.gait * std::f32::consts::TAU * 2.0).sin().abs()) * (2.4 + run * 1.6),
+            tail: self.t * (3.4 + run * 3.0) + self.look * 0.5,
+            ear: self.t * (2.2 + run * 2.0),
+            blink: self.blink,
+            look: self.look,
+            up: 1.0,
+            alert: if self.v.abs() > 200.0 { 0.35 } else { 0.0 },
+        }
+    }
+}
+
+/// 屏幕 y 的缓存(给"鼠标是否在宠物那一带"用)
+static ANCHOR_Y_SCREEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+// ---------------------------------------------------------------- 窗口与渲染
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        // 命中测试交给分层窗的逐像素 alpha 规则, 这里不画了但也不额外挡
-        WM_NCHITTEST => DefWindowProcW(hwnd, msg, wp, lp),
         WM_CLOSE => {
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
@@ -251,14 +442,11 @@ struct Surface {
     memdc: HDC,
     hbmp: HBITMAP,
     old: HGDIOBJ,
-    bits: *mut c_void,
     d2d: ID2D1DCRenderTarget,
     rt: ID2D1RenderTarget,
     _factory: ID2D1Factory,
-    body: ID2D1SolidColorBrush,
-    glow1: ID2D1SolidColorBrush,
-    glow2: ID2D1SolidColorBrush,
-    eye: ID2D1SolidColorBrush,
+    stroke: ID2D1StrokeStyle,
+    b: art::Brushes,
 }
 
 unsafe impl Send for Surface {}
@@ -297,7 +485,14 @@ fn render_thread() -> Result<()> {
             | WS_EX_TOPMOST;
         let sw = GetSystemMetrics(SM_CXSCREEN);
         let sh = GetSystemMetrics(SM_CYSCREEN);
-        let y = sh - WIN_H - 160;
+        let y = sh - WIN_H - 20;
+        ANCHOR_Y_SCREEN.store(y + ANCHOR_Y as i32, Ordering::SeqCst);
+        {
+            let mut g = PET.lock().map_err(|_| Error::from(E_FAIL))?;
+            g.x = sw as f32 * 0.5;
+            g.face = 1.0;
+            g.v = WALK_SPEED;
+        }
         let hwnd = CreateWindowExW(
             ex,
             PCWSTR(cls_name.as_ptr()),
@@ -318,14 +513,15 @@ fn render_thread() -> Result<()> {
 
         let surf = create_surface()?;
         let screen_dc = GetDC(None);
-        let mut anim = Anim { t0: Instant::now(), frozen: None };
         timeBeginPeriod(1);
         READY.store(true, Ordering::SeqCst);
         last_error(String::new());
 
         let period = Duration::from_secs_f32(1.0 / FPS_CAP);
         let mut next = Instant::now();
+        let mut prev = Instant::now();
         let mut msg = MSG::default();
+        let mut seed: u32 = 0x1234_5678;
         'outer: loop {
             if STOP.load(Ordering::SeqCst) {
                 break;
@@ -337,10 +533,24 @@ fn render_thread() -> Result<()> {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
-            let t = anim.time(PAUSED.load(Ordering::SeqCst));
-            // 角色横移 = 移动窗口(而不是画在固定大窗里): 窗口只跟着角色走
-            let wx = (sw - WIN_W) / 2 + ((t * 1.1).sin() * (sw as f32 * 0.28)) as i32;
-            draw(&surf, t)?;
+            let now = Instant::now();
+            let dt = (now - prev).as_secs_f32().min(0.1);
+            prev = now;
+            let frozen = PAUSED.load(Ordering::SeqCst);
+
+            let mut m = POINT { x: 0, y: 0 };
+            let _ = GetCursorPos(&mut m);
+            let (wx, pose) = {
+                let mut g = match PET.lock() {
+                    Ok(g) => g,
+                    Err(_) => break,
+                };
+                if !frozen {
+                    g.step(dt, sw as f32, (m.x as f32, m.y as f32), &mut seed);
+                }
+                ((g.x - ANCHOR_X).round() as i32, g.pose())
+            };
+            draw(&surf, &pose)?;
             present(hwnd, screen_dc, &surf, wx, y)?;
             FRAMES.fetch_add(1, Ordering::SeqCst);
 
@@ -349,7 +559,7 @@ fn render_thread() -> Result<()> {
             if next > now {
                 thread::sleep(next - now);
             } else {
-                next = now; // 落后了就丢时间, 不追帧
+                next = now;
             }
         }
         timeEndPeriod(1);
@@ -361,23 +571,6 @@ fn render_thread() -> Result<()> {
     }
 }
 
-struct Anim {
-    t0: Instant,
-    frozen: Option<f32>,
-}
-
-impl Anim {
-    fn time(&mut self, paused: bool) -> f32 {
-        let el = self.t0.elapsed().as_secs_f32();
-        if paused {
-            *self.frozen.get_or_insert(el)
-        } else {
-            self.frozen = None;
-            el
-        }
-    }
-}
-
 unsafe fn create_surface() -> Result<Surface> {
     let screen_dc = GetDC(None);
     let memdc = CreateCompatibleDC(screen_dc);
@@ -385,7 +578,7 @@ unsafe fn create_surface() -> Result<Surface> {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: WIN_W,
-            biHeight: -WIN_H, // 负 = 自上而下
+            biHeight: -WIN_H,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
@@ -399,7 +592,6 @@ unsafe fn create_surface() -> Result<Surface> {
     ReleaseDC(None, screen_dc);
     dbg("DIB section ok (32bpp, premultiplied)".into());
 
-    // D2D 直接画到这块 DIB 上(DC 渲染目标 = 软件光栅, 与分层窗天然配对)
     let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
     let props = D2D1_RENDER_TARGET_PROPERTIES {
         r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
@@ -414,64 +606,54 @@ unsafe fn create_surface() -> Result<Surface> {
     };
     let d2d = factory.CreateDCRenderTarget(&props)?;
     let rt: ID2D1RenderTarget = d2d.cast()?;
-    // 渲染目标 dpi=96 + DIB 是 96dpi, 于是 1 DIP = 1 像素, 坐标即像素
-    debug_assert_eq!(props.dpiX, 96.0);
+    rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    let stroke = factory.CreateStrokeStyle(
+        &D2D1_STROKE_STYLE_PROPERTIES {
+            startCap: D2D1_CAP_STYLE_ROUND,
+            endCap: D2D1_CAP_STYLE_ROUND,
+            dashCap: D2D1_CAP_STYLE_ROUND,
+            lineJoin: D2D1_LINE_JOIN_ROUND,
+            miterLimit: 4.0,
+            dashStyle: D2D1_DASH_STYLE_SOLID,
+            dashOffset: 0.0,
+        },
+        None,
+    )?;
+    let b = art::Brushes::new(&rt)?;
     dbg("D2D DC render target ok".into());
-
-    let mk = |c: D2D1_COLOR_F| -> Result<ID2D1SolidColorBrush> { rt.CreateSolidColorBrush(&c, None) };
-    let body = mk(D2D1_COLOR_F { r: 0.98, g: 0.62, b: 0.20, a: 1.0 })?;
-    let glow1 = mk(D2D1_COLOR_F { r: 1.0, g: 0.78, b: 0.35, a: 0.35 })?;
-    let glow2 = mk(D2D1_COLOR_F { r: 1.0, g: 0.90, b: 0.60, a: 0.18 })?;
-    let eye = mk(D2D1_COLOR_F { r: 0.10, g: 0.09, b: 0.12, a: 1.0 })?;
 
     Ok(Surface {
         memdc,
         hbmp,
         old,
-        bits,
         d2d,
         rt,
         _factory: factory,
-        body,
-        glow1,
-        glow2,
-        eye,
+        stroke,
+        b,
     })
 }
 
-unsafe fn draw(s: &Surface, t: f32) -> Result<()> {
+unsafe fn draw(s: &Surface, pose: &art::Pose) -> Result<()> {
     let rc = RECT { left: 0, top: 0, right: WIN_W, bottom: WIN_H };
     s.d2d.BindDC(s.memdc, &rc)?;
     s.rt.BeginDraw();
     s.rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
 
-    let breath = 1.0 + (t * 2.2).sin() * 0.05;
-    let cy = CY + (t * 1.7).sin() * 8.0;
-    let rb = 34.0 * breath;
-    let rg1 = 46.0 * breath;
-    let rg2 = 62.0 * breath;
-    if let Ok(mut g) = SPRITE.lock() {
-        *g = [CX, cy, rb, rg1, rg2];
-    }
+    let ctx = art::Ctx { rt: &s.rt, b: &s.b, stroke: &s.stroke };
+    let probe = art::draw_dog(&ctx, pose);
 
-    let ell = |x: f32, y: f32, rx: f32, ry: f32| D2D1_ELLIPSE {
-        point: D2D_POINT_2F { x, y },
-        radiusX: rx,
-        radiusY: ry,
-    };
-    // 分层发光: 叠在桌面上会真的半透明过渡(逐像素 alpha 的可视证据), 边缘圆滑靠 D2D 抗锯齿
-    s.rt.FillEllipse(&ell(CX, cy, rg2, rg2), &s.glow2);
-    s.rt.FillEllipse(&ell(CX, cy, rg1, rg1), &s.glow1);
-    s.rt.FillEllipse(&ell(CX, cy, rb, rb * 0.92), &s.body);
-    let ex = 11.0 * breath;
-    s.rt.FillEllipse(&ell(CX - ex, cy - 5.0, 4.2, 4.8), &s.eye);
-    s.rt.FillEllipse(&ell(CX + ex, cy - 5.0, 4.2, 4.8), &s.eye);
+    if let Ok(mut g) = PROBE.lock() {
+        let (r, gg, b) = art::SHADOW_TINT;
+        g[0] = [probe.shadow.0, probe.shadow.1, r, gg, b, art::SHADOW_TOTAL_ALPHA];
+        let f = art::FUR;
+        g[1] = [probe.body.0, probe.body.1, f.r, f.g, f.b, f.a];
+    }
 
     s.rt.EndDraw(None, None)?;
     Ok(())
 }
 
-/// 提交这一帧: UpdateLayeredWindow 同时负责"移到哪"和"长什么样"。
 unsafe fn present(hwnd: HWND, screen_dc: HDC, s: &Surface, x: i32, y: i32) -> Result<()> {
     let dst = POINT { x, y };
     let size = SIZE { cx: WIN_W, cy: WIN_H };
@@ -482,7 +664,6 @@ unsafe fn present(hwnd: HWND, screen_dc: HDC, s: &Surface, x: i32, y: i32) -> Re
         SourceConstantAlpha: 255,
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
-    let _ = s.bits; // bits 只是给 D2D 写的那块内存, 这里用不到
     UpdateLayeredWindow(
         hwnd,
         screen_dc,
