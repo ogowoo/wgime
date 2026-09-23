@@ -202,7 +202,18 @@ class Gfx(object):
     def __init__(self, hdc, oy=0):
         self.hdc = hdc
         self.oy = int(oy)          # 画布原点相对屏幕的 y 偏移(截图模式: 窗口只盖住底部一条)
+        self.ext = None            # 本帧**实际画到**的范围(屏幕坐标) —— 脏矩形自愈用, 见 paint()
         self._objs = []
+
+    def _hit(self, x0, y0, x1, y1):
+        """记账: 本帧画到哪儿了(皮肤/球/面板/特效都算)。"""
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        e = self.ext
+        self.ext = ((x0, y0, x1, y1) if e is None else
+                    (min(e[0], x0), min(e[1], y0), max(e[2], x1), max(e[3], y1)))
 
     def _brush(self, col):
         b = gdi32.CreateSolidBrush(rgb(col))
@@ -226,6 +237,7 @@ class Gfx(object):
             x0, x1 = x1, x0
         if y0 > y1:
             y0, y1 = y1, y0
+        self._hit(x0, y0, x1, y1)          # 记的是屏幕坐标(不含 oy)
         return int(x0), int(y0) - self.oy, int(x1), int(y1) - self.oy
 
     def rect(self, x0, y0, x1, y1, fill=None, outline=None, width=1):
@@ -247,6 +259,7 @@ class Gfx(object):
         gdi32.Ellipse(self.hdc, x0, y0, x1, y1)
 
     def line(self, x0, y0, x1, y1, col, width=2):
+        self._hit(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
         gdi32.SelectObject(self.hdc, NULL_BRUSH)
         gdi32.SelectObject(self.hdc, self._pen(col, width))
         gdi32.MoveToEx(self.hdc, int(x0), int(y0) - self.oy, None)
@@ -255,6 +268,9 @@ class Gfx(object):
     def poly(self, pts, fill=None, outline=None, width=1):
         gdi32.SelectObject(self.hdc, self._brush(fill) if fill else NULL_BRUSH)
         gdi32.SelectObject(self.hdc, self._pen(outline, width) if outline else NULL_PEN)
+        if pts:
+            self._hit(min(p[0] for p in pts), min(p[1] for p in pts),
+                      max(p[0] for p in pts), max(p[1] for p in pts))
         arr = (w.POINT * len(pts))(*[w.POINT(int(x), int(y) - self.oy) for (x, y) in pts])
         gdi32.Polygon(self.hdc, arr, len(pts))
 
@@ -800,8 +816,9 @@ class DogScene(object):
         return (self.x, self.ground)
 
     def mouth(self):
-        """工具从嘴边抛出去。"""
-        return (self.x + self.face * 62, self.ground - 66)
+        """工具从嘴边抛出去(跟着精灵缩放)。"""
+        s = self.SCALE
+        return (self.x + self.face * 62 * s, self.ground - 66 * s)
 
     def origin(self):
         return self.mouth()
@@ -810,7 +827,9 @@ class DogScene(object):
         return (self.x, self.ground)
 
     def bbox(self):
-        return (self.x - 92, self.ground - 132, self.x + 96, self.ground + 14)
+        # **要跟着 SCALE 放大**(踩过: 只放大精灵不改这里 -> 脏矩形盖不住 -> 走一路留一条拖尾)
+        s = self.SCALE
+        return (self.x - 100 * s, self.ground - 145 * s, self.x + 105 * s, self.ground + 18)
 
     # ---- 绘制: 描边 + 双色明暗 + 像样的比例 ----
     SCALE = 2.05                       # 4K 屏上不放大就是个小点
@@ -1002,10 +1021,12 @@ class BallScene(object):
         return (self.x, self.ground)
 
     def bbox(self):
-        x0 = min(self.x - 60, self.ball['x'] - 40)
-        x1 = max(self.x + 60, self.ball['x'] + 40)
-        y0 = min(self.ground - 190, self.ball['y'] - 40)
-        y1 = self.ground + 6
+        s = self.SCALE
+        bx, br = self.ball['x'], 60.0            # 球也放大了 1.5x
+        x0 = min(self.x - 62 * s, bx - br)
+        x1 = max(self.x + 62 * s, bx + br)
+        y0 = min(self.ground - 195 * s, self.ball['y'] - br)
+        y1 = self.ground + 10
         if self.mode == 'shoot' or self.hoop_flash > 0:
             for side in (-1, 1):                # 投篮/进球时把篮筐也算进脏区
                 hx = self.hoop_x(side)
@@ -1332,7 +1353,7 @@ class ClimbScene(object):
 
     def bbox(self):
         x, y, edge, _f = self.pos()
-        pad = 86
+        pad = 250          # _critter 1.85x 且身体离接触点有偏移 —— 留足, 免得留残影
         return (x - pad, y - pad, x + pad, y + pad)
 
     # ---- 状态机(躲猫猫) ----
@@ -1792,6 +1813,18 @@ class PetWindow(object):
             self._draw_scene(g)
         finally:
             g.free()
+        self._heal_dirty(rc, g.ext)
+
+    def _heal_dirty(self, rc, ext):
+        """脏矩形**自愈**: 这一帧实际画到的地方若超出了刚才给我们的绘制区(美术放大了/面板挪了),
+        立刻把多出来那块也标脏 —— 否则精灵边缘会**留下残影**(实测: 狗走过一路都是身子的拖尾)。"""
+        if not ext:
+            return
+        x0, y0, x1, y1 = ext
+        pad = 8
+        if x0 < rc.left - pad or y0 < rc.top - pad or x1 > rc.right + pad or y1 > rc.bottom + pad:
+            r = RECT(int(x0) - pad, int(y0) - pad, int(x1) + pad, int(y1) + pad)
+            user32.InvalidateRect(ctypes.c_void_p(int(self.hwnd)), ctypes.byref(r), 0)
 
     def _draw_scene(self, g):
         self.dog.draw(g)

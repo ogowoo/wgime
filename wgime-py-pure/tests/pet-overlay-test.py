@@ -424,6 +424,58 @@ def _kill(proc):
             pass
 
 
+def part_smear(md):
+    """走过不留残影: 精灵放大了但脏矩形没跟上 -> 走一路攒一条拖尾(用户截图那个"横带")。
+
+    做法: 起宠**之前**先记住底部几个点的像素 -> 等狗从它们身上走过去 -> 冻住动画 ->
+    再读这几个点, 必须与基线**完全一致**。残影就是"那里还留着狗的颜色"。
+    (比"扫一条线找毛色"可靠: 不依赖壁纸/任务栏里有没有相近颜色 —— 这个坑我也踩了。)
+    """
+    print('--- L4. 走过不留残影(脏矩形) ---')
+    try:
+        import tkinter as tk
+        r = tk.Tk()
+        r.destroy()
+    except Exception as ex:
+        print('SKIP: 没有可用桌面 (%r)' % (ex,))
+        return
+    sw = user32.GetSystemMetrics(0)
+    sh = user32.GetSystemMetrics(1)
+    tmp = tempfile.mkdtemp(prefix='wg-pet-smear-')
+    live, final = os.path.join(tmp, 'live.json'), os.path.join(tmp, 'final.json')
+    # 高度取狗身那一段(而不是最底下 45px): 最底下是任务栏, 它是半透明的, 像素本来就会变
+    pts = [(int(sw * 0.45), sh - 150), (int(sw * 0.35), sh - 150), (int(sw * 0.28), sh - 150)]
+    base = [pixel(x, y) for (x, y) in pts]          # 起宠前的基线
+    proc = _spawn(tmp, 2, live, final, {'WGIME_PET_FAKE_MOUSE': '10,10'}, secs='20000')
+    try:
+        d = wait_dump(live, lambda x: x.get('frames', 0) > 20, timeout=15)
+        if not d:
+            check('残影检查: 宠物起来了', False, 'no live dump')
+            return
+        # 等它从这几个点**走过去**(狗默认向左走): x 小于最左那个点 200px 以上
+        end = time.time() + 20
+        while time.time() < end:
+            d = read_dump(live) or d
+            if (d.get('dog_x') or sw) < pts[-1][0] - 200:
+                break
+            time.sleep(0.2)
+        pause(d['hwnd'])
+        d = wait_still(live) or d
+        check('残影检查: 狗确实走过去了', (d.get('dog_x') or sw) < pts[-1][0],
+              'dog_x=%s 目标<%s' % (d.get('dog_x'), pts[-1][0]))
+        after = [pixel(x, y) for (x, y) in pts]
+        same = sum(1 for a, b in zip(base, after) if a == b)
+        check('走过不留残影(走过的点上像素回到基线 %d/%d)' % (same, len(pts)),
+              same == len(pts),
+              ' '.join('(%d,%d) %06x->%06x' % (x, y, b, a)
+                       for (x, y), b, a in zip(pts, base, after) if a != b))
+        unpause(d['hwnd'])
+        _kill(proc)
+    finally:
+        _kill(proc)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def part_scene1(md):
     """场景 1(篮球): 运球 / 回车投篮(球进筐+篮筐亮) / 呼出=砸球->炸开->面板。"""
     print('--- L2. 场景 1: 篮球 ---')
@@ -576,6 +628,7 @@ def main():
     md = part_s()
     part_l(md)
     part_scene1(md)
+    part_smear(md)
     part_scene3(md)
     release_dc()
     print('')
