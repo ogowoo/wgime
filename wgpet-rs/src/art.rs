@@ -64,6 +64,11 @@ const SHADOW_CORE_C: D2D1_COLOR_F = rgb(SHADOW_TINT.0, SHADOW_TINT.1, SHADOW_TIN
 
 pub struct Brushes {
     pub fur: ID2D1SolidColorBrush,
+    /// 立体感的主力: 一条**全局光向**的线性渐变(左上受光 → 本体 → 右下暗面)。
+    /// 渐变坐标在狗的局部空间里, 所以身体/头/腿/耳共用它就有统一的光向。
+    pub fur_grad: ID2D1LinearGradientBrush,
+    /// 里白也带一点体积(上白下灰)
+    pub urajiro_grad: ID2D1LinearGradientBrush,
     pub urajiro: ID2D1SolidColorBrush,
     pub urajiro_dim: ID2D1SolidColorBrush,
     pub fur_shade: ID2D1SolidColorBrush,
@@ -92,8 +97,54 @@ impl Brushes {
         let mk = |c: D2D1_COLOR_F| -> Result<ID2D1SolidColorBrush> {
             unsafe { rt.CreateSolidColorBrush(&c, None) }
         };
+        // 全局光向: 从左上(-90,-180)打到右下(110,60)。三段: 亮边 → 本体 → 暗面
+        let grad = |a: D2D1_COLOR_F, b: D2D1_COLOR_F, c: D2D1_COLOR_F, p0: Pt, p1: Pt| {
+            unsafe {
+                let stops = [
+                    D2D1_GRADIENT_STOP {
+                        position: 0.0,
+                        color: a,
+                    },
+                    D2D1_GRADIENT_STOP {
+                        position: 0.52,
+                        color: b,
+                    },
+                    D2D1_GRADIENT_STOP {
+                        position: 1.0,
+                        color: c,
+                    },
+                ];
+                let coll = rt.CreateGradientStopCollection(
+                    &stops,
+                    D2D1_GAMMA_2_2,
+                    D2D1_EXTEND_MODE_CLAMP,
+                )?;
+                rt.CreateLinearGradientBrush(
+                    &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                        startPoint: D2D_POINT_2F { x: p0.0, y: p0.1 },
+                        endPoint: D2D_POINT_2F { x: p1.0, y: p1.1 },
+                    },
+                    None,
+                    &coll,
+                )
+            }
+        };
         Ok(Self {
             fur: mk(FUR)?,
+            fur_grad: grad(
+                FUR_SHADE,
+                FUR,
+                CEL,
+                (-90.0, -180.0),
+                (110.0, 60.0),
+            )?,
+            urajiro_grad: grad(
+                URAJIRO,
+                URAJIRO,
+                URAJIRO_DIM,
+                (-70.0, -170.0),
+                (80.0, 30.0),
+            )?,
             urajiro: mk(URAJIRO)?,
             urajiro_dim: mk(URAJIRO_DIM)?,
             fur_shade: mk(FUR_SHADE)?,
@@ -337,13 +388,13 @@ impl Shapes {
 }
 
 impl<'a> Ctx<'a> {
-    pub(crate) unsafe fn limb(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn limb(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1Brush) {
         let _ = self.rt.DrawLine(pt(a), pt(c), brush, w, Some(self.stroke));
     }
-    pub(crate) unsafe fn disc(&self, p: Pt, r: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn disc(&self, p: Pt, r: f32, brush: &ID2D1Brush) {
         let _ = self.rt.FillEllipse(&ell(p.0, p.1, r, r), brush);
     }
-    pub(crate) unsafe fn oval(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush) {
+    pub(crate) unsafe fn oval(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1Brush) {
         let _ = self.rt.FillEllipse(&ell(p.0, p.1, rx, ry), brush);
     }
     /// 绕 (cx,cy) 旋转 angle 弧度后执行 f(与外层变换**相乘**, 不是替换)
@@ -383,7 +434,7 @@ impl<'a> Ctx<'a> {
         angle: f32,
         sx: f32,
         sy: f32,
-        fill: Option<&ID2D1SolidColorBrush>,
+        fill: Option<&ID2D1Brush>,
         outline: f32,
     ) {
         let mut cur = Matrix3x2::default();
@@ -420,7 +471,7 @@ pub(crate) fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> D2D1_ROUNDED_RE
 /// **大腿赤色、小腿以下里白** —— 柴犬的"白袜子"就是这么来的。
 unsafe fn leg(c: &Ctx, s: Pt, f: Pt, bend: f32, w: f32, far: bool) {
     let k = ik(s, f, 18.5, 17.5, bend);
-    let upper = if far { &c.b.fur_shade } else { &c.b.fur };
+    let upper: &ID2D1Brush = if far { &c.b.fur_shade } else { &c.b.fur_grad };
     let lower = if far { &c.b.urajiro_dim } else { &c.b.urajiro };
 
     // 参考图的腿更短、更粗，避免线条腿；脚掌做成圆润的小白爪。
@@ -497,10 +548,10 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
 /// 老写法是两个圆椭圆耷在头顶, 读起来像发髻 —— 用户原话"耳朵位置有点诡异"。
 unsafe fn ear(c: &Ctx, base: Pt, tilt: f32, swing: f32, alert: f32, far: bool) {
     // 整体缩小到 0.82: 柴犬的耳朵相对头是小的; 原来的三角比半个头还高, 看着像纸片贴上去
-    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 1.02;
-    let sx = (if far { 0.95 } else { 1.0 }) * 1.08;
+    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 1.28;
+    let sx = (if far { 0.95 } else { 1.0 }) * 1.30;
     let ang = tilt + swing - alert * tilt * 0.45;
-    let fill = if far { &c.b.fur_shade } else { &c.b.fur };
+    let fill: &ID2D1Brush = if far { &c.b.fur_shade } else { &c.b.fur_grad };
     c.place(&c.shapes.ear, base, ang, sx, sy, Some(fill), 1.7);
     if !far {
         // 内耳: 同一形状缩小, 只填色不描边
@@ -633,7 +684,7 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         c.oval((-7.0, body_y - 20.0), 22.0, 3.0, &c.b.fur_shade);
         // 里白: 胸口一坨 + 腹线一条
         c.oval((22.0, body_y + 18.0), 12.5, 14.0, &c.b.urajiro);
-        c.oval((2.0, body_y + 23.0), 20.0, 5.5, &c.b.urajiro);
+        c.oval((2.0, body_y + 23.0), 20.0, 5.5, &c.b.urajiro_grad);
     });
 
     // ---- 挎包(骑在身体上)。**只有场景 2 背**: 它会把身体整个盖住(见 Pose.bag 的注释)
@@ -690,7 +741,7 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         ear(c, (-9.0 + look * 1.2, -18.5), -0.10 - look * 0.04, p.ear * 0.30, p.alert, true);
 
         // 头本体。x/y 分开缩放，保持大头但不把脸拉成长椭圆。
-        c.place(&c.shapes.head, (0.0, 0.0), 0.0, head_sx, head_sy, Some(&c.b.fur), 1.9);
+        c.place(&c.shapes.head, (0.0, 0.0), 0.0, head_sx, head_sy, Some(&c.b.fur_grad), 1.9);
 
         // V4：里白改成更“蝴蝶结/心形”的包子脸结构。
         // 中央白面负责正脸识别，两侧脸颊负责 Q 版圆润感。
