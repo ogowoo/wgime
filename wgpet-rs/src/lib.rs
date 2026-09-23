@@ -250,6 +250,20 @@ pub extern "C" fn wgime_pet_set_gait(gait: f32) -> i32 {
     })
 }
 
+/// 看画用: 钉住眨眼(0=睁眼 1=闭眼)。会冻结动画, 免得截图正好抓到眨眼那一帧。
+#[no_mangle]
+pub extern "C" fn wgime_pet_set_blink(v: f32) -> i32 {
+    guard(|| {
+        if let Ok(mut g) = PET.lock() {
+            g.blink = v.clamp(0.0, 1.0);
+            g.blink_t = 999.0;
+            g.hold = true;
+        }
+        PAUSED.store(true, Ordering::SeqCst);
+        0
+    })
+}
+
 /// 开/关百宝袋
 #[no_mangle]
 pub extern "C" fn wgime_pet_palette(on: i32) -> i32 {
@@ -822,8 +836,9 @@ struct Surface {
     h: i32,
     d2d: ID2D1DCRenderTarget,
     rt: ID2D1RenderTarget,
-    _factory: ID2D1Factory,
+    factory: ID2D1Factory,
     stroke: ID2D1StrokeStyle,
+    shapes: art::Shapes,
     b: art::Brushes,
     text: art::Text,
     pb: palette::Brushes,
@@ -866,7 +881,8 @@ fn render_thread() -> Result<()> {
         let sw = GetSystemMetrics(SM_CXSCREEN);
         let sh = GetSystemMetrics(SM_CYSCREEN);
         // 站在**工作区**底边上(不是屏幕底边): 否则角色会陷进任务栏里 ——
-        // 半透明任务栏会透出底下的东西, 看起来像"脚被切了", 标定点读数也会偏(真踩过)
+        // 半透明任务栏会透出底下的东西, 看起来像"脚被切了", 标定点读数也会偏(真踩过)。
+        // 再往上留 16px: 软阴影要落在桌面上, 不能压到任务栏那条边界
         let mut work = RECT::default();
         let _ = SystemParametersInfoW(
             SPI_GETWORKAREA,
@@ -875,7 +891,7 @@ fn render_thread() -> Result<()> {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         );
         let work_bottom = if work.bottom > 0 { work.bottom } else { sh };
-        let ground = work_bottom - 6;
+        let ground = work_bottom - 16;
         {
             let mut g = PET.lock().map_err(|_| Error::from(E_FAIL))?;
             g.x = sw as f32 * 0.5;
@@ -1210,6 +1226,7 @@ unsafe fn create_surface(w: i32, h: i32) -> Result<Surface> {
         None,
     )?;
     let b = art::Brushes::new(&rt)?;
+    let shapes = art::Shapes::new(&factory)?;
     let text = art::Text::new()?;
     let pb = palette::Brushes::new(&rt)?;
 
@@ -1221,8 +1238,9 @@ unsafe fn create_surface(w: i32, h: i32) -> Result<Surface> {
         h,
         d2d,
         rt,
-        _factory: factory,
+        factory,
         stroke,
+        shapes,
         b,
         text,
         pb,
@@ -1261,6 +1279,8 @@ unsafe fn draw(
         rt: &s.rt,
         b: &s.b,
         stroke: &s.stroke,
+        factory: &s.factory,
+        shapes: &s.shapes,
     };
     let probe = art::draw_dog(&ctx, pose);
 
@@ -1311,6 +1331,8 @@ unsafe fn draw_fx(s: &Surface, thrown: &Option<f32>, burst: f32, letter: &str) -
         rt: &s.rt,
         b: &s.b,
         stroke: &s.stroke,
+        factory: &s.factory,
+        shapes: &s.shapes,
     };
     let c = FX as f32 * 0.5;
     if let Some(&t) = thrown.as_ref() {

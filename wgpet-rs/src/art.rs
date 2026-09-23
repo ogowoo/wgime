@@ -211,6 +211,67 @@ pub struct Ctx<'a> {
     pub rt: &'a ID2D1RenderTarget,
     pub b: &'a Brushes,
     pub stroke: &'a ID2D1StrokeStyle,
+    pub factory: &'a ID2D1Factory,
+    /// 缓存好的形状(每帧重建路径既慢又费内存)
+    pub shapes: &'a Shapes,
+}
+
+/// 一次性建好、之后只靠变换摆放的路径。
+/// 狗头/耳朵的形状是**固定**的, 变的是位置和角度 —— 所以只建一次。
+pub struct Shapes {
+    pub head: ID2D1PathGeometry,
+    pub ear: ID2D1PathGeometry,
+}
+
+fn bez(p1: Pt, p2: Pt, p3: Pt) -> D2D1_BEZIER_SEGMENT {
+    D2D1_BEZIER_SEGMENT {
+        point1: pt(p1),
+        point2: pt(p2),
+        point3: pt(p3),
+    }
+}
+
+/// 狗头侧面轮廓(朝右, 原点=头中心):
+/// 颅顶圆 → 前额 → **前伸的吻部** → 上唇 → 下巴 → 后脑闭合。
+/// 之前用两个椭圆拼(圆头 + 奶油色大椭圆), 读起来像海豹/水獭 —— 不像狗, 这才是真原因。
+fn build_head(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+    unsafe {
+        let g = f.CreatePathGeometry()?;
+        let s = g.Open()?;
+        s.BeginFigure(pt((-15.0, -15.0)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((2.0, -31.0), (20.0, -22.0), (26.0, -8.0)));
+        s.AddBezier(&bez((30.0, 0.0), (33.0, 5.0), (35.0, 7.5)));
+        s.AddBezier(&bez((37.5, 10.5), (30.0, 14.5), (21.0, 14.0)));
+        s.AddBezier(&bez((10.0, 13.5), (0.0, 12.0), (-6.0, 8.0)));
+        s.AddBezier(&bez((-16.0, 2.0), (-22.0, -6.0), (-15.0, -15.0)));
+        s.EndFigure(D2D1_FIGURE_END_CLOSED);
+        s.Close()?;
+        Ok(g)
+    }
+}
+
+/// 立耳: 底边在 y=0、尖端朝上的圆角三角(柯基那种)。垂耳/圆耳读起来像发髻。
+fn build_ear(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+    unsafe {
+        let g = f.CreatePathGeometry()?;
+        let s = g.Open()?;
+        s.BeginFigure(pt((-9.0, 1.5)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((-8.0, -13.0), (-3.5, -23.0), (0.5, -26.0)));
+        s.AddBezier(&bez((5.0, -23.0), (9.0, -13.0), (9.0, 1.5)));
+        s.AddBezier(&bez((5.0, 4.0), (-5.0, 4.0), (-9.0, 1.5)));
+        s.EndFigure(D2D1_FIGURE_END_CLOSED);
+        s.Close()?;
+        Ok(g)
+    }
+}
+
+impl Shapes {
+    pub fn new(f: &ID2D1Factory) -> Result<Self> {
+        Ok(Self {
+            head: build_head(f)?,
+            ear: build_ear(f)?,
+        })
+    }
 }
 
 impl<'a> Ctx<'a> {
@@ -231,6 +292,46 @@ impl<'a> Ctx<'a> {
             .rt
             .SetTransform(&(Matrix3x2::rotation(angle, c.0, c.1) * cur));
         f(self);
+        let _ = self.rt.SetTransform(&cur);
+    }
+    /// 把局部坐标系的**原点**挪到 `at` 并旋转 angle(之后就能按"相对头中心"的点画东西)
+    pub(crate) unsafe fn at<F: FnOnce(&Self)>(&self, at: Pt, angle: f32, f: F) {
+        let mut cur = Matrix3x2::default();
+        self.rt.GetTransform(&mut cur);
+        let m = Matrix3x2::rotation(angle, at.0, at.1) * Matrix3x2::translation(at.0, at.1);
+        let _ = self.rt.SetTransform(&(m * cur));
+        f(self);
+        let _ = self.rt.SetTransform(&cur);
+    }
+    /// 摆放一个缓存好的路径: 以它的局部原点为基准缩放/旋转, 填充 + 描边
+    pub(crate) unsafe fn place(
+        &self,
+        geo: &ID2D1PathGeometry,
+        at: Pt,
+        angle: f32,
+        sx: f32,
+        sy: f32,
+        fill: Option<&ID2D1SolidColorBrush>,
+        outline: f32,
+    ) {
+        let mut cur = Matrix3x2::default();
+        self.rt.GetTransform(&mut cur);
+        let m = Matrix3x2::rotation(angle, at.0, at.1)
+            * Matrix3x2 {
+                M11: sx,
+                M12: 0.0,
+                M21: 0.0,
+                M22: sy,
+                M31: at.0,
+                M32: at.1,
+            };
+        let _ = self.rt.SetTransform(&(m * cur));
+        if let Some(br) = fill {
+            let _ = self.rt.FillGeometry(geo, br, None);
+        }
+        if outline > 0.0 {
+            let _ = self.rt.DrawGeometry(geo, &self.b.outline, outline, None);
+        }
         let _ = self.rt.SetTransform(&cur);
     }
     pub(crate) unsafe fn line_w(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
@@ -257,38 +358,84 @@ unsafe fn leg(c: &Ctx, s: Pt, f: Pt, bend: f32, w: f32, far: bool) {
     c.oval((f.0 + 1.5, f.1), w * 0.7, w * 0.47, &c.b.fur_dark);
 }
 
-/// 尾巴: 4 段递减粗细 + 一撮毛。`phase` 是**时间相位**, 摆角由 sin 取(有界)。
+/// 尾巴: **毛茸茸的羽状尾** —— 沿脊柱生成左右两侧轮廓再闭合填充。
+/// 老写法是"一根渐细的线 + 末端一个球", 读起来像老鼠尾巴而不是狗的尾巴。
+/// `phase` 是时间相位, 摆角由 sin 取(有界; 拿时间当角度累加会把尾巴折进身体里)。
 unsafe fn tail(c: &Ctx, base: Pt, phase: f32, alert: f32, up: f32) {
-    let lift = 0.34 + alert * 0.75 * up; // 0 → 正后方, π/2 → 正上方
+    use std::f32::consts::{PI, TAU};
+    const N: usize = 7;
+    let mut spine = [(0.0f32, 0.0f32); N + 1];
+    spine[0] = base;
+    let mut ang = 0.30 + alert * 0.72 * up; // 0 → 正后方, π/2 → 正上方
     let mut cur = base;
-    let mut w = 10.4;
-    for i in 0..4 {
-        let wag = (phase * std::f32::consts::TAU + i as f32 * 0.55).sin() * 0.26;
-        let ang = lift + wag + i as f32 * 0.05;
-        let len = 12.5 - i as f32 * 1.2;
-        let nx = cur.0 - ang.cos() * len;
-        let ny = cur.1 - ang.sin() * len;
-        c.limb(cur, (nx, ny), w + 2.6, &c.b.outline);
-        c.limb(cur, (nx, ny), w, &c.b.fur);
-        cur = (nx, ny);
-        w *= 0.88;
+    for i in 0..N {
+        let t = i as f32 / N as f32;
+        let wag = (phase * TAU + i as f32 * 0.5).sin() * 0.20;
+        ang += wag * 0.32 - 0.02;
+        let len = 4.8 + 2.8 * (t * PI).sin();
+        cur = (cur.0 - ang.cos() * len, cur.1 - ang.sin() * len);
+        spine[i + 1] = cur;
     }
-    c.oval((cur.0 + 1.5, cur.1 - 1.0), 8.0, 7.4, &c.b.outline);
-    c.oval((cur.0 + 1.5, cur.1 - 1.0), 6.4, 5.8, &c.b.fur_light);
+    // 宽度剖面: 根部细 → 中后段最粗(蓬松) → 尖端收
+    let mut left = [(0.0f32, 0.0f32); N + 1];
+    let mut right = [(0.0f32, 0.0f32); N + 1];
+    for i in 0..=N {
+        let t = i as f32 / N as f32;
+        let w = 3.2 + 7.6 * (t * PI * 0.9).sin();
+        let (dx, dy) = if i == 0 {
+            (spine[1].0 - spine[0].0, spine[1].1 - spine[0].1)
+        } else {
+            (spine[i].0 - spine[i - 1].0, spine[i].1 - spine[i - 1].1)
+        };
+        let l = (dx * dx + dy * dy).sqrt().max(0.001);
+        let (nx, ny) = (-dy / l, dx / l);
+        left[i] = (spine[i].0 + nx * w, spine[i].1 + ny * w);
+        right[i] = (spine[i].0 - nx * w, spine[i].1 - ny * w);
+    }
+    let Ok(geo) = c.factory.CreatePathGeometry() else {
+        return;
+    };
+    let Ok(sink) = geo.Open() else { return };
+    sink.BeginFigure(pt(left[0]), D2D1_FIGURE_BEGIN_FILLED);
+    for p in left.iter().take(N + 1).skip(1) {
+        sink.AddLine(pt(*p));
+    }
+    let (ex, ey) = (spine[N].0 - spine[N - 1].0, spine[N].1 - spine[N - 1].1);
+    let el = (ex * ex + ey * ey).sqrt().max(0.001);
+    sink.AddLine(pt((spine[N].0 + ex / el * 5.5, spine[N].1 + ey / el * 5.5)));
+    for p in right.iter().rev() {
+        sink.AddLine(pt(*p));
+    }
+    sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+    if sink.Close().is_err() {
+        return;
+    }
+    let _ = c.rt.FillGeometry(&geo, &c.b.fur, None);
+    let _ = c.rt.DrawGeometry(&geo, &c.b.outline, 2.4, None);
+    // 尾尖那撮白毛(柯基尾巴尖就是白的)
+    c.disc(spine[N], 4.4, &c.b.fur_light);
 }
 
-/// 垂耳: 从头顶往侧下方耷拉。`alert` 时抬起。
-unsafe fn ear(c: &Ctx, root: Pt, side: f32, swing: f32, alert: f32, far: bool) {
-    let h = 17.0 - alert * 8.0;
-    let ang = side * 0.55 + swing + alert * side * 0.55;
-    let brush = if far { &c.b.fur_shade } else { &c.b.fur };
-    c.rot_at(ang, root, |c| {
-        c.oval((root.0 + side * 1.5, root.1 + h * 0.45), 7.8, h * 0.62, &c.b.outline);
-        c.oval((root.0 + side * 1.5, root.1 + h * 0.45), 6.6, h * 0.52, brush);
-        if !far {
-            c.oval((root.0 + side * 1.8, root.1 + h * 0.5), 3.6, h * 0.3, &c.b.ear_in);
-        }
-    });
+/// 耳: 三角立耳。`tilt` 是相对头顶的外倾角, `alert` 时立得更直。
+/// 老写法是两个圆椭圆耷在头顶, 读起来像发髻 —— 用户原话"耳朵位置有点诡异"。
+unsafe fn ear(c: &Ctx, base: Pt, tilt: f32, swing: f32, alert: f32, far: bool) {
+    let sy = (if far { 0.88 } else { 1.0 }) * (1.0 - alert * 0.16);
+    let sx = if far { 0.9 } else { 1.0 };
+    let ang = tilt + swing - alert * tilt * 0.45;
+    let fill = if far { &c.b.fur_shade } else { &c.b.fur };
+    c.place(&c.shapes.ear, base, ang, sx, sy, Some(fill), 2.4);
+    if !far {
+        // 内耳: 同一形状缩小, 只填色不描边
+        c.place(
+            &c.shapes.ear,
+            (base.0 + 0.5, base.1 + 2.0),
+            ang,
+            0.52,
+            sy * 0.60,
+            Some(&c.b.ear_in),
+            0.0,
+        );
+    }
 }
 
 /// 挎包: 斜挎带 + 包体 + 翻盖 + 扣子 + 露出的小工具
@@ -397,39 +544,39 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         c.oval(neck, 17.0, 15.0, &c.b.fur);
     });
 
-    // ---- 头
-    let hx = 42.0 + p.look * 5.0 + (1.0 - up) * -14.0;
-    let hy = body_y - 35.0 - up * 3.0 + (1.0 - up) * 10.0;
-    c.rot_at(body_rot * 0.7 + p.look * 0.06, (hx, hy), |c| {
-        // 远侧耳(在头后面)
-        ear(c, (hx + 3.0, hy - 14.0), -1.0, p.ear * 0.8, p.alert, true);
+    // ---- 头: 用**一条狗头侧面轮廓**(颅顶圆 → 前伸吻部 → 下巴)而不是两个椭圆拼。
+    // 两个椭圆拼出来的是"圆头 + 奶油色大椭圆", 读起来像海豹/水獭 —— 这才是"狗头不像狗"的真原因。
+    let hx = 44.0 + p.look * 5.0 + (1.0 - up) * -14.0;
+    let hy = body_y - 36.0 - up * 3.0 + (1.0 - up) * 10.0;
+    c.at((hx, hy), body_rot * 0.7 + p.look * 0.06, |c| {
+        // 远侧耳(三角立耳, 画在头后面)
+        ear(c, (-6.0, -16.0), -0.34, p.ear * 0.5, p.alert, true);
         // 头
-        c.oval((hx, hy), 26.0, 24.5, &c.b.outline);
-        c.oval((hx, hy), 24.3, 22.8, &c.b.fur);
-        // 近侧耳: **必须在口鼻/眼睛之前画**, 而且要往外推 ——
-        // 否则它会盖住眼睛(真事故: 屏幕上只看得见一只眼)
-        ear(c, (hx + 18.0, hy - 12.0), 1.0, -p.ear * 0.8, p.alert, false);
-        // 额前浅色
-        c.oval((hx + 8.0, hy + 8.0), 14.0, 10.0, &c.b.fur_light);
-        // 口鼻(压低、收小, 免得把眼睛挤掉)
-        let mz = (hx + 21.0, hy + 11.0);
-        c.oval(mz, 13.0, 10.5, &c.b.outline);
-        c.oval(mz, 11.6, 9.2, &c.b.fur_light);
-        // 鼻头
-        let ns = (hx + 30.0, hy + 7.0);
-        c.oval(ns, 5.6, 4.4, &c.b.outline);
-        c.oval(ns, 4.4, 3.3, &c.b.nose);
+        c.place(&c.shapes.head, (0.0, 0.0), 0.0, 1.0, 1.0, Some(&c.b.fur), 2.6);
+        // 吻部浅色 + 额前白斑(柯基那副脸)
+        c.oval((17.0, 5.0), 12.0, 7.0, &c.b.fur_light);
+        c.oval((6.0, -9.0), 5.5, 12.0, &c.b.fur_light);
+        // 鼻头(可以略微探出吻尖, 狗鼻子本来就鼓出来)
+        c.oval((35.0, 6.5), 5.4, 4.2, &c.b.outline);
+        c.oval((35.0, 6.5), 4.2, 3.1, &c.b.nose);
         // 嘴
-        c.line_w((hx + 27.0, hy + 13.5), (hx + 19.0, hy + 15.5), 1.7, &c.b.outline);
-        // 眼: 两只间距要够(小于 8 单位就会糊成一个黑点), blink 压扁
-        let eh = 4.6 * (1.0 - p.blink).max(0.07);
-        let e1 = (hx - 1.0 + p.look * 2.0, hy - 7.0);
-        let e2 = (hx + 13.0 + p.look * 2.0, hy - 9.0);
+        c.line_w((31.0, 11.0), (22.0, 13.0), 1.7, &c.b.outline);
+        // 眼(略高、带高光)+ 眉
+        let k = (1.0 - p.blink).max(0.07);
+        let eh = 5.0 * k;
+        let e1 = (1.0 + p.look * 1.5, -9.0);
+        let e2 = (15.0 + p.look * 1.5, -11.0);
         for e in [e1, e2] {
-            c.oval(e, 4.2, eh + 0.6, &c.b.outline);
-            c.oval(e, 3.4, eh, &c.b.eye);
-            c.disc((e.0 + 1.1, e.1 - 1.4), 1.5, &c.b.eye_hi);
+            c.oval(e, 4.6, eh + 0.5, &c.b.outline);
+            c.oval(e, 3.7, eh, &c.b.eye);
+            // 高光必须**跟着眼皮一起缩**: 否则眨眼时那点白比眼睛还大, 看着像戴墨镜(真踩过)
+            c.disc((e.0 + 1.2, e.1 - 1.5 * k), 1.5 * k, &c.b.eye_hi);
         }
+        // 眉: 短、细、贴着眼的斜线
+        c.line_w((0.0, -14.5), (6.5, -15.6), 1.5, &c.b.fur_shade);
+        c.line_w((12.0, -16.2), (18.5, -16.6), 1.5, &c.b.fur_shade);
+        // 近侧耳
+        ear(c, (10.0, -17.0), 0.30, -p.ear * 0.5, p.alert, false);
     });
 
     let _ = c.rt.SetTransform(&Matrix3x2::identity());
