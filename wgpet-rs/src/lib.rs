@@ -41,10 +41,19 @@ const ABI_VERSION: u32 = 2;
 
 /// 关着百宝袋时的窗口(只装角色)
 const SMALL: (i32, i32) = (300, 280);
+/// 场景 1(投篮)的窗口: 要装得下左右两个球架 + 抛物线的最高点
+const S1: (i32, i32) = (760, 360);
+/// 场景 1 里角色的脚底中心(窗口坐标) 与 球架相对角色的水平距离 / 篮框高度
+const S1_AX: f32 = 380.0;
+const S1_HOOP_DX: f32 = 320.0;
+const S1_RIM_Y: f32 = 96.0;
+const S1_BALL_R: f32 = 15.0;
 /// DIB 一律按**最大**尺寸分配, 提交时只交当前需要的那块(psize 允许是 DIB 的子矩形) ——
-/// 于是开合面板、工具数变化时都不必重建 DIB 与 D2D 渲染目标
-const MAX_W: i32 = palette::WIN_W as i32;
-const MAX_H: i32 = 430;
+/// 于是开合面板、工具数变化时都不必重建 DIB 与 D2D 渲染目标。
+/// **必须 >= 任何场景的窗口尺寸**: 场景 1 的场地窗是 760 宽, 一开始这里只有 620,
+/// 于是"右边球架整块没画、画面还错位"(真踩过; 超出 DIB 的部分 ULW 取不到源)。
+const MAX_W: i32 = 760;
+const MAX_H: i32 = 440;
 /// 飞行物窗口
 const FX: i32 = 220;
 
@@ -79,6 +88,8 @@ const FPS_CAP: f32 = 120.0;
 const T_PULL: f32 = 0.22;
 const T_FLY: f32 = 0.62;
 const T_BURST: f32 = 0.38;
+/// 场景 1: 球从爪到篮框的飞行时间
+const SHOT_T: f32 = 1.05;
 
 #[link(name = "winmm")]
 unsafe extern "system" {
@@ -101,6 +112,9 @@ static CLICK: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 static WHEEL: Mutex<Option<i32>> = Mutex::new(None);
 /// 覆盖光标位置(测试钩子, x<0 = 用真实光标)
 static FAKE_CURSOR: Mutex<Option<(f32, f32)>> = Mutex::new(None);
+/// 吉祥物模式: 窗口自己填白底(导出插画用)。分层窗的 alpha 抓屏抓不到,
+/// 所以"白底插画"不能靠事后合成, 得让窗口本身是不透明的白。
+static MASCOT: AtomicBool = AtomicBool::new(false);
 static LAST_LAUNCHED: Mutex<String> = Mutex::new(String::new());
 /// 宿主给的回调: 点中工具时把 code 交回去, 由宿主启动(插件不许自己跑插件, 见 AGENTS §5 规则 51)
 type ToolCb = unsafe extern "C" fn(*const u8, usize);
@@ -187,6 +201,77 @@ pub extern "C" fn wgime_pet_stop() -> i32 {
 #[no_mangle]
 pub extern "C" fn wgime_pet_hwnd() -> isize {
     HWND_MAIN.load(Ordering::SeqCst)
+}
+
+/// 场景 1: 开始一次投篮(自己挑一侧: 交替, 保证两边都能看到)
+fn shoot() {
+    if let Ok(mut g) = PET.lock() {
+        if g.scene == 1 && g.ball_mode == 0 {
+            g.ball_side = -g.ball_side;
+            g.ball_mode = 1;
+            g.ball_t = 0.0;
+            dbg(format!("court: 投篮 side={}", g.ball_side));
+        }
+    }
+}
+
+/// 场景 1 的球状态(窗口坐标): [x, y, mode, side] —— 给探针断言用
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_ball(out: *mut f32) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    match PET.lock() {
+        Ok(g) => {
+            let v = [
+                g.ball_x,
+                g.ball_y,
+                g.ball_mode as f32,
+                g.ball_side as f32,
+            ];
+            std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// 吉祥物模式(白底, 导出 IP 插画用): on=1 开。
+#[no_mangle]
+pub extern "C" fn wgime_pet_mascot(on: i32) -> i32 {
+    MASCOT.store(on != 0, Ordering::SeqCst);
+    0
+}
+
+/// 投篮一次(= 场景 1 里按回车)
+#[no_mangle]
+pub extern "C" fn wgime_pet_shoot() -> i32 {
+    guard(|| {
+        shoot();
+        0
+    })
+}
+
+/// 换场景(1=投篮 2=百宝袋狗 3=四边漫游)。返回换好之后的场景号。
+#[no_mangle]
+pub extern "C" fn wgime_pet_scene(no: i32) -> i32 {
+    guard(|| {
+        let mut v = 2;
+        if let Ok(mut g) = PET.lock() {
+            g.scene = no.clamp(1, 3);
+            g.palette = false;
+            g.throw_t = None;
+            g.ball_mode = 0;
+            g.ball_t = 0.0;
+            v = g.scene;
+        }
+        v
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn wgime_pet_scene_no() -> i32 {
+    PET.lock().map(|g| g.scene).unwrap_or(2)
 }
 
 #[no_mangle]
@@ -441,19 +526,19 @@ pub unsafe extern "C" fn wgime_pet_dog_xy(out: *mut f32) -> i32 {
     if out.is_null() {
         return -1;
     }
-    let (open, flip) = PET
+    let (open, flip, scene) = PET
         .lock()
-        .map(|g| (g.palette && g.anim > 0.02, g.flip))
-        .unwrap_or((false, false));
+        .map(|g| (g.palette && g.anim > 0.02, g.flip, g.scene))
+        .unwrap_or((false, false, 2));
     let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
-    let a = anchor(open, flip, n);
+    let a = anchor(scene, open, flip, n);
     let h = HWND_MAIN.load(Ordering::SeqCst);
     let r = if h == 0 {
         (0, 0)
     } else {
         window_rect(HWND(h as *mut c_void))
     };
-    let size = win_size(open, n);
+    let size = win_size(scene, open, n);
     let v = [
         r.0 as f32 + a.0,
         r.1 as f32 + a.1,
@@ -568,6 +653,20 @@ struct Pet {
     throw_idx: i32,
     /// fx 落点爆开剩余时间
     burst: f32,
+    /// 场景: 1=投篮 2=百宝袋狗 3=四边漫游(还没做)
+    scene: i32,
+    /// 抬前爪 0..1
+    arm: f32,
+    arm_want: f32,
+    /// 球: mode 0=拍球 1=飞出 2=捡回来
+    ball_mode: u8,
+    ball_t: f32,
+    ball_side: i32,
+    ball_x: f32,
+    ball_y: f32,
+    ball_spin: f32,
+    /// 进球后框口闪光剩余
+    flash: f32,
 }
 
 static PET: Mutex<Pet> = Mutex::new(Pet {
@@ -591,6 +690,16 @@ static PET: Mutex<Pet> = Mutex::new(Pet {
     throw_t: None,
     throw_idx: -1,
     burst: 0.0,
+    scene: 2,
+    arm: 0.0,
+    arm_want: 0.0,
+    ball_mode: 0,
+    ball_t: 0.0,
+    ball_side: 1,
+    ball_x: 0.0,
+    ball_y: 0.0,
+    ball_spin: 0.0,
+    flash: 0.0,
 });
 
 fn rnd(seed: &mut u32) -> f32 {
@@ -603,8 +712,79 @@ fn rnd(seed: &mut u32) -> f32 {
 }
 
 impl Pet {
+    /// 场景 1: 站在场地中间拍球; 按下"投篮"就把球抛向一侧的篮框, 进了闪一下再捡回来。
+    /// 这一场**不漫游**(v=0) —— 场地是跟着它走的窗口, 走起来球架就跟着飘了。
+    fn step_court(&mut self, dt: f32) {
+        let ground = S1.1 as f32 - ANCHOR_BOTTOM;
+        let paw = (S1_AX + 46.0, ground - 72.0);
+        self.v = 0.0;
+        self.running = false;
+        self.look = 0.0;
+        // 抬爪朝篮框那侧
+        self.face = if self.ball_side >= 0 { 1.0 } else { -1.0 };
+        self.arm += (self.arm_want - self.arm) * (dt * 9.0).min(1.0);
+        self.ball_t += dt;
+        let rim_x = S1_AX + self.ball_side as f32 * (S1_HOOP_DX - 33.0);
+        match self.ball_mode {
+            0 => {
+                // 拍球: 在爪下弹
+                let b = (self.ball_t * 4.6).sin().abs();
+                self.ball_x = S1_AX + 46.0;
+                self.ball_y = ground - 24.0 - b * 92.0;
+                self.ball_spin += dt * 7.0;
+                self.arm_want = 0.0;
+            }
+            1 => {
+                // 飞出: 抛物线
+                let k = (self.ball_t / SHOT_T).min(1.0);
+                self.arm_want = if k < 0.3 { 1.0 } else { 0.0 };
+                self.ball_x = paw.0 + (rim_x - paw.0) * k;
+                self.ball_y = paw.1 + (S1_RIM_Y - paw.1) * k
+                    - (k * std::f32::consts::PI).sin() * 118.0;
+                self.ball_spin += dt * 9.0;
+                if k >= 1.0 {
+                    self.ball_mode = 2;
+                    self.ball_t = 0.0;
+                    self.flash = 1.0;
+                    dbg("court: 进球".into());
+                }
+            }
+            _ => {
+                // 捡回来
+                let k = (self.ball_t / 0.55).min(1.0);
+                self.ball_x = rim_x + (paw.0 - rim_x) * k;
+                self.ball_y = S1_RIM_Y + (paw.1 - S1_RIM_Y) * k
+                    + (k * std::f32::consts::PI).sin() * 30.0;
+                self.ball_spin += dt * 5.0;
+                if k >= 1.0 {
+                    self.ball_mode = 0;
+                    self.ball_t = 0.0;
+                }
+            }
+        }
+        self.flash = (self.flash - dt * 1.6).max(0.0);
+    }
+
     fn step(&mut self, dt: f32, sw: f32, ground: f32, mouse: (f32, f32), seed: &mut u32) {
         self.t += dt;
+        // 眨眼(所有场景共用)
+        self.blink_t -= dt;
+        if self.blink_t <= 0.0 {
+            self.blink_t = 2.0 + rnd(seed) * 4.0;
+        }
+        // 只在 blink_t 掉到最后 0.14s 才闭眼。
+        // **别写成 `if blink_t > 0.86`** —— 那样 blink_t 一大就等于 1(闭着),
+        // 也就是眼睛几乎永远闭着(真 bug: 表现是"像戴墨镜/一直眯着眼", 只修高光缩放是治标)
+        self.blink = if self.blink_t < 0.14 {
+            ((0.14 - self.blink_t) / 0.14).min(1.0)
+        } else {
+            0.0
+        };
+        if self.scene == 1 {
+            self.step_court(dt);
+            return;
+        }
+        let _ = ground;
         // 面板开着的时候站住不动(不然面板跟着角色满屏跑, 鼠标追不上)
         let want_hold = self.hold || self.palette || self.throw_t.is_some();
         if !want_hold {
@@ -645,19 +825,6 @@ impl Pet {
             self.v = 0.0;
         }
         self.gait = (self.gait + self.v.abs() * dt / GAIT_CYCLE_PX).fract();
-
-        self.blink_t -= dt;
-        if self.blink_t <= 0.0 {
-            self.blink_t = 2.0 + rnd(seed) * 4.0;
-        }
-        // 只在 blink_t 掉到最后 0.14s 才闭眼。
-        // **别写成 `if blink_t > 0.86`** —— 那样 blink_t 一大就等于 1(闭着),
-        // 也就是眼睛几乎永远闭着(真 bug: 表现是"像戴墨镜/一直眯着眼", 只修高光缩放是治标)
-        self.blink = if self.blink_t < 0.14 {
-            ((0.14 - self.blink_t) / 0.14).min(1.0)
-        } else {
-            0.0
-        };
 
         let want = ((mouse.0 - self.x) / LOOK_DIST).clamp(-1.0, 1.0);
         self.look += (want - self.look) * (dt * 4.0).min(1.0);
@@ -731,22 +898,33 @@ impl Pet {
             } else {
                 0.0
             },
+            arm: self.arm,
+            // 站住不动(且不是投篮场)时坐着: Q版柴犬的常态姿势就是坐姿
+            sit: if self.scene != 1 && self.v.abs() < 1.0 && self.throw_t.is_none() {
+                1.0
+            } else {
+                0.0
+            },
         }
     }
 }
 
 // ---------------------------------------------------------------- 几何
 
-fn win_size(open: bool, n: usize) -> (i32, i32) {
-    if open {
+fn win_size(scene: i32, open: bool, n: usize) -> (i32, i32) {
+    if scene == 1 {
+        S1
+    } else if open {
         palette::win_size(n)
     } else {
         SMALL
     }
 }
 
-fn anchor(open: bool, flip: bool, n: usize) -> (f32, f32) {
-    if open {
+fn anchor(scene: i32, open: bool, flip: bool, n: usize) -> (f32, f32) {
+    if scene == 1 {
+        (S1_AX, S1.1 as f32 - ANCHOR_BOTTOM)
+    } else if open {
         (
             palette::anchor_x(flip, 1.0),
             palette::win_size(n).1 as f32 - ANCHOR_BOTTOM,
@@ -786,10 +964,12 @@ fn window_rect(h: HWND) -> (i32, i32) {
 /// 给导出用的快照: (窗口宽, 是否翻到左边, 面板是否开着, 窗口左上角)
 #[allow(dead_code)]
 fn geom_snapshot() -> (i32, bool, bool, (i32, i32)) {
-    let (open, flip) = PET
+    let v = PET.lock().map(|g| g.v).unwrap_or(0.0);
+    let _ = v;
+    let (open, flip, scene) = PET
         .lock()
-        .map(|g| (g.palette && g.anim > 0.02, g.flip))
-        .unwrap_or((false, false));
+        .map(|g| (g.palette && g.anim > 0.02, g.flip, g.scene))
+        .unwrap_or((false, false, 2));
     let h = HWND_MAIN.load(Ordering::SeqCst);
     let r = if h == 0 {
         (0, 0)
@@ -797,7 +977,7 @@ fn geom_snapshot() -> (i32, bool, bool, (i32, i32)) {
         window_rect(HWND(h as *mut c_void))
     };
     let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
-    (win_size(open, n).0, flip, open, r)
+    (win_size(scene, open, n).0, flip, open, r)
 }
 
 // ---------------------------------------------------------------- 窗口与渲染
@@ -822,25 +1002,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_APP_ENTER => {
-            // 把第一格(或当前高亮那格)工具甩出去
-            let idx = {
+            // 场景 1 = 投篮; 场景 2 = 把第一格(或高亮那格)工具甩出去
+            let (scene, idx) = {
                 let g = PET.lock().ok();
                 match g {
+                    Some(g) if g.scene == 1 => (1, -1),
                     Some(g) if g.palette && g.throw_t.is_none() => {
-                        if g.hover >= 0 {
-                            g.hover
-                        } else {
-                            0
-                        }
+                        (2, if g.hover >= 0 { g.hover } else { 0 })
                     }
-                    _ => -1,
+                    _ => (0, -1),
                 }
             };
-            if idx >= 0 {
+            if scene == 1 {
+                shoot();
+            } else if idx >= 0 {
                 if let Ok(mut g) = PET.lock() {
                     g.throw_idx = idx;
                     g.throw_t = Some(0.0);
                 }
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONDOWN => {
+            // 右键 = 换场景 1→2→3→1(python 版宠物也是这个规矩)
+            if let Ok(mut g) = PET.lock() {
+                g.scene = if g.scene >= 3 { 1 } else { g.scene + 1 };
+                g.palette = false;
+                dbg(format!("scene -> {}", g.scene));
             }
             LRESULT(0)
         }
@@ -882,6 +1070,8 @@ struct Surface {
     memdc: HDC,
     hbmp: HBITMAP,
     old: HGDIOBJ,
+    /// DIB 的像素首地址 —— 验收标定点要**回读自己刚画的画**(见 `refine_probe`)
+    bits: *mut c_void,
     w: i32,
     h: i32,
     d2d: ID2D1DCRenderTarget,
@@ -948,7 +1138,7 @@ fn render_thread() -> Result<()> {
             g.face = 1.0;
             g.v = WALK_SPEED;
         }
-        let (a0x, a0y) = anchor(false, false, 0);
+        let (a0x, a0y) = anchor(2, false, false, 0);
         let hwnd = CreateWindowExW(
             ex,
             PCWSTR(cls_name.as_ptr()),
@@ -1027,7 +1217,7 @@ fn render_thread() -> Result<()> {
             };
             let click = CLICK.lock().ok().and_then(|mut c| c.take());
 
-            let (open, flip, ax, ay, pose, thrown, fx_pos, fx_vis, burst, fx_letter, n, page) = {
+            let (open, flip, ax, ay, pose, thrown, fx_pos, fx_vis, burst, fx_letter, n, page, scene) = {
                 let mut g = match PET.lock() {
                     Ok(g) => g,
                     Err(_) => break,
@@ -1037,7 +1227,7 @@ fn render_thread() -> Result<()> {
                 }
                 let open = g.palette && g.anim > 0.02;
                 let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
-                let (ax, ay) = anchor(open, g.flip, n);
+                let scene = g.scene; let (ax, ay) = anchor(scene, open, g.flip, n);
                 let l = palette::layout(n, g.flip, g.page);
                 // 命中测试: 光标 → 窗口坐标 → 面板格子
                 let wr = window_rect(hwnd);
@@ -1139,14 +1329,25 @@ fn render_thread() -> Result<()> {
                     fx_y = by + (ey_ - by) * k - arc;
                     fx_vis = t >= 0.0;
                 }
-                (open, g.flip, ax, ay, g.pose(ax, ay), thrown, (fx_x, fx_y), fx_vis, g.burst, letter, n, g.page)
+                (open, g.flip, ax, ay, g.pose(ax, ay), thrown, (fx_x, fx_y), fx_vis, g.burst, letter, n, g.page, scene)
             };
 
-            // 窗口尺寸/位置随面板开合与工具数变化(锚点按离底边的距离算 => 脚底原地不动)
-            let want = win_size(open, n);
-            let wx = (state_x() - ax).round() as i32;
+            // 窗口尺寸/位置随面板开合与工具数变化(锚点按离底边的距离算 => 脚底原地不动);
+            // 场景 1 的场地窗固定在屏幕中间(球架跟着窗口走, 走起来球架就飘了)
+            let want = win_size(scene, open, n);
+            let wx = if scene == 1 {
+                (sw - S1.0) / 2
+            } else {
+                (state_x() - ax).round() as i32
+            };
             let wy = ground - ay.round() as i32;
-            draw(&surf, &pose, open, flip, page, want, &thrown)?;
+            if want.0 > MAX_W || want.1 > MAX_H {
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::SeqCst) {
+                    dbg(format!("!! 窗口 {}x{} 超出 DIB {}x{}", want.0, want.1, MAX_W, MAX_H));
+                }
+            }
+            draw(&surf, &pose, open, flip, page, want, &thrown, scene)?;
             present(hwnd, screen_dc, &surf, wx, wy, want.0, want.1)?;
 
             // 交互态切换: 面板开着才需要点得到
@@ -1284,6 +1485,7 @@ unsafe fn create_surface(w: i32, h: i32) -> Result<Surface> {
         memdc,
         hbmp,
         old,
+        bits,
         w,
         h,
         d2d,
@@ -1306,13 +1508,78 @@ unsafe fn begin(s: &Surface, w: i32, h: i32) -> Result<()> {
     };
     s.d2d.BindDC(s.memdc, &rc)?;
     s.rt.BeginDraw();
-    s.rt.Clear(Some(&D2D1_COLOR_F {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0,
-    }));
+    if MASCOT.load(Ordering::SeqCst) {
+        // 不透明白: 导出"吉祥物插画"用
+        s.rt.Clear(Some(&D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }));
+    } else {
+        s.rt.Clear(Some(&D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        }));
+    }
     Ok(())
+}
+
+/// 标定点**自愈**: 回读自己刚画的那一帧, 在标定点附近找一块确定的纯背毛。
+/// 为什么要这样: 形象一改(身体变小/坐姿旋转/加赛璐璐暗面), 手挑的点就可能落到
+/// 描边、暗面或挎包上, 逐通道断言就变成**假红** —— 这个坑已经踩过三次
+/// (挎包工具的描边、身体旋转、以及 V4 瘦身), 与其每次改画都手调坐标, 不如让它自己找。
+unsafe fn refine_probe(s: &Surface, p: (f32, f32)) -> (f32, f32) {
+    let px = |x: i32, y: i32| -> (u8, u8, u8, u8) {
+        if x < 1 || y < 1 || x >= s.w - 1 || y >= s.h - 1 || s.bits.is_null() {
+            return (0, 0, 0, 0);
+        }
+        let o = ((y as isize) * (s.w as isize) + x as isize) * 4;
+        let q = s.bits as *const u8;
+        unsafe {
+            (
+                *q.offset(o + 2),
+                *q.offset(o + 1),
+                *q.offset(o),
+                *q.offset(o + 3),
+            )
+        }
+    };
+    let want = (
+        (art::FUR.r * 255.0) as i32,
+        (art::FUR.g * 255.0) as i32,
+        (art::FUR.b * 255.0) as i32,
+    );
+    let plain = |c: (u8, u8, u8, u8)| {
+        c.3 == 255
+            && (c.0 as i32 - want.0).abs() <= 2
+            && (c.1 as i32 - want.1).abs() <= 2
+            && (c.2 as i32 - want.2).abs() <= 2
+    };
+    let (x0, y0) = (p.0.round() as i32, p.1.round() as i32);
+    if plain(px(x0, y0)) {
+        return p;
+    }
+    for r in 1..=30i32 {
+        for (dx, dy) in [
+            (r, 0),
+            (-r, 0),
+            (0, r),
+            (0, -r),
+            (r, r),
+            (-r, -r),
+            (r, -r),
+            (-r, r),
+        ] {
+            let (x, y) = (x0 + dx, y0 + dy);
+            if plain(px(x, y)) && plain(px(x + 1, y)) && plain(px(x, y + 1)) && plain(px(x - 1, y)) {
+                return (x as f32, y as f32);
+            }
+        }
+    }
+    p
 }
 
 unsafe fn draw(
@@ -1323,6 +1590,7 @@ unsafe fn draw(
     page: usize,
     size: (i32, i32),
     thrown: &Option<f32>,
+    scene: i32,
 ) -> Result<()> {
     begin(s, size.0, size.1)?;
     let ctx = art::Ctx {
@@ -1332,7 +1600,25 @@ unsafe fn draw(
         factory: &s.factory,
         shapes: &s.shapes,
     };
+    // 场景 1: 先把场地画了(球架在角色后面)
+    if scene == 1 {
+        let ground = S1.1 as f32 - ANCHOR_BOTTOM;
+        let (flash, side, bx, by, spin) = PET
+            .lock()
+            .map(|g| (g.flash, g.ball_side, g.ball_x, g.ball_y, g.ball_spin))
+            .unwrap_or((0.0, 1, 0.0, 0.0, 0.0));
+        art::draw_hoop(&ctx, S1_AX + S1_HOOP_DX, ground, S1_RIM_Y, 1.0, flash);
+        art::draw_hoop(&ctx, S1_AX - S1_HOOP_DX, ground, S1_RIM_Y, -1.0, flash);
+        let _ = side;
+        let _ = (bx, by, spin);
+    }
     let probe = art::draw_dog(&ctx, pose);
+    // 球在角色之前(拍球时球在爪下、投篮时球在手前)
+    if scene == 1 {
+        if let Ok(g) = PET.lock() {
+            art::draw_ball(&ctx, g.ball_x, g.ball_y, S1_BALL_R, g.ball_spin);
+        }
+    }
 
     if open {
         let items = TOOLS.lock().map(|g| g.clone()).unwrap_or_default();
@@ -1367,8 +1653,9 @@ unsafe fn draw(
             b,
             art::SHADOW_TOTAL_ALPHA,
         ];
+        let body = refine_probe(s, probe.body);
         let f = art::FUR;
-        g[1] = [probe.body.0, probe.body.1, f.r, f.g, f.b, f.a];
+        g[1] = [body.0, body.1, f.r, f.g, f.b, f.a];
     }
     s.rt.EndDraw(None, None)?;
     Ok(())
