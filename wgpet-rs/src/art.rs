@@ -157,6 +157,14 @@ pub struct Pose {
     pub arm: f32,
     /// 坐姿 0..1: 屁股着地、后腿折在身子底下、身体略微后仰
     pub sit: f32,
+    /// 前趴(玩耍/伸懒腰)0..1: 前身压低、屁股翘起
+    pub bow: f32,
+    /// 低头 0..1(闻地面/鞠躬): 头往地面压
+    pub head_drop: f32,
+    /// 歪头(弧度, 正负=左右)
+    pub head_tilt: f32,
+    /// 打哈欠 0..1: 嘴张到最大、舌头伸出来
+    pub yawn: f32,
 }
 
 impl Default for Pose {
@@ -179,6 +187,10 @@ impl Default for Pose {
             alert: 0.0,
             arm: 0.0,
             sit: 0.0,
+            bow: 0.0,
+            head_drop: 0.0,
+            head_tilt: 0.0,
+            yawn: 0.0,
         }
     }
 }
@@ -563,9 +575,11 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
 
     let up = p.up;
     let sit = p.sit.clamp(0.0, 1.0);
-    let body_y = -56.0 * up - 15.0 * (1.0 - up) + p.bob + sit * 3.0;
+    let bow = p.bow.clamp(0.0, 1.0);
+    let body_y = -56.0 * up - 15.0 * (1.0 - up) + p.bob + sit * 3.0 - bow * 6.0;
     // 坐姿: 后躯往下坐、前身抬起(负角 = 逆时针 = 前侧抬高) —— 柴犬坐着就是这个斜度
-    let body_rot = p.lean * 0.55 + (1.0 - up) * 0.16 - sit * 0.34;
+    // 前趴(bow): 正相反, 前身压低、屁股翘起
+    let body_rot = p.lean * 0.55 + (1.0 - up) * 0.16 - sit * 0.34 + bow * 0.38;
 
     // ---- 地面软阴影: 三层递减 alpha + 半径, 核心层是恒定 alpha(探针按合成值断言)
     let sy = 2.0;
@@ -650,11 +664,11 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     let look = p.look.clamp(-1.0, 1.0);
     let yaw = look * 0.10;
     let hx = 38.5 + look * 3.8 + (1.0 - up) * -11.0;
-    let hy = body_y - 31.5 - up * 3.0 + (1.0 - up) * 9.0;
+    let hy = body_y - 31.5 - up * 3.0 + (1.0 - up) * 9.0 + p.head_drop * 26.0;
     let head_sx = 1.58 * (1.0 - look.abs() * 0.035);
     let head_sy = 1.58;
 
-    c.at_scaled((hx, hy), body_rot * 0.65 + yaw, 1.0, |c| {
+    c.at_scaled((hx, hy), body_rot * 0.65 + yaw + p.head_tilt, 1.0, |c| {
         // 远耳：向头顶中心收，避免“耳朵长在脸两边”。
         ear(c, (-9.0 + look * 1.2, -18.5), -0.10 - look * 0.04, p.ear * 0.30, p.alert, true);
 
@@ -698,11 +712,23 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         c.disc((nose_x - 1.0, nose_y - 0.9), 0.72, &c.b.eye_hi);
 
         // 嘴：短短的倒Y型，配一点小舌头，避免 V3 的“长嘴线”。
+        // 打哈欠(yawn)时把嘴和舌头摊大、舌头伸下来
+        let yz = p.yawn.clamp(0.0, 1.0);
         c.line_w((nose_x, nose_y + 2.4), (nose_x - 1.5, nose_y + 5.8), 1.8, &c.b.mouth);
         c.line_w((nose_x - 1.5, nose_y + 5.8), (nose_x - 5.0, nose_y + 5.2), 1.7, &c.b.mouth);
         c.line_w((nose_x - 1.5, nose_y + 5.8), (nose_x + 2.0, nose_y + 5.1), 1.7, &c.b.mouth);
-        c.oval((nose_x - 0.5, nose_y + 7.2), 2.6, 2.0, &c.b.outline);
-        c.oval((nose_x - 0.5, nose_y + 7.8), 2.0, 1.5, &c.b.tongue);
+        c.oval(
+            (nose_x - 0.5, nose_y + 7.2 + yz * 1.4),
+            2.6 + yz * 2.4,
+            2.0 + yz * 2.6,
+            &c.b.outline,
+        );
+        c.oval(
+            (nose_x - 0.5, nose_y + 7.8 + yz * 2.6),
+            2.0 + yz * 1.8,
+            1.5 + yz * 3.0,
+            &c.b.tongue,
+        );
 
         // 近侧耳：更靠中、更短、更厚，贴着圆头生长。
         ear(c, (0.5 + look * 0.9, -22.0), 0.19 + look * 0.05, -p.ear * 0.34, p.alert, false);

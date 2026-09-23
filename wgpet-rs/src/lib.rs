@@ -236,6 +236,24 @@ pub unsafe extern "C" fn wgime_pet_ball(out: *mut f32) -> i32 {
     }
 }
 
+/// 姿势预设(对着用户给的《柴犬姿势表》): -1 = 按状态机正常来;
+/// 0=站 1=坐 2=趴 3=跑 4=跳 5=前趴玩 6=歪头 7=闻地面 8=回头看 9=睡 10=打哈欠 11=眯眼笑。
+/// 会顺带冻住动画, 供"姿势表"导出与验收。
+#[no_mangle]
+pub extern "C" fn wgime_pet_act(k: i32) -> i32 {
+    guard(|| {
+        if let Ok(mut g) = PET.lock() {
+            g.act = k.clamp(-1, 11);
+            g.hold = true;
+            g.v = 0.0;
+            g.gait = 0.0;
+            g.throw_t = None;
+        }
+        PAUSED.store(true, Ordering::SeqCst);
+        0
+    })
+}
+
 /// 吉祥物模式(白底, 导出 IP 插画用): on=1 开。
 #[no_mangle]
 pub extern "C" fn wgime_pet_mascot(on: i32) -> i32 {
@@ -667,6 +685,8 @@ struct Pet {
     ball_spin: f32,
     /// 进球后框口闪光剩余
     flash: f32,
+    /// 姿势预设(-1 = 按状态机正常来; 0..11 见 `pose()`), 供"姿势表"导出与测试
+    act: i32,
 }
 
 static PET: Mutex<Pet> = Mutex::new(Pet {
@@ -700,6 +720,7 @@ static PET: Mutex<Pet> = Mutex::new(Pet {
     ball_y: 0.0,
     ball_spin: 0.0,
     flash: 0.0,
+    act: -1,
 });
 
 fn rnd(seed: &mut u32) -> f32 {
@@ -876,35 +897,93 @@ impl Pet {
     fn pose(&self, anchor_x: f32, anchor_y: f32) -> art::Pose {
         let run = self.running as i32 as f32;
         let moving = self.v.abs() > 1.0;
-        art::Pose {
-            x: anchor_x,
-            ground: anchor_y,
-            face: self.face,
-            scale: DOG_SCALE,
-            gait: self.gait,
-            stride: if moving { 24.0 + run * 9.0 } else { 0.0 },
-            lift: if moving { 8.5 + run * 4.0 } else { 0.0 },
-            lean: self.v * 0.00035,
-            bob: -((self.gait * std::f32::consts::TAU * 2.0).sin().abs()) * (2.4 + run * 1.6),
-            tail: self.t * (3.4 + run * 3.0) + self.look * 0.5,
-            ear: self.t * (2.2 + run * 2.0),
-            blink: self.blink,
-            look: self.look,
-            up: 1.0,
-            alert: if self.throw_t.is_some() {
+        // 姿势预设(对着用户给的姿势表): -1 = 按状态机正常来
+        let (mut up, mut sit, mut bow, mut drop, mut tilt, mut yawn) = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let (mut stride, mut lift, mut bob, mut alert, mut blink, mut look) = (
+            if moving { 24.0 + run * 9.0 } else { 0.0 },
+            if moving { 8.5 + run * 4.0 } else { 0.0 },
+            -((self.gait * std::f32::consts::TAU * 2.0).sin().abs()) * (2.4 + run * 1.6),
+            if self.throw_t.is_some() {
                 0.9
             } else if self.v.abs() > 200.0 {
                 0.35
             } else {
                 0.0
             },
+            self.blink,
+            self.look,
+        );
+        if self.act >= 0 {
+            // 0站 1坐 2趴 3跑 4跳 5前趴 6歪头 7闻地 8回头看 9睡 10哈欠 11眯眼笑
+            match self.act {
+                0 => {}
+                1 => sit = 1.0,
+                2 => {
+                    up = 0.34;
+                    drop = 0.75;
+                }
+                3 => {
+                    stride = 30.0;
+                    lift = 12.0;
+                    bob = -3.0;
+                    alert = 0.25;
+                }
+                4 => {
+                    stride = 12.0;
+                    lift = 26.0;
+                    bob = -30.0;
+                    alert = 0.5;
+                }
+                5 => {
+                    bow = 1.0;
+                    alert = 0.3;
+                }
+                6 => tilt = 0.30,
+                7 => drop = 0.95,
+                8 => {
+                    sit = 1.0;
+                    look = -1.0;
+                    tilt = -0.12;
+                }
+                9 => {
+                    up = 0.30;
+                    drop = 0.55;
+                    blink = 1.0;
+                }
+                10 => {
+                    sit = 1.0;
+                    yawn = 1.0;
+                }
+                _ => {
+                    sit = 1.0;
+                    blink = 0.55;
+                }
+            }
+        } else if self.scene != 1 && self.v.abs() < 1.0 && self.throw_t.is_none() {
+            sit = 1.0; // 站住不动时坐着: Q版柴犬的常态姿势
+        }
+        art::Pose {
+            x: anchor_x,
+            ground: anchor_y,
+            face: self.face,
+            scale: DOG_SCALE,
+            gait: self.gait,
+            stride,
+            lift,
+            lean: self.v * 0.00035,
+            bob,
+            tail: self.t * (3.4 + run * 3.0) + self.look * 0.5,
+            ear: self.t * (2.2 + run * 2.0),
+            blink,
+            look,
+            up,
+            alert,
             arm: self.arm,
-            // 站住不动(且不是投篮场)时坐着: Q版柴犬的常态姿势就是坐姿
-            sit: if self.scene != 1 && self.v.abs() < 1.0 && self.throw_t.is_none() {
-                1.0
-            } else {
-                0.0
-            },
+            sit,
+            bow,
+            head_drop: drop,
+            head_tilt: tilt,
+            yawn,
         }
     }
 }
