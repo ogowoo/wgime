@@ -424,8 +424,9 @@ unsafe fn leg(c: &Ctx, s: Pt, f: Pt, bend: f32, w: f32, far: bool) {
     let lower = if far { &c.b.urajiro_dim } else { &c.b.urajiro };
 
     // 参考图的腿更短、更粗，避免线条腿；脚掌做成圆润的小白爪。
-    c.limb(s, k, w + 4.0, &c.b.outline);
-    c.limb(k, f, w * 0.90 + 3.2, &c.b.outline);
+    // 描边收细(参考图是细而均匀的线): 原来 +4.0/+3.2 像记号笔
+    c.limb(s, k, w + 2.4, &c.b.outline);
+    c.limb(k, f, w * 0.90 + 1.9, &c.b.outline);
     c.limb(s, k, w, upper);
     c.limb(k, f, w * 0.90, lower);
 
@@ -441,7 +442,7 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
     // 卷心抬到背上方; **圈半径必须明显大于尾巴的粗细**, 否则圈被填死、看起来只是"背上一坨"
     // (真踩过: r=15.5 配半宽 11.4 => 内孔半径只剩 4, 整条尾巴糊成一个横香肠)
     let cx = -24.0 + wag * 1.1;
-    let cy = base_y - 31.0 - alert * 2.5 * up + wag * 1.0;
+    let cy = base_y - 29.0 - alert * 2.5 * up + wag * 1.0;
     let mut spine = [(0.0f32, 0.0f32); N + 1];
     for (i, p) in spine.iter_mut().enumerate() {
         let t = i as f32 / N as f32;
@@ -454,7 +455,7 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
     for i in 0..=N {
         let t = i as f32 / N as f32;
         // 中段最蓬松(参考图里那条尾巴又粗又蓬, 快赶上身子了)
-        let w = 6.6 + 5.2 * (t * PI * 0.95).sin();
+        let w = 10.8 + 4.0 * (t * PI * 0.95).sin();
         let (dx, dy) = if i == 0 {
             (spine[1].0 - spine[0].0, spine[1].1 - spine[0].1)
         } else {
@@ -484,7 +485,7 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
         return;
     }
     let _ = c.rt.FillGeometry(&geo, &c.b.fur, None);
-    let _ = c.rt.DrawGeometry(&geo, &c.b.outline, 2.4, None);
+    let _ = c.rt.DrawGeometry(&geo, &c.b.outline, 1.7, None);
     // 参考图不是纯白尾尖，而是卷尾内侧的一小块奶油色里白。
     let ti = N.saturating_sub(1);
     let tx = spine[ti].0 * 0.82 + spine[N].0 * 0.18;
@@ -496,11 +497,11 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
 /// 老写法是两个圆椭圆耷在头顶, 读起来像发髻 —— 用户原话"耳朵位置有点诡异"。
 unsafe fn ear(c: &Ctx, base: Pt, tilt: f32, swing: f32, alert: f32, far: bool) {
     // 整体缩小到 0.82: 柴犬的耳朵相对头是小的; 原来的三角比半个头还高, 看着像纸片贴上去
-    let sy = (if far { 0.88 } else { 1.0 }) * (1.0 - alert * 0.12) * 0.72;
-    let sx = (if far { 0.92 } else { 1.0 }) * 0.94;
+    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 1.02;
+    let sx = (if far { 0.95 } else { 1.0 }) * 1.08;
     let ang = tilt + swing - alert * tilt * 0.45;
     let fill = if far { &c.b.fur_shade } else { &c.b.fur };
-    c.place(&c.shapes.ear, base, ang, sx, sy, Some(fill), 2.4);
+    c.place(&c.shapes.ear, base, ang, sx, sy, Some(fill), 1.7);
     if !far {
         // 内耳: 同一形状缩小, 只填色不描边
         c.place(
@@ -613,10 +614,21 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
             1.06,
             1.06 * (0.82 + 0.18 * up),
             Some(&c.b.fur),
-            3.4,
+            2.3,
         );
-        // 赛璐璐暗面: 一块平涂压在下半身(动漫插画那味儿, 不渐变)
-        c.oval((-5.0, body_y + 13.0), 29.0, 7.0, &c.b.cel);
+        // 暗面: 参考图是**水彩柔过渡**而不是硬平涂 —— 用两层半透明叠出柔和的边
+        if let Ok(soft) = c.rt.CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: CEL.r,
+                g: CEL.g,
+                b: CEL.b,
+                a: 0.28,
+            },
+            None,
+        ) {
+            c.oval((-4.0, body_y + 12.0), 33.0, 11.0, &soft);
+        }
+        c.oval((-5.0, body_y + 13.0), 27.0, 6.0, &c.b.cel);
         // 背脊高光
         c.oval((-7.0, body_y - 20.0), 22.0, 3.0, &c.b.fur_shade);
         // 里白: 胸口一坨 + 腹线一条
@@ -678,7 +690,7 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         ear(c, (-9.0 + look * 1.2, -18.5), -0.10 - look * 0.04, p.ear * 0.30, p.alert, true);
 
         // 头本体。x/y 分开缩放，保持大头但不把脸拉成长椭圆。
-        c.place(&c.shapes.head, (0.0, 0.0), 0.0, head_sx, head_sy, Some(&c.b.fur), 2.7);
+        c.place(&c.shapes.head, (0.0, 0.0), 0.0, head_sx, head_sy, Some(&c.b.fur), 1.9);
 
         // V4：里白改成更“蝴蝶结/心形”的包子脸结构。
         // 中央白面负责正脸识别，两侧脸颊负责 Q 版圆润感。
@@ -710,11 +722,12 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         }
 
         // 鼻子往脸中心收，形成“柴犬正脸”的圆鼻，而不是狐狸尖鼻。
+        // ②吻部/鼻子比 V4 再放大一点(表里的鼻子很显眼), 嘴也多给一点
         let nose_x = 24.0 + look * 3.2;
         let nose_y = 1.0 + look.abs() * 0.5;
-        c.oval((nose_x, nose_y), 4.5, 3.7, &c.b.outline);
-        c.oval((nose_x, nose_y), 3.45, 2.75, &c.b.nose);
-        c.disc((nose_x - 1.0, nose_y - 0.9), 0.72, &c.b.eye_hi);
+        c.oval((nose_x, nose_y), 5.4, 4.4, &c.b.outline);
+        c.oval((nose_x, nose_y), 4.2, 3.3, &c.b.nose);
+        c.disc((nose_x - 1.1, nose_y - 1.0), 0.85, &c.b.eye_hi);
 
         // 嘴：短短的倒Y型，配一点小舌头，避免 V3 的“长嘴线”。
         // 打哈欠(yawn)时把嘴和舌头摊大、舌头伸下来
