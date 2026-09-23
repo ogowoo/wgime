@@ -2160,3 +2160,104 @@ BitBlt 400x300 + GetDIBits  9.86 ms/次      <- 一次读 12 万像素(但见下
 "API 清单里有工具" —— 就是这次真事故的守卫。`standalone-plugin-test.py` 7/7。
 真机(发行版布局)端到端另验过: 宠物从 `package\plugins\` 起, 点第一个工具 -> 日志
 `tool jsq -> 交给宿主 API (pid ...)` + `ok=True 已启动 计算器`, 且 EnumWindows 真看到新窗口。
+
+## §D40 第八十七轮：桌面宠物改 Rust —— 渲染路线用实测钉死(ULW, 不是 DComp)
+
+### 1) 起因与选型
+
+用户问"python 不适合做这个, 看看用什么语言更适合? rust? C++? Java? 或者 go?"。先摸本机事实再回答:
+
+```
+rustc 1.98.0 (host: x86_64-pc-windows-gnu)   ✓ 已装
+cargo 1.98.0                                  ✓ 已装
+C:\Tools\WgIme\wgime-tsf\Cargo.toml           crate-type = ["cdylib"]  ← 本仓库早已在用 Rust 出 DLL
+wgime-tsf\target\release\wgime_tsf.dll        1,433,485 字节
+cl / g++ / go                                  ✗ 不在 PATH (VS BuildTools 18 在, 需 vcvars)
+javac / java                                   JDK 17 (Adoptium)
+```
+
+→ **Rust 第一**(工具链已装 + 仓库已有同形态 crate + `windows` crate 有全套 D2D/DComp 绑定), C++ 并列
+(D2D/DComp 官方样例全是 C++, 但要手工管 COM 生命周期、仓库新增一套 C++ 构建), Java 不合适(GraalVM
+native-image 出 shared lib 勉强可行, 但无 D2D 生态、要靠 FFM/JNI 手搓 COM、本机连 GraalVM 都没装),
+Go 不合适(`-buildmode=c-shared` 能出 DLL 但拖一整套运行时, 而且**没有 GPU 2D 绑定** —— 最后还是 GDI,
+换语言换不来画面)。C# 是暗牌(`csc.exe` 系统自带、仓库里还有 `tray_cs.cs`), 但托管 DLL 不能被 `ctypes.CDLL`
+载入, 要 NativeAOT + MSVC 或写薄 C++ shim, 只能作备选。
+
+开写前的关键判断: **让宠物难看的不是 Python, 而是渲染路径** —— ①`LWA_COLORKEY` 是 1 位透明(边缘必然锯齿、
+没有半透明光晕); ②形状是代码一行行画的, 不是美术资源; ③全屏窗 + 手算脏矩形(残影 bug 的温床)。
+语言只解决第一条里"GPU 合成"那部分。
+
+### 2) 坑一: DirectComposition —— 画对了、Present 成功、屏幕上什么都没有
+
+第一版按"正解"写: `WS_EX_NOREDIRECTIONBITMAP` + D3D11 + `CreateSwapChainForComposition`
+(`B8G8R8A8_UNORM` + `DXGI_ALPHA_MODE_PREMULTIPLIED` + `FLIP_SEQUENTIAL`) + `DCompositionCreateDevice` /
+`CreateTargetForHwnd` / `CreateVisual` / `SetContent` / `SetRoot` / `Commit` + D2D `CreateBitmapFromDxgiSurface`。
+
+客观测量全部"正常": 扩展样式五条齐、**120.0fps**、不抢焦点、`WindowFromPoint` 命中自己(说明窗是可见的)。
+像素验证却全线失败, 于是加了两件诊断: **回读后台缓冲**(拷到 staging 纹理再 `Map`)与 **HRESULT 逐步日志**:
+
+```
+D3D11CreateDevice ok
+CreateSwapChainForComposition ok
+DirectComposition: target/visual/content/rootset/commit ok
+D2D device context ok, dpi=96
+center BGRA = (250, 158, 51, 255)   ← 本体色, 分毫不差
+(4,4)  BGRA = (0, 0, 0, 0)          ← 真透明
+alpha 直方图 top: [(46, 1578), (255, 931), (119, 877)]   ← 0.18 / 0.35+0.18 / 1.0 三档全对
+frames/1s = 120
+```
+
+**渲染是对的, 屏幕上看不到**。三种"看"法(BitBlt / GetPixel / `PrintWindow(PW_RENDERFULLCONTENT)`)都看不到,
+于是**请用户用眼睛当裁判** —— 用户答"什么都没看到"。两个独立原因:
+
+- **原因 A(致命)**: `dcomp` / `target` / `visual` 是建窗函数的**局部变量**, 函数返回即 drop ⇒ COM 引用计数
+  归零 ⇒ 合成树被拆。C++ 样例里这三个都是窗口生命周期的成员。**这条一修, 画面就出来了**(用户肉眼确认了
+  品红背景上那个橙色发光团)。
+- **原因 B(路线级)**: DComp 窗的内容**不按 alpha 做命中测试** —— 整窗区域 `WindowFromPoint` 都命中本窗。
+  唯一能强制穿透的 `SetWindowRgn` 做对照实验: **装空区域后精灵像素变成背景色, 关掉立刻变回 `(250,158,51)`**
+  ⇒ 区域会把 DComp 内容一起裁掉。"看得见"和"点得穿"在 DComp 上只能二选一。
+
+### 3) 坑二: 换 `UpdateLayeredWindow` —— 逐像素 alpha 命中测试, 天然穿透
+
+- 窗口: `WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST`(不带 NOREDIRECTIONBITMAP)。
+- 表面: `CreateDIBSection` 32bpp 顶朝下 DIB + `CreateCompatibleDC`; D2D 用 **`CreateDCRenderTarget`**
+  (`D2D1_RENDER_TARGET_TYPE_SOFTWARE` + 预乘 BGRA + dpi 96 => 1DIP=1px)。
+- 提交: `UpdateLayeredWindow(ULW_ALPHA)` + `BLENDFUNCTION{AC_SRC_OVER, 255, AC_SRC_ALPHA}`,
+  **同时负责"移到哪"和"长什么样"**(不用另调 SetWindowPos)。
+- 命中测试**逐像素按 alpha**: 没画到的像素鼠标直接穿过去。被动态实测**连本体都不挡**
+  (`WindowFromPoint` 三点全部跳过本窗); 交互态只摘 `WS_EX_TRANSPARENT` ⇒ **只有画到的像素挡鼠标**,
+  面板外空白照旧穿透, 前台全程不变。
+
+三条实测数字: **ULW 不做 vsync 节流** —— 不限速跑出 **2085fps**(纯烧 CPU), 必须自己限速
+(`timeBeginPeriod(1)` + 每帧算 deadline, 常量 `FPS_CAP=120`, 限速后稳 120.0); 窗口做成**精灵大小**
+(260×260)并跟着角色横移, 全屏窗 + 手算脏矩形那一整类残影 bug 因此**不存在**(每帧整块重画);
+D2D 软件光栅在这个尺寸上完全不是瓶颈。
+
+### 4) 验收: `wgpet-rs/verify-overlay.py` 25/25
+
+纯品红背景窗 + 精灵不同半径采样, 全靠像素与句柄:
+
+| 断言 | 实测 |
+|---|---|
+| 三层 alpha 叠加逐通道吻合 | `pix=(255,97,185)` vs 期望 `(255,96,185)`(=`0.35` 叠在 `0.18` 叠在品红上) |
+| 三层边界都有中间色(真抗锯齿) | `aa=[(254,113,152), (255,82,198), (255,36,239)]` |
+| 窗内空白 = 纯背景色 | `(255,0,255)` 精确相等 |
+| 本体核心 = 本体色 | `(250,158,51)` 精确相等 |
+| 眼睛在上方(证明 DIB 没上下翻转) | `(26,23,31)` 精确相等 |
+| 透明处/本体处/光晕处全部穿透 | 三点 `WindowFromPoint` 都不是本窗 |
+| 交互态: 本体可点而空白仍穿透 | `wfp=self` / `wfp≠self`, 且前台不变 |
+| 帧率 | 120.0fps |
+
+**顺带一条测试纪律**: 探针中途集体变红, 读数全是 `(102,0,102)`(品红被 40% 黑盖住)、前台窗口在测试中途
+自己变了 —— 是**用户的截图遮罩层**盖在屏幕上。现在采像素前有**环境闸门**: 先确认角点是干净的纯品红再往下断言,
+否则报"环境不干净"而不是假装是代码 bug。
+
+### 5) Rust 侧小坑
+
+`windows 0.58` 的 `ID2D1RenderTarget::CreateSolidColorBrush` 挂在 **`Foundation_Numerics`** feature 之下
+(不打开就是 "no method named CreateSolidColorBrush"); `IDXGISwapChain1::Present` 返回 **`HRESULT`** 而不是
+`Result`(用 `.ok()` 转); `DCompositionCreateDevice` / `D2D1CreateFactory` 是**泛型**返回(要写
+`let d: IDCompositionDevice = DCompositionCreateDevice(&dev)?`); `SelectObject` 要显式 `HGDIOBJ(hbmp.0)`
+(泛型推断不出来); `ID2D1DeviceContext::SetUnitMode` 只存在于 DeviceContext(不在 RenderTarget 上),
+而 `ID2D1DCRenderTarget` 没有这个方法 —— DC 渲染目标靠 dpi 96 保证 1:1。
+
