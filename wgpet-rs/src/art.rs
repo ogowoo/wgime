@@ -223,11 +223,6 @@ impl<'a> Ctx<'a> {
     pub(crate) unsafe fn oval(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush) {
         let _ = self.rt.FillEllipse(&ell(p.0, p.1, rx, ry), brush);
     }
-    /// 带描边的椭圆: 先画大一圈的深色, 再画本色
-    pub(crate) unsafe fn oval_out(&self, p: Pt, rx: f32, ry: f32, brush: &ID2D1SolidColorBrush, w: f32) {
-        self.oval(p, rx + w, ry + w, &self.b.outline);
-        self.oval(p, rx, ry, brush);
-    }
     /// 绕 (cx,cy) 旋转 angle 弧度后执行 f(与外层变换**相乘**, 不是替换)
     pub(crate) unsafe fn rot_at<F: FnOnce(&Self)>(&self, angle: f32, c: Pt, f: F) {
         let mut cur = Matrix3x2::default();

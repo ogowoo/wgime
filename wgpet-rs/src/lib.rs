@@ -39,12 +39,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const ABI_VERSION: u32 = 2;
 
-/// 关着百宝袋时的窗口(只装角色) / 打开时(角色 + 面板)
+/// 关着百宝袋时的窗口(只装角色)
 const SMALL: (i32, i32) = (300, 280);
-const BIG: (i32, i32) = (palette::WIN_W as i32, palette::WIN_H as i32);
-/// DIB 一律按最大尺寸分配, 提交时只交当前需要的那块(psize 允许是 DIB 的子矩形)
-const MAX_W: i32 = BIG.0;
-const MAX_H: i32 = BIG.1;
+/// DIB 一律按**最大**尺寸分配, 提交时只交当前需要的那块(psize 允许是 DIB 的子矩形) ——
+/// 于是开合面板、工具数变化时都不必重建 DIB 与 D2D 渲染目标
+const MAX_W: i32 = palette::WIN_W as i32;
+const MAX_H: i32 = 430;
 /// 飞行物窗口
 const FX: i32 = 220;
 
@@ -89,6 +89,11 @@ static DBG: Mutex<String> = Mutex::new(String::new());
 static PROBE: Mutex<[[f32; 6]; PROBE_N]> = Mutex::new([[0.0; 6]; PROBE_N]);
 static TOOLS: Mutex<Vec<palette::Item>> = Mutex::new(Vec::new());
 static CLICK: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+/// 滚轮 delta(WM_MOUSEWHEEL)。注意: 鼠标滚轮默认发给**焦点窗**, 而本窗永不取焦点 ——
+/// Win10+ 的「悬停时滚动非活动窗口」才会把它发过来, 所以翻页另有 ‹ › 按钮兜底。
+static WHEEL: Mutex<Option<i32>> = Mutex::new(None);
+/// 覆盖光标位置(测试钩子, x<0 = 用真实光标)
+static FAKE_CURSOR: Mutex<Option<(f32, f32)>> = Mutex::new(None);
 static LAST_LAUNCHED: Mutex<String> = Mutex::new(String::new());
 /// 宿主给的回调: 点中工具时把 code 交回去, 由宿主启动(插件不许自己跑插件, 见 AGENTS §5 规则 51)
 type ToolCb = unsafe extern "C" fn(*const u8, usize);
@@ -339,43 +344,115 @@ pub unsafe extern "C" fn wgime_pet_panel_rect(out: *mut f32) -> i32 {
     if out.is_null() {
         return -1;
     }
-    let (w, flip, open, r) = geom_snapshot();
-    if !open {
-        let z = [0.0f32; 4];
-        std::ptr::copy_nonoverlapping(z.as_ptr(), out, 4);
-        return 0;
+    match layout_now() {
+        None => {
+            let z = [0.0f32; 4];
+            std::ptr::copy_nonoverlapping(z.as_ptr(), out, 4);
+        }
+        Some((l, r)) => {
+            let v = [
+                r.0 as f32 + l.panel.0,
+                r.1 as f32 + l.panel.1,
+                l.panel.2,
+                l.panel.3,
+            ];
+            std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
+        }
     }
-    let l = palette::layout(TOOLS.lock().map(|g| g.len()).unwrap_or(0), flip);
-    let v = [
-        (r.0 as f32 + l.panel.0),
-        (r.1 as f32 + l.panel.1),
-        l.panel.2,
-        l.panel.3,
-    ];
-    let _ = w;
-    std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
     0
 }
 
-/// 第 i 个工具格的矩形(屏幕坐标): [x, y, w, h]
+/// 第 i 个工具格的矩形(屏幕坐标): [x, y, w, h]。不在当前页则返回 -1。
 #[no_mangle]
 pub unsafe extern "C" fn wgime_pet_item_rect(i: i32, out: *mut f32) -> i32 {
     if out.is_null() || i < 0 {
         return -1;
     }
-    let (_w, flip, open, r) = geom_snapshot();
-    if !open {
+    let Some((l, r)) = layout_now() else { return -1 };
+    let Some(it) = l.items.iter().find(|it| it.0 == i as usize) else {
         return -1;
-    }
-    let l = palette::layout(TOOLS.lock().map(|g| g.len()).unwrap_or(0), flip);
-    let idx = i as usize;
-    if idx >= l.items.len() {
-        return -1;
-    }
-    let it = l.items[idx];
-    let v = [r.0 as f32 + it.0, r.1 as f32 + it.1, it.2, it.3];
+    };
+    let v = [r.0 as f32 + it.1, r.1 as f32 + it.2, it.3, it.4];
     std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
     0
+}
+
+/// 标题条控件的矩形: 0=关闭 1=上一页 2=下一页。给探针点击用。
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_btn_rect(k: i32, out: *mut f32) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    let Some((l, r)) = layout_now() else { return -1 };
+    let b = match k {
+        0 => l.close,
+        1 => l.prev,
+        2 => l.next,
+        _ => return -1,
+    };
+    let v = [r.0 as f32 + b.0, r.1 as f32 + b.1, b.2, b.3];
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
+    0
+}
+
+/// 测试/演示用: 覆盖"光标位置"(x<0 恢复真实光标)。
+/// 为什么必须有这个钩子: 悬停/看鼠标都读真实光标, 而**屏幕前的人一动鼠标**,
+/// 断言就会假红(真踩过: 光标从 (1596,1830) 自己漂到 (1507,1868), 悬停断言白红一条)。
+/// 与 python 版宠物的 `WGIME_PET_FAKE_MOUSE` 同一个用途。
+#[no_mangle]
+pub extern "C" fn wgime_pet_set_cursor(x: i32, y: i32) -> i32 {
+    guard(|| {
+        if let Ok(mut g) = FAKE_CURSOR.lock() {
+            *g = if x < 0 {
+                None
+            } else {
+                Some((x as f32, y as f32))
+            };
+        }
+        0
+    })
+}
+
+/// 角色的**屏幕**坐标: [脚底中心x, 脚底y, 窗口宽, 窗口高]。
+/// 给探针用 —— 别让它自己拿窗口矩形去猜角色在哪(开合面板时锚点会变, 猜必错)。
+#[no_mangle]
+pub unsafe extern "C" fn wgime_pet_dog_xy(out: *mut f32) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    let (open, flip) = PET
+        .lock()
+        .map(|g| (g.palette && g.anim > 0.02, g.flip))
+        .unwrap_or((false, false));
+    let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
+    let a = anchor(open, flip, n);
+    let h = HWND_MAIN.load(Ordering::SeqCst);
+    let r = if h == 0 {
+        (0, 0)
+    } else {
+        window_rect(HWND(h as *mut c_void))
+    };
+    let size = win_size(open, n);
+    let v = [
+        r.0 as f32 + a.0,
+        r.1 as f32 + a.1,
+        size.0 as f32,
+        size.1 as f32,
+    ];
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, 4);
+    0
+}
+
+/// 当前页(0 基) / 总页数
+#[no_mangle]
+pub extern "C" fn wgime_pet_page() -> i32 {
+    PET.lock().map(|g| g.page as i32).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn wgime_pet_pages() -> i32 {
+    let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
+    n.div_ceil(palette::PER_PAGE).max(1) as i32
 }
 
 /// 当前高亮的工具下标(-1 = 没高亮)
@@ -458,14 +535,18 @@ struct Pet {
     palette: bool,
     /// 开场动画 0..1
     anim: f32,
+    /// 高亮的工具**全局**下标(-1 = 无)
     hover: i32,
+    /// 每个格子的悬停动效值 0..1(索引是格子序号, 不是工具下标)
+    hover_anim: [f32; palette::PER_PAGE],
+    /// 当前第几页
+    page: usize,
     flip: bool,
     /// 掏工具动作进度: None = 没在掏
     throw_t: Option<f32>,
     throw_idx: i32,
     /// fx 落点爆开剩余时间
     burst: f32,
-    fx_on: bool,
 }
 
 static PET: Mutex<Pet> = Mutex::new(Pet {
@@ -483,11 +564,12 @@ static PET: Mutex<Pet> = Mutex::new(Pet {
     palette: false,
     anim: 0.0,
     hover: -1,
+    hover_anim: [0.0; palette::PER_PAGE],
+    page: 0,
     flip: false,
     throw_t: None,
     throw_idx: -1,
     burst: 0.0,
-    fx_on: false,
 });
 
 fn rnd(seed: &mut u32) -> f32 {
@@ -631,20 +713,42 @@ impl Pet {
 
 // ---------------------------------------------------------------- 几何
 
-fn win_size(open: bool) -> (i32, i32) {
+fn win_size(open: bool, n: usize) -> (i32, i32) {
     if open {
-        BIG
+        palette::win_size(n)
     } else {
         SMALL
     }
 }
 
-fn anchor(open: bool, flip: bool) -> (f32, f32) {
+fn anchor(open: bool, flip: bool, n: usize) -> (f32, f32) {
     if open {
-        (palette::anchor_x(flip, 1.0), palette::WIN_H - ANCHOR_BOTTOM)
+        (
+            palette::anchor_x(flip, 1.0),
+            palette::win_size(n).1 as f32 - ANCHOR_BOTTOM,
+        )
     } else {
         (ANCHOR_X_SMALL, ANCHOR_Y_SMALL)
     }
+}
+
+/// 当前布局(仅面板开着时), 以及窗口左上角屏幕坐标 —— 给导出用
+fn layout_now() -> Option<(palette::Layout, (i32, i32))> {
+    let (open, flip, page) = PET
+        .lock()
+        .map(|g| (g.palette && g.anim > 0.02, g.flip, g.page))
+        .unwrap_or((false, false, 0));
+    if !open {
+        return None;
+    }
+    let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
+    let h = HWND_MAIN.load(Ordering::SeqCst);
+    let r = if h == 0 {
+        (0, 0)
+    } else {
+        window_rect(HWND(h as *mut c_void))
+    };
+    Some((palette::layout(n, flip, page), r))
 }
 
 fn window_rect(h: HWND) -> (i32, i32) {
@@ -656,6 +760,7 @@ fn window_rect(h: HWND) -> (i32, i32) {
 }
 
 /// 给导出用的快照: (窗口宽, 是否翻到左边, 面板是否开着, 窗口左上角)
+#[allow(dead_code)]
 fn geom_snapshot() -> (i32, bool, bool, (i32, i32)) {
     let (open, flip) = PET
         .lock()
@@ -667,7 +772,8 @@ fn geom_snapshot() -> (i32, bool, bool, (i32, i32)) {
     } else {
         window_rect(HWND(h as *mut c_void))
     };
-    (win_size(open).0, flip, open, r)
+    let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
+    (win_size(open, n).0, flip, open, r)
 }
 
 // ---------------------------------------------------------------- 窗口与渲染
@@ -684,6 +790,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let _ = ClientToScreen(hwnd, &mut p);
             if let Ok(mut c) = CLICK.lock() {
                 *c = Some((p.x, p.y));
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            let d = ((wp.0 >> 16) & 0xFFFF) as i16 as i32;
+            if let Ok(mut w) = WHEEL.lock() {
+                *w = Some(d);
             }
             LRESULT(0)
         }
@@ -769,7 +882,7 @@ fn render_thread() -> Result<()> {
             g.face = 1.0;
             g.v = WALK_SPEED;
         }
-        let (a0x, a0y) = anchor(false, false);
+        let (a0x, a0y) = anchor(false, false, 0);
         let hwnd = CreateWindowExW(
             ex,
             PCWSTR(cls_name.as_ptr()),
@@ -842,60 +955,99 @@ fn render_thread() -> Result<()> {
 
             let mut m = POINT { x: 0, y: 0 };
             let _ = GetCursorPos(&mut m);
+            let (mx, my) = match FAKE_CURSOR.lock().ok().and_then(|g| *g) {
+                Some((x, y)) => (x, y),
+                None => (m.x as f32, m.y as f32),
+            };
             let click = CLICK.lock().ok().and_then(|mut c| c.take());
 
-            let (open, flip, ax, ay, pose, thrown, fx_pos, fx_vis, burst, fx_letter) = {
+            let (open, flip, ax, ay, pose, thrown, fx_pos, fx_vis, burst, fx_letter, n, page) = {
                 let mut g = match PET.lock() {
                     Ok(g) => g,
                     Err(_) => break,
                 };
                 if !frozen {
-                    g.step(dt, sw as f32, ground as f32, (m.x as f32, m.y as f32), &mut seed);
+                    g.step(dt, sw as f32, ground as f32, (mx, my), &mut seed);
                 }
                 let open = g.palette && g.anim > 0.02;
-                let (ax, ay) = anchor(open, g.flip);
+                let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
+                let (ax, ay) = anchor(open, g.flip, n);
+                let l = palette::layout(n, g.flip, g.page);
                 // 命中测试: 光标 → 窗口坐标 → 面板格子
                 let wr = window_rect(hwnd);
-                let (lx, ly) = ((m.x - wr.0) as f32, (m.y - wr.1) as f32);
-                let n = TOOLS.lock().map(|t| t.len()).unwrap_or(0);
-                let l = palette::layout(n, g.flip);
+                let (lx, ly) = (mx - wr.0 as f32, my - wr.1 as f32);
                 let mut hover = -1;
                 if open && g.throw_t.is_none() {
-                    for (i, it) in l.items.iter().enumerate() {
-                        if lx >= it.0 && lx <= it.0 + it.2 && ly >= it.1 && ly <= it.1 + it.3 {
-                            hover = i as i32;
+                    for (gi, x, y, w, h) in l.items.iter() {
+                        if lx >= *x && lx <= x + w && ly >= *y && ly <= y + h {
+                            hover = *gi as i32;
                             break;
                         }
                     }
                 }
+                if g.hover != hover {
+                    dbg(format!(
+                        "hover {} -> {} cursor=({},{}) local=({:.0},{:.0}) win=({},{}) page={}",
+                        g.hover, hover, m.x, m.y, lx, ly, wr.0, wr.1, g.page
+                    ));
+                }
                 g.hover = hover;
-                // 点击(真实 WM_LBUTTONDOWN 或 wgime_pet_click 注入)
-                if let Some((cx, cy)) = click {
-                    let idx = if open && g.throw_t.is_none() {
-                        let mut hit = -1;
-                        for (i, it) in l.items.iter().enumerate() {
-                            let (fx0, fy0) = (it.0 + wr.0 as f32, it.1 + wr.1 as f32);
-                            if cx as f32 >= fx0
-                                && (cx as f32) <= fx0 + it.2
-                                && cy as f32 >= fy0
-                                && (cy as f32) <= fy0 + it.3
-                            {
-                                hit = i as i32;
-                                break;
-                            }
-                        }
-                        hit
+                // 悬停动效: 每个格子朝目标值靠(亮起来/暗下去都平滑)
+                let sp = (dt * 14.0).min(1.0);
+                for k in 0..palette::PER_PAGE {
+                    let target = if l.items.get(k).map(|it| it.0 as i32) == Some(hover) {
+                        1.0
                     } else {
-                        -1
+                        0.0
                     };
+                    g.hover_anim[k] += (target - g.hover_anim[k]) * sp;
+                }
+                // 滚轮翻页
+                if let Some(d) = WHEEL.lock().ok().and_then(|mut w| w.take()) {
+                    if open {
+                        if d > 0 && g.page > 0 {
+                            g.page -= 1;
+                        } else if d < 0 && g.page + 1 < l.pages {
+                            g.page += 1;
+                        }
+                    }
+                }
+                // 点击(真实 WM_LBUTTONDOWN 或 wgime_pet_click 注入, 都是屏幕坐标)
+                if let Some((cx, cy)) = click {
+                    let (rx, ry) = (wr.0 as f32, wr.1 as f32);
+                    let inside = |r: (f32, f32, f32, f32)| {
+                        cx as f32 >= rx + r.0
+                            && (cx as f32) <= rx + r.0 + r.2
+                            && cy as f32 >= ry + r.1
+                            && (cy as f32) <= ry + r.1 + r.3
+                    };
+                    let mut idx = -1;
+                    if open && g.throw_t.is_none() {
+                        if inside(l.close) {
+                            g.palette = false;
+                            dbg("palette: 关闭按钮收起".into());
+                        } else if l.pages > 1 && inside(l.prev) && g.page > 0 {
+                            g.page -= 1;
+                        } else if l.pages > 1 && inside(l.next) && g.page + 1 < l.pages {
+                            g.page += 1;
+                        } else if inside(l.panel) {
+                            for (gi, x, y, w, h) in l.items.iter() {
+                                if inside((*x, *y, *w, *h)) {
+                                    idx = *gi as i32;
+                                    break;
+                                }
+                            }
+                        } else {
+                            g.palette = false;
+                            dbg("palette: 点空白处收起".into());
+                        }
+                    }
                     LAST_IDX.store(idx as isize, Ordering::SeqCst);
                     if idx >= 0 {
                         g.throw_idx = idx;
                         g.throw_t = Some(0.0);
                     }
                 }
-                // 面板格子的屏幕矩形(命中测试用真实窗口坐标, 所以这里再取一次)
-                let _ = l;
                 let letter: String = TOOLS
                     .lock()
                     .ok()
@@ -921,14 +1073,14 @@ fn render_thread() -> Result<()> {
                     fx_y = by + (ey_ - by) * k - arc;
                     fx_vis = t >= 0.0;
                 }
-                (open, g.flip, ax, ay, g.pose(ax, ay), thrown, (fx_x, fx_y), fx_vis, g.burst, letter)
+                (open, g.flip, ax, ay, g.pose(ax, ay), thrown, (fx_x, fx_y), fx_vis, g.burst, letter, n, g.page)
             };
 
-            // 窗口尺寸/位置随面板开合变化(保持脚底在屏幕上的位置不动)
-            let want = win_size(open);
+            // 窗口尺寸/位置随面板开合与工具数变化(锚点按离底边的距离算 => 脚底原地不动)
+            let want = win_size(open, n);
             let wx = (state_x() - ax).round() as i32;
             let wy = ground - ay.round() as i32;
-            draw(&surf, &pose, open, flip, want, &thrown)?;
+            draw(&surf, &pose, open, flip, page, want, &thrown)?;
             present(hwnd, screen_dc, &surf, wx, wy, want.0, want.1)?;
 
             // 交互态切换: 面板开着才需要点得到
@@ -1100,6 +1252,7 @@ unsafe fn draw(
     pose: &art::Pose,
     open: bool,
     flip: bool,
+    page: usize,
     size: (i32, i32),
     thrown: &Option<f32>,
 ) -> Result<()> {
@@ -1113,19 +1266,25 @@ unsafe fn draw(
 
     if open {
         let items = TOOLS.lock().map(|g| g.clone()).unwrap_or_default();
-        let anim = PET.lock().map(|g| g.anim).unwrap_or(1.0);
-        let l = palette::layout(items.len(), flip);
-        let hover = if thrown.is_some() {
-            PET.lock().map(|g| g.throw_idx).unwrap_or(-1)
-        } else {
-            PET.lock().map(|g| g.hover).unwrap_or(-1)
-        };
-        // "掏出来"那一拍: 被点中的格子朝角色滑出去
-        let pull = thrown.map(|t| {
-            let idx = PET.lock().map(|g| g.throw_idx.max(0) as usize).unwrap_or(0);
-            (idx, (t / T_PULL).clamp(0.0, 1.0))
-        });
-        palette::draw_panel(&ctx, &s.pb, &s.text, &items, &l, hover, anim, pull);
+        let (anim, hover, hover_anim) = PET
+            .lock()
+            .map(|g| (g.anim, g.hover, g.hover_anim))
+            .unwrap_or((1.0, -1, [0.0; palette::PER_PAGE]));
+        let thrown_idx = PET.lock().map(|g| g.throw_idx).unwrap_or(-1);
+        let l = palette::layout(items.len(), flip, page);
+        let hover = if thrown.is_some() { thrown_idx } else { hover };
+        let pull = thrown.map(|t| (thrown_idx.max(0) as usize, (t / T_PULL).clamp(0.0, 1.0)));
+        palette::draw_panel(
+            &ctx,
+            &s.pb,
+            &s.text,
+            &items,
+            &l,
+            hover,
+            &hover_anim,
+            anim,
+            pull,
+        );
     }
 
     if let Ok(mut g) = PROBE.lock() {
