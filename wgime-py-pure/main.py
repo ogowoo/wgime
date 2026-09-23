@@ -54,7 +54,8 @@ def _relaunch_if_console_python():
         return                       # 重启失败则不阻塞主流程, 保留当前进程(可能仍弹控制台)
 
 
-_relaunch_if_console_python()
+if '--api' not in sys.argv:        # 第八十六轮: API 调用**不要**重启成 pythonw —— 那会把 stdout detach 掉
+    _relaunch_if_console_python()
 
 
 # DPI 感知: tkinter 与 Win32 物理坐标一致 (否则高分屏光标跟随错位)
@@ -105,6 +106,147 @@ DICT_DIR = _find_dict_dir()
 # 应用根(配置/插件/工具箱/run-csharp-plugin.ps1): 单文件版 = dicts 的父目录(package 根),
 # 开发版 = DICT_DIR 本身(仓库根, 码表与 config/tools/plugins 平级)。
 APP_DIR = os.path.dirname(DICT_DIR) if os.path.basename(DICT_DIR).lower() == 'dicts' else DICT_DIR
+
+
+# ======================================================================
+# 宿主 API (第八十六轮): 给**别的进程 / 插件**一个正式入口, 而不是让它们自己瞎猜
+#   <宿主文件> --api list-plugins              -> 一行 JSON: 可用插件
+#   <宿主文件> --api run-plugin <code>         -> 用**和宿主完全一样的环境**跑插件(建 Tk root + mainloop)
+#
+# 为什么不放在别的文件里做: 发行版是**单文件**, `ui`/`win`/`wspy` 只存在于本进程 exec 出来的
+# `sys.modules` 里 —— 任何子进程(桌面宠物就是)都 import 不到, 所以"跑插件"只能由本文件来干。
+# 这也是"插件点工具没反应"的真因: 那些插件的 run() 要 ui.make_window(), 子进程里没 ui。
+#
+# 两条实现约束(踩过的):
+#   ① 必须在 `_relaunch_if_console_python()` **之前**判掉 --api: 否则 python.exe 启动会被重启成
+#      pythonw 并 detach, CLI 的 stdout 直接丢(上面加了 `if '--api' not in sys.argv`);
+#   ② 必须在 APP_DIR 算完之后——插件目录要从 BASE/APP_DIR 推。
+# ======================================================================
+import json as _json_api          # API 的一行 JSON 输出(模块级很便宜, 不引任何东西)
+
+
+def _api_plugin_dirs():
+    return [os.path.join(BASE, 'plugins'), os.path.join(APP_DIR, 'plugins')]
+
+
+def _api_scan_plugins():
+    """列出插件(宿主口径): .py 静态读 CODE/NAME/PERM, .txt 走 plugins.load_plugins。"""
+    import re
+    out, seen = [], set()
+
+    def add(code, name, kind, perm, path):
+        if not code or code.lower() in seen:
+            return
+        seen.add(code.lower())
+        out.append({'code': code, 'name': name or code, 'kind': kind,
+                    'perm': (perm or 'low'), 'path': path})
+    for d in _api_plugin_dirs():
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if fn.startswith('_'):
+                continue
+            path = os.path.join(d, fn)
+            low = fn.lower()
+            if low.endswith('.py'):
+                try:
+                    with open(path, encoding='utf-8', errors='replace') as f:
+                        txt = f.read()
+                except OSError:
+                    continue
+                if not re.search(r'^def\s+run\s*\(', txt, re.M):
+                    continue
+
+                def g(k, _t=txt):
+                    m = re.search(r"^%s\s*=\s*['\"]([^'\"]*)" % k, _t, re.M)
+                    return m.group(1) if m else ''
+                add(g('CODE'), g('NAME'), 'py', g('PERM'), path)
+            elif low.endswith('.txt'):
+                try:
+                    import plugins as _plug
+                    for p in _plug.load_plugins(d, globals().get('DATA_DIR') or APP_DIR)[0]:
+                        m = _plug.plugin_meta(p)
+                        add(m.get('code'), m.get('name'), 'txt', m.get('perm'), p.path)
+                except Exception as _e:
+                    print(_json_api.dumps({'ok': False, 'error': 'txt scan: %r' % (_e,)}))
+    return out
+
+
+def _api_run_plugin(code):
+    """跑一个插件 —— 环境与"在输入法里打编码呼出"完全一致。返回退出码。"""
+    items = _api_scan_plugins()
+    hit = next((p for p in items if p['code'].lower() == code.lower()), None)
+    if not hit:
+        print(_json_api.dumps({'ok': False, 'error': 'no such plugin: %s' % code}, ensure_ascii=False))
+        return 2
+    for d in _api_plugin_dirs():                      # 插件常在同目录 import 兄弟模块
+        if os.path.isdir(d) and d not in sys.path:
+            sys.path.insert(0, d)
+    try:
+        import tkinter as tk
+        if hit['kind'] == 'py':
+            modname = 'wgime_api_' + str(abs(hash(os.path.abspath(hit['path'])))) + '_' + code
+            spec = importlib.util.spec_from_file_location(modname, hit['path'])
+            m = importlib.util.module_from_spec(spec)
+            sys.modules[modname] = m
+            spec.loader.exec_module(m)
+            if not callable(getattr(m, 'run', None)):
+                raise ValueError('plugin has no run()')
+            fn = m.run
+        else:
+            import plugins as _plug
+            p = _plug.parse_plugin(hit['path'])
+            if p.error:
+                raise ValueError('parse: %s' % p.error)
+            raise ValueError('v1 暂不支持 .txt 步骤插件 (kind=%s)' % p.kind)
+        root = tk.Tk()
+        root.withdraw()
+        fn()                                          # 宿主同一套: run() 在 Tk 主线程里同步跑
+        print(_json_api.dumps({'ok': True, 'code': code, 'name': hit['name']},
+                         ensure_ascii=False), flush=True)
+        # 插件可能自己 spawn 了独立窗口(如翻译): 没有任何 Toplevel 就别干等
+        if not root.winfo_children():
+            root.after(1200, root.quit)
+        else:
+            def _watch():
+                try:
+                    if not root.winfo_children():
+                        root.quit()
+                        return
+                except Exception:
+                    root.quit()
+                    return
+                root.after(200, _watch)
+            root.after(200, _watch)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(_json_api.dumps({'ok': False, 'code': code, 'error': '%s: %s' % (type(e).__name__, e)},
+                         ensure_ascii=False), flush=True)
+        return 1
+    return 0
+
+
+def _api_main(args):
+    if not args:
+        print(_json_api.dumps({'ok': False, 'error': 'usage: --api list-plugins|run-plugin <code>'}))
+        return 2
+    cmd = args[0].lower()
+    if cmd in ('list-plugins', 'plugins'):
+        print(_json_api.dumps({'ok': True, 'plugins': _api_scan_plugins()}, ensure_ascii=False))
+        return 0
+    if cmd in ('run-plugin', 'run'):
+        if len(args) < 2:
+            print(_json_api.dumps({'ok': False, 'error': 'run-plugin needs a code'}))
+            return 2
+        return _api_run_plugin(args[1])
+    print(_json_api.dumps({'ok': False, 'error': 'unknown command: %s' % cmd}))
+    return 2
+
+
+if '--api' in sys.argv:
+    sys.exit(_api_main(sys.argv[sys.argv.index('--api') + 1:]))
 
 
 def _appdata_virtualized(path):
