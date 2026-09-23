@@ -23,10 +23,12 @@ const fn rgb(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a }
 }
 
-/// 奶油色柯基风: 背毛暖棕、胸口/口鼻奶油白、四肢末端深棕、皮挎包。
-pub const FUR: D2D1_COLOR_F = rgb(0.816, 0.545, 0.286, 1.0);
-const FUR_LIGHT: D2D1_COLOR_F = rgb(0.976, 0.918, 0.831, 1.0);
-const FUR_DARK: D2D1_COLOR_F = rgb(0.545, 0.318, 0.149, 1.0);
+/// 赤柴: 赤色背毛 + **里白**(吻部/脸颊/胸腹/四肢下段/尾尖), 鼻头与眼圈深色
+pub const FUR: D2D1_COLOR_F = rgb(0.878, 0.478, 0.212, 1.0);
+/// 里白(urajiro): 柴犬那张"白脸白胸白袜子"就靠它
+const URAJIRO: D2D1_COLOR_F = rgb(0.996, 0.980, 0.957, 1.0);
+/// 远侧肢体用的里白(略压暗, 制造前后层次)
+const URAJIRO_DIM: D2D1_COLOR_F = rgb(0.878, 0.851, 0.827, 1.0);
 const FUR_SHADE: D2D1_COLOR_F = rgb(0.702, 0.435, 0.208, 1.0);
 /// 描边: 卡通角色有没有这一圈差别很大(浅色/深色背景上都立得住)
 const OUTLINE: D2D1_COLOR_F = rgb(0.353, 0.216, 0.114, 1.0);
@@ -57,8 +59,8 @@ const SHADOW_CORE_C: D2D1_COLOR_F = rgb(SHADOW_TINT.0, SHADOW_TINT.1, SHADOW_TIN
 
 pub struct Brushes {
     pub fur: ID2D1SolidColorBrush,
-    pub fur_light: ID2D1SolidColorBrush,
-    pub fur_dark: ID2D1SolidColorBrush,
+    pub urajiro: ID2D1SolidColorBrush,
+    pub urajiro_dim: ID2D1SolidColorBrush,
     pub fur_shade: ID2D1SolidColorBrush,
     pub outline: ID2D1SolidColorBrush,
     pub ear_in: ID2D1SolidColorBrush,
@@ -84,8 +86,8 @@ impl Brushes {
         };
         Ok(Self {
             fur: mk(FUR)?,
-            fur_light: mk(FUR_LIGHT)?,
-            fur_dark: mk(FUR_DARK)?,
+            urajiro: mk(URAJIRO)?,
+            urajiro_dim: mk(URAJIRO_DIM)?,
             fur_shade: mk(FUR_SHADE)?,
             outline: mk(OUTLINE)?,
             ear_in: mk(EAR_IN)?,
@@ -231,18 +233,17 @@ fn bez(p1: Pt, p2: Pt, p3: Pt) -> D2D1_BEZIER_SEGMENT {
     }
 }
 
-/// 狗头侧面轮廓(朝右, 原点=头中心):
-/// 颅顶圆 → 前额 → **前伸的吻部** → 上唇 → 下巴 → 后脑闭合。
-/// 之前用两个椭圆拼(圆头 + 奶油色大椭圆), 读起来像海豹/水獭 —— 不像狗, 这才是真原因。
+/// 柴犬头侧面轮廓(朝右, 原点=头中心): 额头宽、**吻部短而楔形**(狐狸脸但不能太长,
+/// 之前那版吻部太长, 读起来像狐狸/狼), 下巴干净。
 fn build_head(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
         s.BeginFigure(pt((-15.0, -15.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((2.0, -31.0), (20.0, -22.0), (26.0, -8.0)));
-        s.AddBezier(&bez((30.0, 0.0), (33.0, 5.0), (35.0, 7.5)));
-        s.AddBezier(&bez((37.5, 10.5), (30.0, 14.5), (21.0, 14.0)));
-        s.AddBezier(&bez((10.0, 13.5), (0.0, 12.0), (-6.0, 8.0)));
+        s.AddBezier(&bez((2.0, -31.0), (18.0, -24.0), (23.0, -11.0)));
+        s.AddBezier(&bez((26.0, -4.0), (27.0, 1.0), (27.5, 4.5)));
+        s.AddBezier(&bez((29.0, 8.0), (24.0, 11.5), (17.0, 11.5)));
+        s.AddBezier(&bez((8.0, 11.5), (0.0, 10.0), (-6.0, 7.0)));
         s.AddBezier(&bez((-16.0, 2.0), (-22.0, -6.0), (-15.0, -15.0)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
@@ -344,44 +345,44 @@ pub(crate) fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> D2D1_ROUNDED_RE
     rr(x, y, w, h, r, r)
 }
 
-/// 一条腿: 髋/肩 → 膝/肘 → 爪, 带描边
+/// 一条腿: 髋/肩 → 膝/肘 → 爪, 带描边。
+/// **大腿赤色、小腿以下里白** —— 柴犬的"白袜子"就是这么来的。
 unsafe fn leg(c: &Ctx, s: Pt, f: Pt, bend: f32, w: f32, far: bool) {
     // 骨长只比髋脚距离略长 => 膝盖只轻微外凸; 太长会变成"Λ"形
     let k = ik(s, f, 21.5, 21.5, bend);
-    let fur = if far { &c.b.fur_shade } else { &c.b.fur };
+    let upper = if far { &c.b.fur_shade } else { &c.b.fur };
+    let lower = if far { &c.b.urajiro_dim } else { &c.b.urajiro };
     c.limb(s, k, w + 3.0, &c.b.outline);
     c.limb(k, f, w * 0.86 + 2.8, &c.b.outline);
-    c.limb(s, k, w, fur);
-    c.limb(k, f, w * 0.86, fur);
+    c.limb(s, k, w, upper);
+    c.limb(k, f, w * 0.86, lower);
     // 爪
     c.oval((f.0 + 1.5, f.1), w * 0.86, w * 0.6, &c.b.outline);
-    c.oval((f.0 + 1.5, f.1), w * 0.7, w * 0.47, &c.b.fur_dark);
+    c.oval((f.0 + 1.5, f.1), w * 0.7, w * 0.47, lower);
 }
 
-/// 尾巴: **毛茸茸的羽状尾** —— 沿脊柱生成左右两侧轮廓再闭合填充。
-/// 老写法是"一根渐细的线 + 末端一个球", 读起来像老鼠尾巴而不是狗的尾巴。
-/// `phase` 是时间相位, 摆角由 sin 取(有界; 拿时间当角度累加会把尾巴折进身体里)。
-unsafe fn tail(c: &Ctx, base: Pt, phase: f32, alert: f32, up: f32) {
-    use std::f32::consts::{PI, TAU};
-    const N: usize = 7;
+/// 尾巴: **柴犬的卷尾**(背在背上那一卷) —— 沿一圈螺旋生成脊柱, 再算左右轮廓闭合填充。
+/// 柴犬的尾巴是最好认的特征: 粗、卷、尾尖白。之前那版是"沿背斜着翘起来的羽状尾", 读起来不像柴。
+unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
+    use std::f32::consts::PI;
+    const N: usize = 10;
+    // 卷心抬到背上方; **圈半径必须明显大于尾巴的粗细**, 否则圈被填死、看起来只是"背上一坨"
+    // (真踩过: r=15.5 配半宽 11.4 => 内孔半径只剩 4, 整条尾巴糊成一个横香肠)
+    let cx = -26.0 + wag * 1.5;
+    let cy = base_y - 30.0 - alert * 3.0 * up + wag * 1.2;
     let mut spine = [(0.0f32, 0.0f32); N + 1];
-    spine[0] = base;
-    let mut ang = 0.30 + alert * 0.72 * up; // 0 → 正后方, π/2 → 正上方
-    let mut cur = base;
-    for i in 0..N {
+    for (i, p) in spine.iter_mut().enumerate() {
         let t = i as f32 / N as f32;
-        let wag = (phase * TAU + i as f32 * 0.5).sin() * 0.20;
-        ang += wag * 0.32 - 0.02;
-        let len = 4.8 + 2.8 * (t * PI).sin();
-        cur = (cur.0 - ang.cos() * len, cur.1 - ang.sin() * len);
-        spine[i + 1] = cur;
+        let a = 3.50 - t * 4.6 + wag * 0.16;
+        let r = 17.0 - t * 2.0;
+        *p = (cx + r * a.cos(), cy - r * a.sin());
     }
-    // 宽度剖面: 根部细 → 中后段最粗(蓬松) → 尖端收
     let mut left = [(0.0f32, 0.0f32); N + 1];
     let mut right = [(0.0f32, 0.0f32); N + 1];
     for i in 0..=N {
         let t = i as f32 / N as f32;
-        let w = 3.2 + 7.6 * (t * PI * 0.9).sin();
+        // 中段最蓬松(柴犬尾很厚), 尖端收
+        let w = 5.0 + 3.6 * (t * PI * 0.95).sin();
         let (dx, dy) = if i == 0 {
             (spine[1].0 - spine[0].0, spine[1].1 - spine[0].1)
         } else {
@@ -402,7 +403,7 @@ unsafe fn tail(c: &Ctx, base: Pt, phase: f32, alert: f32, up: f32) {
     }
     let (ex, ey) = (spine[N].0 - spine[N - 1].0, spine[N].1 - spine[N - 1].1);
     let el = (ex * ex + ey * ey).sqrt().max(0.001);
-    sink.AddLine(pt((spine[N].0 + ex / el * 5.5, spine[N].1 + ey / el * 5.5)));
+    sink.AddLine(pt((spine[N].0 + ex / el * 6.0, spine[N].1 + ey / el * 6.0)));
     for p in right.iter().rev() {
         sink.AddLine(pt(*p));
     }
@@ -412,8 +413,8 @@ unsafe fn tail(c: &Ctx, base: Pt, phase: f32, alert: f32, up: f32) {
     }
     let _ = c.rt.FillGeometry(&geo, &c.b.fur, None);
     let _ = c.rt.DrawGeometry(&geo, &c.b.outline, 2.4, None);
-    // 尾尖那撮白毛(柯基尾巴尖就是白的)
-    c.disc(spine[N], 4.4, &c.b.fur_light);
+    // 尾尖那撮白毛(柴犬的里白一直白到尾巴尖)
+    c.disc(spine[N], 5.0, &c.b.urajiro);
 }
 
 /// 耳: 三角立耳。`tilt` 是相对头顶的外倾角, `alert` 时立得更直。
@@ -515,15 +516,15 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     leg(c, (24.0, body_y + 16.0), (ff.0, ff.1), -1.0, 8.0, true);
     leg(c, (-32.0, body_y + 18.0), (fr.0, fr.1), 1.0, 8.8, true);
 
-    // ---- 尾巴(在身体之后)
-    tail(c, (-40.0, body_y - 14.0), p.tail, p.alert, up);
+    // ---- 尾巴: 卷在背上
+    tail(c, body_y, (p.tail * std::f32::consts::TAU).sin(), p.alert, up);
 
     // ---- 身体
     c.rot_at(body_rot, (0.0, body_y), |c| {
         c.oval((0.0, body_y), 49.0, 28.0 * (0.84 + 0.16 * up), &c.b.outline);
         c.oval((0.0, body_y), 47.0, 26.0 * (0.84 + 0.16 * up), &c.b.fur);
-        // 肚子/胸口奶油色
-        c.oval((11.0, body_y + 11.0), 27.0, 14.0, &c.b.fur_light);
+        // 胸腹一片里白(别太大, 侧面看柴犬的赤色要占主体)
+        c.oval((14.0, body_y + 10.0), 25.0, 13.0, &c.b.urajiro);
         // 背脊高光
         c.oval((-6.0, body_y - 17.0), 27.0, 5.2, &c.b.fur_shade);
     });
@@ -549,34 +550,39 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     let hx = 44.0 + p.look * 5.0 + (1.0 - up) * -14.0;
     let hy = body_y - 36.0 - up * 3.0 + (1.0 - up) * 10.0;
     c.at((hx, hy), body_rot * 0.7 + p.look * 0.06, |c| {
-        // 远侧耳(三角立耳, 画在头后面)
-        ear(c, (-6.0, -16.0), -0.34, p.ear * 0.5, p.alert, true);
+        // 远侧耳(长在**颅顶**上, 不是额头上; 耳根压太低会把眉斑盖住)
+        ear(c, (-8.0, -20.0), -0.22, p.ear * 0.5, p.alert, true);
         // 头
         c.place(&c.shapes.head, (0.0, 0.0), 0.0, 1.0, 1.0, Some(&c.b.fur), 2.6);
-        // 吻部浅色 + 额前白斑(柯基那副脸)
-        c.oval((17.0, 5.0), 12.0, 7.0, &c.b.fur_light);
-        c.oval((6.0, -9.0), 5.5, 12.0, &c.b.fur_light);
-        // 鼻头(可以略微探出吻尖, 狗鼻子本来就鼓出来)
-        c.oval((35.0, 6.5), 5.4, 4.2, &c.b.outline);
-        c.oval((35.0, 6.5), 4.2, 3.1, &c.b.nose);
-        // 嘴
-        c.line_w((31.0, 11.0), (22.0, 13.0), 1.7, &c.b.outline);
-        // 眼(略高、带高光)+ 眉
+        // 里白: 吻部+下颊一小片 + 两眼之间一小道白 —— **别铺太大**, 铺满整张脸就成狐狸/白狗了
+        c.oval((14.0, 7.0), 13.0, 8.0, &c.b.urajiro);
+        c.oval((5.0, -3.0), 4.5, 7.5, &c.b.urajiro);
+        // 眉上两个白点(眉斑) —— 柴犬最好认的记号。位置有讲究:
+        // ①落在**赤毛**上(白鼻梁不能铺到额头, 否则白点画在白底上等于没画);
+        // ②比耳根低, 否则被耳朵盖住(两个坑都真踩过)
+        c.oval((-2.0, -13.0), 4.2, 3.2, &c.b.urajiro);
+        c.oval((11.0, -15.0), 4.0, 3.0, &c.b.urajiro);
+        // 鼻头(短吻, 黑鼻)
+        c.oval((28.0, 4.0), 4.8, 4.0, &c.b.outline);
+        c.oval((28.0, 4.0), 3.6, 2.9, &c.b.nose);
+        // 嘴(从鼻下往后收的弧)
+        c.line_w((24.5, 8.0), (17.0, 10.0), 1.6, &c.b.outline);
+        // 眼: 杏形、外眼角略上挑, 眼圈深色
         let k = (1.0 - p.blink).max(0.07);
-        let eh = 5.0 * k;
-        let e1 = (1.0 + p.look * 1.5, -9.0);
-        let e2 = (15.0 + p.look * 1.5, -11.0);
-        for e in [e1, e2] {
-            c.oval(e, 4.6, eh + 0.5, &c.b.outline);
-            c.oval(e, 3.7, eh, &c.b.eye);
-            // 高光必须**跟着眼皮一起缩**: 否则眨眼时那点白比眼睛还大, 看着像戴墨镜(真踩过)
-            c.disc((e.0 + 1.2, e.1 - 1.5 * k), 1.5 * k, &c.b.eye_hi);
+        let eh = 4.6 * k;
+        for (e, tilt) in [
+            ((1.5 + p.look * 1.5, -9.0), -0.22f32),
+            ((14.5 + p.look * 1.5, -11.0), -0.26f32),
+        ] {
+            c.rot_at(tilt, e, |c| {
+                c.oval(e, 4.3, eh + 0.5, &c.b.outline);
+                c.oval(e, 3.4, eh * 0.88, &c.b.eye);
+            });
+            // 高光必须跟着眼皮一起缩, 否则眨眼时白点比眼睛还大(像戴墨镜)
+            c.disc((e.0 + 1.2, e.1 - 1.2 * k), 1.35 * k, &c.b.eye_hi);
         }
-        // 眉: 短、细、贴着眼的斜线
-        c.line_w((0.0, -14.5), (6.5, -15.6), 1.5, &c.b.fur_shade);
-        c.line_w((12.0, -16.2), (18.5, -16.6), 1.5, &c.b.fur_shade);
-        // 近侧耳
-        ear(c, (10.0, -17.0), 0.30, -p.ear * 0.5, p.alert, false);
+        // 近侧耳(小三角, 前倾)
+        ear(c, (8.0, -23.0), 0.30, -p.ear * 0.5, p.alert, false);
     });
 
     let _ = c.rt.SetTransform(&Matrix3x2::identity());

@@ -256,7 +256,7 @@ pub extern "C" fn wgime_pet_set_blink(v: f32) -> i32 {
     guard(|| {
         if let Ok(mut g) = PET.lock() {
             g.blink = v.clamp(0.0, 1.0);
-            g.blink_t = 999.0;
+            g.blink_t = 0.5; // > 0.14 => 保持睁眼(别设 999: 见 step() 里的眨眼分段)
             g.hold = true;
         }
         PAUSED.store(true, Ordering::SeqCst);
@@ -643,8 +643,11 @@ impl Pet {
         if self.blink_t <= 0.0 {
             self.blink_t = 2.0 + rnd(seed) * 4.0;
         }
-        self.blink = if self.blink_t > 0.86 {
-            ((self.blink_t - 0.86) / 0.14).min(1.0)
+        // 只在 blink_t 掉到最后 0.14s 才闭眼。
+        // **别写成 `if blink_t > 0.86`** —— 那样 blink_t 一大就等于 1(闭着),
+        // 也就是眼睛几乎永远闭着(真 bug: 表现是"像戴墨镜/一直眯着眼", 只修高光缩放是治标)
+        self.blink = if self.blink_t < 0.14 {
+            ((0.14 - self.blink_t) / 0.14).min(1.0)
         } else {
             0.0
         };
