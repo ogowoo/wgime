@@ -219,10 +219,11 @@ pub struct Ctx<'a> {
 }
 
 /// 一次性建好、之后只靠变换摆放的路径。
-/// 狗头/耳朵的形状是**固定**的, 变的是位置和角度 —— 所以只建一次。
+/// 狗头/耳/身体的形状是**固定**的, 变的是位置和角度 —— 所以只建一次。
 pub struct Shapes {
     pub head: ID2D1PathGeometry,
     pub ear: ID2D1PathGeometry,
+    pub body: ID2D1PathGeometry,
 }
 
 fn bez(p1: Pt, p2: Pt, p3: Pt) -> D2D1_BEZIER_SEGMENT {
@@ -233,18 +234,25 @@ fn bez(p1: Pt, p2: Pt, p3: Pt) -> D2D1_BEZIER_SEGMENT {
     }
 }
 
-/// 柴犬头侧面轮廓(朝右, 原点=头中心): 额头宽、**吻部短而楔形**(狐狸脸但不能太长,
-/// 之前那版吻部太长, 读起来像狐狸/狼), 下巴干净。
+/// 柴犬头侧面轮廓(朝右, 原点=头中心): **圆颅骨 + 明显额段(停) + 短而钝的楔形吻**。
+/// 之前那版吻部又长又尖(吻尖到 27.5 而颅骨又小), 读起来像狐狸/食蚁兽 —— 用户原话"头很诡异"。
 fn build_head(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
-        s.BeginFigure(pt((-15.0, -15.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((2.0, -31.0), (18.0, -24.0), (23.0, -11.0)));
-        s.AddBezier(&bez((26.0, -4.0), (27.0, 1.0), (27.5, 4.5)));
-        s.AddBezier(&bez((29.0, 8.0), (24.0, 11.5), (17.0, 11.5)));
-        s.AddBezier(&bez((8.0, 11.5), (0.0, 10.0), (-6.0, 7.0)));
-        s.AddBezier(&bez((-16.0, 2.0), (-22.0, -6.0), (-15.0, -15.0)));
+        s.BeginFigure(pt((-16.0, -16.0)), D2D1_FIGURE_BEGIN_FILLED);
+        // 颅顶(高而圆)
+        s.AddBezier(&bez((1.0, -34.0), (11.0, -35.0), (16.0, -23.0)));
+        // 额段(停) + 吻上缘: 吻部占头长三分之一强 ——
+        // 太短像小熊/猫, 太长像狐狸(两个方向都试过), 这一段是"像狗"的甜点区
+        s.AddBezier(&bez((21.0, -16.0), (27.0, -8.0), (32.0, -2.0)));
+        // 吻尖
+        s.AddBezier(&bez((34.0, 0.0), (34.0, 2.0), (32.5, 4.5)));
+        // 上唇 -> 下颚
+        s.AddBezier(&bez((30.0, 8.0), (24.0, 10.5), (16.0, 10.5)));
+        s.AddBezier(&bez((6.0, 10.5), (0.0, 9.0), (-6.0, 6.0)));
+        // 喉/颈回到起点
+        s.AddBezier(&bez((-11.0, 1.0), (-17.0, -7.0), (-16.0, -16.0)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
@@ -266,11 +274,41 @@ fn build_ear(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     }
 }
 
+/// 柴犬躯干侧面轮廓(朝右, 原点=脚底中心, y 向上为负):
+/// **背线平直 + 胸深 + 腰收紧(tuck-up) + 后躯圆**。
+/// 之前是一个大椭圆("面包"), 侧面看既没背线也没腰, 读不出品种 —— 用户原话"身体不像"。
+fn build_body(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+    unsafe {
+        let g = f.CreatePathGeometry()?;
+        let s = g.Open()?;
+        // 肩隆(背线前端)
+        s.BeginFigure(pt((33.0, -84.0)), D2D1_FIGURE_BEGIN_FILLED);
+        // 背线: 几乎水平(柴犬的背线是平的)
+        s.AddBezier(&bez((-8.0, -87.0), (-24.0, -86.0), (-34.0, -80.0)));
+        // 臀 -> 后躯
+        s.AddBezier(&bez((-46.0, -74.0), (-50.0, -63.0), (-50.0, -50.0)));
+        // 后躯 -> 后腿根
+        s.AddBezier(&bez((-50.0, -38.0), (-44.0, -30.0), (-34.0, -30.0)));
+        // 腹线: 向后**收紧**(tuck-up)
+        s.AddBezier(&bez((-18.0, -34.0), (-4.0, -35.0), (8.0, -32.0)));
+        // 深胸(最低点在前胸)
+        s.AddBezier(&bez((20.0, -29.0), (28.0, -25.0), (30.0, -23.0)));
+        // 前胸上缘
+        s.AddBezier(&bez((36.0, -28.0), (38.0, -46.0), (37.0, -60.0)));
+        // 回到肩隆
+        s.AddBezier(&bez((37.0, -72.0), (35.0, -80.0), (33.0, -84.0)));
+        s.EndFigure(D2D1_FIGURE_END_CLOSED);
+        s.Close()?;
+        Ok(g)
+    }
+}
+
 impl Shapes {
     pub fn new(f: &ID2D1Factory) -> Result<Self> {
         Ok(Self {
             head: build_head(f)?,
             ear: build_ear(f)?,
+            body: build_body(f)?,
         })
     }
 }
@@ -420,8 +458,9 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
 /// 耳: 三角立耳。`tilt` 是相对头顶的外倾角, `alert` 时立得更直。
 /// 老写法是两个圆椭圆耷在头顶, 读起来像发髻 —— 用户原话"耳朵位置有点诡异"。
 unsafe fn ear(c: &Ctx, base: Pt, tilt: f32, swing: f32, alert: f32, far: bool) {
-    let sy = (if far { 0.88 } else { 1.0 }) * (1.0 - alert * 0.16);
-    let sx = if far { 0.9 } else { 1.0 };
+    // 整体缩小到 0.82: 柴犬的耳朵相对头是小的; 原来的三角比半个头还高, 看着像纸片贴上去
+    let sy = (if far { 0.88 } else { 1.0 }) * (1.0 - alert * 0.16) * 0.82;
+    let sx = (if far { 0.9 } else { 1.0 }) * 0.86;
     let ang = tilt + swing - alert * tilt * 0.45;
     let fill = if far { &c.b.fur_shade } else { &c.b.fur };
     c.place(&c.shapes.ear, base, ang, sx, sy, Some(fill), 2.4);
@@ -519,14 +558,24 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     // ---- 尾巴: 卷在背上
     tail(c, body_y, (p.tail * std::f32::consts::TAU).sin(), p.alert, up);
 
-    // ---- 身体
+    // ---- 身体: 用**轮廓路径**(背线平直 + 深胸 + 收腰), 不是一个大椭圆
     c.rot_at(body_rot, (0.0, body_y), |c| {
-        c.oval((0.0, body_y), 49.0, 28.0 * (0.84 + 0.16 * up), &c.b.outline);
-        c.oval((0.0, body_y), 47.0, 26.0 * (0.84 + 0.16 * up), &c.b.fur);
-        // 胸腹一片里白(别太大, 侧面看柴犬的赤色要占主体)
-        c.oval((14.0, body_y + 10.0), 25.0, 13.0, &c.b.urajiro);
-        // 背脊高光
-        c.oval((-6.0, body_y - 17.0), 27.0, 5.2, &c.b.fur_shade);
+        // 路径是按"身体中心在 y=-58"画的, 所以这里整体抬到 body_y
+        let dy = body_y + 58.0;
+        c.place(
+            &c.shapes.body,
+            (0.0, dy),
+            0.0,
+            1.0,
+            0.84 + 0.16 * up,
+            Some(&c.b.fur),
+            2.6,
+        );
+        // 背脊高光: 贴着背线的一道浅色
+        c.oval((-6.0, body_y - 26.0), 28.0, 3.6, &c.b.fur_shade);
+        // 里白: 胸口一坨 + 腹线一条 —— 侧面看赤色要占主体, 别铺满下半身
+        c.oval((26.0, body_y + 22.0), 12.0, 13.0, &c.b.urajiro);
+        c.oval((2.0, body_y + 26.0), 22.0, 5.5, &c.b.urajiro);
     });
 
     // ---- 挎包(骑在身体上)
@@ -534,55 +583,57 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         satchel(c, -7.0, body_y + 6.0, p.bob, 3);
     });
 
-    // ---- 近侧两条腿
+    // ---- 近侧两条腿(比之前粗一点: 柴犬是壮实的小型犬, 不是细腿)
     let (nf, nr) = feet(p, 0.0, 36.0, -26.0);
-    leg(c, (32.0, body_y + 16.0), (nf.0, nf.1), -1.0, 8.6, false);
-    leg(c, (-22.0, body_y + 18.0), (nr.0, nr.1), 1.0, 9.2, false);
+    leg(c, (32.0, body_y + 18.0), (nf.0, nf.1), -1.0, 9.6, false);
+    leg(c, (-22.0, body_y + 20.0), (nr.0, nr.1), 1.0, 10.4, false);
 
-    // ---- 脖子: 把身体和头连起来(不描边, 否则肩上会多出一道深色圆弧)
-    let neck = (28.0, body_y - 22.0);
+    // ---- 脖子: 粗(柴犬有厚颈毛), 把身体和头连起来(不描边, 否则肩上会多一道深色圆弧)
+    // 但**别太粗太高**: 一大坨会把头托成"长在粗柄上"
+    let neck = (36.0, body_y - 24.0);
     c.rot_at(0.42, neck, |c| {
-        c.oval(neck, 17.0, 15.0, &c.b.fur);
+        c.oval(neck, 13.0, 12.0, &c.b.fur);
     });
 
     // ---- 头: 用**一条狗头侧面轮廓**(颅顶圆 → 前伸吻部 → 下巴)而不是两个椭圆拼。
     // 两个椭圆拼出来的是"圆头 + 奶油色大椭圆", 读起来像海豹/水獭 —— 这才是"狗头不像狗"的真原因。
-    let hx = 44.0 + p.look * 5.0 + (1.0 - up) * -14.0;
+    // 头中心比背线只高一点点(约 10 单位): 抬太高就成了"脖子很长的怪东西"
+    let hx = 45.0 + p.look * 5.0 + (1.0 - up) * -14.0;
     let hy = body_y - 36.0 - up * 3.0 + (1.0 - up) * 10.0;
     c.at((hx, hy), body_rot * 0.7 + p.look * 0.06, |c| {
-        // 远侧耳(长在**颅顶**上, 不是额头上; 耳根压太低会把眉斑盖住)
-        ear(c, (-8.0, -20.0), -0.22, p.ear * 0.5, p.alert, true);
+        // 远侧耳(长在**颅顶**上、靠近彼此; 之前两耳拉得太开, 像贴在头两侧的纸片)
+        ear(c, (-9.0, -17.0), -0.18, p.ear * 0.5, p.alert, true);
         // 头
         c.place(&c.shapes.head, (0.0, 0.0), 0.0, 1.0, 1.0, Some(&c.b.fur), 2.6);
         // 里白: 吻部+下颊一小片 + 两眼之间一小道白 —— **别铺太大**, 铺满整张脸就成狐狸/白狗了
-        c.oval((14.0, 7.0), 13.0, 8.0, &c.b.urajiro);
-        c.oval((5.0, -3.0), 4.5, 7.5, &c.b.urajiro);
+        c.oval((22.0, 4.5), 10.5, 6.5, &c.b.urajiro);
+        c.oval((5.0, -4.0), 4.2, 6.5, &c.b.urajiro);
         // 眉上两个白点(眉斑) —— 柴犬最好认的记号。位置有讲究:
         // ①落在**赤毛**上(白鼻梁不能铺到额头, 否则白点画在白底上等于没画);
         // ②比耳根低, 否则被耳朵盖住(两个坑都真踩过)
-        c.oval((-2.0, -13.0), 4.2, 3.2, &c.b.urajiro);
-        c.oval((11.0, -15.0), 4.0, 3.0, &c.b.urajiro);
+        c.oval((-5.0, -13.0), 3.7, 2.9, &c.b.urajiro);
+        c.oval((7.0, -16.0), 3.5, 2.7, &c.b.urajiro);
         // 鼻头(短吻, 黑鼻)
-        c.oval((28.0, 4.0), 4.8, 4.0, &c.b.outline);
-        c.oval((28.0, 4.0), 3.6, 2.9, &c.b.nose);
+        c.oval((31.5, 1.5), 4.6, 3.9, &c.b.outline);
+        c.oval((31.5, 1.5), 3.5, 2.8, &c.b.nose);
         // 嘴(从鼻下往后收的弧)
-        c.line_w((24.5, 8.0), (17.0, 10.0), 1.6, &c.b.outline);
+        c.line_w((28.5, 6.5), (20.0, 9.0), 1.6, &c.b.outline);
         // 眼: 杏形、外眼角略上挑, 眼圈深色
         let k = (1.0 - p.blink).max(0.07);
-        let eh = 4.6 * k;
+        let eh = 4.8 * k;
         for (e, tilt) in [
-            ((1.5 + p.look * 1.5, -9.0), -0.22f32),
-            ((14.5 + p.look * 1.5, -11.0), -0.26f32),
+            ((-1.0 + p.look * 1.5, -8.5), -0.20f32),
+            ((11.5 + p.look * 1.5, -10.5), -0.24f32),
         ] {
             c.rot_at(tilt, e, |c| {
-                c.oval(e, 4.3, eh + 0.5, &c.b.outline);
-                c.oval(e, 3.4, eh * 0.88, &c.b.eye);
+                c.oval(e, 4.1, eh + 0.5, &c.b.outline);
+                c.oval(e, 3.3, eh * 0.88, &c.b.eye);
             });
             // 高光必须跟着眼皮一起缩, 否则眨眼时白点比眼睛还大(像戴墨镜)
             c.disc((e.0 + 1.2, e.1 - 1.2 * k), 1.35 * k, &c.b.eye_hi);
         }
-        // 近侧耳(小三角, 前倾)
-        ear(c, (8.0, -23.0), 0.30, -p.ear * 0.5, p.alert, false);
+        // 近侧耳(小三角, 前倾; 两耳靠近)
+        ear(c, (2.0, -22.0), 0.26, -p.ear * 0.5, p.alert, false);
     });
 
     let _ = c.rt.SetTransform(&Matrix3x2::identity());
