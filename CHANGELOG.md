@@ -1,5 +1,41 @@
 ---
 
+## 2026-09-24 (第八十九轮: 把 PyShot(Qt 截图工具)接成插件 —— 薄包装 + 下划线载荷)
+
+**来由**: 用户"把插件目录里的 pyshot.py 转成插件"。那份 `PyShot.py` 480,349 B / 10,733 行, 是
+**PySide6(Qt)** 的截图/滚动截图/标注工具(托盘常驻 + 全局热键), 由 `build_single.py` 合成单文件。
+
+**为什么不按 §8.8 直接当插件**: ①PySide6 是巨型 C 扩展, **内嵌不进**单文件(§12); ②它的 `import PySide6.*`
+在**模块级**, 且第 861 行有**模块级**依赖自举 `if not ensure_deps(): raise SystemExit(1)`(缺包会自己 pip 装)
+⇒ 进了装载器就是"输入法启动时 exec + 可能联网装包 + 缺依赖时插件静默消失"; ③Qt 与宿主 Tk **不能共用主线程
+事件循环**, 必须独立进程(照 `wgpet.py`)。
+
+**交付**:
+1. **载荷 `plugins\_pyshot_app.py`**(480,349 B, **一个字节没改**, sha256 `EA7263B3…`): `_` 开头 ⇒ 装载器跳过、
+   独立运行枚举也跳过; 并登记进 `tests\undefined-globals.py` 的 `SKIP_FILES`(它的 7 处告警是 symtable 对
+   嵌套作用域的已知误判)。
+2. **薄插件 `plugins\pyshot.py`**(7.3 KB): `CODE='pyshot'` / `PERM='low'` / `STANDALONE = True`;
+   `run()` 只做"查 PySide6 → 独立进程拉起 → 发气泡"并**立刻返回**; 子进程优先 `pythonw.exe` +
+   `CREATE_NO_WINDOW`, 并把 `%LOCALAPPDATA%\wgime-py\site[\pip]` 挂进它的 `PYTHONPATH`
+   (否则依赖自检装出来的 PySide6 子进程看不见)。
+3. **缺 PySide6 不自动装**(200MB 不该悄悄装): 气泡给两条线索(启动编码 `deps` / `pip install PySide6`);
+   `deps.py` 的 SPECS 也加上 `PySide6`(`inst=True`)⇒ 依赖自检窗口里可勾选。
+4. **回归 `tests\pyshot-plugin-test.py`(40 项)** + `docs\WGIME_插件规范.md` 新增 **§8.9**
+   (重依赖 GUI 程序的接法) + 使用说明 §12 依赖表加一行。
+
+**真事故(留档)**: 我先 `write` 新建薄插件 `plugins\pyshot.py`, 而当时载荷还叫 `plugins\PyShot.py` ——
+**Windows 大小写不敏感, 两者是同一路径**, 480 KB 原程序被 7 KB 包装文件**原地覆盖**(write 报的是 "Updated file"),
+随后改名脚本又把这份 7 KB 内容重命名成 `_pyshot_app.py`; 该文件**未入库**, git 无备份。
+按"同尺寸+mtime"全盘搜回 `C:\Explorer\pyshot\PyShot.py`(480,349 B, mtime 与被覆盖那份**完全一致**),
+恢复后用**指纹**确认同一件东西: 行数 10,733 / `APP_VERSION = "2.16.1"` / `if not ensure_deps():` /
+`class SnipperOverlay` / `act_copy`。**规矩**: 薄插件不许与载荷同名, 载荷一律 `_` 开头, 且回归里有
+"两文件共存且大小悬殊(薄 < 载荷/10)"的断言守着 —— 已写进 §5 规则 53。
+
+**验证**: `py_compile -W error::SyntaxWarning` 0 / `undefined-globals.py` 全量 `RESULT: OK` /
+`pyshot-plugin-test.py` **40/40**(含真机 `--check-deps`: 载荷 rc=0、薄插件 rc=0 且打印 `STANDALONE-OK`) /
+`deps-test.py` 51/51(可装清单期望值已同步) / `standalone-plugin-test.py` **8/8** / `pure-state-harness.py` 67 /
+`example-plugin-test.py` 24/24; 本机 PySide6 6.11.2 已就绪。`deps.py` 是内嵌模块 ⇒ 已重建 dist + package。
+
 ## 2026-09-24 (第八十八轮: AGENTS.md 二次瘦身 —— 宠物那几条叙事规则下沉, 余量 4.9KB → 9.8KB)
 
 **来由**: 追平远端 21 个提交(第八十六~八十七轮桌面宠物)后, `AGENTS.md` 从 51.9KB 涨到 **60,256 B**,

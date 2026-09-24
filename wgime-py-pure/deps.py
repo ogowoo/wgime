@@ -33,6 +33,8 @@ SPECS = [
      'label': '聊天加密', 'why': 'chat 插件的加密会话（缺则加密不可用，明文仍可用）'},
     {'key': 'argostranslate', 'mod': 'argostranslate', 'pkg': 'argostranslate', 'inst': True,
      'label': '离线翻译', 'why': 'wgtranslate 插件的离线机翻（缺则报错；首次用还需下语言包）'},
+    {'key': 'PySide6', 'mod': 'PySide6', 'pkg': 'PySide6', 'inst': True,
+     'label': '截图标注 (PyShot)', 'why': 'PyShot 插件的界面库（约 200MB，装完即用；不装则该插件不工作）'},
     {'key': 'faster_whisper', 'mod': 'faster_whisper', 'pkg': 'faster-whisper', 'inst': False,
      'label': '本地语音 whisper', 'why': 'voice_engine=whisper 的后端；几百 MB 且要另外准备模型，请照 §D8.2 手工装'},
     {'key': 'sherpa_onnx', 'mod': 'sherpa_onnx', 'pkg': 'sherpa-onnx', 'inst': False,

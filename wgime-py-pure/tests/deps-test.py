@@ -90,8 +90,8 @@ def main():
               all(all(k in s for k in ('key', 'mod', 'pkg', 'label', 'why', 'inst')) for s in deps.SPECS))
         manual = sorted(s['key'] for s in deps.SPECS if not s['inst'])
         check('SPECS: 只报告的是语音两项', manual == ['faster_whisper', 'sherpa_onnx'], repr(manual))
-        check('SPECS: 可装项含 psutil/cryptography/argostranslate',
-              {'psutil', 'cryptography', 'argostranslate'} <=
+        check('SPECS: 可装项含 psutil/cryptography/argostranslate/PySide6',
+              {'psutil', 'cryptography', 'argostranslate', 'PySide6'} <=
               {s['key'] for s in deps.SPECS if s['inst']})
 
         # ---- 2) 探测分类（假 finder：只认 pypdf 与 psutil） ----
@@ -104,7 +104,7 @@ def main():
               and by['sherpa_onnx']['inst'] is False)
         check('probe: 长度 = 清单长度', len(items) == len(deps.SPECS))
         check('installable(): 只含可装且缺的',
-              sorted(deps.installable(items)) == ['argostranslate', 'cryptography'],
+              sorted(deps.installable(items)) == ['PySide6', 'argostranslate', 'cryptography'],
               repr(deps.installable(items)))
         check('report_only(): 语音两项', sorted(i['key'] for i in deps.report_only(items)) ==
               ['faster_whisper', 'sherpa_onnx'])

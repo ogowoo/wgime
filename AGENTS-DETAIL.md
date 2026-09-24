@@ -2446,3 +2446,61 @@ D2D 软件光栅在这个尺寸上完全不是瓶颈。
 
 52. 全屏鼠标穿透浮层**用 `UpdateLayeredWindow`(逐像素 alpha 分层窗), 别用 DirectComposition**(第八十七轮)|用户问"python 不适合做这个, 换什么语言" -> 换成 Rust 并实测两条渲染路。结论: ①**DComp 路是死路** —— `WS_EX_NOREDIRECTIONBITMAP` 合成窗的内容**不按 alpha 做命中测试**(`WindowFromPoint` 照样命中整块窗外框), 唯一能强制穿透的 `SetWindowRgn` 会把 DComp 内容**一起裁掉**(装空区域后回读像素变成背景色, 关掉立刻恢复) => "看得见"和"点得穿"在 DComp 上二选一; ②**ULW 路可行**: `WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST` + `CreateDIBSection`(32bpp 预乘) + D2D **DC 渲染目标**(`CreateDCRenderTarget`, 软件光栅, dpi 96 => 1DIP=1px) + `UpdateLayeredWindow(ULW_ALPHA)`; 命中测试**逐像素按 alpha**: 没画到的像素直接穿过去; ③**交互态只摘 `WS_EX_TRANSPARENT`**(保留 NOACTIVATE): 于是**只有画到的像素挡住鼠标**, 面板外空白照旧穿透, 前台全程不变 -> 点工具不丢输入框焦点; ④**ULW 不做 vsync 节流**(实测不限速 **2085fps**, 纯烧 CPU), 必须自己限速(`timeBeginPeriod(1)`+每帧算 deadline, 上限常量 `FPS_CAP`); ⑤**窗口做成精灵大小并跟着角色移动**, 不要全屏窗 —— 全屏+手算脏矩形那一整类残影 bug 由此不存在(每帧整块重画), 每帧合成量也就几百乘几百; ⑥Rust 侧 **COM 对象必须活到窗口销毁**(放进长期结构体): 把 `dcomp`/`target`/`visual` 放在建窗函数里当局部变量, 函数一返回就 drop -> 画面完全正确(回读像素 (250,158,51,255) 分毫不差)、`Present` 也成功, **屏幕上却什么都没有**(真踩过, 靠用户肉眼才发现); ⑦本机 rust 工具链 `x86_64-pc-windows-gnu` + `windows 0.58` crate 可直接出 `cdylib`(仓库 `wgime-tsf` 早已是这形态, 零安装成本), 需要 `Foundation_Numerics` 才有 `CreateSolidColorBrush`; ⑧验收探针 `wgpet-rs\verify-overlay.py`(21 项: 渲染器报的标定点逐通道整数吻合 / 抗锯齿 / 真透明 / 被动态整窗穿透 / 交互态只有画到的像素挡鼠标 / 不抢焦点 / 120fps / 动画在动 / 干净关闭)。**⑨角色必须站在工作区底边**(`SystemParametersInfoW(SPI_GETWORKAREA)`)而不是屏幕底边 —— 屏幕底边 40px 处已在任务栏里, 半透明任务栏会透出背景(标定点读数因此偏一个通道, 真查了一轮)。**⑩面板布局只能有 `layout()` 一处出处**(绘制/命中测试/探针矩形共用), **点击坐标统一屏幕坐标**(`WM_LBUTTONDOWN` 是客户端坐标, 要 `ClientToScreen`), 两套坐标系混用会整体偏移。**⑪飞到屏幕中间的东西要单独一个窗**: 把角色窗撑到半个屏幕的话每帧要提交几 MB(120fps = 几百 MB/s), 小窗跟着它走每帧只几十 KB。**⑫凡断言依赖"光标在哪"的, 必须走测试钩子**(`wgime_pet_set_cursor`, python 版对应 `WGIME_PET_FAKE_MOUSE`)—— 屏幕前的人一动鼠标, 光标就从被测点上漂走, 悬停类断言集体假红(真踩过: 光标从 (1596,1830) 自己漂到 (1507,1868))。**⑬面板布局参数(格子数/分页/标题控件)也从 `layout()` 一处出**; 窗口高度按工具数动态算, 锚点按离**底边**算才保证开合/工具数变化时角色脚底不动; 探针要角色屏幕坐标就用 `wgime_pet_dog_xy`, **别拿窗口矩形去猜**(锚点会变, 猜必错)。原文 §D40.
 
+## §D49 第八十九轮：PyShot（Qt 截图工具）接成插件 —— 薄包装 + 下划线载荷
+
+### 1) 需求与判断
+
+用户: "把插件目录里的 pyshot.py 转成插件"。看清它是什么再动手 —— `PyShot.py` 480,349 B / 10,733 行，
+是 **PySide6(Qt)** 的截图/滚动截图/标注工具（`PyShotApp`/`SnipperOverlay`/`PinWindow`/全局热键/托盘常驻），
+由 `build_single.py` 把多文件源码合并成单文件（`C:\Explorer\pyshot\PyShot.py` 是源，插件目录那份是副本）。
+
+**不能按 §8.8 直接当插件**，三条硬理由：
+① PySide6 是巨型 C 扩展，**内嵌不进**单文件发行版（§12）；
+② 它的 `import PySide6.*` 在**模块级**，且第 861 行有一句**模块级**依赖自举 `if not ensure_deps(): raise SystemExit(1)`
+   （`ensure_deps()` 缺包会自己 pip 装）—— 进了装载器就是"输入法启动时 exec + 可能联网装包 + 缺依赖时插件静默消失"；
+③ Qt 与宿主 Tk **不能共用主线程事件循环**，必须独立进程（照 `wgpet.py` 的 detached 套路）。
+
+### 2) 交付形态
+
+- 载荷 `plugins\_pyshot_app.py`（480,349 B，**一个字节没改**，sha256 `EA7263B3…`）：`_` 开头 ⇒
+  `load_py_plugins()` 跳过、`standalone-plugin-test.py` 的枚举也跳过；同时登记进
+  `tests\undefined-globals.py` 的 `SKIP_FILES`（见第 4 节）。
+- 薄插件 `plugins\pyshot.py`（7.3 KB）：清单 `CODE='pyshot'` / `PERM='low'`（同 wgpet，只拉自家工具）+
+  `STANDALONE = True` + 双模式三块；`run()` 只做「查 PySide6 → `spawn()` 独立进程 → 发气泡」，立刻返回。
+- 子进程：优先 `pythonw.exe`，`CREATE_NO_WINDOW`，`cwd=` 插件目录，stdin/stdout/stderr 都不继承；
+  `child_env()` 把 `%LOCALAPPDATA%\wgime-py\site`（及 `site\pip`）挂进 `PYTHONPATH` —— **否则用 wgime 依赖自检
+  装出来的 PySide6 子进程看不见**。
+- 缺 PySide6 时**不自动装**（200MB 不该悄悄装）：发气泡指向启动编码 `deps` 或 `pip install PySide6`。
+  同时把 `PySide6` 加进 `deps.py` 的 SPECS（`inst=True`）⇒ 依赖自检窗口里能勾选安装。
+- 独立运行也走载荷（`subprocess.call` 等待）；测试钩子 `WGIME_STANDALONE_AUTOEXIT_MS` 存在时改跑
+  `--check-deps`（**不出界面**）—— PyShot 自带的 `--check-deps`/`PYSHOT_SKIP_DEPS`/`PYSHOT_NO_ALERT`
+  正好是干净的自检通路，被我们复用。
+
+### 3) 真事故：Windows 大小写不敏感，薄插件把载荷覆盖了
+
+我先用 `write` 新建"薄插件" `plugins\pyshot.py` —— 而当时载荷还叫 `plugins\PyShot.py`，
+**Windows 上这两个是同一个路径** ⇒ 480 KB 的原程序被 7 KB 的包装文件**原地覆盖**（write 报的是 "Updated file"，
+不是 "Created"）。随后改名脚本又把这份 7 KB 内容重命名成 `_pyshot_app.py`。那份文件**未入库**，git 无备份。
+
+找回过程（留档，值得复用）：按"同名/同尺寸/同 mtime"全盘搜 → `C:\Explorer\pyshot\PyShot.py`
+（480,349 B，mtime `9/24 1:45:10 PM`，与被覆盖那份**完全一致**，同目录还有它 1:45:17 生成的
+`__pycache__\PyShot.cpython-312.pyc`）⇒ 即源。恢复后用**指纹**确认是同一件东西：行数 10,733、
+`APP_VERSION = "2.16.1"`、`if not ensure_deps():`、`class SnipperOverlay`、`act_copy`（那 7 处假阳性的名字）。
+
+**规矩**（已写进 §5 规则 53 与薄插件 docstring）：薄插件**不许**与载荷同名，载荷一律 `_` 开头；
+回归 `tests\pyshot-plugin-test.py` 里有一条"**两文件共存且大小悬殊**（薄 < 载荷/10）"的断言守着它。
+
+### 4) undefined-globals 的例外
+
+载荷的 7 处告警（`PyShot.py.EditorWindow._icon_button -> act_copy/act_pin/act_wm/act_save/act_close/lay/bar`）
+是 symtable 对**嵌套作用域**的已知误判，不是真 bug。处理：`undefined-globals.py` 加显式
+`SKIP_FILES = {r'plugins\_pyshot_app.py'}`（带原因的注释），并在 `main()` 里按 `os.path.relpath(t, BASE)`
+过滤；回归断言"**跳过名单只有它一个**"—— 名单要加新的，必须一并改那条断言。
+
+### 5) 验证
+
+`py_compile -W error::SyntaxWarning` 0 / `undefined-globals.py` 全量 `RESULT: OK` /
+`pyshot-plugin-test.py` **40/40**（含真机 `--check-deps`：载荷 rc=0、薄插件 rc=0 且打印 `STANDALONE-OK`）/
+`deps-test.py` 51/51（新加 PySide6 后可装清单期望值同步） / `standalone-plugin-test.py` **8/8**（多了 pyshot.py）/
+`pure-state-harness.py` 67 / `example-plugin-test.py` 24/24。本机 PySide6 6.11.2 已就绪。
+

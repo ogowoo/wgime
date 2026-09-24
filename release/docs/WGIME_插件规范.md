@@ -233,3 +233,31 @@ txt 插件里的 `[csharp]` 块在纯 Python 版**仍然可用**：经 sidecar �
 
 回归：`python wgime-py-pure\tests\example-plugin-test.py`（模板契约 + `_` 前缀不被装载 + `run()` 真建窗 +
 独立运行 + 文档一致性；无桌面时后两项 SKIP）。
+
+### 8.9 重依赖 GUI 程序怎么接（薄包装 + 下划线载荷）
+
+不是所有程序都能按 §8.8 那样直接写成 `plugins\*.py`。典型反例是 **Qt（PySide6/PyQt）** 程序：
+
+- PySide6 是**巨型 C 扩展**，内嵌不进单文件发行版（§12 的 C 扩展边界）；
+- 它的 `import PySide6` 常在**模块级**，而且往往还带一句模块级的依赖自举（缺包就自己 pip 装、装不上直接退出）；
+- Qt 与宿主的 Tk **不能共用主线程事件循环**。
+
+这类程序一律用「**薄包装 + 下划线载荷**」：
+
+1. **载荷**（原程序，**一个字节都不用改**）放 `plugins\_xxx_app.py` —— 名字以 `_` 开头，
+   `load_py_plugins()` 会跳过它（§8.1/§8.8），于是它**不会被输入法启动时 exec**：
+   既不拖慢启动，也不会因为缺依赖而让插件静默消失。它同时**不进** `tests\undefined-globals.py`
+   的扫描（第三方生成物的嵌套作用域会被 symtable 误判），需要在该文件的 `SKIP_FILES` 里登记一行。
+2. **薄插件** `plugins\xxx.py` 只做三件事：声明清单（`CODE/NAME/DESC/...`）、检查重依赖、
+   用**独立进程**把载荷拉起来（`subprocess.Popen` + `CREATE_NO_WINDOW`，`pythonw.exe` 优先）。
+   宿主入口 `run()` 必须**立刻返回**（它在 Tk 主线程里同步调）。
+3. 依赖检查要给**人话出口**：缺依赖时发气泡说明装法（走 wgime 的依赖自检 `deps`，或 `pip install`），
+   **不要**在插件里悄悄装几百 MB。
+4. 把私有依赖目录（`%LOCALAPPDATA%\wgime-py\site\pip`）塞进子进程的 `PYTHONPATH` ——
+   否则用 wgime 依赖自检装出来的包，子进程看不见。
+5. 独立运行（`python xxx.py`）也走载荷；回归里给一条 `--check-deps` 之类的**不出界面**的自检路径，
+   免得测试真的弹全屏窗口。
+
+参考实现：`plugins\pyshot.py` + `plugins\_pyshot_app.py`（PyShot 截图工具），
+回归 `wgime-py-pure\tests\pyshot-plugin-test.py`。
+

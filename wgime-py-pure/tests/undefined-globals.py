@@ -55,6 +55,15 @@ def scan(path):
     return findings
 
 
+SKIP_FILES = {
+    # 「第三方自动生成的单文件版应用」的**载荷**(不是 wgime 自己的代码): 由多文件源码合并而成,
+    # symtable 会把它的**嵌套作用域**引用误判成全局量(PyShot 的 `_icon_button` 里 act_copy/lay/bar 等 7 处)。
+    # 约定: 这类载荷一律 `_` 开头(装载器也跳过它) + 在此登记; 名单**只允许**放这类载荷 ——
+    # `tests\pyshot-plugin-test.py` 有一条断言"名单里只有 _pyshot_app.py", 加新的必须一并改那条。
+    r'plugins\_pyshot_app.py',
+}
+
+
 def main(argv):
     roots = argv or [BASE]
     targets = []
@@ -66,6 +75,8 @@ def main(argv):
                 targets += [os.path.join(dirpath, fn) for fn in filenames if fn.endswith('.py')]
         else:
             targets.append(a)
+    _skip = {os.path.normpath(k) for k in SKIP_FILES}
+    targets = [t for t in targets if os.path.normpath(os.path.relpath(t, BASE)) not in _skip]
     total = 0
     for t in sorted(targets):
         for scope, name in scan(t):

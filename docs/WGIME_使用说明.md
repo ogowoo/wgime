@@ -351,6 +351,7 @@ stt_prompt = 以下是普通话的句子。
 | `psutil` | 进程列举（插件管理器/清理） | 回退 taskkill，慢一点 | 可以 |
 | `cryptography` | chat 插件的加密会话 | 加密不可用（明文仍可用） | 可以 |
 | `argostranslate` | wgtranslate 离线翻译 | 翻译报错 | 可以（首次用还要下语言包） |
+| `PySide6` | 截图标注插件（PyShot） | 该插件不工作（它会提示你装） | 可以（约 200MB，自己勾选才装） |
 | `faster-whisper` | 语音引擎 `whisper` | 该后端不可用 | **不代装**（几百 MB + 还要模型，见 §D8.2） |
 | `sherpa-onnx` | 语音引擎 `sherpa`（首选） | 该后端不可用 | **不代装**（同上） |
 
