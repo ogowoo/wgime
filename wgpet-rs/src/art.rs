@@ -27,28 +27,30 @@ const fn rgb(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
 }
 
 /// 赤柴: 赤色背毛 + **里白**(吻部/脸颊/胸腹/四肢下段/尾尖), 鼻头与眼圈深色
-pub const FUR: D2D1_COLOR_F = rgb(0.957, 0.604, 0.205, 1.0);
+/// 调色板按用户给的**姿态图**取样定色(第九十轮补五): 背毛 `#eb953c` / 里白 `#fdf2e0` /
+/// 描边 `#6b3d1a`(暖棕, **不是**近黑 —— 参考图的线是细暖棕) / 鼻眼 `#0f1111` / 舌 `#f1836c`
+pub const FUR: D2D1_COLOR_F = rgb(0.922, 0.584, 0.235, 1.0);
 /// 里白(urajiro): 柴犬那张"白脸白胸白袜子"就靠它
-const URAJIRO: D2D1_COLOR_F = rgb(1.000, 0.957, 0.855, 1.0);
+const URAJIRO: D2D1_COLOR_F = rgb(0.992, 0.949, 0.878, 1.0);
 /// 远侧肢体用的里白(略压暗, 制造前后层次)
-const URAJIRO_DIM: D2D1_COLOR_F = rgb(0.900, 0.840, 0.750, 1.0);
-const FUR_SHADE: D2D1_COLOR_F = rgb(0.900, 0.500, 0.145, 1.0);
+const URAJIRO_DIM: D2D1_COLOR_F = rgb(0.937, 0.878, 0.784, 1.0);
+const FUR_SHADE: D2D1_COLOR_F = rgb(0.851, 0.502, 0.227, 1.0);
 /// 赛璐璐光影: 一块平涂的暗面(不渐变), 压在下半身/内侧 —— 动漫插画那味儿
-const CEL: D2D1_COLOR_F = rgb(0.890, 0.505, 0.135, 1.0);
+const CEL: D2D1_COLOR_F = rgb(0.878, 0.533, 0.204, 1.0);
 /// 受光面(比背毛更亮更黄)。径向"体积球"的球心色 —— 用户要的"立体一点"全靠它。
-const FUR_LIGHT: D2D1_COLOR_F = rgb(1.000, 0.775, 0.430, 1.0);
+const FUR_LIGHT: D2D1_COLOR_F = rgb(0.973, 0.725, 0.420, 1.0);
 /// 体积球最外圈的反光暗面(比 CEL 更深, 否则球没有"转过去"的感觉)
-const FUR_DEEP: D2D1_COLOR_F = rgb(0.780, 0.395, 0.085, 1.0);
+const FUR_DEEP: D2D1_COLOR_F = rgb(0.761, 0.416, 0.157, 1.0);
 /// 里白的球心(近纯白)
-const URAJIRO_LIGHT: D2D1_COLOR_F = rgb(1.000, 0.996, 0.960, 1.0);
-/// 描边: 动漫插画那种**粗黑边**(原来是棕色细边, 换近黑后立刻"立"起来)
-const OUTLINE: D2D1_COLOR_F = rgb(0.180, 0.105, 0.075, 1.0);
-const EAR_IN: D2D1_COLOR_F = rgb(0.925, 0.525, 0.455, 1.0);
-const NOSE: D2D1_COLOR_F = rgb(0.105, 0.070, 0.055, 1.0);
-const EYE: D2D1_COLOR_F = rgb(0.075, 0.050, 0.040, 1.0);
+const URAJIRO_LIGHT: D2D1_COLOR_F = rgb(1.000, 0.984, 0.945, 1.0);
+/// 描边: 参考图是**暖棕细线**(原来是近黑粗边, 太"记号笔")
+const OUTLINE: D2D1_COLOR_F = rgb(0.420, 0.239, 0.102, 1.0);
+const EAR_IN: D2D1_COLOR_F = rgb(0.984, 0.820, 0.667, 1.0);
+const NOSE: D2D1_COLOR_F = rgb(0.059, 0.067, 0.067, 1.0);
+const EYE: D2D1_COLOR_F = rgb(0.059, 0.067, 0.067, 1.0);
 /// 张嘴的暗部与舌头: 参考图里"张着嘴笑"是萌点的主力, 只画一条嘴线是不够的
-const MOUTH: D2D1_COLOR_F = rgb(0.400, 0.105, 0.100, 1.0);
-const TONGUE: D2D1_COLOR_F = rgb(0.960, 0.430, 0.470, 1.0);
+const MOUTH: D2D1_COLOR_F = rgb(0.478, 0.165, 0.125, 1.0);
+const TONGUE: D2D1_COLOR_F = rgb(0.945, 0.514, 0.424, 1.0);
 const EYE_HI: D2D1_COLOR_F = rgb(1.0, 1.0, 1.0, 0.95);
 const STRAP: D2D1_COLOR_F = rgb(0.408, 0.259, 0.169, 1.0);
 const BAG: D2D1_COLOR_F = rgb(0.769, 0.396, 0.231, 1.0);
@@ -368,7 +370,8 @@ pub struct Shapes {
     pub head: ID2D1PathGeometry,
     pub ear: ID2D1PathGeometry,
     pub body: ID2D1PathGeometry,
-    pub muzzle: ID2D1PathGeometry,
+    /// **白脸罩**(里白): 颊 + 眼周, 顶上留一道橙 V —— 柴犬的脸就靠它
+    pub mask: ID2D1PathGeometry,
     /// 嘴线(只描边, 不填充)
     pub mouth: ID2D1PathGeometry,
     /// 吻部的鼻梁线(只描边)
@@ -383,38 +386,44 @@ fn bez(p1: Pt, p2: Pt, p3: Pt) -> D2D1_BEZIER_SEGMENT {
     }
 }
 
-/// 柴犬头侧面轮廓(朝右, 原点=头中心): **圆颅骨 + 明显额段(停) + 短而钝的楔形吻**。
-/// 之前那版吻部又长又尖(吻尖到 27.5 而颅骨又小), 读起来像狐狸/食蚁兽 —— 用户原话"头很诡异"。
+/// 柴犬头(朝右, 原点=头中心): **圆颅骨 + 前下方伸出一小段短吻**, 一个闭合轮廓。
+/// 姿态图里的头是"大而圆 + 吻很短", 五官都摆在这个轮廓的中前部。
 fn build_head(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
-        // **圆颅骨**: 五官画在它中部。之前那版头是"蛋形 + 五官挤在右下" —— 不像的根在这。
-        s.BeginFigure(pt((-14.0, -19.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((-6.0, -30.0), (10.0, -30.0), (18.0, -17.0)));
-        s.AddBezier(&bez((23.0, -11.0), (25.0, -4.0), (24.0, 2.0)));
-        s.AddBezier(&bez((22.0, 9.0), (12.0, 13.0), (-1.0, 12.5)));
-        s.AddBezier(&bez((-11.0, 12.0), (-18.0, 4.0), (-14.0, -19.0)));
+        s.BeginFigure(pt((-15.0, -12.0)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((-14.0, -24.5), (-4.0, -29.5), (7.0, -27.0)));
+        s.AddBezier(&bez((16.5, -24.5), (21.5, -18.0), (23.0, -9.5)));
+        s.AddBezier(&bez((24.5, -3.0), (27.5, 0.0), (31.0, 1.5)));
+        s.AddBezier(&bez((34.5, 3.2), (34.0, 7.5), (30.0, 9.0)));
+        s.AddBezier(&bez((25.5, 10.6), (20.0, 10.4), (15.5, 9.2)));
+        s.AddBezier(&bez((9.5, 12.0), (1.0, 13.4), (-5.5, 12.2)));
+        s.AddBezier(&bez((-11.5, 11.0), (-15.0, 6.0), (-15.2, 0.0)));
+        s.AddBezier(&bez((-15.4, -4.5), (-15.2, -8.5), (-15.0, -12.0)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
     }
 }
 
-/// 吻部: 从颅骨前下方**伸出来**的一段短圆楔形(参考图里柴犬的吻就是这个结构)。
-/// 单独一条路径的好处: 它能自带描边, 而那条"吻部与脸的分界线"正是卡通狗该有的线。
-fn build_muzzle(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+/// **白脸罩**(里白): 颊 + 眼周 + 吻, 顶上是一道"人字"橙 V(额头那道橙毛).
+/// 姿态图的脸就是这个结构: 橙色的额 V 从两眼之间下来, 其余下半张脸都是里白。
+fn build_mask(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
-        // 吻部: 从颅骨前下方**伸出来**的一段短圆楔形(参考图里柴犬的吻就是这个结构)。
-        // 后缘必须是**向脸内凹的浅弧**(显式加一段贝塞尔); 直接 `EndFigure(CLOSED)` 会用一条
-        // 竖直直线收口, 配上近水平的鼻梁就成了一张"白方框"糊在脸上。
-        s.BeginFigure(pt((13.5, -6.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((20.0, -7.5), (28.0, -4.0), (32.0, 0.0)));
-        s.AddBezier(&bez((34.5, 3.5), (32.0, 8.0), (26.5, 9.0)));
-        s.AddBezier(&bez((20.0, 9.8), (16.0, 8.0), (14.0, 4.5)));
-        s.AddBezier(&bez((12.4, 2.0), (12.0, -2.5), (13.5, -6.0)));
+        s.BeginFigure(pt((-13.0, 8.5)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((-6.0, 12.0), (3.0, 12.5), (9.5, 10.5)));
+        s.AddBezier(&bez((15.0, 8.6), (21.0, 6.0), (24.5, 2.5)));
+        s.AddBezier(&bez((26.0, 0.5), (25.5, -3.0), (23.5, -6.5)));
+        s.AddBezier(&bez((21.5, -11.0), (19.0, -16.0), (14.0, -18.0)));
+        s.AddBezier(&bez((10.0, -19.5), (6.0, -19.5), (3.5, -17.5)));
+        // V 字凹口: 额头那道橙毛从这儿下来(窄而浅 —— 太深会把白脸劈成两半)
+        s.AddBezier(&bez((2.5, -16.0), (1.5, -16.0), (0.0, -17.5)));
+        s.AddBezier(&bez((-2.0, -19.5), (-6.0, -19.5), (-9.5, -18.0)));
+        s.AddBezier(&bez((-13.0, -16.5), (-15.5, -11.0), (-15.5, -5.0)));
+        s.AddBezier(&bez((-15.5, 1.0), (-14.5, 5.5), (-13.0, 8.5)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
@@ -426,27 +435,26 @@ fn build_ear(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
 
-        // 参考图中的小而厚的圆角三角立耳。
-        // **宽高比接近 1:1** —— 之前那版底宽 16 / 高 26.5 是"兔耳", 柴犬的耳朵是厚三角。
-        s.BeginFigure(pt((-9.5, 2.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((-9.5, -8.0), (-6.5, -16.5), (0.0, -20.5)));
-        s.AddBezier(&bez((6.5, -16.5), (9.5, -8.0), (9.5, 2.0)));
-        s.AddBezier(&bez((5.0, 4.6), (-5.0, 4.6), (-9.5, 2.0)));
+        // 姿态图里的厚三角立耳(底宽 ≈ 高度的 0.8, 尖端略圆)。
+        s.BeginFigure(pt((-9.5, 2.5)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((-10.0, -7.5), (-6.5, -15.5), (0.0, -19.5)));
+        s.AddBezier(&bez((6.5, -15.5), (10.0, -7.5), (9.5, 2.5)));
+        s.AddBezier(&bez((5.0, 5.2), (-5.0, 5.2), (-9.5, 2.5)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
     }
 }
 
-/// 吻部的**鼻梁线**(只描边): 从鼻根往后上方回到额段。
+/// 吻部的**鼻梁线**(只描边): 从鼻根往后上方回到眼睛下方。
 /// 为什么不描吻部整条轮廓: 闭合的圆角矩形轮廓 = 脸上糊了一张"白方框"(用户看到的"不像"之一),
 /// 卡通狗只画这条鼻梁线 + 嘴, 吻部其余边缘靠里白色自己交代。
 fn build_bridge(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
-        s.BeginFigure(pt((27.5, -1.0)), D2D1_FIGURE_BEGIN_HOLLOW);
-        s.AddBezier(&bez((24.0, -5.2), (17.0, -6.8), (9.0, -6.0)));
+        s.BeginFigure(pt((27.0, -0.4)), D2D1_FIGURE_BEGIN_HOLLOW);
+        s.AddBezier(&bez((23.0, -3.4), (17.0, -5.0), (11.0, -4.6)));
         s.EndFigure(D2D1_FIGURE_END_OPEN);
         s.Close()?;
         Ok(g)
@@ -459,12 +467,12 @@ fn build_mouth(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
-        s.BeginFigure(pt((28.0, 3.4)), D2D1_FIGURE_BEGIN_FILLED);
+        s.BeginFigure(pt((26.0, 3.6)), D2D1_FIGURE_BEGIN_FILLED);
         // 下缘(从鼻根往后下方兜出去)
-        s.AddBezier(&bez((27.0, 7.4), (23.0, 9.4), (19.0, 8.8)));
-        s.AddBezier(&bez((17.0, 8.4), (15.8, 6.8), (16.2, 5.0)));
+        s.AddBezier(&bez((25.5, 6.6), (23.0, 8.8), (20.0, 8.6)));
+        s.AddBezier(&bez((18.0, 8.4), (16.5, 7.2), (16.1, 5.4)));
         // 上缘(贴着吻部回去)
-        s.AddBezier(&bez((20.0, 5.4), (24.5, 4.6), (28.0, 3.4)));
+        s.AddBezier(&bez((19.1, 5.6), (23.0, 4.9), (26.0, 3.6)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
@@ -529,7 +537,7 @@ impl Shapes {
             head: pick("head", build_head)?,
             ear: pick("ear", build_ear)?,
             body: pick("body", build_body)?,
-            muzzle: pick("muzzle", build_muzzle)?,
+            mask: pick("mask", build_mask)?,
             mouth: pick("mouth", build_mouth)?,
             bridge: pick("bridge", build_bridge)?,
         };
@@ -746,11 +754,11 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
 /// 耳: 三角立耳。`tilt` 是相对头顶的外倾角, `alert` 时立得更直。
 /// 老写法是两个圆椭圆耷在头顶, 读起来像发髻 —— 用户原话"耳朵位置有点诡异"。
 unsafe fn ear(c: &Ctx, base: Pt, tilt: f32, swing: f32, alert: f32, far: bool) {
-    // **耳朵的总高度必须是头的 1/3 上下**: 这里的几何高 25, 配 0.80 缩放 ≈ 20 —— 柴犬的立耳
-    // 就这个比例。之前给 1.28/1.34 倍, 耳朵比半个头还高, 而且耳根压在眼睛上(远侧那只眼
-    // 被耳朵盖掉上半, 读起来是"怒眉"—— 真踩过)。
-    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 0.80;
-    let sx = (if far { 0.95 } else { 1.0 }) * 0.80;
+    // **耳朵的总高度必须是头的 1/3 上下**: 这里的几何高 21.5, 配 0.95 缩放 ≈ 20; 耳根坐在颅顶
+    // (头轮廓的顶在 -26 左右, 所以耳根给 -20 上下, 下半截埋在头里 —— 真踩过: 耳根给太低
+    // 整只耳朵被头盖住, 画面上只剩一个尖)。
+    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 1.12;
+    let sx = (if far { 0.95 } else { 1.0 }) * 1.02;
     let ang = tilt + swing - alert * tilt * 0.45;
     // 耳的填充**不用体积球**: 球刷的坐标在"画几何的那个空间"里, 而耳是在头的 `at_scaled`
     // 里画的(还乘了头的缩放), 会算错位置 —— 小零件上不值当, 线性渐变够了。
@@ -928,12 +936,12 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         c.oval(neck, 15.5, 14.5, &c.b.fur);
     });
 
-    // ---- 头: **圆颅骨 + 独立伸出的吻部**(结构对齐参考图; 五官画在颅骨中部, 不再挤在右下)
+    // ---- 头: 姿态图那张脸(圆颅骨 + 短吻 + 白脸罩 + 额前橙 V + 眉上两点 + 小圆黑眼)
     let look = p.look.clamp(-1.0, 1.0);
     let yaw = look * 0.10;
     let hx = 36.0 + look * 3.8 + (1.0 - up) * -11.0;
     let hy = body_y - 29.0 - up * 3.0 + (1.0 - up) * 9.0 + p.head_drop * 26.0;
-    // **头整体缩放**: 五官/耳朵/吻部一律画在"艺术坐标"里, 由 `at_scaled` 统一缩放 ——
+    // **头整体缩放**: 五官/耳朵一律画在"艺术坐标"里, 由 `at_scaled` 统一缩放 ——
     // 只把颅骨 `place(..., head_sx, ...)` 放大是错的: 头涨大而五官不动, 出来是个"大空脑袋"
     // (真踩过)。凡是这一层里 `ball_at` 的坐标/半径都是**画几何用的那个空间**, 要乘 hs。
     let hs = 1.34 * (1.0 - look.abs() * 0.035);
@@ -941,15 +949,15 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         // 远耳(立在颅顶后侧)
         ear(
             c,
-            (-9.0 + look * 1.2, -21.0),
-            -0.26 - look * 0.04,
+            (-9.0 + look * 1.2, -20.0),
+            -0.30 - look * 0.04,
             p.ear * 0.30,
             p.alert,
             true,
         );
 
-        // 颅骨: 用**体积球**填 —— 球心在头中偏左上(受光), 右下自然压暗。
-        c.ball_at(&c.b.ball, (4.5 * hs, -6.5 * hs), 32.0 * hs, 27.5 * hs, |c| {
+        // 颅骨 + 吻(一整条轮廓): **体积球**填 —— 球心在头中偏左上(受光), 右下自然压暗
+        c.ball_at(&c.b.ball, (4.0 * hs, -7.0 * hs), 30.0 * hs, 27.0 * hs, |c| {
             c.place(
                 &c.shapes.head,
                 (0.0, 0.0),
@@ -960,17 +968,10 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
                 2.0,
             );
         });
-        // 里白: 下半张脸(颊/下颚)。**这里不能用体积球**: 球刷最外圈是暗色, 画在另一块白上
-        // 就留下一道弧形的"接缝"(看着像脸上贴了张白方框)。用**共用同一条线性渐变**,
-        // 同一个局部点的颜色完全一致, 两块白之间自然无缝。
-        c.oval((10.0, 7.5), 15.5, 10.5, &c.b.urajiro_grad);
-        // 额前一道奶油色(参考图两眼里那道浅色, 让大额头不空)
-        c.oval((-3.0, -7.5), 7.0, 10.0, &c.b.urajiro_grad);
-
-        // 吻部 + 鼻 + 嘴
-        // **不描轮廓**(见 `build_bridge`), 只填里白; 与脸颊共用同一条渐变 => 无缝
+        // **白脸罩**(里白): 颊 + 眼周, 顶上是那道橙 V。与吻部共用同一条里白渐变 ⇒ 无缝
+        // (用体积球会在白底上留一道弧形的暗边, 看着像脸上贴了块白方子 —— 真踩过)。
         c.place(
-            &c.shapes.muzzle,
+            &c.shapes.mask,
             (0.0, 0.0),
             0.0,
             1.0,
@@ -978,10 +979,14 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
             Some(&c.b.urajiro_grad),
             0.0,
         );
-        // 鼻梁线(停部 → 鼻根)
+        // 眉上两点(柴犬的"四眼"): 奶油小圆点, 压在额头那道橙 V 上面
+        c.oval((-6.5, -23.0), 2.7, 2.1, &c.b.urajiro);
+        c.oval((4.5, -22.0), 2.5, 2.0, &c.b.urajiro);
+
+        // 鼻梁线(眼下方 → 鼻根)
         let _ = c
             .rt
-            .DrawGeometry(&c.shapes.bridge, &c.b.outline, 1.9, None);
+            .DrawGeometry(&c.shapes.bridge, &c.b.outline, 1.7, None);
         // 嘴: 张开的笑口(月牙) + 舌头。**先嘴后鼻** —— 鼻子压在嘴上沿, 嘴才不会盖住鼻头。
         let yz = p.yawn.clamp(0.0, 1.0);
         c.place(
@@ -991,39 +996,32 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
             1.0 + yz * 0.08,
             1.0 + yz * 0.55,
             Some(&c.b.mouth),
-            1.6,
+            1.5,
         );
         c.oval(
-            (21.0, 7.0 + yz * 2.0),
-            2.7 + yz * 1.5,
+            (21.0, 6.8 + yz * 2.0),
+            2.6 + yz * 1.5,
             1.3 + yz * 2.1,
             &c.b.tongue,
         );
-        // 鼻(圆头黑鼻 + 高光): 尺寸/位置要**收在吻部轮廓里**, 否则黑鼻头会戳出吻部边缘
-        c.oval((28.5, 0.5), 4.5, 3.7, &c.b.outline);
-        c.oval((28.5, 0.5), 3.5, 2.8, &c.b.nose);
-        c.disc((27.3, -0.7), 0.9, &c.b.eye_hi);
+        // 鼻: 姿态图里是**小的圆角三角黑鼻**(不是大圆鼻头), 压在吻的前上方
+        c.oval((28.0, 1.0), 3.8, 3.0, &c.b.nose);
+        c.disc((26.8, 0.0), 0.8, &c.b.eye_hi);
 
-        // 眼: 近大远小(三分之四), **都落在颅骨中部、吻根上方** —— 之前两只眼一高一低挤在
-        // 吻部上沿, 远侧那只被读成"单片眼镜"。眼白高光两粒是一大一小。
-        let k = (1.0 - p.blink).max(0.07);
+        // 眼: **小黑豆 + 单点高光**(姿态图的眼睛比原来那对大圆眼小一圈, 位置更低更分开),
+        // 两只都落在白脸罩里。近大远小(三分之四视角)。
+        let k = (1.0 - p.blink).max(0.08);
         for (e, r, tilt) in [
-            ((-4.5 + look * 2.0, -12.5), 4.2f32, -0.12f32),
-            ((7.0 + look * 2.0, -11.5), 4.8f32, -0.16f32),
+            ((-5.0 + look * 2.0, -10.5), 4.0f32, -0.10f32),
+            ((6.5 + look * 2.0, -10.0), 4.3f32, -0.13f32),
         ] {
-            let eh = r * k;
+            let eh = r * 1.18 * k;
             c.rot_at(tilt, e, |c| {
-                c.oval(e, r + 0.7, eh + 0.55, &c.b.outline);
                 c.oval(e, r, eh, &c.b.eye);
             });
             c.disc(
-                (e.0 - r * 0.30, e.1 - r * 0.32 * k),
-                r * 0.44 * k,
-                &c.b.eye_hi,
-            );
-            c.disc(
-                (e.0 + r * 0.34, e.1 + r * 0.30 * k),
-                r * 0.21 * k,
+                (e.0 - r * 0.28, e.1 - r * 0.36 * k),
+                r * 0.34 * k,
                 &c.b.eye_hi,
             );
         }
@@ -1031,8 +1029,8 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
         // 近耳(立在颅顶前侧)
         ear(
             c,
-            (5.0 + look * 0.9, -21.5),
-            0.22 + look * 0.05,
+            (6.0 + look * 0.9, -21.0),
+            0.26 + look * 0.05,
             -p.ear * 0.34,
             p.alert,
             false,
