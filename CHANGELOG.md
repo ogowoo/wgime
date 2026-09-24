@@ -1,5 +1,45 @@
 ---
 
+## 2026-09-24 (第九十轮: 步骤 DSL 新增 `start` 动词 —— 终于能"启动一个常驻程序"了)
+
+**来由**: 用户问"是不是用 dsl 的方式还简单呢？"(指 PyShot 能不能直接写成 `plugins\pyshot.txt`)。查完
+`plugins.py _run_verb` 后结论是**不行** —— DSL 每个能起程序的动词都会**等进程结束**: `run`/`shell` 是
+`subprocess.run(..., timeout=120)`(超时先 kill 子进程再抛), `shellx`/`[shellx]`/`[psx]` 走 `RunVisible` +
+`WaitForExit`(24h), `[shell]`/`[powershell]` 块 300s; 唯一不等的 `open` 又不能传参数、不能选解释器、还弹窗。
+但这一问暴露了**真缺口**: DSL 和 `tools.txt` 按钮都**启动不了常驻程序**(托盘工具/截图器)。用户"做" ⇒ 两侧补齐。
+
+**实现(两侧逐条对齐, §32)**:
+- python `plugins.py _run_verb` 新增 `start`: `tokenize` → 只对程序名 `expandvars` → `Popen(parts,
+  stdin/stdout/stderr=DEVNULL, close_fds=True, creationflags=CREATE_NO_WINDOW)` → 记 `started pid` → 返回 0。
+  三流一律 DEVNULL(pythonw 下 `sys.stdout/stderr` 是 `None`, 继承过去等于给子进程无效句柄; 也不接管道, 免得
+  没人读塞满把常驻程序卡死); `OSError` 包上程序名再抛(Windows 的 FileNotFoundError 文本里没有文件名)。
+- C# `ExecToolStep` 新增同名 `start`: `ProcessStartInfo{UseShellExecute=false, CreateNoWindow=true}` +
+  `Process.Start`, **分支里没有 `WaitForExit`**; 启动异常 `catch` 里带上 `spi.FileName` 返回。
+- 缺参(python `start 缺少程序名` / C# `"start missing program name"`)与找不到程序都**记一步失败**, 不静默成功。
+
+**回归 `tests\dsl-verbs-test.py`(29 项, 新)**: 真进程(睡 1.2s 再写标记的子进程 ⇒ start 立即返回 / 返回时标记未现 /
+稍后出现且内容 = 带空格的引号参数; `run` 同款对照要等 ≥0.35s)、失败路径(缺参/找不到程序记失败且后续步骤照跑)、
+调用形态(假 `subprocess`: start 走 Popen + 三流 DEVNULL + CREATE_NO_WINDOW, run 仍走 run(timeout=120))、
+**两侧动词表不许漂移**(从 C# 抽 `\bv == "…"`、python 抽 `(?:if|elif) verb == '…'` + 块标签, 别名归一后断言
+集合完全相等; 还断言 C# start 分支无 `.WaitForExit(`)、规范文档里必须有 `start`。
+
+**C# 连锁动作(§3)**: `tests\rebuild-wgime-bat-payload.ps1`(瘦 DLL 560 KB) → `build-wgime-ps1.ps1`
+(DLL 5,361,152 B; WgIme.ps1 39,427,025 B, 同步 release) → `Copy-Item wgime.bat release\wgime.bat` →
+`tests\wgime-ps1.tests.ps1` **15/15**(含 "ps1 parses without syntax errors" 与 "runtime: IME worker is running",
+即新 C# 真跑起来了)。`plugins.py` 在内嵌清单 ⇒ `build-package.ps1` 重建 dist(1,186.5 → 1,188.2 KB)与 package,
+`%TEMP%\wgime-dist-sync-check.py` → `mismatches=0` / `main.py embedded match: True`。`rebuild-wgime-bat-payload.ps1`
+写出的 bat 工作区是混合行尾, 已按 §1 归一成 CRLF(blob 不变, `git diff --numstat` 仍 19/1)。
+
+**文档**: `docs\WGIME_插件规范.md` §3 动词表加 `start` 行 + §7 动词清单; `docs\WGIME_使用说明.md`(工具箱一节)/
+`docs\WGIME_技术文档.md`/`docs\WGIME_Python重实现方案.md` 同步; AGENTS §5 规则 32 加 ⑤(两侧语义 + 不许漂移);
+§4 测试表加 `dsl-verbs-test.py`(29 项); AGENTS-DETAIL 新增 **§D53**(为什么以前启动不了常驻程序 / 两侧实现 /
+两个正则坑 / 重建链实测数字)。
+
+**验证**: `dsl-verbs-test.py` 29/29 / `wgime-ps1.tests.ps1` 15/15 / `undefined-globals` RESULT: OK /
+`tests\pure-state-harness.py` 全绿 / `deps-test` 51/51 / `example-plugin-test` 24/24 / `standalone-plugin-test` 8/8 /
+`pet-dll-plugin-test` 22/22 / `pyshot-plugin-test` 70/70 / `update-test` 36/36(真 dist 自洽) /
+`embedded-isolation-test` 14/14。
+
 ## 2026-09-24 (第八十九轮补: PyShot 改成**单文件**双模包装 —— 一个文件既是插件、又能独立跑)
 
 **来由**: 用户看完第八十九轮的"薄包装 + 下划线载荷"两文件方案后明确否决 —— "之前不是做了一个双模的么？跟随那个来做不行？，我也要可以独立运行的。" 即照 §8.7 的双模式做成**一个** `plugins\PyShot.py`, 不要两个文件。

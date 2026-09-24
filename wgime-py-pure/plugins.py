@@ -460,6 +460,29 @@ def _run_verb(verb, arg, log, msgbox, confirm):
         return _run_hidden(parts, log)
     elif verb == 'shell':
         return _run_hidden('cmd /c ' + arg, log)     # cmd 自己展开 %env%, 对齐 C# (不预先展开)
+    elif verb == 'start':
+        # 第八十九轮补: 只管拉起、**不等它退出** —— 给"常驻程序"(托盘工具/截图器/常开监视器)用。
+        # 以前所有能起程序的动词都会等: run/shell 超时 120s、shellx/多行块 300s~86400s, 拿它们启动一个
+        # 不退出的程序 = 调用线程干等到超时, 然后 subprocess.run 把那个子进程**杀掉**; 而 open 又不能传
+        # 参数、不能选解释器(还不隐藏窗口)。语义与 C# ExecToolStep 的 start 分支一致。
+        parts = tokenize(arg)
+        if not parts:
+            raise RuntimeError('start 缺少程序名')      # 同 run: 缺参记一步失败, 不能静默成功
+        parts[0] = os.path.expandvars(parts[0])      # C# 只展开程序名(tk[1]), 参数原样
+        # 不继承我们的标准流(pythonw 下 sys.stdout/stderr 是 None, 子进程拿到的是无效句柄), 也不接管道
+        # (管道没人读, 常驻程序写满了会自己卡住); 控制台窗口用 CREATE_NO_WINDOW 藏掉。
+        kw = {}
+        if os.name == 'nt':
+            kw['creationflags'] = subprocess.CREATE_NO_WINDOW
+        p = None
+        try:
+            p = subprocess.Popen(parts, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, close_fds=True, **kw)
+        except OSError as ex:
+            # 带上是哪个程序: Windows 的 FileNotFoundError 文本里**没有**文件名, 只报"系统找不到指定的文件"
+            raise RuntimeError('%s: %s' % (parts[0], ex))
+        log('  started pid %s' % getattr(p, 'pid', '?'))
+        return 0
     elif verb == 'shellx':
         subprocess.run('cmd /c ' + arg, shell=True,  # 同上: 交给 cmd 展开
                        creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=86400)

@@ -200,7 +200,7 @@ tkinter 无边框置顶候选条（`overrideredirect` + `-topmost`）可用。
 ## 12. 阶段 3 第一批已完成（2026-08-26，外挂生态）
 
 - **插件系统**：`plugins\*.txt` 解析（code/name/desc 头 + 步骤 DSL 或 `[csharp]`）；`[csharp]` 走运行时 CodeDom 编译 + 专用 STA 线程（`PluginHost`：`Application.Run` + 定时器泵队列），错误落盘 + 弹窗；与 WgIme 宿主同契约——`lt` 选中 ▶聊天 即弹出真正的聊天窗（验证通过）
-- **步骤 DSL 执行器**（`plugins.py`）：msg/confirm/run/shell/shellx/open/kill/wait/reg-set/reg-del/file-del/mkdir + `[shell]/[powershell]/[shellx]/[psx]` 块（ANSI .cmd / UTF-8 BOM .ps1，临时文件）；失败记日志不中断、confirm 选否中止
+- **步骤 DSL 执行器**（`plugins.py`）：msg/confirm/run/start/shell/shellx/open/kill/wait/reg-set/reg-del/file-del/mkdir + `[shell]/[powershell]/[shellx]/[psx]` 块（ANSI .cmd / UTF-8 BOM .ps1，临时文件）；失败记日志不中断、confirm 选否中止
 - **工具箱窗体**：`tools.txt` tab/cols/按钮解析 → TabControl + 按钮网格，点击后台执行对应步骤
 - **插件管理窗体**：列表 + 启用/禁用（`plugins-disabled.txt`）+ 重载
 - **剪贴板历史**：轮询剪贴板序列号，30 条历史，复制选中/粘贴上屏

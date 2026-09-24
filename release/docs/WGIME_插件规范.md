@@ -35,6 +35,7 @@ desc = 一句话说明        ; 可选（目前仅作文档）
 | `msg 文本` | 气泡提示 |
 | `confirm 文本` | 确认框；选"否"**中止**该插件后续步骤 |
 | `run <程序> [参数...]` | 静默运行并等待结束（输出/退出码入日志） |
+| `start <程序> [参数...]` | **只拉起、不等它退出** —— 常驻程序（托盘工具、截图器之类）专用（`run`/`shell` 会一直等到超时才把子进程收掉；`open` 又不能传参数、不藏窗口） |
 | `shell <cmd 命令行>` | `cmd /c` 单行静默执行 |
 | `shellx <cmd 命令行>` | 同 `shell` 但弹**可见控制台窗口**（交互式命令用），等窗口关闭 |
 | `open <目标>` | 系统默认方式打开（程序/文件夹/网址），不等待 |
@@ -123,7 +124,7 @@ public class ClockPlugin
 
 txt 插件复用与 C# 版同一套步骤 DSL：
 
-- 动词：`msg` / `confirm` / `run` / `shell` / `open` / `kill` / `wait` / `file-del` / `reg-set` / `reg-del` / `mkdir`。
+- 动词：`msg` / `confirm` / `run` / `start` / `shell` / `open` / `kill` / `wait` / `file-del` / `reg-set` / `reg-del` / `mkdir`。
 - 多行脚本块：`[shell]` / `[powershell]` / `[shellx]` / `[psx]`。
 - **另有 `[python]` 块**：Python 代码在**子进程**中运行（超时 60s 熔断），不会拖垮宿主——不要指望它与输入法同进程共享状态。
 

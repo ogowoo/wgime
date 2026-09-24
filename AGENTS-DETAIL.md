@@ -2570,3 +2570,56 @@ D2D 软件光栅在这个尺寸上完全不是瓶颈。
 （`--cached` 不碰工作区）再 `git add -- wgime-py-pure\plugins\PyShot.py`，然后 `git diff --cached --name-status`
 确认是 `A PyShot.py` + `D pyshot.py` + `D _pyshot_app.py` 三条。
 
+## §D53 步骤 DSL 新增 `start` 动词（第九十轮）
+
+**来由**：用户问"是不是用 dsl 的方式还简单呢？"—— 即 PyShot 这类常驻 Qt 程序能不能干脆写成
+`plugins\pyshot.txt`（步骤 DSL）省掉包装。查完 `_run_verb` 后结论是**不行**（DSL 每个能起程序的动词都会
+等进程结束），但那一问暴露了一个**真缺口**：DSL 与 tools.txt 按钮**都启动不了常驻程序**。用户"做" ⇒
+两侧（python + C#）加 `start`。
+
+**为什么以前启动不了常驻程序**（逐个动词，`plugins.py:_run_verb` / C# `ExecToolStep`）：
+- `run` → `_run_hidden` = `subprocess.run(..., timeout=120)`：等进程退出；超时是"先 kill 子进程再抛
+  TimeoutExpired" ⇒ 拿它启动常驻程序 = 干等 120 秒再把人家收掉（`run_steps` 按步捕获异常，只记一次失败）。
+- `shell` 同款（120s）；`shellx`/`[shellx]`/`[psx]` 走 `RunVisible` + `WaitForExit`（24h）；
+  `[shell]`/`[powershell]` 块 300s。
+- `open` → `os.startfile(_tool_path(...))`：唯一不等的，但 ①不能传参数 ②不能选解释器（`.py` 关联到编辑器就
+  开编辑器；关联 python 也会弹黑框）③`_tool_path` 只去引号 + `expandvars`，不解析安装目录 ④没地方注入
+  `PYTHONPATH`（私有 site 目录那套）。
+
+**实现**（两侧逐条对齐）：
+- python（`plugins.py` `_run_verb`）：`tokenize(arg)` → `parts[0] = os.path.expandvars(parts[0])`（只展开程序名，
+  同 `run`）→ `Popen(parts, stdin/stdout/stderr=DEVNULL, close_fds=True, creationflags=CREATE_NO_WINDOW)`
+  → `log('  started pid %s')` → 返回 0。**三个标准流一律 DEVNULL**：pythonw 下 `sys.stdout`/`sys.stderr` 是
+  `None`，继承给子进程等于给无效句柄；也不接管道（没人读，常驻程序写满了会自己卡住）。`OSError` 包成
+  `RuntimeError('%s: %s' % (parts[0], ex))` —— Windows 的 `FileNotFoundError` 文本里**没有文件名**，
+  不带上一句用户根本不知道缺哪个程序。
+- C#（`wgime.bat` `ExecToolStep`）：`tk[1]` 过 `Environment.ExpandEnvironmentVariables`、`tk[2..]` 带空格加引号；
+  `ProcessStartInfo{UseShellExecute=false, CreateNoWindow=true}` + `Process.Start`（**分支里绝不许出现
+  `WaitForExit`**）；启动异常 `catch` 里返回 `"start " + spi.FileName + ": " + ex.Message`（同样为了带上程序名）。
+- 缺参：python 抛 `start 缺少程序名`；C# 返回 `"start missing program name"` —— 都记一步失败，**不静默成功**。
+
+**回归 `tests\dsl-verbs-test.py`（29 项）**：真进程行为（`start` 一个"睡 1.2s 再写标记文件"的子进程 ⇒ 断言
+start 立即返回、返回时标记还没出现、稍后标记出现且内容 = 带空格的引号参数；`run` 同款对照 ≥0.35s 才返回）、
+失败路径（缺参 / 找不到程序都记失败且**后续步骤照跑**）、调用形态（把 `plugins.subprocess` 换成假对象：
+start 走 `Popen` 且三流 DEVNULL + `CREATE_NO_WINDOW`、run 走 `subprocess.run(timeout=120)`、只展开程序名里的
+`%VAR%`）、**两侧动词表不许漂移**（从 C# `ExecToolStep` 抽 `\bv == "…"`、从 python 抽 `(?:if|elif) verb == '…'`
+加块标签，别名归一后断言集合完全相等；C# start 分支断言无 `.WaitForExit(`）、规范文档里必须有 `start`。
+> 写测试时真踩的两个正则坑：① `v == "ok"` 会匹配到 C# 里的 `ov == "ok"`（`ok`/`okcancel` 就这么混进动词表）
+> ⇒ 必须 `\bv == `；② python 第一个分支是 `if verb == 'msg'`（不是 `elif`）⇒ 只抓 `elif` 会漏 `msg`。
+
+**这一轮的重建链**（§3，因为是 C# 改动）：`tests\rebuild-wgime-bat-payload.ps1`（瘦 DLL 560 KB，
+wgime.bat 3.31 MB —— 脚本报的 "was 2.6 MB" 是它自己记的旧基线，实际只 +865 B ≈ 那 16 行）→
+`build-wgime-ps1.ps1`（完整 DLL 5,361,152 B、WgIme.ps1 39,427,025 B，同步 release）→
+`Copy-Item wgime.bat release\wgime.bat` → `tests\wgime-ps1.tests.ps1` **15/15**（含
+"ps1 parses without syntax errors" 与 "runtime: IME worker is running"，即新 C# 真跑起来了）。
+`plugins.py` 在内嵌清单里 ⇒ `build-package.ps1` 重建 dist（1,186.5 → 1,188.2 KB）与 package，
+`%TEMP%\wgime-dist-sync-check.py` → `mismatches=0` / `main.py embedded match: True`。
+> 另注：`rebuild-wgime-bat-payload.ps1` 写出的 wgime.bat 工作区是**混合行尾**（145,656 LF vs 145,655 CRLF，
+> 末行 LF）⇒ 按 §1 归一成 CRLF 再提交（`eol=crlf` 下 blob 不变，`git diff --numstat` 仍是 19/1 可验证）。
+
+**验证**：`dsl-verbs-test.py` 29/29 / `wgime-ps1.tests.ps1` 15/15 / `undefined-globals` RESULT: OK /
+`pure-state-harness` 全绿 / `deps-test` 51/51 / `example-plugin-test` 24/24 / `standalone-plugin-test` 8/8 /
+`pet-dll-plugin-test` 22/22 / `pyshot-plugin-test` 70/70 / `update-test` 36/36（真 dist 自洽）/
+`embedded-isolation-test` 14/14。
+
+
