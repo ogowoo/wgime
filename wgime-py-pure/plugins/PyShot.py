@@ -28,7 +28,7 @@ import sys
 
 CODE = 'pyshot'
 NAME = '截图标注'
-DESC = '截图标注 2.16.1 —— 截图/滚动截图/标注编辑/贴图(独立进程, 需 PySide6)'
+DESC = '截图标注 2.18.1 —— 截图/滚动截图/标注编辑/贴图(独立进程, 需 PySide6)'
 VERSION = '1.0'
 AUTHOR = 'ogowoo'
 PERM = 'low'                       # 只把「跟插件一起分发的自家程序」拉起来; 程序自身权限另算(规范 §16)
@@ -36,7 +36,7 @@ STANDALONE = True                  # 双模式 (2/3) 标记: 插件管理器据�
 
 SELF = os.path.abspath(__file__)
 CREATE_NO_WINDOW = 0x08000000
-PAYLOAD_VERSION = '2.16.1'          # 打包时从原程序里抠的版本(便于 `app_version()` 兜底)
+PAYLOAD_VERSION = '2.18.1'          # 打包时从原程序里抠的版本(便于 `app_version()` 兜底)
 
 
 def app_version():
@@ -159,9 +159,10 @@ def _app_main():
     """原程序体(由 build-wrap-qt-plugin.py 整体缩进进来)。**只在被调用时才有副作用**。"""
     global _cache, _current, _settings_cache
     # -*- coding: utf-8 -*-
-    """PyShot 2.16.1 单文件版 —— 仿 FSCapture 的截图 + 标注编辑工具（自动安装依赖）
+    """PyShot 2.18.1 单文件版 —— 仿 FSCapture 的截图 + 标注编辑工具（自动安装依赖）
 
-    本版主题：工具条可滚动可收起
+    本版主题：标注作者信息
+    作者：Walt Liang <Wat.L@outlook.com>
 
     这是一个自动生成的单文件版本：把多文件源码合并在一起，并在启动时自动安装
     缺失的第三方库（PySide6），因此可以直接发给别人运行::
@@ -214,6 +215,8 @@ def _app_main():
         "打开一张已有图片进行标注": ("開啟一張已有圖片進行標注", "Open an existing image to annotate"),
         "显示编辑器": ("顯示編輯器", "Show Editor"),
         "直接打开编辑器窗口（空白也能用，从它的「文件」菜单打开图片）": ("直接開啟編輯器窗口（空白也能用，从它的「檔案」菜單開啟圖片）", "Open the editor window directly (works even when empty; use its File menu to open an image)"),
+        "使用帮助": ("使用幫助", "Help"),
+        "打开帮助窗口（F1；三语，可按关键字搜索）": ("開啟幫助窗口（F1；三語，可按關鍵字搜索）", "Open the help window (F1; 3 languages, searchable)"),
         "语言": ("語言", "Language"),
         "取消截图": ("取消截圖", "Cancel Capture"),
         "收起正在显示的截图遮罩（Esc / 再按一次热键也可以）": ("收起正在顯示的截圖遮罩（Esc / 再按一次快速鍵也可以）", "Dismiss the capture overlay (Esc or pressing the hotkey again also works)"),
@@ -278,6 +281,7 @@ def _app_main():
         " 排队 ": (" 排队 ", ""),
         "ms，实际等了 ": ("ms，實際等了 ", ""),
         " 耗时 ": (" 耗時 ", ""),
+        "已复制到剪贴板（选项里可关）": ("已複製到剪貼簿（選項裡可關）", "Copied to the clipboard (can be turned off in Options)"),
         "热键（{}）都被占用，请双击托盘图标截图。\n": ("快速鍵（{}）都被佔用，請雙擊托盤圖示截圖。\n", "Hotkeys ({}) are all taken — double-click the tray icon to capture.\n"),
         "可用环境变量 PYSHOT_HOTKEY 指定其他组合，例如 PYSHOT_HOTKEY=ctrl+alt+j": ("可用環境變數 PYSHOT_HOTKEY 指定其他組合，例如 PYSHOT_HOTKEY=ctrl+alt+j", "Set PYSHOT_HOTKEY to pick another combination, e.g. PYSHOT_HOTKEY=ctrl+alt+j"),
         "PyShot 已启动（恢复了 {} 张上次的截图）": ("PyShot 已啟動（恢複了 {} 張上次的截圖）", "PyShot started (restored {} capture(s))"),
@@ -390,10 +394,13 @@ def _app_main():
         "重启后自动把上次编辑的截图放回来（存在缓存里，不需要你保存）": ("重啟後自動把上次編輯的截圖放回來（存在緩存裡，不需要你儲存）", "Bring back your last captures automatically after a restart (kept in a cache — no need to save)"),
         "截图时不最小化编辑器": ("截圖時不最小化編輯器", "Keep the editor visible while capturing"),
         "打开后截图时编辑器留在原地，方便截编辑器自己；平时关着（截图时自动让位，免得被拍进图里）": ("開啟後截圖時編輯器留在原地，方便截編輯器自己；平時關着（截圖時自動讓位，免得被拍進圖裡）", "When on, the editor stays where it is while you capture — handy for capturing the editor itself. Keep it off normally, so the editor gets out of the way instead of appearing in your screenshot"),
+        "截图后自动复制到剪贴板": ("截圖後自動複製到剪貼簿", "Copy to clipboard after capturing"),
+        "截图完成后立刻把这张图放进剪贴板（标注后的版本仍可用 Ctrl+C 复制）": ("截圖完成後立刻把這張圖放進剪貼簿（標注後的版本仍可用 Ctrl+C 複製）", "Put the captured image on the clipboard right away (annotate it and use Ctrl+C later if you want the annotated version instead)"),
         "清除上次的截图缓存": ("清除上次的截圖緩存", "Clear last-capture cache"),
         "编辑默认水印…": ("編輯預設水印…", "Edit Default Watermark…"),
         "编辑默认边框…": ("編輯預設邊框…", "Edit Default Border…"),
         "帮助": ("幫助", "Help"),
+        "打开帮助窗口（三语，可按关键字搜索）": ("開啟幫助窗口（三語，可按關鍵字搜索）", "Open the help window (in 3 languages, searchable)"),
         "关于 PyShot": ("關於 PyShot", "About PyShot"),
         "已粘贴到当前图：拖动摆位置 · 拖手柄缩放、拖上方圆点旋转 · Enter 固定 · Esc 取消": ("已貼上到當前圖：拖動擺位置 · 拖手柄縮放、拖上方圓點旋轉 · Enter 固定 · Esc 取消", "Pasted onto this image: drag to place · drag the handles to scale, the dot above to rotate · Enter to apply · Esc to discard"),
         "已再制一个（Ctrl+Z 可撤销）": ("已再製一個（Ctrl+Z 可復原）", "Duplicated (Ctrl+Z to undo)"),
@@ -404,7 +411,7 @@ def _app_main():
         "宽度（像素，当前 {}）": ("寬度（像素，當前 {}）", "Width in pixels (currently {})"),
         "高度（像素，当前 {}）": ("高度（像素，當前 {}）", "Height in pixels (currently {})"),
         "已调整为 {} × {}（Ctrl+Z 可撤销）": ("已調整為 {} × {}（Ctrl+Z 可復原）", "Resized to {} × {} (Ctrl+Z to undo)"),
-        "PyShot {} — {}\n仿 FastStone Capture 的截图与标注工具\n\n托盘右键：区域截图 / 全屏截图 / 滚动长截图 / 屏幕取色 / 贴图\n编辑器：多标签标注 · 粘贴拼图 · 水印 · 加边框（含手撕纸）· 三语界面": ("PyShot {} — {}\n仿 FastStone Capture 的截圖與標注工具\n\n托盤右鍵：區域截圖 / 全螢幕截圖 / 捲動長截圖 / 螢幕取色 / 釘圖\n編輯器：多標籤標注 · 貼上拼圖 · 水印 · 加邊框（含手撕紙）· 三語介面", "PyShot {} — {}\nA FastStone Capture style screenshot and annotation tool\n\nTray menu: region / full-screen capture, scrolling capture, color picker, pin\nEditor: multi-tab annotation · paste & compose · watermark · borders (incl. torn paper) · 3 languages"),
+        "PyShot {} — {}\n仿 FastStone Capture 的截图与标注工具\n\n托盘右键：区域截图 / 全屏截图 / 滚动长截图 / 屏幕取色 / 贴图\n编辑器：多标签标注 · 粘贴拼图 · 水印 · 加边框（含手撕纸）· 三语界面\n\n作者：{} <{}>": ("PyShot {} — {}\n仿 FastStone Capture 的截圖與標注工具\n\n托盤右鍵：區域截圖 / 全螢幕截圖 / 捲動長截圖 / 螢幕取色 / 釘圖\n編輯器：多標籤標注 · 貼上拼圖 · 水印 · 加邊框（含手撕紙）· 三語介面\n\n作者：{} <{}>", "PyShot {} — {}\nA FastStone Capture style screenshot and annotation tool\n\nTray menu: region / full-screen capture, scrolling capture, color picker, pin\nEditor: multi-tab annotation · paste & compose · watermark · borders (incl. torn paper) · 3 languages\n\nAuthor: {} <{}>"),
         "关闭此标签 (Ctrl+W)": ("關閉此標籤 (Ctrl+W)", "Close this tab (Ctrl+W)"),
         "截图": ("截圖", "Capture"),
         "截取新区域\n会自动最小化编辑器，截完回到这里新增标签": ("截取新區域\n會自動最小化編輯器，截完回到這裡新增標籤", "Capture a new region\nThe editor is minimized and the capture is added as a tab"),
@@ -446,6 +453,8 @@ def _app_main():
         "已垂直翻转（Ctrl+Z 可撤销）": ("已垂直翻轉（Ctrl+Z 可復原）", "Flipped vertically (Ctrl+Z to undo)"),
         "已开启：截图时编辑器留在原地（方便截编辑器自己）": ("已開啟：截圖時編輯器留在原地（方便截編輯器自己）", "On: the editor stays visible while capturing (good for capturing the editor)"),
         "已关闭：截图时编辑器自动最小化让位": ("已關閉：截圖時編輯器自動最小化讓位", "Off: the editor minimizes itself while capturing"),
+        "已开启：截图完成后自动复制到剪贴板": ("已開啟：截圖完成後自動複製到剪貼簿", "On: captures go to the clipboard automatically"),
+        "已关闭：截图后不再自动复制（需要时按 Ctrl+C）": ("已關閉：截圖後不再自動複製（需要時按 Ctrl+C）", "Off: captures no longer go to the clipboard (press Ctrl+C when you need it)"),
         "已收起左侧工具条（工具快捷键仍可用；想恢复：视图菜单）": ("已收起左側工具條（工具快捷鍵仍可用；想恢複：視圖菜單）", "Tool rail hidden (shortcuts still work; bring it back from the View menu)"),
         "已显示左侧工具条": ("已顯示左側工具條", "Tool rail shown"),
         "已清除上次的截图缓存": ("已清除上次的截圖緩存", "Last-capture cache cleared"),
@@ -463,6 +472,8 @@ def _app_main():
         "点这里定义一个自定义颜色…": ("點這裡定義一個自定義顏色…", "Click to define a custom color…"),
         "已旋转 90°（Ctrl+Z 可撤销）": ("已旋轉 90°（Ctrl+Z 可復原）", "Rotated 90° (Ctrl+Z to undo)"),
         "已逆时针旋转 90°（Ctrl+Z 可撤销）": ("已逆時针旋轉 90°（Ctrl+Z 可復原）", "Rotated 90° counter-clockwise (Ctrl+Z to undo)"),
+        "区域截图（全局热键）": ("區域截圖（全局快速鍵）", "Capture Region (global hotkey)"),
+        "全屏截图（全局热键）": ("全螢幕截圖（全局快速鍵）", "Capture Full Screen (global hotkey)"),
         "当前颜色": ("當前顏色", "Current color"),
         "已加边框：": ("已加邊框：", "Border added: "),
         "截图 {}": ("截圖 {}", "Capture {}"),
@@ -604,7 +615,66 @@ def _app_main():
         " 已就绪。": (" 已就绪。", ""),
         "[PyShot] pip 执行失败：": ("[PyShot] pip 執行失敗：", ""),
         "  [缺失] ": ("  [缺失] ", ""),
-        "工具条可滚动可收起": ("工具條可捲動可收起", "scrollable / collapsible tool rail"),
+        "标注作者信息": ("標注作者資訊", "author info in About"),
+        "PyShot 使用帮助": ("PyShot 使用幫助", "PyShot Help"),
+        "截图 + 标注工具，专为做操作指引/步骤说明优化。": ("截圖 + 標注工具，專為做操作指引/步驟說明優化。", "Screenshot and annotation tool, built for step-by-step guides."),
+        "快速开始": ("快速開始", "Quick Start"),
+        "截图方式": ("截圖方式", "Capture Modes"),
+        "编辑器工具": ("編輯器工具", "Editor Tools"),
+        "把多张截图拼到一张图上": ("把多張截圖拼到一張圖上", "Compose Several Screenshots into One"),
+        "编辑效率": ("編輯效率", "Editing Power-Ups"),
+        "水印与边框": ("水印與邊框", "Watermark & Border"),
+        "保存、复制与贴图": ("儲存、複製與釘圖", "Save, Copy, Pin"),
+        "疑难解答": ("疑難解答", "Troubleshooting"),
+        "关于与依赖": ("關於與依賴", "About & Dependencies"),
+        "按 {hotkey} 框选截图，或双击托盘图标。": ("按 {hotkey} 框選截圖，或雙擊托盤圖示。", "Press {hotkey} to capture a region, or double-click the tray icon."),
+        "- 截完自动进编辑器：左边选工具，图上直接标。": ("- 截完自動進編輯器：左邊選工具，圖上直接標。", "- The capture opens in the editor: pick a tool on the left and annotate right on the image."),
+        "- 编辑器里 Ctrl+S 保存、Ctrl+C 复制、Ctrl+Z 撤销。": ("- 編輯器裡 Ctrl+S 儲存、Ctrl+C 複製、Ctrl+Z 復原。", "- In the editor: Ctrl+S saves, Ctrl+C copies, Ctrl+Z undoes."),
+        "- 托盘图标找不到时，点任务栏右侧的 ∧ 展开。": ("- 托盤圖示找不到時，點任務欄右側的 ∧ 展開。", "- Can't find the tray icon? Click the ∧ arrow near the clock to expand it."),
+        "- 区域截图：拖拽框选，Esc 或右键取消。": ("- 區域截圖：拖曳框選，Esc 或右鍵取消。", "- Region capture: drag to select; Esc or right-click cancels."),
+        "- 全屏截图 {fullhotkey}：截鼠标所在的那块显示器。": ("- 全螢幕截圖 {fullhotkey}：截滑鼠所在的那塊顯示器。", "- Full screen {fullhotkey}: captures the monitor the mouse is on."),
+        "- 选择显示器截图：多屏时指定某一块，或「所有显示器拼成一张」。": ("- 選擇顯示器截圖：多屏時指定某一塊，或「所有顯示器拼成一張」。", "- Capture a specific monitor: pick one, or stitch every monitor into a single image."),
+        "- 滚动长截图（实验性，默认关闭）：先在托盘菜单里勾选启用；框选可滚动区域后程序自己滚轮逐屏拼接。": ("- 捲動長截圖（實驗性，預設關閉）：先在托盤菜單裡勾選啟用；框選可捲動區域後程序自己滾輪逐屏拼接。", "- Scrolling capture (experimental, off by default): enable it in the tray menu first; select a scrollable area and PyShot scrolls and stitches frame by frame."),
+        "- 手动滚动：你自己滚，程序只负责拼帧，兼容性最好。": ("- 手動捲動：你自己滾，程序只負責拼幀，兼容性最好。", "- Manual scroll: you scroll, PyShot only stitches — the most compatible mode."),
+        "- 选择：点选/拖动已有标注；方向键微调 1px（按住 Shift 是 10px）；Delete 删除。": ("- 選擇：點選/拖動已有標注；方向鍵微調 1px（按住 Shift 是 10px）；Delete 刪除。", "- Select: click or drag existing annotations; arrow keys nudge by 1px (Shift: 10px); Delete removes."),
+        "- 矩形 / 椭圆 / 直线 / 箭头 / 画笔：拖拽绘制；按住 Shift 可画正方形、正圆或锁定方向。": ("- 矩形 / 橢圓 / 直線 / 箭頭 / 畫筆：拖曳繪製；按住 Shift 可畫正方形、正圓或鎖定方向。", "- Rectangle / ellipse / line / arrow / pen: drag to draw; hold Shift for a square, a circle, or a locked direction."),
+        "- 序号：单击放置递增序号，做步骤指引。": ("- 序號：單擊放置遞增序號，做步驟指引。", "- Step number: click to place an incrementing number for step-by-step guides."),
+        "- 文字：单击后输入，Enter 确认；双击已有文字可以直接改内容。": ("- 文字：單擊後輸入，Enter 確認；雙擊已有文字可以直接改內容。", "- Text: click and type, Enter to confirm; double-click existing text to edit it."),
+        "- 高亮 / 马赛克：拖拽涂抹。": ("- 標示 / 馬賽克：拖曳塗抹。", "- Highlight / mosaic: drag to paint."),
+        "- 取色：单击吸取图上颜色（取完自动切回上一个工具）。": ("- 取色：單擊吸取圖上顏色（取完自動切回上一個工具）。", "- Pick color: click to pick a color from the image (it switches back to your previous tool)."),
+        "- 裁剪：拖拽选出要保留的区域，Enter 应用。": ("- 裁剪：拖曳選出要保留的區域，Enter 套用。", "- Crop: drag the area to keep, Enter applies it."),
+        "- 抓手：放大后拖动查看；任何工具下按住空格或鼠标中键也能拖。": ("- 抓手：放大後拖動查看；任何工具下按住空格或滑鼠中鍵也能拖。", "- Hand: drag to pan once zoomed in; middle-drag or hold Space works with any tool."),
+        "Ctrl+V 会把剪贴板里的截图贴到**当前这张图**上（想新开标签用 Ctrl+Shift+V）。": ("Ctrl+V 會把剪貼簿裡的截圖貼到**當前這張圖**上（想新開標籤用 Ctrl+Shift+V）。", "Ctrl+V pastes the clipboard screenshot onto **this** image (Ctrl+Shift+V opens it as a new tab)."),
+        "- 贴上去是浮动层：拖动摆位置、拖 8 个手柄改大小（Shift 等比）、拖上方圆点旋转。": ("- 貼上去是浮動層：拖動擺位置、拖 8 個手柄改大小（Shift 等比）、拖上方圓點旋轉。", "- It arrives as a floating layer: drag to place, drag the 8 handles to resize (Shift keeps the ratio), drag the dot above to rotate."),
+        "- 外观可调：编辑菜单 →「粘贴图外观」可加阴影、白色描边、圆角。": ("- 外观可調：編輯菜單 →「貼上圖外观」可加陰影、白色描邊、圓角。", "- Style it from Edit → Pasted Image Style: shadow, white outline, rounded corners."),
+        "- Enter 或双击固定进图（Ctrl+Z 撤销），Esc 丢弃；连按两次 Ctrl+V 会先把上一张固定。": ("- Enter 或雙擊固定進圖（Ctrl+Z 復原），Esc 丢棄；連按兩次 Ctrl+V 會先把上一張固定。", "- Enter or double-click applies it (Ctrl+Z undoes), Esc discards; pasting twice applies the first one before starting the next."),
+        "- 固定后它就是底图的一部分，可以继续在上面标注。": ("- 固定後它就是底圖的一部分，可以继續在上面標注。", "- Once applied it is part of the image, and you can keep annotating on top."),
+        "- 图层顺序：右键菜单或编辑菜单里的置于顶层 / 底层、上移 / 下移一层。": ("- 圖層順序：右鍵菜單或編輯菜單裡的置於顶層 / 底層、上移 / 下移一層。", "- Layer order: right-click menu or Edit → Bring to Front / Send to Back / Bring Forward / Send Backward."),
+        "- Ctrl+D 再制一个；旋转 15° / 摆正也在编辑菜单。": ("- Ctrl+D 再製一個；旋轉 15° / 擺正也在編輯菜單。", "- Ctrl+D duplicates; Rotate 15° / Straighten are in the Edit menu too."),
+        "- 画布变换（特效菜单）：水平/垂直翻转、顺/逆时针 90°、调整尺寸 —— 标注会跟着一起变换，之后还能继续编辑。": ("- 畫布變換（特效菜單）：水平/垂直翻轉、順/逆時针 90°、調整尺寸 —— 標注會跟着一起變換，之後還能继續編輯。", "- Canvas transforms (Effects menu): flip horizontally/vertically, rotate 90° either way, resize — annotations transform with it and stay editable."),
+        "- 撤销 / 重做：Ctrl+Z / Ctrl+Y（Ctrl+Shift+Z 也可以）。": ("- 復原 / 重做：Ctrl+Z / Ctrl+Y（Ctrl+Shift+Z 也可以）。", "- Undo / redo: Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z also works)."),
+        "- 特效 → 水印：文字或图片、九宫格位置或平铺、各自调透明度、可旋转与设边距。": ("- 特效 → 水印：文字或圖片、九宮格位置或平鋪、各自調透明度、可旋轉與設邊距。", "- Effects → Watermark: text or image, 9-grid position or tiling, separate opacity, rotation and margin."),
+        "- 特效 → 边框：单线 / 双线 / 虚线 / 圆角 / 投影 / 立体浮雕 / 边缘渐隐 / 拍立得 / 手撕纸。": ("- 特效 → 邊框：單線 / 雙線 / 虛線 / 圓角 / 投影 / 立體浮雕 / 邊缘漸隱 / 拍立得 / 手撕紙。", "- Effects → Border: solid / double / dashed / rounded / drop shadow / bevel / fade edges / polaroid / torn paper."),
+        "- 两个对话框里都能「应用并设为默认」，之后每次新截图自动加上。": ("- 兩個對話框裡都能「套用并設為預設」，之後每次新截圖自動加上。", "- Both dialogs offer Apply and Set as Default, so new captures get it automatically."),
+        "- Ctrl+S 保存成 PNG / JPG / BMP；Ctrl+C 复制到剪贴板。": ("- Ctrl+S 儲存成 PNG / JPG / BMP；Ctrl+C 複製到剪貼簿。", "- Ctrl+S saves as PNG / JPG / BMP; Ctrl+C copies to the clipboard."),
+        "- 截图完成后会**自动复制到剪贴板**（默认开，选项里可关），截完直接粘到聊天/文档里。": ("- 截圖完成後會**自動複製到剪貼簿**（預設開，選項裡可關），截完直接粘到聊天/文档裡。", "- Every capture is **copied to the clipboard automatically** (on by default; turn it off in Options), so you can paste it straight away."),
+        "- 编辑 → 贴图到屏幕：把结果钉在屏幕最上层，方便照着做。": ("- 編輯 → 釘圖到螢幕：把結果钉在螢幕最上層，方便照着做。", "- Edit → Pin to Screen: keeps the result on top of everything while you follow it."),
+        "- 关掉编辑器也不怕：默认会记住上次的截图（选项 → 启动时恢复上次的截图）。": ("- 關掉編輯器也不怕：預設會記住上次的截圖（選項 → 啟動時恢複上次的截圖）。", "- Closing the editor is safe: your last captures are remembered (Options → Restore last captures on startup)."),
+        "- 多标签：一次会话里的多张截图各占一个标签，Ctrl+W 关掉当前标签。": ("- 多標籤：一次會话裡的多張截圖各占一個標籤，Ctrl+W 關掉當前標籤。", "- Multiple tabs: each capture of a session gets a tab; Ctrl+W closes the current one."),
+        "滚动长截图拼不上：Citrix、远程桌面、Java、虚拟机里的画面经常拼不出来 —— 关掉目标软件的硬件加速，或改用「手动滚动」；另外选区只框住会滚的那块（别带上工具栏/侧栏）成功率更高。": ("捲動長截圖拼不上：Citrix、遠端桌面、Java、虛擬機裡的畫面經常拼不出來 —— 關掉目標軟體的硬體加速，或改用「手動捲動」；另外選區只框住會滾的那塊（别帶上工具列/側欄）成功率更高。", "Scrolling capture fails to stitch: Citrix, Remote Desktop, Java apps and virtual machines often cannot be stitched — turn off hardware acceleration in the target app, or switch to Manual scroll; selecting only the part that actually scrolls (without toolbars/sidebars) works much better."),
+        "截出来是黑的 / 花的：目标窗口在用硬件加速或内容保护，常见于 Citrix、视频播放器。可尝试改用手动滚动，或把窗口调整大小后重试。": ("截出來是黑的 / 花的：目標窗口在用硬體加速或內容保護，常見於 Citrix、影片播放器。可嘗試改用手動捲動，或把窗口調整大小後重試。", "The capture comes out black or garbled: the target window uses hardware acceleration or content protection (common with Citrix and video players). Try Manual scroll, or resize the window and retry."),
+        "按快捷键没反应：先确认托盘图标还在（可能在任务栏右侧的 ∧ 里）；热键被别的软件占用时程序会自动换一个，启动气泡里会写当前用的是哪个。": ("按快捷鍵沒反應：先確認托盤圖示還在（可能在任務欄右側的 ∧ 裡）；快速鍵被别的軟體佔用時程序會自動換一個，啟動氣泡裡會寫當前用的是哪個。", "The hotkey does nothing: first check the tray icon is still there (it may be behind the ∧ arrow). If another app owns the hotkey, PyShot automatically picks a different one — the startup balloon says which."),
+        "启动有点慢：首次启动要付一次 Qt 的初始化开销（本机实测几秒），之后就好；想看得更细，设环境变量 PYSHOT_DEBUG=1，日志里每一步都有耗时。": ("啟動有點慢：首次啟動要付一次 Qt 的初始化開銷（本機實測几秒），之後就好；想看得更細，設環境變數 PYSHOT_DEBUG=1，日志裡每一步都有耗時。", "Startup feels slow: the first launch pays a one-time Qt initialization cost (a few seconds on the test machine) and is fine afterwards. Set PYSHOT_DEBUG=1 for a log with per-step timings."),
+        "想截编辑器自己：选项 → 截图时不最小化编辑器。": ("想截編輯器自己：選項 → 截圖時不最小化編輯器。", "Want to capture the editor itself? Options → Keep the editor visible while capturing."),
+        "- 作者：{author} <{email}>。": ("- 作者：{author} <{email}>。", "- Author: {author} <{email}>."),
+        "- 版本号在 version.py；托盘或编辑器「帮助 → 关于」也能看到。": ("- 版本號在 version.py；托盤或編輯器「幫助 → 關於」也能看到。", "- The version lives in version.py; Help → About shows it too."),
+        "- 检查依赖：python PyShot.py --check-deps（单文件版缺库会自动 pip 安装）。": ("- 檢查依賴：python PyShot.py --check-deps（單檔案版缺庫會自動 pip 安裝）。", "- Check dependencies: python PyShot.py --check-deps (the single-file build auto-installs what is missing)."),
+        "- 设置与缓存都在 ~/.pyshot/（settings.json、session/、debug.log）。": ("- 設定與緩存都在 ~/.pyshot/（settings.json、session/、debug.log）。", "- Settings and cache live in ~/.pyshot/ (settings.json, session/, debug.log)."),
+        "- 界面语言：选项 → 语言，简体中文 / 繁體中文 / English。": ("- 介面語言：選項 → 語言，簡體中文 / 繁體中文 / English。", "- Language: Options → Language — Simplified Chinese / Traditional Chinese / English."),
+        "搜索帮助内容…（例如：拼图、滚动、快捷键）": ("搜索幫助內容…（例如：拼圖、捲動、快捷鍵）", "Search the help… (e.g. compose, scrolling, shortcuts)"),
+        "快捷键一览": ("快捷鍵一覽", "Shortcuts"),
+        " 快捷键 ": (" 快捷鍵 ", ""),
+        "下面这些是当前生效的快捷键（菜单里改不了的就写在这里）。": ("下面這些是當前生效的快捷鍵（菜單裡改不了的就寫在這裡）。", "These are the shortcuts that are active right now."),
     }
 
 
@@ -1036,13 +1106,18 @@ def _app_main():
     命名：`MAJOR.MINOR[.PATCH]`，git 标签为 `v<版本>-qt`（`-qt` 表示根目录这套
     PySide6 实现，`tk_version/` 是独立的 Tkinter 版）。
     """
-    APP_VERSION = "2.16.1"
+    APP_VERSION = "2.18.1"
 
     # 这版的一句话主题（写进单文件头与「关于」对话框，便于用户确认自己拿的是哪版）
-    VERSION_TITLE = "工具条可滚动可收起"
+    VERSION_TITLE = "标注作者信息"
 
     # 版本日期（本地日期，供日志/文档使用）
     VERSION_DATE = "2026-09-24"
+
+    # 作者（唯一来源：关于对话框、README、单文件头、帮助里都从这里取，
+    # 别再各处各写一份邮箱 —— 改一次就全对上）
+    AUTHOR = "Walt Liang"
+    AUTHOR_EMAIL = "Wat.L@outlook.com"
 
     __version__ = APP_VERSION      # 兼容 `mod.__version__` 这种取法
 
@@ -1483,6 +1558,302 @@ def _app_main():
             sys.__excepthook__(etype, value, tb)
 
         sys.excepthook = _hook
+
+
+    # ========================================================================
+    # 来自 help_text.py
+    # ========================================================================
+    # -*- coding: utf-8 -*-
+    """帮助文档内容（简体原文；繁體/English 由 i18n 词表提供）。
+
+    写法约定（显示时按前缀排版）：
+      - "## xxx"  → 小标题
+      - "- xxx"   → 条目
+      - 其它      → 段落
+    `{hotkey}` / `{fullhotkey}` / `{author}` / `{email}` 在显示时替换成当前实际的值
+    （热键来自主程序，作者来自 version.py）。
+
+    **只写简体**：`gen_i18n.py` 会把这里的字符串收进词表（繁体自动转、英文手写在
+    EN 字典里），所以帮助跟界面一样是三语的，不用另写两份。
+    """
+
+    HELP_TITLE = "PyShot 使用帮助"
+    HELP_INTRO = "截图 + 标注工具，专为做操作指引/步骤说明优化。"
+
+    # (小节标题, [行...])
+    SECTIONS = [
+        ("快速开始", [
+            "按 {hotkey} 框选截图，或双击托盘图标。",
+            "- 截完自动进编辑器：左边选工具，图上直接标。",
+            "- 编辑器里 Ctrl+S 保存、Ctrl+C 复制、Ctrl+Z 撤销。",
+            "- 托盘图标找不到时，点任务栏右侧的 ∧ 展开。",
+        ]),
+        ("截图方式", [
+            "- 区域截图：拖拽框选，Esc 或右键取消。",
+            "- 全屏截图 {fullhotkey}：截鼠标所在的那块显示器。",
+            "- 选择显示器截图：多屏时指定某一块，或「所有显示器拼成一张」。",
+            "- 滚动长截图（实验性，默认关闭）：先在托盘菜单里勾选启用；"
+            "框选可滚动区域后程序自己滚轮逐屏拼接。",
+            "- 手动滚动：你自己滚，程序只负责拼帧，兼容性最好。",
+        ]),
+        ("编辑器工具", [
+            "- 选择：点选/拖动已有标注；方向键微调 1px（按住 Shift 是 10px）；Delete 删除。",
+            "- 矩形 / 椭圆 / 直线 / 箭头 / 画笔：拖拽绘制；按住 Shift 可画正方形、正圆或锁定方向。",
+            "- 序号：单击放置递增序号，做步骤指引。",
+            "- 文字：单击后输入，Enter 确认；双击已有文字可以直接改内容。",
+            "- 高亮 / 马赛克：拖拽涂抹。",
+            "- 取色：单击吸取图上颜色（取完自动切回上一个工具）。",
+            "- 裁剪：拖拽选出要保留的区域，Enter 应用。",
+            "- 抓手：放大后拖动查看；任何工具下按住空格或鼠标中键也能拖。",
+        ]),
+        ("把多张截图拼到一张图上", [
+            "Ctrl+V 会把剪贴板里的截图贴到**当前这张图**上（想新开标签用 Ctrl+Shift+V）。",
+            "- 贴上去是浮动层：拖动摆位置、拖 8 个手柄改大小（Shift 等比）、拖上方圆点旋转。",
+            "- 外观可调：编辑菜单 →「粘贴图外观」可加阴影、白色描边、圆角。",
+            "- Enter 或双击固定进图（Ctrl+Z 撤销），Esc 丢弃；连按两次 Ctrl+V 会先把上一张固定。",
+            "- 固定后它就是底图的一部分，可以继续在上面标注。",
+        ]),
+        ("编辑效率", [
+            "- 图层顺序：右键菜单或编辑菜单里的置于顶层 / 底层、上移 / 下移一层。",
+            "- Ctrl+D 再制一个；旋转 15° / 摆正也在编辑菜单。",
+            "- 画布变换（特效菜单）：水平/垂直翻转、顺/逆时针 90°、调整尺寸 —— "
+            "标注会跟着一起变换，之后还能继续编辑。",
+            "- 撤销 / 重做：Ctrl+Z / Ctrl+Y（Ctrl+Shift+Z 也可以）。",
+        ]),
+        ("水印与边框", [
+            "- 特效 → 水印：文字或图片、九宫格位置或平铺、各自调透明度、可旋转与设边距。",
+            "- 特效 → 边框：单线 / 双线 / 虚线 / 圆角 / 投影 / 立体浮雕 / 边缘渐隐 / 拍立得 / 手撕纸。",
+            "- 两个对话框里都能「应用并设为默认」，之后每次新截图自动加上。",
+        ]),
+        ("保存、复制与贴图", [
+            "- Ctrl+S 保存成 PNG / JPG / BMP；Ctrl+C 复制到剪贴板。",
+            "- 截图完成后会**自动复制到剪贴板**（默认开，选项里可关），截完直接粘到聊天/文档里。",
+            "- 编辑 → 贴图到屏幕：把结果钉在屏幕最上层，方便照着做。",
+            "- 关掉编辑器也不怕：默认会记住上次的截图（选项 → 启动时恢复上次的截图）。",
+            "- 多标签：一次会话里的多张截图各占一个标签，Ctrl+W 关掉当前标签。",
+        ]),
+        ("疑难解答", [
+            "滚动长截图拼不上：Citrix、远程桌面、Java、虚拟机里的画面经常拼不出来 —— 关掉目标软件的硬件加速，或改用「手动滚动」；另外选区只框住会滚的那块（别带上工具栏/侧栏）成功率更高。",
+            "截出来是黑的 / 花的：目标窗口在用硬件加速或内容保护，常见于 Citrix、视频播放器。可尝试改用手动滚动，或把窗口调整大小后重试。",
+            "按快捷键没反应：先确认托盘图标还在（可能在任务栏右侧的 ∧ 里）；热键被别的软件占用时程序会自动换一个，启动气泡里会写当前用的是哪个。",
+            "启动有点慢：首次启动要付一次 Qt 的初始化开销（本机实测几秒），之后就好；想看得更细，设环境变量 PYSHOT_DEBUG=1，日志里每一步都有耗时。",
+            "想截编辑器自己：选项 → 截图时不最小化编辑器。",
+        ]),
+        ("关于与依赖", [
+            "- 作者：{author} <{email}>。",
+            "- 版本号在 version.py；托盘或编辑器「帮助 → 关于」也能看到。",
+            "- 检查依赖：python PyShot.py --check-deps（单文件版缺库会自动 pip 安装）。",
+            "- 设置与缓存都在 ~/.pyshot/（settings.json、session/、debug.log）。",
+            "- 界面语言：选项 → 语言，简体中文 / 繁體中文 / English。",
+        ]),
+    ]
+
+
+    # ========================================================================
+    # 来自 helpwin.py
+    # ========================================================================
+    # -*- coding: utf-8 -*-
+    """帮助窗口：左侧小节列表 + 搜索框，右侧正文（可滚动、可复制）。
+
+    内容来自 `help_text.py`（只写简体），显示时逐条走 `tr()`，所以和界面一样是三语的；
+    语言切换后重新打开（或按 `retranslate()`）就是新语言。
+    """
+    import html
+    import re
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
+                                   QLineEdit, QListWidget, QListWidgetItem,
+                                   QSplitter, QTextBrowser, QVBoxLayout, QWidget)
+
+
+
+
+
+
+    def _escape(text: str) -> str:
+        """转义 HTML，并把 `**加粗**` 变成 <b>（帮助正文里会用到）。"""
+        safe = html.escape(text, quote=False)
+        return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)
+
+
+    def _line_to_html(raw: str) -> str:
+        """把一行的前缀约定转成 HTML：`- ` 条目、`## ` 小标题、其余段落。"""
+        text = raw.strip()
+        if text.startswith("## "):
+            return f"<h4>{_escape(text[3:])}</h4>"
+        if text.startswith("- "):
+            return f"<li>{_escape(text[2:])}</li>"
+        return f"<p>{_escape(text)}</p>"
+
+
+    def section_html(index: int, hotkey: str = "", fullhotkey: str = "") -> str:
+        """第 index 小节的 HTML（含热键替换）。抽成函数便于测试与复用。"""
+        title, lines = SECTIONS[index]
+        body = []
+        open_list = False
+        for raw in lines:
+            # 先翻译再替换占位符（译文里同样用 {hotkey}/{author} 这些）
+            text = tr(raw)
+            text = text.replace("{hotkey}", hotkey or "Ctrl+Alt+X")
+            text = text.replace("{fullhotkey}", fullhotkey or "Ctrl+Alt+F")
+            text = text.replace("{author}", AUTHOR).replace("{email}", AUTHOR_EMAIL)
+            if text.strip().startswith("- "):
+                if not open_list:
+                    body.append("<ul>")
+                    open_list = True
+                body.append(_line_to_html(text))
+            else:
+                if open_list:
+                    body.append("</ul>")
+                    open_list = False
+                body.append(_line_to_html(text))
+        if open_list:
+            body.append("</ul>")
+        return (f"<h3>{_escape(tr(title))}</h3>" + "".join(body))
+
+
+    class HelpDialog(QDialog):
+        """非模态帮助窗口：可以一边看一边照着操作。"""
+
+        def __init__(self, parent=None, hotkey: str = "", fullhotkey: str = "",
+                     shortcuts: list | None = None):
+            super().__init__(parent)
+            self.hotkey = hotkey
+            self.fullhotkey = fullhotkey
+            self.extra_shortcuts = list(shortcuts or [])
+            self.setObjectName("helpwin")
+            self.setWindowTitle(tr(HELP_TITLE))
+            self.resize(760, 560)
+            self.setSizeGripEnabled(True)
+
+            root = QVBoxLayout(self)
+            head = QLabel(tr(HELP_INTRO))
+            head.setObjectName("helpintro")
+            head.setWordWrap(True)
+            root.addWidget(head)
+
+            # 搜索框：过滤左侧小节（标题或正文命中都算）
+            self.search = QLineEdit()
+            self.search.setObjectName("helpsearch")
+            self.search.setPlaceholderText(tr("搜索帮助内容…（例如：拼图、滚动、快捷键）"))
+            self.search.setClearButtonEnabled(True)
+            self.search.textChanged.connect(self._apply_filter)
+            root.addWidget(self.search)
+
+            split = QSplitter(Qt.Horizontal)
+            self.topics = QListWidget()
+            self.topics.setObjectName("helptopics")
+            self.topics.setMinimumWidth(150)
+            self.topics.currentRowChanged.connect(self._show_current)
+            split.addWidget(self.topics)
+
+            self.view = QTextBrowser()
+            self.view.setObjectName("helptext")
+            self.view.setOpenExternalLinks(False)
+            split.addWidget(self.view)
+            split.setStretchFactor(0, 0)
+            split.setStretchFactor(1, 1)
+            split.setSizes([180, 560])
+            root.addWidget(split, 1)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(self.close)
+            buttons.button(QDialogButtonBox.Close).setText(tr("关闭"))
+            root.addWidget(buttons)
+
+            self._fill_topics()
+            self.topics.setCurrentRow(0)
+            self.search.setFocus()
+
+        # ---------- 内部 ----------
+        def _fill_topics(self):
+            """填小节列表；最后一节是"快捷键一览"（从菜单实时收集，不会过期）。"""
+            self.topics.clear()
+            for i, (title, _lines) in enumerate(SECTIONS):
+                item = QListWidgetItem(tr(title))
+                item.setData(Qt.UserRole, i)
+                self.topics.addItem(item)
+            if self.extra_shortcuts:
+                item = QListWidgetItem(tr("快捷键一览"))
+                item.setData(Qt.UserRole, len(SECTIONS))       # 虚拟小节
+                self.topics.addItem(item)
+
+        def _show_current(self, row: int):
+            item = self.topics.item(row)
+            if item is None:
+                return
+            idx = item.data(Qt.UserRole)
+            if idx == len(SECTIONS):
+                self.view.setHtml(self._shortcuts_html())
+            else:
+                self.view.setHtml(section_html(idx, self.hotkey, self.fullhotkey))
+            self.view.verticalScrollBar().setValue(0)
+
+        def _shortcuts_html(self) -> str:
+            rows = "".join(
+                f"<tr><td>{_escape(tr(label))}</td>"
+                f"<td><code>{_escape(seq)}</code></td></tr>"
+                for label, seq in self.extra_shortcuts)
+            return (f"<h3>{_escape(tr('快捷键一览'))}</h3>"
+                    + f"<p>{_escape(tr('下面这些是当前生效的快捷键（菜单里改不了的就写在这里）。'))}</p>"
+                    + f"<table cellspacing='0' cellpadding='4'>{rows}</table>")
+
+        def _apply_filter(self, text: str):
+            """按关键字过滤小节：标题命中或正文命中都保留。"""
+            key = (text or "").strip().lower()
+            for i in range(self.topics.count()):
+                item = self.topics.item(i)
+                idx = item.data(Qt.UserRole)
+                if not key:
+                    item.setHidden(False)
+                    continue
+                if idx == len(SECTIONS):
+                    blob = tr("快捷键一览") + " 快捷键 " + " ".join(
+                        f"{tr(l)} {s}" for l, s in self.extra_shortcuts)
+                else:
+                    title, lines = SECTIONS[idx]
+                    # 译文和简体原文都搜：英文界面下用中文关键词也找得到
+                    blob = " ".join([tr(title), title]
+                                    + [tr(x) for x in lines] + list(lines))
+                    blob += " " + blob.replace(" ", "")      # 中文没空格，去空格再匹配一次
+                item.setHidden(key not in blob.lower())
+            # 过滤后如果当前项被隐藏，自动选第一个可见的
+            cur = self.topics.currentItem()
+            if cur is not None and cur.isHidden():
+                for i in range(self.topics.count()):
+                    if not self.topics.item(i).isHidden():
+                        self.topics.setCurrentRow(i)
+                        break
+
+        def retranslate(self):
+            """语言切换后刷新（标题、按钮、列表、正文）。"""
+            self.setWindowTitle(tr(HELP_TITLE))
+            self.search.setPlaceholderText(tr("搜索帮助内容…（例如：拼图、滚动、快捷键）"))
+            row = self.topics.currentRow()
+            self._fill_topics()
+            self.topics.setCurrentRow(max(0, row))
+            self._apply_filter(self.search.text())
+
+
+    def open_help(parent=None, hotkey: str = "", fullhotkey: str = "",
+                  shortcuts: list | None = None) -> HelpDialog:
+        """打开（或复用）帮助窗口；非模态，方便照着做。"""
+        dlg = getattr(parent, "_help_dialog", None)
+        if dlg is None:
+            dlg = HelpDialog(parent, hotkey, fullhotkey, shortcuts)
+            if parent is not None:
+                parent._help_dialog = dlg          # 持有引用，别被回收
+        else:
+            dlg.hotkey, dlg.fullhotkey = hotkey, fullhotkey
+            dlg.extra_shortcuts = list(shortcuts or [])
+            row = dlg.topics.currentRow()
+            dlg._fill_topics()
+            dlg.topics.setCurrentRow(max(0, row))
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
 
     # ========================================================================
@@ -3937,6 +4308,17 @@ def _app_main():
         p.drawLine(QPointF(6.4, 6.4), QPointF(17.6, 17.6))
 
 
+    def _draw_help(p, c):
+        """帮助：圆圈 + 问号（菜单/托盘「使用帮助」用）。"""
+        p.drawEllipse(QPointF(12, 12), 8.5, 8.5)
+        path = QPainterPath(QPointF(9, 9.5))
+        path.cubicTo(QPointF(9, 5.5), QPointF(15, 5.5), QPointF(15, 9.5))
+        path.cubicTo(QPointF(15, 12), QPointF(12, 12), QPointF(12, 14.5))
+        p.drawPath(path)
+        p.setBrush(c)
+        p.drawEllipse(QPointF(12, 17.6), 1.3, 1.3)
+
+
     _ICON_DRAWERS = {
         "select": _draw_select, "rect": _draw_rect, "ellipse": _draw_ellipse,
         "line": _draw_line, "arrow": _draw_arrow, "pen": _draw_pen,
@@ -3946,6 +4328,7 @@ def _app_main():
         "monitor": _draw_monitor, "scroll": _draw_scroll, "image": _draw_image,
         "window": _draw_window, "pin": _draw_pin, "exit": _draw_exit,
         "globe": _draw_globe, "hand": _draw_hand, "pan": _draw_hand, "cancel": _draw_cancel,
+        "help": _draw_help,
     }
 
 
@@ -6454,6 +6837,17 @@ def _app_main():
 
     # 「截图时不最小化编辑器」的设置键（主程序截图时读同一个键）
     KEEP_EDITOR_SETTING = "capture_keep_editor"
+    # 「截图后自动复制到剪贴板」的设置键（主程序与编辑器菜单共用）
+    AUTO_COPY_SETTING = "capture_auto_copy"
+
+
+    def auto_copy_on_capture() -> bool:
+        """截图后是否自动把图放进剪贴板（默认开：截完就能直接粘到别处）。"""
+        try:
+
+            return bool(get_setting(AUTO_COPY_SETTING, True))
+        except Exception:                              # noqa: BLE001
+            return True
 
 
     def keep_editor_on_capture() -> bool:
@@ -6793,6 +7187,8 @@ def _app_main():
             self._text_pos = QPointF()
             self._text_target = None      # 正在改的已有文字（None = 新建）
             self.font_family = ""         # 文字字体（空 = 默认微软雅黑）
+            self.hotkey_hint = ""         # 当前生效的全局截图热键（帮助/提示里用）
+            self.full_hotkey_hint = ""
 
             self.setMouseTracking(True)
             self.setFocusPolicy(Qt.StrongFocus)
@@ -8285,6 +8681,14 @@ def _app_main():
                    "平时关着（截图时自动让位，免得被拍进图里）"))
             self.act_keep_editor.toggled.connect(self._toggle_keep_editor)
             m_opt.addAction(self.act_keep_editor)
+            # 截图后自动复制到剪贴板：截完直接粘到聊天/文档里，不用再按 Ctrl+C
+            self.act_auto_copy = QAction(tr("截图后自动复制到剪贴板"), self)
+            self.act_auto_copy.setCheckable(True)
+            self.act_auto_copy.setChecked(auto_copy_on_capture())
+            self.act_auto_copy.setToolTip(
+                tr("截图完成后立刻把这张图放进剪贴板（标注后的版本仍可用 Ctrl+C 复制）"))
+            self.act_auto_copy.toggled.connect(self._toggle_auto_copy)
+            m_opt.addAction(self.act_auto_copy)
             m_opt.addSeparator()
             self.act_clear_session = QAction(tr("清除上次的截图缓存"), self)
             self.act_clear_session.triggered.connect(self._clear_session_cache)
@@ -8300,6 +8704,12 @@ def _app_main():
             # ---------- 帮助 ----------
             m_help = bar.addMenu(tr("帮助"))
             self.menus["help"] = m_help
+            self.act_help = QAction(tr("使用帮助"), self)
+            self.act_help.setShortcut("F1")
+            self.act_help.setToolTip(tr("打开帮助窗口（三语，可按关键字搜索）"))
+            self.act_help.triggered.connect(self.show_help)
+            m_help.addAction(self.act_help)
+            m_help.addSeparator()
             act_about = QAction(tr("关于 PyShot"), self)
             act_about.triggered.connect(self.show_about)
             m_help.addAction(act_about)
@@ -8568,6 +8978,32 @@ def _app_main():
             self.statusBar().showMessage(
                 tr("已调整为 {} × {}（Ctrl+Z 可撤销）", new_w, new_h), 4000)
 
+        def show_help(self):
+            """打开帮助窗口（三语，内容见 help_text.py，快捷键从菜单实时收集）。"""
+
+            open_help(self, self.hotkey_hint or "", self.full_hotkey_hint or "",
+                      self.help_shortcuts())
+
+        def help_shortcuts(self) -> list:
+            """当前菜单/窗口里实际生效的快捷键 —— 实时收集，帮助不会过期。"""
+            out = []
+            seen = set()
+            if self.hotkey_hint:
+                out.append((tr("区域截图（全局热键）"), self.hotkey_hint))
+            if self.full_hotkey_hint:
+                out.append((tr("全屏截图（全局热键）"), self.full_hotkey_hint))
+            seen.update({s for _, s in out})
+            for act in self.findChildren(QAction):
+                seq = act.shortcut().toString()
+                text = act.text().split("\t")[0].strip()
+                if not seq or not text or text in ("", "-"):
+                    continue
+                if seq in seen:
+                    continue
+                seen.add(seq)
+                out.append((text, seq))
+            return out
+
         def show_about(self):
             """关于：一句话 + 版本号 + 主要能力（三语齐全）。"""
             QMessageBox.about(
@@ -8575,8 +9011,9 @@ def _app_main():
                 tr("PyShot {} — {}\n"
                    "仿 FastStone Capture 的截图与标注工具\n\n"
                    "托盘右键：区域截图 / 全屏截图 / 滚动长截图 / 屏幕取色 / 贴图\n"
-                   "编辑器：多标签标注 · 粘贴拼图 · 水印 · 加边框（含手撕纸）· 三语界面",
-                   APP_VERSION, tr(VERSION_TITLE)))
+                   "编辑器：多标签标注 · 粘贴拼图 · 水印 · 加边框（含手撕纸）· 三语界面\n\n"
+                   "作者：{} <{}>",
+                   APP_VERSION, tr(VERSION_TITLE), AUTHOR, AUTHOR_EMAIL))
 
         def _toggle_restore_session(self, on: bool):
             try:
@@ -8597,6 +9034,17 @@ def _app_main():
             self.statusBar().showMessage(
                 tr("已开启：截图时编辑器留在原地（方便截编辑器自己）") if on
                 else tr("已关闭：截图时编辑器自动最小化让位"), 4000)
+
+        def _toggle_auto_copy(self, on: bool):
+            """「截图后自动复制到剪贴板」开关：存进设置，主程序截图完成时读它。"""
+            try:
+
+                set_setting(AUTO_COPY_SETTING, bool(on))
+            except Exception:                          # noqa: BLE001
+                pass
+            self.statusBar().showMessage(
+                tr("已开启：截图完成后自动复制到剪贴板") if on
+                else tr("已关闭：截图后不再自动复制（需要时按 Ctrl+C）"), 4000)
 
         def set_rail_visible(self, on: bool, persist: bool = True):
             """显示/收起左侧工具条（收起后画布更宽，工具快捷键照旧可用）。"""
@@ -9201,8 +9649,10 @@ def _app_main():
                 a.triggered.connect(lambda checked, t=tid: self.set_tool(t))
                 self.addAction(a)
 
-        def set_hotkey_hint(self, hotkey: str):
-            """把当前生效的全局热键告知编辑器（显示在截图按钮提示里）。"""
+        def set_hotkey_hint(self, hotkey: str, fullhotkey: str = ""):
+            """把当前生效的全局热键告知编辑器（截图按钮提示 + 帮助里也要用）。"""
+            self.hotkey_hint = hotkey or ""
+            self.full_hotkey_hint = fullhotkey or ""
             if not hasattr(self, "btn_shot"):
                 return
             suffix = f"（{hotkey}）" if hotkey else ""
@@ -9899,6 +10349,11 @@ def _app_main():
             act_editor.triggered.connect(self.show_editor)
             menu.addAction(act_editor)
 
+            act_help = QAction(make_menu_icon("help"), tr("使用帮助"), self.app)
+            act_help.setToolTip(tr("打开帮助窗口（F1；三语，可按关键字搜索）"))
+            act_help.triggered.connect(self.show_help)
+            menu.addAction(act_help)
+
             menu.addSeparator()
 
             # ---------- 语言 ----------
@@ -10401,6 +10856,7 @@ def _app_main():
             if self._scroll_mode:      # 滚动截图的选区，不是要编辑的截图
                 self._scroll_mode = None
                 return
+            self.auto_copy(pixmap)     # 选项：截完立刻进剪贴板
 
             # 等覆盖层彻底关闭再开编辑器，否则置顶的覆盖层可能压在编辑器上面；
             # 并且把异常显式暴露出来，避免"截图后什么都没发生"这种静默失败。
@@ -10415,6 +10871,29 @@ def _app_main():
                     self._finish_capture_session()
 
             QTimer.singleShot(120, _open)
+
+        def auto_copy(self, pixmap: QPixmap) -> bool:
+            """按选项把刚截到的图放进剪贴板（默认开）。
+
+            只在这里（截图/滚动截图完成）调用 —— 用「打开图片编辑」打开已有文件时
+            **不能**顺手覆盖掉用户的剪贴板。
+            """
+            if not auto_copy_on_capture():
+                return False
+            try:
+                QApplication.clipboard().setPixmap(pixmap)
+            except Exception as exc:                   # noqa: BLE001
+                self._cap_log("截图·复制剪贴板失败", repr(exc))
+                return False
+            self._cap_log("截图·已复制到剪贴板", f"{pixmap.width()}x{pixmap.height()}")
+            # 状态栏提一句（不弹气泡，免得每次截图都打扰）
+            for ed in getattr(self, "editors", []):
+                try:
+                    ed.statusBar().showMessage(
+                        tr("已复制到剪贴板（选项里可关）"), 4000)
+                except Exception:                      # noqa: BLE001
+                    pass
+            return True
 
         def capture_fullscreen(self, screen=None):
             """全屏截图。
@@ -10455,6 +10934,16 @@ def _app_main():
             QTimer.singleShot(280, _grab)
 
         # ---------- 滚动长截图 ----------
+        def show_help(self):
+            """托盘菜单「使用帮助」：确保有编辑器窗口，然后在它上面打开帮助。"""
+            try:
+                self.show_editor()
+                ed = self.editors[-1] if self.editors else None
+                if ed is not None:
+                    ed.show_help()
+            except Exception as exc:                   # noqa: BLE001
+                self._cap_log("帮助打开失败", repr(exc))
+
         def scroll_enabled(self) -> bool:
             """滚动长截图是否已启用（默认关闭，见 SCROLL_ENABLED_KEY）。"""
             try:
@@ -10570,6 +11059,7 @@ def _app_main():
         def _on_scroll_finished(self, pixmap: QPixmap):
             self.scroller = None
             self._notify(tr("滚动截图完成"), f"已拼接 {pixmap.height()} px 长图")
+            self.auto_copy(pixmap)     # 滚动拼接的结果同样按选项进剪贴板
             self.open_editor(pixmap)
             self._finish_capture_session()
 
@@ -10779,7 +11269,8 @@ def _app_main():
             editor.capture_requested.connect(self.capture_region)
             self._hook_session(editor)
             if hasattr(editor, "set_hotkey_hint"):
-                editor.set_hotkey_hint(getattr(self, "hotkey_text", "") or "")
+                editor.set_hotkey_hint(getattr(self, "hotkey_text", "") or "",
+                                       getattr(self, "full_hotkey_text", "") or "")
             self.editors.append(editor)
             # 新建的编辑器 = "用户又把编辑器打开了"：先把上次还在的标签放回来。
             # 关掉窗口后再截图（open_editor）走的也是这里 —— 以前只有「显示编辑器」

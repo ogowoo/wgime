@@ -1,5 +1,39 @@
 ---
 
+## 2026-09-25 (第九十轮补四: PyShot 从上游 `github.com/ogowoo/pyshot` 同步到 2.18.1 + 回归改成"无 PySide6 也能跑")
+
+**来由**: 用户说"关于 pyshot, 我们可以直接从我的 github 上同步了, github.com/ogowoo/pyshot"。
+
+**同步**: 上游仓库(clone 到临时目录)里 `PyShot.py`(517,272 B)是 `build_single.py` 从多文件源码
+(main/editor/snipper/scroller/shapes/i18n/bootstrap…)**合并出来的单文件**, 版本 **2.18.1**(我们那份还是 2.16.1)。
+按 §53 的老规矩一条命令重新生成(原程序一个字节不改):
+
+```
+git clone --depth 1 https://github.com/ogowoo/pyshot <临时目录>
+python wgime-py-pure\build-wrap-qt-plugin.py <临时目录>\PyShot.py wgime-py-pure\plugins\PyShot.py pyshot 截图标注
+Copy-Item wgime-py-pure\plugins\PyShot.py wgime-py-pure\package\plugins\PyShot.py    # 用户在用那份
+```
+
+结果: `plugins\PyShot.py` 564,511 B(10,733 → **11,402 行**), `PAYLOAD_VERSION = '2.18.1'`,
+`global` 序言仍是 `_cache,_current,_settings_cache`(与上游一致), 包装零改动。
+
+**顺带修好回归的两处"环境假红"**(这次一同步就撞上了, 都是第八十九轮埋的):
+1. **版本写死**: `tests\pyshot-plugin-test.py` 里 4 处断言写死 `2.16.1`/`PyShot 2.16.1` —— 同步一次就红。
+   改成**自洽**判据: 抠出包装写下的 `PAYLOAD_VERSION`, 断言它 == 载荷里的 `APP_VERSION` ==
+   `app_version()` 抠到的值(载荷换了版本而包装没重生成, 照样红 —— 守卫没变弱)。
+2. **没装 PySide6 就崩**: `run(): 有 PySide6 时拉起自己并返 True` 这一条直接调真 `pyside_available()`,
+   本机没装 ⇒ 恒 False ⇒ **FAIL**; 紧随其后的"真载荷体 A/B 对照"要真执行 `_app_main()`(载荷体真 `import PySide6.*`)
+   ⇒ `ModuleNotFoundError` **带 traceback 崩掉整份测试**。改法: 前者**打桩** `pyside_available = lambda: True`
+   (它测的是 run() 的逻辑, 不该要求本机真装), 后者在 `drive()` 里按可用性**整段 SKIP**。
+   本机(无 PySide6)现在 **59/59 全绿、rc=0**(装了 PySide6 的机器仍是 70 项)。
+
+**验证**: `pyshot-plugin-test.py` 59/59 rc=0 / `undefined-globals` RESULT: OK(扫描 27 个文件, SKIP_FILES 仍只有
+`plugins\PyShot.py`)。
+
+**文档**: AGENTS §4 的 pyshot 行注明"没装 PySide6 时 59 项 + 版本断言查 `PAYLOAD_VERSION==APP_VERSION`";
+§5 规则 53 加 ⑧(上游同步的三条命令 + "回归不许写死上游版本号" + "run() 那条要打桩");
+AGENTS-DETAIL §D49 续。
+
 ## 2026-09-25 (第九十轮补三: wgpet 零件形状改用 SVG 当"绘制源" —— 不引渲染器, 零新依赖)
 
 **来由**: 用户问"关于 wgpet, 是否使用 SVG 来做会更简单更好呢?"。先查环境再答: 本机 crate 缓存里

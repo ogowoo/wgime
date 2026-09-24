@@ -114,7 +114,13 @@ def body(tmp):
     check('模块级**没有**调用 _app_main()(装载零副作用)', not kalls)
     check('载荷的依赖自举被缩进进了函数(不在模块级)', '\n    if not ensure_deps():' in txt
           and '\nif not ensure_deps():' not in txt)
-    check('载荷指纹: APP_VERSION = "2.16.1"', 'APP_VERSION = "2.16.1"' in txt)
+    # 版本**不写死**: 上游(PyShot)一发新版就要同步, 写死 2.16.1 只会每次假红。
+    # 改成"自洽断言": 包装时从载荷里抠出来的 `PAYLOAD_VERSION` 必须 == 载荷里的 `APP_VERSION`,
+    # 且 `app_version()` 抠到的也是它 —— 载荷换了版本而包装没重生成, 照样红。
+    vm = re.search(r"PAYLOAD_VERSION = '([^']+)'", txt)
+    V = vm.group(1) if vm else ''
+    check('载荷指纹: 有 PAYLOAD_VERSION 且 = 载荷里的 APP_VERSION',
+          bool(V) and ('APP_VERSION = "%s"' % V) in txt, 'PAYLOAD_VERSION=%r' % V)
     check('载荷指纹: class SnipperOverlay / act_copy 还在',
           'class SnipperOverlay' in txt and 'act_copy' in txt)
 
@@ -147,9 +153,9 @@ def body(tmp):
             info = json.loads(l[len('LOADINFO '):])
     check('装载**不** import PySide6(输入法启动不被拖累)', info.get('pyside') is False, so.strip())
     check('装载 <2000ms(冷编译也算; 关键是上面那条)', (info.get('ms') or 99999) < 2000, str(info.get('ms')))
-    check('契约: CODE=pyshot / run 可调用 / STANDALONE / 版本 2.16.1',
+    check('契约: CODE=pyshot / run 可调用 / STANDALONE / 版本',
           info.get('code') == 'pyshot' and info.get('run') and info.get('sa')
-          and info.get('ver') == '2.16.1', so.strip())
+          and info.get('ver') == V, '%s vs V=%s' % (so.strip()[-120:], V))
     check('spawn_argv 指向自己 + 透传额外参数',
           info.get('self') == os.path.abspath(PLUGF) and info.get('tail') == '--check-deps', so.strip())
     check('child_env(skip_deps) 设 PYSHOT_SKIP_DEPS, 干净时不设',
@@ -196,7 +202,7 @@ def body(tmp):
           and seen['kw'].get('stderr') is subprocess.DEVNULL)
     check('spawn: argv[0] 是 pythonw(不弹黑框)或 python',
           os.path.basename(seen['argv'][0]).lower() in ('pythonw.exe', 'python.exe'), seen['argv'][0])
-    check('app_version() 抠到 2.16.1', mod.app_version() == '2.16.1', repr(mod.app_version()))
+    check('app_version() 抠到载荷版本(%s)' % V, mod.app_version() == V, repr(mod.app_version()))
     # run() 不许阻塞 Tk 主线程(气泡出口打桩, 别把测试输出弄花)
     mod._tip = lambda text: None
     saved = mod.pyside_available
@@ -207,9 +213,22 @@ def body(tmp):
     mod.pyside_available = saved
     check('run(): 缺 PySide6 时立刻返回 False(不阻塞)', ok is False and dt < 50, '%.0fms' % dt)
     mod.spawn = lambda *a, **k: 111
-    check('run(): 有 PySide6 时拉起自己并返 True', mod.run() is True)
+    # 这一条测的是 run() 的**逻辑**(查依赖 -> 拉起 -> 发气泡), 不该要求本机真装了 PySide6:
+    # 真判据用打桩(本机没装时它会返回 False, 于是这条会变成"环境假红" —— 真踩过)。
+    mod.pyside_available = lambda: True
+    try:
+        check('run(): 有 PySide6 时拉起自己并返 True', mod.run() is True)
+    finally:
+        mod.pyside_available = saved
 
     # ================= 5) 包装语义: global 序言是承重的(A/B 对照, 真载荷) =================
+    # 这一段要**真跑** `_app_main()`(载荷体), 而载荷体是真的 `import PySide6.*` ——
+    # 本机没装就 SKIP(而不是让它带 traceback 崩掉: 回归必须在任何机器上都能给出结论)。
+    if not mod.pyside_available():
+        print('  %-58s SKIP (本机没装 PySide6, 跳过"真载荷体 A/B 对照")' % 'global 序言 A/B')
+        _skip_ab = True
+    else:
+        _skip_ab = False
     os.environ.setdefault('PYSHOT_SKIP_DEPS', '1')
     os.environ.setdefault('PYSHOT_NO_ALERT', '1')
     os.environ['PYSHOT_SESSION_DIR'] = os.path.join(tmp, 'sess')
@@ -217,7 +236,12 @@ def body(tmp):
     probed = head + '    return locals()\n\n\n' + sep + tail      # 让 _app_main 交出整个命名空间
     argv_save = sys.argv
 
+    class _SkipAB(Exception):
+        """本机没装 PySide6: 真载荷体跑不了, 整段跳过(而不是 traceback 崩掉)"""
+
     def drive(src, tag):
+        if _skip_ab:
+            raise _SkipAB()
         g = {'__name__': 'wg_pyshot_' + tag, '__file__': PLUGF}
         exec(compile(src, PLUGF, 'exec'), g)
         return g, g['_app_main']()          # __name__ 非 __main__ ⇒ 载荷入口块不跑
@@ -249,6 +273,8 @@ def body(tmp):
             err = str(ex)
         check('对照: 删掉序言 current_language() 当场 NameError ⇒ 那行是承重的',
               err is not None, err or '(没抛错, 危险!)')
+    except _SkipAB:
+        pass
     finally:
         sys.argv = argv_save
 
@@ -282,7 +308,7 @@ def body(tmp):
     # (c) 真 --check-deps
     rc, so, se = run([sys.executable, '-X', 'utf8', PLUGF, '--check-deps'],
                      env=dict(os.environ, PYSHOT_NO_ALERT='1'), timeout=240)
-    if 'PySide6' in so and 'PyShot 2.16.1' in so:
+    if 'PySide6' in so and ('PyShot %s' % V) in so:
         check('--check-deps rc=0 且报出 PyShot 版本与 PySide6', rc == 0, 'rc=%s' % rc)
     else:
         print('  %-58s SKIP (本机没装 PySide6: %r)' % ('--check-deps 真机自检', so.strip()[-60:]))

@@ -2570,6 +2570,41 @@ D2D 软件光栅在这个尺寸上完全不是瓶颈。
 （`--cached` 不碰工作区）再 `git add -- wgime-py-pure\plugins\PyShot.py`，然后 `git diff --cached --name-status`
 确认是 `A PyShot.py` + `D pyshot.py` + `D _pyshot_app.py` 三条。
 
+### §D49 续：从上游同步（第九十轮补四）
+**来由**：用户说"关于 pyshot，我们可以直接从我的 github 上同步了, github.com/ogowoo/pyshot"。
+上游仓库结构（`git clone --depth 1`，分支 `main`，只有一个提交 `adbc762 chore(layout): 目录整理`）：
+
+```
+PyShot.py        517,272 B   ← build_single.py 从下面这些合并出来的**单文件**（我们同步的就是它）
+main.py editor.py snipper.py scroller.py border.py shapes.py capture_utils.py
+i18n.py i18n_data.py helpwin.py session.py pinboard.py bootstrap.py diag.py
+bootstrap.py  tools/  tk_version/  tests/  README.md  CHANGELOG.md  demo.png
+```
+
+**同步三步**（原程序一个字节不改，仍走 §53 那套包装）：
+1. `git clone --depth 1 https://github.com/ogowoo/pyshot "$env:TEMP\pyshot-upstream"`
+2. `python wgime-py-pure\build-wrap-qt-plugin.py "$env:TEMP\pyshot-upstream\PyShot.py" wgime-py-pure\plugins\PyShot.py pyshot 截图标注`
+   → `wrapped PyShot.py (517272 B, 11224 行) -> plugins\PyShot.py (564511 B, 11402 行) global=_cache,_current,_settings_cache ver=2.18.1`
+3. `Copy-Item wgime-py-pure\plugins\PyShot.py wgime-py-pure\package\plugins\`（package 是用户在用那份；插件不进 dist，见 §30）
+
+**这次同步撞出来的两处"环境假红"**（都是第八十九轮埋的，同步前看不出来）：
+1. **版本写死**：测试里 4 处写死 `2.16.1`（`APP_VERSION` 指纹、契约版本、`app_version()`、`--check-deps` 那一支）。
+   同步到 2.18.1 立刻全红。改成**自洽**判据：`PAYLOAD_VERSION`(包装时从载荷抠的) == 载荷里的 `APP_VERSION`
+   == `mod.app_version()`。守卫没变弱 —— 换了载荷却没重生成包装，`PAYLOAD_VERSION` 还是旧的，照样红。
+2. **没装 PySide6 就崩**（本机从来没装过，三个私有依赖目录都不存在）：
+   · `run(): 有 PySide6 时拉起自己并返 True` 直接调**真** `pyside_available()` ⇒ 恒 False ⇒ FAIL。
+     这一条测的是 `run()` 的**逻辑**（查依赖 → spawn → 发气泡），不该要求本机真装 ⇒ 改成**打桩**
+     `pyside_available = lambda: True`（用 `try/finally` 还原）。
+   · 紧随其后的"真载荷体 A/B 对照"要真 `exec` 载荷体并调 `_app_main()`，而载荷体真 `import PySide6.*`
+     ⇒ `ModuleNotFoundError: No module named 'PySide6'` **带 traceback 崩掉整份测试（rc=1）**，而不是干净 SKIP。
+     改法：`drive()` 里 `if _skip_ab: raise _SkipAB()`，调用处 `except _SkipAB: pass` —— 整段跳过。
+   结果：本机 **59/59 rc=0**（70 项减去 A/B 那 11 项）；装了 PySide6 的机器仍跑满 70 项。
+   **教训与 §4 那条老规矩同源**：测试要么自己造环境，要么按可用性 SKIP；**"这台机器恰好没装"不该表现成 traceback**。
+
+**验证**：`pyshot-plugin-test.py` 59/59 rc=0 / `undefined-globals.py` `RESULT: OK`（27 个文件，`SKIP_FILES` 仍只有
+`plugins\PyShot.py`）/ 包装后 `plugins\PyShot.py` 564,511 B、`PAYLOAD_VERSION='2.18.1'`、
+`package\plugins\PyShot.py` 同步为同一份（564,511 B）。
+
 ## §D53 步骤 DSL 新增 `start` 动词（第九十轮）
 
 **来由**：用户问"是不是用 dsl 的方式还简单呢？"—— 即 PyShot 这类常驻 Qt 程序能不能干脆写成
