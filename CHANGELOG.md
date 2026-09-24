@@ -1,6 +1,57 @@
 ---
 
+## 2026-09-24 (第八十九轮补: PyShot 改成**单文件**双模包装 —— 一个文件既是插件、又能独立跑)
+
+**来由**: 用户看完第八十九轮的"薄包装 + 下划线载荷"两文件方案后明确否决 —— "之前不是做了一个双模的么？跟随那个来做不行？，我也要可以独立运行的。" 即照 §8.7 的双模式做成**一个** `plugins\PyShot.py`, 不要两个文件。
+
+**做法**: 新增 `wgime-py-pure\build-wrap-qt-plugin.py`(`wrap()` 纯函数 + `ast.parse` 守卫 + 拒绝"输入=输出"),
+把原程序**整个程序体**缩进进 `_app_main()`: 模块级只剩清单(`CODE/NAME/DESC/VERSION/AUTHOR/PERM/STANDALONE`)
+与 `app_version()`/`pyside_available()`/`child_env()`/`spawn_argv()`/`spawn()`/`missing_hint()`/`_tip()`/`run()`。
+原程序 **480,349 B 一个字节没改**; 生成物 `plugins\PyShot.py` 525,828 B / 10,911 行。旧的两份
+`plugins\pyshot.py` + `plugins\_pyshot_app.py` **删除**。
+
+1. **`global` 序言是承重的(本轮核心)**: 原程序 11 处 `global _settings_cache/_current/_cache` 指向它自己的
+   模块级缓存。缩进进函数后若不声明, `_app_main` 里的初始化会变成**函数局部**, 而嵌套函数里的 `global` 读写的是
+   **模块全局** —— 两个变量, 缓存静默失联。包装脚本自动收集**全部** `global` 名写成 `_app_main()` 开头一行。
+2. **实测证据(A/B, 不是"我觉得没问题")**: 给 `_app_main()` 尾部塞一句 `return locals()`, 以
+   `__name__ != '__main__'` exec 整份文件 ⇒ 载荷体全跑一遍(PRELUDE + 74 个 import + 全部类/函数定义)却没有任何
+   入口副作用, 于是能直接查命名空间: 真文件下三个缓存名**在模块全局、不在函数局部**, `current_language()`/
+   `set_language('en', False)`/`_load_settings()`/`tr()` 全正常且共用同一份状态; 把那一行 `global …` 删掉做对照,
+   三个名字跑进函数局部、`current_language()` **当场 NameError**。两条已固化进回归(第 5 节, "删掉序言必红")。
+3. **三个硬约束逐条验过**: ①模块级 `import PySide6.*` + 模块级 `ensure_deps()` 会被装载器在**输入法启动时** exec
+   (拖慢启动/当场联网装 200MB/缺依赖时插件静默消失) ⇒ 必须整体进函数; ②原程序自带的
+   `if __name__ == '__main__':` 块缩进进函数后**照样成立**(独立运行时 `__name__` 仍是 `'__main__'`) ⇒
+   **入口仍只有一个**, §45 的入口互斥没被破坏; ③Qt 与宿主 Tk 不能共用主线程事件循环 ⇒ `run()` 把**本文件自己**
+   作为独立进程拉起(`pythonw` + `CREATE_NO_WINDOW`)并**立刻返回**。
+4. **包装前安全单**: `__future__`/`nonlocal`/`globals()`/`eval(`/`multiprocessing`/`pickle` 皆 0;
+   `exec(` 的 14 处词法命中逐个确认是 Qt 的 `menu.exec()/dlg.exec()/app.exec()`(非内建); 并实测
+   **方法体看得见外层函数的局部名**(类作用域不阻断闭包) —— 整套包法的前提。
+5. **实测数字**: 装载包装后的文件 **15ms** 且 `PySide6` **不在** `sys.modules`; `python plugins\PyShot.py`
+   打 `STANDALONE-OK`; `--check-deps` 报 `PyShot 2.16.1 … [OK] PySide6 6.11.2`; 用 `sys.meta_path` 挡住
+   `PySide6` 时走 `STANDALONE-SKIP-DEPS` 分支、**rc=0** 且无 pip 痕迹(钩子下自动 `PYSHOT_SKIP_DEPS=1`/
+   `PYSHOT_NO_ALERT=1`, 绝不联网)。
+6. **回归重做**: `tests\pyshot-plugin-test.py` 40 → **70 项**, 新增: 装载纯净(子进程量时间 + `PySide6` 不在
+   `sys.modules`)、**真宿主装载器**(把 `main.py` 的 `load_py_plugins` 源码抠出来, 喂它一个只放 `PyShot.py` 的
+   临时插件目录 ⇒ 断言被收下且装载后 `PySide6` 仍不在 `sys.modules`)、模块级只许 `os/subprocess/sys` 且不许调用
+   `_app_main()`、`global` 序言 A/B、挡住 PySide6 的独立运行、
+   **生成器回归**(现场合成"Qt 式单文件": 模块级 import + 模块级自举 + `global` 缓存 + 尾 `__main__`,
+   证明"原程序当模块 import 就喷副作用 / 包装后零副作用"且独立运行输出**逐字相同**)、"同目录只有一份 `PyShot.py`"
+   (上一轮那次大小写覆盖事故的守门员)。`tests\undefined-globals.py` 的 `SKIP_FILES` 由
+   `plugins\_pyshot_app.py` 改成 `plugins\PyShot.py`。
+7. **文档与索引**: `docs\WGIME_插件规范.md` §8.9 重写为"整个程序体缩进进 `_app_main()` 的单文件双模插件"
+   (8 条做法 + 安全检查单); AGENTS §5 规则 53 同步重写(68 项); `release\docs` 由 `sync-dist.ps1` 同步。
+   Windows 上 git 会把 `plugins/PyShot.py` 当成既有 `plugins/pyshot.py` 的"修改", 需
+   `git rm --cached -- plugins/pyshot.py` + `git add -- plugins/PyShot.py` 才提交得出大写名。
+
+**验证**: `pyshot-plugin-test.py` **70/70** / `undefined-globals.py` `RESULT: OK` / `tests\pure-state-harness.py` 全绿 /
+`deps-test.py` 51/51 / `standalone-plugin-test.py` **8/8**(同一份文件既当插件又独立跑) / `example-plugin-test.py` 24/24 /
+`pet-dll-plugin-test.py` 22/22; `build-package.ps1` 后 `git checkout -- wgime-py-pure\dist\wgime-py.py`
+(本轮 `deps.py` 没动 ⇒ dist 只脏 `THIRD_ZIP_B64` 一行), `%TEMP%\wgime-dist-sync-check.py` → `mismatches=0` /
+`main.py embedded match: True`; `package\plugins\` 已同步。
+
 ## 2026-09-24 (第八十九轮: 把 PyShot(Qt 截图工具)接成插件 —— 薄包装 + 下划线载荷)
+
+> ⚠ **本轮的两文件方案已被下一轮(第八十九轮补)按用户要求改成单文件双模包装** —— 下面这段留着当日志与事故复盘, 别照它做。
 
 **来由**: 用户"把插件目录里的 pyshot.py 转成插件"。那份 `PyShot.py` 480,349 B / 10,733 行, 是
 **PySide6(Qt)** 的截图/滚动截图/标注工具(托盘常驻 + 全局热键), 由 `build_single.py` 合成单文件。

@@ -234,30 +234,50 @@ txt 插件里的 `[csharp]` 块在纯 Python 版**仍然可用**：经 sidecar �
 回归：`python wgime-py-pure\tests\example-plugin-test.py`（模板契约 + `_` 前缀不被装载 + `run()` 真建窗 +
 独立运行 + 文档一致性；无桌面时后两项 SKIP）。
 
-### 8.9 重依赖 GUI 程序怎么接（薄包装 + 下划线载荷）
+### 8.9 重依赖 GUI 程序怎么接（整个程序体缩进进 `_app_main()` 的**单文件**双模插件）
 
-不是所有程序都能按 §8.8 那样直接写成 `plugins\*.py`。典型反例是 **Qt（PySide6/PyQt）** 程序：
+不是所有程序都能按 §8.8 那样模块级平铺。典型反例是 **Qt（PySide6/PyQt）** 程序：
 
 - PySide6 是**巨型 C 扩展**，内嵌不进单文件发行版（§12 的 C 扩展边界）；
 - 它的 `import PySide6` 常在**模块级**，而且往往还带一句模块级的依赖自举（缺包就自己 pip 装、装不上直接退出）；
 - Qt 与宿主的 Tk **不能共用主线程事件循环**。
 
-这类程序一律用「**薄包装 + 下划线载荷**」：
+接法是**一个文件**：把原程序体整体缩进进一个函数，模块级只剩清单与几个小函数。
+（第八十九轮用户明确要求**单文件 + 可独立运行** —— 别拆成"薄插件 + 下划线载荷"两个文件。）
 
-1. **载荷**（原程序，**一个字节都不用改**）放 `plugins\_xxx_app.py` —— 名字以 `_` 开头，
-   `load_py_plugins()` 会跳过它（§8.1/§8.8），于是它**不会被输入法启动时 exec**：
-   既不拖慢启动，也不会因为缺依赖而让插件静默消失。它同时**不进** `tests\undefined-globals.py`
-   的扫描（第三方生成物的嵌套作用域会被 symtable 误判），需要在该文件的 `SKIP_FILES` 里登记一行。
-2. **薄插件** `plugins\xxx.py` 只做三件事：声明清单（`CODE/NAME/DESC/...`）、检查重依赖、
-   用**独立进程**把载荷拉起来（`subprocess.Popen` + `CREATE_NO_WINDOW`，`pythonw.exe` 优先）。
-   宿主入口 `run()` 必须**立刻返回**（它在 Tk 主线程里同步调）。
-3. 依赖检查要给**人话出口**：缺依赖时发气泡说明装法（走 wgime 的依赖自检 `deps`，或 `pip install`），
-   **不要**在插件里悄悄装几百 MB。
-4. 把私有依赖目录（`%LOCALAPPDATA%\wgime-py\site\pip`）塞进子进程的 `PYTHONPATH` ——
+1. **模块级只留四件事**：清单（`CODE/NAME/DESC/...` + `STANDALONE = True`）、依赖查询
+   （`pyside_available()`）、把**自己**拉起来的 `spawn()`、宿主入口 `run()`。
+   模块级**不许**有任何重依赖 import 和副作用 —— 装载器是在**输入法启动时** exec 插件的（§8.1），
+   一行模块级 `import PySide6` 就是几百毫秒，一句模块级 `ensure_deps()` 就可能在启动路径上联网装 200MB。
+2. **原程序体整体缩进进 `_app_main()`**（原程序**一个字节不用改**）：它所有的模块级 import、
+   类/函数定义、依赖自举、乃至它自己的 `if __name__ == '__main__':` 入口块全变成函数体 ——
+   于是"装载"零重依赖零副作用，"运行"才建 Qt 界面。那个入口块在函数里**照样成立**
+   （独立运行时 `__name__` 仍是 `'__main__'`），所以**入口仍然只有一个**（§8.7 的互斥要求）。
+3. **`_app_main()` 靠前的 `global` 序言是承重的，不许删**：原程序里那些 `global 缓存名` 指的是它自己的
+   模块级缓存；缩进进函数后若不声明，`_app_main` 里的初始化会变成**函数局部**，与嵌套函数里的 `global`
+   成了两个变量（PyShot 的 `_settings_cache/_current/_cache` 会静默失联，`current_language()` 当场
+   `NameError`）。包装脚本自动收集全部 `global` 名写成这一行；回归里有 A/B 断言守着（删掉必红）。
+4. **`run()` 必须立刻返回**（它在 Tk 主线程里同步调）：把**本文件自己**作为独立进程拉起
+   （`pythonw.exe` 优先 + `CREATE_NO_WINDOW`）。**不要**复用 `_standalone.py` 那套 Tk 看守 ——
+   本程序不是 Tk 程序，白建一个隐藏 root，还看着一个早就返回的父进程。
+5. **依赖给人话、不代装**：缺 PySide6 时发气泡说明装法（启动编码 `deps` / `pip install PySide6`），
+   并把私有依赖目录（`%LOCALAPPDATA%\wgime-py\site[\pip]`）塞进子进程 `PYTHONPATH` ——
    否则用 wgime 依赖自检装出来的包，子进程看不见。
-5. 独立运行（`python xxx.py`）也走载荷；回归里给一条 `--check-deps` 之类的**不出界面**的自检路径，
-   免得测试真的弹全屏窗口。
+6. **独立运行 + 不出界面的自检路径**：`python 本文件.py` = 原程序；`--check-deps` = 只报依赖。
+   再留一条测试钩子（`WGIME_STANDALONE_AUTOEXIT_MS`：钩子下自动 `PYSHOT_SKIP_DEPS=1`、把 argv 补成
+   `--check-deps`、打 `STANDALONE-OK`），回归才能真跑一遍而不弹窗口；缺 PySide6 时该钩子还会打
+   `STANDALONE-SKIP-DEPS` 并 **rc=0**，免得别的机器上整条链变红。
+7. **生成器 `wgime-py-pure\build-wrap-qt-plugin.py`**：`wrap()` 是纯函数 —— 读原单文件 → 自动收集
+   `global` 名 → 缩进进 `_app_main()` → 拼上清单与头尾块，并对生成物做 `ast.parse` 守卫；
+   拒绝"输入=输出"。原程序升级后重跑一次即可，**不要手改生成物**。
+8. ⚠ **命名大小写**：Windows 上 `pyshot.py` 与 `PyShot.py` 是**同一个路径** —— 第八十九轮真踩过
+   （7KB 包装把 480KB 原程序原地覆盖）。回归断言同目录里只有一份。
 
-参考实现：`plugins\pyshot.py` + `plugins\_pyshot_app.py`（PyShot 截图工具），
-回归 `wgime-py-pure\tests\pyshot-plugin-test.py`。
+包装前的**安全检查单**（Qt 程序能不能这么包）：`__future__` / `nonlocal` / `globals()` / `eval()` /
+`multiprocessing` / `pickle` 皆无（前两个会因缩进改变语义，后几个要模块级名字）；`exec(` 的词法命中
+要逐个确认是 Qt 的 `app.exec()` 而不是内建 `exec`。**方法体看得见外层函数的局部名**（类作用域不阻断闭包，
+`class C:` 里 `def m(self): return X` 能取到外层函数的 `X`）—— 这是整套包法的前提，已实测。
+
+参考实现：`plugins\PyShot.py`（PyShot 截图工具：480KB 原程序 + 包装，共一个文件）、生成器
+`wgime-py-pure\build-wrap-qt-plugin.py`、回归 `wgime-py-pure\tests\pyshot-plugin-test.py`（70 项）。
 

@@ -56,11 +56,13 @@ def scan(path):
 
 
 SKIP_FILES = {
-    # 「第三方自动生成的单文件版应用」的**载荷**(不是 wgime 自己的代码): 由多文件源码合并而成,
-    # symtable 会把它的**嵌套作用域**引用误判成全局量(PyShot 的 `_icon_button` 里 act_copy/lay/bar 等 7 处)。
-    # 约定: 这类载荷一律 `_` 开头(装载器也跳过它) + 在此登记; 名单**只允许**放这类载荷 ——
-    # `tests\pyshot-plugin-test.py` 有一条断言"名单里只有 _pyshot_app.py", 加新的必须一并改那条。
-    r'plugins\_pyshot_app.py',
+    # 「第三方自动生成的单文件版应用」被**整体包进** wgime 插件后的那一份(不是 wgime 自己的代码):
+    # 由多文件源码合并而成, symtable 会把它的**嵌套作用域**引用误判成全局量(PyShot 的 `_icon_button`
+    # 里 act_copy/lay/bar 等 7 处 —— 真跑起来没问题, 是扫描器的假阳性)。
+    # 约定: 这类「原程序 + 包装」的单文件**只在 `plugins\PyShot.py` 这一份**包装里出现(包装手法见
+    # `build-wrap-qt-plugin.py` 与规范 §8.9), 在此登记; 名单**只允许**放这类文件 ——
+    # `tests\pyshot-plugin-test.py` 有一条断言"名单里只有 plugins\PyShot.py", 加新的必须一并改那条。
+    r'plugins\PyShot.py',
 }
 
 
