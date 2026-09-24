@@ -2713,6 +2713,57 @@ subprocess.TimeoutExpired: ... wgpet.py  timed out after 5 seconds
 本机现状：`python -c "import PySide6"` 失败，三个私有依赖目录（`%LOCALAPPDATA%\wgime-py\site\pip` 等）**都不存在**
 ⇒ 用户机器上 PyShot 目前**起不来**（插件会按 §53 ④ 弹"缺依赖"气泡）。
 
+## §D55 wgpet 零件形状改用 SVG 当"绘制源"（第九十轮补三）
+**问题**（用户原话）："关于 wgpet, 是否使用 SVG 来做会更简单更好呢?"
+
+**先查环境再回答**（别凭印象）：
+
+| 查什么 | 结果 |
+|---|---|
+| 本地 crate 缓存里有 `resvg`/`usvg`/`tiny-skia` 吗 | **一个都没有**（`cargo build --offline` 加依赖会直接失败，得先联网） |
+| Python 侧 `cairosvg`/`svglib`/`reportlab` | 都没有（只有 `PIL`） |
+| 命令行光栅器 | `resvg`/`magick`/`rsvg-convert` 都没有，**`inkscape` 有**（`C:\Program Files\Inkscape\bin\inkscape.com`） |
+| 现况 | DLL 1,728,177 B，`Cargo.lock` **20** 个包 |
+
+**结论：分两件事**——
+- **SVG 当运行时渲染器（resvg 进 DLL）不划算**：①依赖树大（usvg+kurbo+roxmltree+**fontdb/rustybuzz** 字体栈，
+  而面板中文走 DirectWrite，等于两套字体）；②渲染模型不匹配 —— resvg 是 **CPU 光栅到 RGBA 位图**，
+  我们的管线是 D2D → 32bpp DIB → `UpdateLayeredWindow` 逐像素 alpha，每帧重新光栅（120fps）太贵、
+  预渲染又等于退回**精灵图集**，而腿是 2 骨 IK、尾巴/耳朵/眨眼/张口全是**参数化连续形变**（当初不要图集就为这个）；
+  ③狗只是画面一部分（篮筐/球/抛物线/工具面板/中文/命中测试同在一个 DIB），混两个渲染器还得处理彼此的 alpha 合成；
+  ④SVG 本身没有骨骼，要动得自己写场景图驱动。
+- **SVG 当绘制源划算**：D2D 几何接口与 SVG 几乎一一对应（`M/L/H/V→AddLine`、`C/S→AddBezier`、
+  `A→AddArc`、`Z→EndFigure(CLOSED)`、`fill-rule→FILL_MODE`、渐变→对应笔刷），所以"把 d 串变成
+  `ID2D1PathGeometry`"完全可以自己做，**不必请一个渲染器进来**。
+
+**实现**（`wgpet-rs`）：
+1. `src/svgpath.rs`（522 行，零新依赖）：先剥 XML 注释 → 扫 `<path`（引号内的 `>` 不算标签结尾）→
+   取 `id`/`d`/`fill`/`style`/`fill-rule` → `d` 串词法（绝对/相对、`.5`/`1.`/`1.5.5`/指数都认）→ 建几何。
+   `Q/T` 自己转三次（控制点各取 2/3 —— **不碰 D2D 1.1 的 `AddQuadraticBezier`**，DC 渲染目标是 1.0）；
+   `A` 走端点参数化 → 每段 ≤90° 的三次（`4/3·tan(Δ/4)`）；`fill="none"` → HOLLOW + OPEN。
+2. `art/dog.svg`：6 个零件真身（head / ear / body / muzzle / mouth / bridge），从 `build_*` **逐字符转录**。
+3. `src/art.rs`：`include_str!("../art/dog.svg")`（编译期嵌入，单文件交付不变）；`Shapes::new` **优先 SVG**、
+   逐件失败才退回 `build_*`；每次启动比一遍两边包围盒并 `dbg()` 出来。
+
+**验证**（客观判据）：
+- 初始化日志：`art: svg 用了 6/6 个零件 [body bridge ear head mouth muzzle], 与内置路径的包围盒差: 0(逐件一致)`
+  —— 转录正确的硬证据（4 个数 × 6 个零件全等）；`verify-overlay.py` 21/21、`wg-court.py` 7/7、
+  `wg-rustpet-panel.py` 16/16、`pet-dll-plugin-test.py` 22/22。
+- **扰动静默测试**（证明真的在吃 SVG，不是悄悄退回内置）：把头的两个控制点抬高 8 → 重编译 →
+  渲染出来头顶明显变高、日志同时变 `head 差5.99`；改回 → 回 `0(逐件一致)`。
+- 体量：DLL 1,728,177 → **1,786,221 B**（+58 KB），依赖数不变。
+
+**踩到的坑（留给下一次）**：
+1. 想拿"改前/改后两张渲染图逐像素比"当等价证据 —— **不行**：探针渲染的是**活动画**
+   （同一构建连渲两次也有 ~6.5k 像素不同，因为 bob/尾巴相位不同；换场景 3 还会漫游换位置）。
+   真正干净的判据是**进程内比几何**（包围盒/采样），不是比截图。
+2. `Shapes::new` 里原来那个 `Ok(Self { … })` 只改了前半段，会留下 `        })` 三行残骸 ——
+   编译报错才看见；改这种"整块替换"记得连尾部一起看。
+3. `SetFillMode` 必须在 `BeginFigure` **之前**调；SVG 的缺省 `fill-rule` 是 nonzero（= `D2D1_FILL_MODE_WINDING`），
+   而 D2D 新建 sink 的缺省是 ALTERNATE —— 我们的零件都是简单闭合曲线所以看不出差别，
+   但**将来画"环"(两条同向轮廓)就会差**，别以为可以随便省。
+
+
 
 
 

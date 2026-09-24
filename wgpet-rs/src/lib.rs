@@ -18,6 +18,8 @@
 
 mod art;
 mod palette;
+/// SVG `<path>` → D2D 路径几何(零件形状的绘制源, 见 `art/dog.svg`)
+mod svgpath;
 
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};

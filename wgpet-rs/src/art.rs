@@ -17,6 +17,9 @@ use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 
+/// 零件形状的**真身**(编译期嵌进 DLL, 单文件交付不变)。见 `art/dog.svg` 头部注释与 §D55。
+const ART_SVG: &str = include_str!("../art/dog.svg");
+
 // ---------------------------------------------------------------- 配色
 
 const fn rgb(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
@@ -32,6 +35,12 @@ const URAJIRO_DIM: D2D1_COLOR_F = rgb(0.900, 0.840, 0.750, 1.0);
 const FUR_SHADE: D2D1_COLOR_F = rgb(0.900, 0.500, 0.145, 1.0);
 /// 赛璐璐光影: 一块平涂的暗面(不渐变), 压在下半身/内侧 —— 动漫插画那味儿
 const CEL: D2D1_COLOR_F = rgb(0.890, 0.505, 0.135, 1.0);
+/// 受光面(比背毛更亮更黄)。径向"体积球"的球心色 —— 用户要的"立体一点"全靠它。
+const FUR_LIGHT: D2D1_COLOR_F = rgb(1.000, 0.775, 0.430, 1.0);
+/// 体积球最外圈的反光暗面(比 CEL 更深, 否则球没有"转过去"的感觉)
+const FUR_DEEP: D2D1_COLOR_F = rgb(0.780, 0.395, 0.085, 1.0);
+/// 里白的球心(近纯白)
+const URAJIRO_LIGHT: D2D1_COLOR_F = rgb(1.000, 0.996, 0.960, 1.0);
 /// 描边: 动漫插画那种**粗黑边**(原来是棕色细边, 换近黑后立刻"立"起来)
 const OUTLINE: D2D1_COLOR_F = rgb(0.180, 0.105, 0.075, 1.0);
 const EAR_IN: D2D1_COLOR_F = rgb(0.925, 0.525, 0.455, 1.0);
@@ -64,11 +73,20 @@ const SHADOW_CORE_C: D2D1_COLOR_F = rgb(SHADOW_TINT.0, SHADOW_TINT.1, SHADOW_TIN
 
 pub struct Brushes {
     pub fur: ID2D1SolidColorBrush,
+    /// 背毛受光面(背脊高光/边缘光用)
+    pub fur_light: ID2D1SolidColorBrush,
     /// 立体感的主力: 一条**全局光向**的线性渐变(左上受光 → 本体 → 右下暗面)。
     /// 渐变坐标在狗的局部空间里, 所以身体/头/腿/耳共用它就有统一的光向。
     pub fur_grad: ID2D1LinearGradientBrush,
     /// 里白也带一点体积(上白下灰)
     pub urajiro_grad: ID2D1LinearGradientBrush,
+    /// **体积球**: 径向渐变(球心偏左上受光 → 边缘压暗)。
+    /// 为什么线性渐变不够: 在"圆球"形状上它只拉出一条斜的色带, 读起来还是平的;
+    /// 而径向渐变的等值线是圆的, 才有"球面转过去"的效果 —— 用户原话"能做立体一点的吗"。
+    /// 单位半径(1.0), 用的时候靠 `Ctx::ball_at` 摆到目标位置并按 rx/ry 缩放。
+    pub ball: ID2D1RadialGradientBrush,
+    /// 里白的体积球(吻部/胸腹/脸)
+    pub ball_white: ID2D1RadialGradientBrush,
     pub urajiro: ID2D1SolidColorBrush,
     pub urajiro_dim: ID2D1SolidColorBrush,
     pub fur_shade: ID2D1SolidColorBrush,
@@ -129,8 +147,48 @@ impl Brushes {
                 )
             }
         };
+        // 单位"体积球": 半径 1, 球心在原点; 受光点由 gradientOriginOffset 往左上偏。
+        // 四段停靠点让亮面→本体→暗面→反光的过渡更像球形, 而不是两色对半开。
+        let ball = |hi: D2D1_COLOR_F, mid: D2D1_COLOR_F, dark: D2D1_COLOR_F, off: Pt| {
+            unsafe {
+                let stops = [
+                    D2D1_GRADIENT_STOP {
+                        position: 0.0,
+                        color: hi,
+                    },
+                    D2D1_GRADIENT_STOP {
+                        position: 0.42,
+                        color: mid,
+                    },
+                    D2D1_GRADIENT_STOP {
+                        position: 0.72,
+                        color: mid,
+                    },
+                    D2D1_GRADIENT_STOP {
+                        position: 1.0,
+                        color: dark,
+                    },
+                ];
+                let coll = rt.CreateGradientStopCollection(
+                    &stops,
+                    D2D1_GAMMA_2_2,
+                    D2D1_EXTEND_MODE_CLAMP,
+                )?;
+                rt.CreateRadialGradientBrush(
+                    &D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+                        center: D2D_POINT_2F { x: 0.0, y: 0.0 },
+                        gradientOriginOffset: D2D_POINT_2F { x: off.0, y: off.1 },
+                        radiusX: 1.0,
+                        radiusY: 1.0,
+                    },
+                    None,
+                    &coll,
+                )
+            }
+        };
         Ok(Self {
             fur: mk(FUR)?,
+            fur_light: mk(FUR_LIGHT)?,
             fur_grad: grad(
                 FUR_SHADE,
                 FUR,
@@ -138,6 +196,8 @@ impl Brushes {
                 (-90.0, -180.0),
                 (110.0, 60.0),
             )?,
+            ball: ball(FUR_LIGHT, FUR, FUR_DEEP, (-0.26, -0.30))?,
+            ball_white: ball(URAJIRO_LIGHT, URAJIRO, URAJIRO_DIM, (-0.22, -0.28))?,
             urajiro_grad: grad(
                 URAJIRO,
                 URAJIRO,
@@ -308,6 +368,11 @@ pub struct Shapes {
     pub head: ID2D1PathGeometry,
     pub ear: ID2D1PathGeometry,
     pub body: ID2D1PathGeometry,
+    pub muzzle: ID2D1PathGeometry,
+    /// 嘴线(只描边, 不填充)
+    pub mouth: ID2D1PathGeometry,
+    /// 吻部的鼻梁线(只描边)
+    pub bridge: ID2D1PathGeometry,
 }
 
 fn bez(p1: Pt, p2: Pt, p3: Pt) -> D2D1_BEZIER_SEGMENT {
@@ -324,18 +389,32 @@ fn build_head(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     unsafe {
         let g = f.CreatePathGeometry()?;
         let s = g.Open()?;
+        // **圆颅骨**: 五官画在它中部。之前那版头是"蛋形 + 五官挤在右下" —— 不像的根在这。
+        s.BeginFigure(pt((-14.0, -19.0)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((-6.0, -30.0), (10.0, -30.0), (18.0, -17.0)));
+        s.AddBezier(&bez((23.0, -11.0), (25.0, -4.0), (24.0, 2.0)));
+        s.AddBezier(&bez((22.0, 9.0), (12.0, 13.0), (-1.0, 12.5)));
+        s.AddBezier(&bez((-11.0, 12.0), (-18.0, 4.0), (-14.0, -19.0)));
+        s.EndFigure(D2D1_FIGURE_END_CLOSED);
+        s.Close()?;
+        Ok(g)
+    }
+}
 
-        // V4：不再追求“长吻侧脸”，而是把柴犬脸做成圆润的包子脸。
-        // 鼻口区域短、宽、钝，这样 face 镜像后仍然能读成正脸/三分之四脸。
-        s.BeginFigure(pt((-20.5, -12.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((-21.0, -25.0), (-11.0, -36.5), (1.0, -38.0)));
-        s.AddBezier(&bez((14.0, -38.5), (23.5, -31.0), (26.5, -20.5)));
-        s.AddBezier(&bez((28.5, -14.0), (28.5, -8.0), (29.5, -3.0)));
-        // 短圆吻：比 V3 再收 2~3px，避免狐狸感。
-        s.AddBezier(&bez((30.5, -0.5), (30.0, 3.5), (26.5, 5.5)));
-        s.AddBezier(&bez((23.0, 9.5), (16.0, 12.5), (8.0, 12.5)));
-        s.AddBezier(&bez((-1.5, 12.5), (-10.5, 9.5), (-16.5, 4.0)));
-        s.AddBezier(&bez((-21.0, -0.5), (-22.0, -6.5), (-20.5, -12.0)));
+/// 吻部: 从颅骨前下方**伸出来**的一段短圆楔形(参考图里柴犬的吻就是这个结构)。
+/// 单独一条路径的好处: 它能自带描边, 而那条"吻部与脸的分界线"正是卡通狗该有的线。
+fn build_muzzle(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+    unsafe {
+        let g = f.CreatePathGeometry()?;
+        let s = g.Open()?;
+        // 吻部: 从颅骨前下方**伸出来**的一段短圆楔形(参考图里柴犬的吻就是这个结构)。
+        // 后缘必须是**向脸内凹的浅弧**(显式加一段贝塞尔); 直接 `EndFigure(CLOSED)` 会用一条
+        // 竖直直线收口, 配上近水平的鼻梁就成了一张"白方框"糊在脸上。
+        s.BeginFigure(pt((13.5, -6.0)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((20.0, -7.5), (28.0, -4.0), (32.0, 0.0)));
+        s.AddBezier(&bez((34.5, 3.5), (32.0, 8.0), (26.5, 9.0)));
+        s.AddBezier(&bez((20.0, 9.8), (16.0, 8.0), (14.0, 4.5)));
+        s.AddBezier(&bez((12.4, 2.0), (12.0, -2.5), (13.5, -6.0)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
@@ -348,10 +427,44 @@ fn build_ear(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
         let s = g.Open()?;
 
         // 参考图中的小而厚的圆角三角立耳。
-        s.BeginFigure(pt((-8.0, 1.5)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((-8.0, -10.0), (-5.0, -21.0), (0.0, -25.0)));
-        s.AddBezier(&bez((5.0, -21.0), (8.0, -10.0), (8.0, 1.5)));
-        s.AddBezier(&bez((4.5, 4.0), (-4.5, 4.0), (-8.0, 1.5)));
+        // **宽高比接近 1:1** —— 之前那版底宽 16 / 高 26.5 是"兔耳", 柴犬的耳朵是厚三角。
+        s.BeginFigure(pt((-9.5, 2.0)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((-9.5, -8.0), (-6.5, -16.5), (0.0, -20.5)));
+        s.AddBezier(&bez((6.5, -16.5), (9.5, -8.0), (9.5, 2.0)));
+        s.AddBezier(&bez((5.0, 4.6), (-5.0, 4.6), (-9.5, 2.0)));
+        s.EndFigure(D2D1_FIGURE_END_CLOSED);
+        s.Close()?;
+        Ok(g)
+    }
+}
+
+/// 吻部的**鼻梁线**(只描边): 从鼻根往后上方回到额段。
+/// 为什么不描吻部整条轮廓: 闭合的圆角矩形轮廓 = 脸上糊了一张"白方框"(用户看到的"不像"之一),
+/// 卡通狗只画这条鼻梁线 + 嘴, 吻部其余边缘靠里白色自己交代。
+fn build_bridge(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+    unsafe {
+        let g = f.CreatePathGeometry()?;
+        let s = g.Open()?;
+        s.BeginFigure(pt((27.5, -1.0)), D2D1_FIGURE_BEGIN_HOLLOW);
+        s.AddBezier(&bez((24.0, -5.2), (17.0, -6.8), (9.0, -6.0)));
+        s.EndFigure(D2D1_FIGURE_END_OPEN);
+        s.Close()?;
+        Ok(g)
+    }
+}
+
+/// 嘴: **张开的笑口**(填充的月牙 + 里面的舌头)。
+/// 一条细嘴线读不出"笑" —— 参考图里那个萌点就是张着嘴。单独一条路径才能填充+描边。
+fn build_mouth(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
+    unsafe {
+        let g = f.CreatePathGeometry()?;
+        let s = g.Open()?;
+        s.BeginFigure(pt((28.0, 3.4)), D2D1_FIGURE_BEGIN_FILLED);
+        // 下缘(从鼻根往后下方兜出去)
+        s.AddBezier(&bez((27.0, 7.4), (23.0, 9.4), (19.0, 8.8)));
+        s.AddBezier(&bez((17.0, 8.4), (15.8, 6.8), (16.2, 5.0)));
+        // 上缘(贴着吻部回去)
+        s.AddBezier(&bez((20.0, 5.4), (24.5, 4.6), (28.0, 3.4)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
@@ -364,13 +477,15 @@ fn build_body(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
         let s = g.Open()?;
 
         // Q版重点：身体比原版更短、更圆、更敦实，胸腹呈软乎乎的桶形。
-        s.BeginFigure(pt((31.0, -77.0)), D2D1_FIGURE_BEGIN_FILLED);
-        s.AddBezier(&bez((15.0, -82.0), (-10.0, -82.0), (-27.0, -76.0)));
-        s.AddBezier(&bez((-42.0, -71.0), (-46.0, -58.0), (-45.0, -45.0)));
-        s.AddBezier(&bez((-44.0, -33.0), (-36.0, -27.0), (-24.0, -27.0)));
-        s.AddBezier(&bez((-11.0, -31.0), (1.0, -32.0), (12.0, -29.0)));
-        s.AddBezier(&bez((23.0, -26.0), (30.0, -28.0), (32.0, -37.0)));
-        s.AddBezier(&bez((35.0, -49.0), (36.0, -66.0), (31.0, -77.0)));
+        // **长度是 Q 版的关键**: 原来 -46..36 (82 单位) 是"腊肠犬", 大头必须配短身子。
+        // 这里 x 全体按 0.88 向中心压缩(以 -5 为轴), y 不变 —— 长度降到 72, 头身比才立得住。
+        s.BeginFigure(pt((26.7, -77.0)), D2D1_FIGURE_BEGIN_FILLED);
+        s.AddBezier(&bez((12.6, -82.0), (-9.4, -82.0), (-24.4, -76.0)));
+        s.AddBezier(&bez((-37.6, -71.0), (-41.1, -58.0), (-40.2, -45.0)));
+        s.AddBezier(&bez((-39.3, -33.0), (-32.3, -27.0), (-21.7, -27.0)));
+        s.AddBezier(&bez((-10.3, -31.0), (0.3, -32.0), (10.0, -29.0)));
+        s.AddBezier(&bez((19.6, -26.0), (25.8, -28.0), (27.6, -37.0)));
+        s.AddBezier(&bez((30.2, -49.0), (31.1, -66.0), (26.7, -77.0)));
         s.EndFigure(D2D1_FIGURE_END_CLOSED);
         s.Close()?;
         Ok(g)
@@ -379,11 +494,66 @@ fn build_body(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
 
 impl Shapes {
     pub fn new(f: &ID2D1Factory) -> Result<Self> {
-        Ok(Self {
-            head: build_head(f)?,
-            ear: build_ear(f)?,
-            body: build_body(f)?,
-        })
+        // 零件形状的**真身**在 `art/dog.svg`(编译期嵌进 DLL); 下面这些 `build_*` 是**兜底**:
+        // SVG 缺 id / d 解析不动 / D2D 报错时才用它们 —— 所以它们不能删(改了 SVG 也别删)。
+        // 每次启动都比一次两边的包围盒, 把差值写进初始化日志: 它抓不出"改丑了"(那是你的自由),
+        // 但能立刻抓出"解析失败、悄悄退回内置路径、看着像没生效"。
+        let svg = crate::svgpath::SvgPaths::parse(ART_SVG);
+        let mut used = 0usize;
+        let mut notes: Vec<String> = Vec::new();
+        let mut pick =
+            |id: &str, fb: fn(&ID2D1Factory) -> Result<ID2D1PathGeometry>| -> Result<ID2D1PathGeometry> {
+                let builtin = fb(f)?;
+                match svg.build(f, id) {
+                    Ok(g) => {
+                        used += 1;
+                        if let (Ok(a), Ok(b)) = (bounds(&g), bounds(&builtin)) {
+                            let d = (a.0 - b.0)
+                                .abs()
+                                .max((a.1 - b.1).abs())
+                                .max((a.2 - b.2).abs())
+                                .max((a.3 - b.3).abs());
+                            if d > 0.01 {
+                                notes.push(format!("{id} 差{d:.2}"));
+                            }
+                        }
+                        Ok(g)
+                    }
+                    Err(e) => {
+                        notes.push(format!("{id} 退回内置({e})"));
+                        Ok(builtin)
+                    }
+                }
+            };
+        let s = Self {
+            head: pick("head", build_head)?,
+            ear: pick("ear", build_ear)?,
+            body: pick("body", build_body)?,
+            muzzle: pick("muzzle", build_muzzle)?,
+            mouth: pick("mouth", build_mouth)?,
+            bridge: pick("bridge", build_bridge)?,
+        };
+        crate::dbg(format!(
+            "art: svg 用了 {}/{} 个零件 [{}]{}, 与内置路径的包围盒差: {}",
+            used,
+            svg.len(),
+            svg.ids().join(" "),
+            if notes.is_empty() { "" } else { " (有偏差)" },
+            if notes.is_empty() {
+                "0(逐件一致)".to_string()
+            } else {
+                notes.join(", ")
+            }
+        ));
+        Ok(s)
+    }
+}
+
+/// 路径包围盒 (left, top, right, bottom) —— 只给上面那行自检日志用
+fn bounds(g: &ID2D1PathGeometry) -> Result<(f32, f32, f32, f32)> {
+    unsafe {
+        let r = g.GetBounds(None)?;
+        Ok((r.left, r.top, r.right, r.bottom))
     }
 }
 
@@ -460,6 +630,32 @@ impl<'a> Ctx<'a> {
     pub(crate) unsafe fn line_w(&self, a: Pt, c: Pt, w: f32, brush: &ID2D1SolidColorBrush) {
         let _ = self.rt.DrawLine(pt(a), pt(c), brush, w, None);
     }
+    /// 把"单位体积球"刷摆到局部坐标 `center` 并按 `rx/ry` 缩放, 在 `f` 里用它填形状。
+    /// 刷的变换与渲染目标变换**各自独立**(刷的坐标空间就是画几何时用的那个空间),
+    /// 所以 `ball_at` 的 center/rx/ry 一律用**画该形状时的局部坐标**, 不用管外层怎么平移。
+    /// 画完还原刷的变换 —— 否则下一次用同一个球刷会继承上次的位置。
+    pub(crate) unsafe fn ball_at<F: FnOnce(&Self)>(
+        &self,
+        b: &ID2D1RadialGradientBrush,
+        center: Pt,
+        rx: f32,
+        ry: f32,
+        f: F,
+    ) {
+        let mut prev = Matrix3x2::default();
+        b.GetTransform(&mut prev);
+        // 单位球 → 目标: 先按 (rx,ry) 缩放, 再平移到 center(M31/M32 就是平移项)
+        let _ = b.SetTransform(&Matrix3x2 {
+            M11: rx,
+            M12: 0.0,
+            M21: 0.0,
+            M22: ry,
+            M31: center.0,
+            M32: center.1,
+        });
+        f(self);
+        let _ = b.SetTransform(&prev);
+    }
 }
 
 /// 给外面用的圆角矩形构造(面板模块用)
@@ -474,6 +670,9 @@ unsafe fn leg(c: &Ctx, s: Pt, f: Pt, bend: f32, w: f32, far: bool) {
     let upper: &ID2D1Brush = if far { &c.b.fur_shade } else { &c.b.fur_grad };
     let lower = if far { &c.b.urajiro_dim } else { &c.b.urajiro };
 
+    // 大腿根一坨: 腿是**从身体里长出来**的, 不是接在身上的一根管子
+    c.oval((s.0, s.1 + 1.5), w * 0.88, w * 1.10, upper);
+
     // 参考图的腿更短、更粗，避免线条腿；脚掌做成圆润的小白爪。
     // 描边收细(参考图是细而均匀的线): 原来 +4.0/+3.2 像记号笔
     c.limb(s, k, w + 2.4, &c.b.outline);
@@ -481,8 +680,8 @@ unsafe fn leg(c: &Ctx, s: Pt, f: Pt, bend: f32, w: f32, far: bool) {
     c.limb(s, k, w, upper);
     c.limb(k, f, w * 0.90, lower);
 
-    c.oval((f.0 + 1.0, f.1), w * 0.95, w * 0.66, &c.b.outline);
-    c.oval((f.0 + 1.0, f.1), w * 0.78, w * 0.52, lower);
+    c.oval((f.0 + 1.0, f.1), w * 0.80, w * 0.56, &c.b.outline);
+    c.oval((f.0 + 1.0, f.1), w * 0.64, w * 0.43, lower);
 }
 
 /// 尾巴: **柴犬的卷尾**(背在背上那一卷) —— 沿一圈螺旋生成脊柱, 再算左右轮廓闭合填充。
@@ -492,7 +691,7 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
     const N: usize = 10;
     // 卷心抬到背上方; **圈半径必须明显大于尾巴的粗细**, 否则圈被填死、看起来只是"背上一坨"
     // (真踩过: r=15.5 配半宽 11.4 => 内孔半径只剩 4, 整条尾巴糊成一个横香肠)
-    let cx = -24.0 + wag * 1.1;
+    let cx = -21.0 + wag * 1.1;
     let cy = base_y - 29.0 - alert * 2.5 * up + wag * 1.0;
     let mut spine = [(0.0f32, 0.0f32); N + 1];
     for (i, p) in spine.iter_mut().enumerate() {
@@ -547,20 +746,24 @@ unsafe fn tail(c: &Ctx, base_y: f32, wag: f32, alert: f32, up: f32) {
 /// 耳: 三角立耳。`tilt` 是相对头顶的外倾角, `alert` 时立得更直。
 /// 老写法是两个圆椭圆耷在头顶, 读起来像发髻 —— 用户原话"耳朵位置有点诡异"。
 unsafe fn ear(c: &Ctx, base: Pt, tilt: f32, swing: f32, alert: f32, far: bool) {
-    // 整体缩小到 0.82: 柴犬的耳朵相对头是小的; 原来的三角比半个头还高, 看着像纸片贴上去
-    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 1.28;
-    let sx = (if far { 0.95 } else { 1.0 }) * 1.30;
+    // **耳朵的总高度必须是头的 1/3 上下**: 这里的几何高 25, 配 0.80 缩放 ≈ 20 —— 柴犬的立耳
+    // 就这个比例。之前给 1.28/1.34 倍, 耳朵比半个头还高, 而且耳根压在眼睛上(远侧那只眼
+    // 被耳朵盖掉上半, 读起来是"怒眉"—— 真踩过)。
+    let sy = (if far { 0.92 } else { 1.0 }) * (1.0 - alert * 0.12) * 0.80;
+    let sx = (if far { 0.95 } else { 1.0 }) * 0.80;
     let ang = tilt + swing - alert * tilt * 0.45;
+    // 耳的填充**不用体积球**: 球刷的坐标在"画几何的那个空间"里, 而耳是在头的 `at_scaled`
+    // 里画的(还乘了头的缩放), 会算错位置 —— 小零件上不值当, 线性渐变够了。
     let fill: &ID2D1Brush = if far { &c.b.fur_shade } else { &c.b.fur_grad };
     c.place(&c.shapes.ear, base, ang, sx, sy, Some(fill), 1.7);
     if !far {
-        // 内耳: 同一形状缩小, 只填色不描边
+        // 内耳: 同一形状缩小(只填色不描边)。**别做得太满** —— 顶到耳廓边缘就成了"粉三角"。
         c.place(
             &c.shapes.ear,
-            (base.0 + 0.5, base.1 + 2.0),
+            (base.0 + 0.3, base.1 + 3.0),
             ang,
-            0.52,
-            sy * 0.60,
+            0.44,
+            sy * 0.52,
             Some(&c.b.ear_in),
             0.0,
         );
@@ -632,7 +835,7 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     let up = p.up;
     let sit = p.sit.clamp(0.0, 1.0);
     let bow = p.bow.clamp(0.0, 1.0);
-    let body_y = -56.0 * up - 15.0 * (1.0 - up) + p.bob + sit * 3.0 - bow * 6.0;
+    let body_y = -50.0 * up - 13.0 * (1.0 - up) + p.bob + sit * 3.0 - bow * 6.0;
     // 坐姿: 后躯往下坐、前身抬起(负角 = 逆时针 = 前侧抬高) —— 柴犬坐着就是这个斜度
     // 前趴(bow): 正相反, 前身压低、屁股翘起
     let body_rot = p.lean * 0.55 + (1.0 - up) * 0.16 - sit * 0.34 + bow * 0.38;
@@ -647,9 +850,9 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     let shadow_sample = (14.0, sy);
 
     // ---- 远侧两条腿(先画, 显深, 制造前后层次)
-    let (ff, fr) = feet(p, 0.5, 28.0, -34.0, 0.0);
-    leg(c, (24.0, body_y + 16.0), (ff.0, ff.1), -1.0, 8.0, true);
-    leg(c, (-32.0, body_y + 18.0), (fr.0, fr.1), 1.0, 8.8, true);
+    let (ff, fr) = feet(p, 0.5, 25.0, -30.5, 0.0);
+    leg(c, (21.5, body_y + 16.0), (ff.0, ff.1), -1.0, 8.0, true);
+    leg(c, (-28.5, body_y + 18.0), (fr.0, fr.1), 1.0, 8.8, true);
 
     // ---- 尾巴: 卷在背上
     tail(c, body_y, (p.tail * std::f32::consts::TAU).sin(), p.alert, up);
@@ -658,48 +861,59 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     // 比例对齐参考图那张表: 身体放大到 1.06(之前 0.90 配上 1.58 的大头 = "大头娃娃")
     c.rot_at(body_rot, (0.0, body_y), |c| {
         let dy = body_y + 58.0;
-        c.place(
-            &c.shapes.body,
-            (0.0, dy),
-            0.0,
-            1.06,
-            1.06 * (0.82 + 0.18 * up),
-            Some(&c.b.fur),
-            2.3,
+        // 身体: 轮廓路径 + **体积球**填充(球心在胸腹之间偏左上) —— 桶形身材的立体感
+        c.ball_at(
+            &c.b.ball,
+            (-3.5, body_y + 3.0),
+            44.0,
+            29.0 * (0.85 + 0.15 * up),
+            |c| {
+                c.place(
+                    &c.shapes.body,
+                    (0.0, dy),
+                    0.0,
+                    1.00,
+                    0.82 + 0.18 * up,
+                    Some(&c.b.ball),
+                    2.3,
+                );
+            },
         );
         // 暗面: 参考图是**水彩柔过渡**而不是硬平涂 —— 用两层半透明叠出柔和的边
         if let Ok(soft) = c.rt.CreateSolidColorBrush(
             &D2D1_COLOR_F {
-                r: CEL.r,
-                g: CEL.g,
-                b: CEL.b,
-                a: 0.28,
+                r: FUR_DEEP.r,
+                g: FUR_DEEP.g,
+                b: FUR_DEEP.b,
+                a: 0.30,
             },
             None,
         ) {
-            c.oval((-4.0, body_y + 12.0), 33.0, 11.0, &soft);
+            c.oval((-3.5, body_y + 14.0), 30.0, 11.0, &soft);
         }
-        c.oval((-5.0, body_y + 13.0), 27.0, 6.0, &c.b.cel);
-        // 背脊高光
-        c.oval((-7.0, body_y - 20.0), 22.0, 3.0, &c.b.fur_shade);
+        c.oval((-4.5, body_y + 15.0), 24.0, 5.6, &c.b.cel);
+        // 背脊高光(一圈亮的边缘光, 让背线"鼓"起来)
+        c.oval((-8.0, body_y - 21.0), 20.0, 3.2, &c.b.fur_light);
         // 里白: 胸口一坨 + 腹线一条
-        c.oval((22.0, body_y + 18.0), 12.5, 14.0, &c.b.urajiro);
-        c.oval((2.0, body_y + 23.0), 20.0, 5.5, &c.b.urajiro_grad);
+        c.ball_at(&c.b.ball_white, (21.0, body_y + 20.0), 15.0, 16.0, |c| {
+            c.oval((19.0, body_y + 18.0), 12.0, 14.0, &c.b.ball_white);
+        });
+        c.oval((1.0, body_y + 23.0), 18.0, 5.5, &c.b.urajiro_grad);
     });
 
     // ---- 挎包(骑在身体上)。**只有场景 2 背**: 它会把身体整个盖住(见 Pose.bag 的注释)
     if p.bag > 0.01 {
         c.rot_at(body_rot, (0.0, body_y), |c| {
-            satchel(c, -7.0, body_y + 6.0, p.bob, 3);
+            satchel(c, -6.0, body_y + 6.0, p.bob, 3);
         });
     }
 
     // ---- 近侧两条腿: 柴犬是壮实的小型犬, 腿要**短而粗**(细杆腿是"不像"的主因之一)
-    let (nf, nr) = feet(p, 0.0, 36.0, -26.0 + sit * 16.0, p.arm);
-    leg(c, (32.0, body_y + 18.0), (nf.0, nf.1), -1.0, 12.6, false);
+    let (nf, nr) = feet(p, 0.0, 32.5, -23.0 + sit * 16.0, p.arm);
+    leg(c, (28.0, body_y + 18.0), (nf.0, nf.1), -1.0, 12.6, false);
     leg(
         c,
-        (-22.0, body_y + 20.0),
+        (-19.5, body_y + 20.0),
         (nr.0, nr.1),
         if sit > 0.4 { -0.5 } else { 1.0 },
         13.4,
@@ -707,100 +921,122 @@ pub unsafe fn draw_dog(c: &Ctx, p: &Pose) -> Probe {
     );
 
     // ---- 脖子: 粗(柴犬有厚颈毛), 把身体和头连起来(不描边, 否则肩上会多一道深色圆弧)
-    let neck = (30.0, body_y - 15.0);
+    // **别再往这里挂项圈**: 侧视里一条横杠无论怎么摆都读成"肩上贴了块皮子"(用户看到的就是这个),
+    // 而参考图的柴犬本来就不戴项圈 —— 只有场景 2 的挎包。
+    let neck = (27.0, body_y - 15.0);
     c.rot_at(0.42, neck, |c| {
-        c.oval(neck, 17.0, 16.0, &c.b.fur);
-        // 项圈(深棕) + **银色圆环吊坠**(用户要的那个环)
-        let _ = c.rt.FillRoundedRectangle(
-            &rr(neck.0 - 14.0, neck.1 + 1.0, 28.0, 5.2, 2.6, 2.6),
-            &c.b.outline,
-        );
-        let _ = c.rt.FillRoundedRectangle(
-            &rr(neck.0 - 13.0, neck.1 + 2.0, 26.0, 3.2, 1.6, 1.6),
-            &c.b.bag_dark,
-        );
-        c.oval((neck.0 - 3.0, neck.1 + 10.0), 3.6, 3.6, &c.b.outline);
-        c.oval((neck.0 - 3.0, neck.1 + 10.0), 2.6, 2.6, &c.b.metal);
-        c.oval((neck.0 - 3.0, neck.1 + 10.0), 1.3, 1.3, &c.b.outline);
+        c.oval(neck, 15.5, 14.5, &c.b.fur);
     });
 
-    // ---- 头：V4 Q版“包子脸”
-    // p.look 不再只是让眼睛平移，而是模拟轻微转头：
-    //   look≈0  -> 三分之四/正面感最强
-    //   |look|大 -> 更明显的侧向关注
-    // 这样不需要改 Pose/状态机，现有动画全部兼容。
+    // ---- 头: **圆颅骨 + 独立伸出的吻部**(结构对齐参考图; 五官画在颅骨中部, 不再挤在右下)
     let look = p.look.clamp(-1.0, 1.0);
     let yaw = look * 0.10;
-    let hx = 38.5 + look * 3.8 + (1.0 - up) * -11.0;
-    let hy = body_y - 31.5 - up * 3.0 + (1.0 - up) * 9.0 + p.head_drop * 26.0;
-    let head_sx = 1.22 * (1.0 - look.abs() * 0.035);
-    let head_sy = 1.22;
+    let hx = 36.0 + look * 3.8 + (1.0 - up) * -11.0;
+    let hy = body_y - 29.0 - up * 3.0 + (1.0 - up) * 9.0 + p.head_drop * 26.0;
+    // **头整体缩放**: 五官/耳朵/吻部一律画在"艺术坐标"里, 由 `at_scaled` 统一缩放 ——
+    // 只把颅骨 `place(..., head_sx, ...)` 放大是错的: 头涨大而五官不动, 出来是个"大空脑袋"
+    // (真踩过)。凡是这一层里 `ball_at` 的坐标/半径都是**画几何用的那个空间**, 要乘 hs。
+    let hs = 1.34 * (1.0 - look.abs() * 0.035);
+    c.at_scaled((hx, hy), body_rot * 0.65 + yaw + p.head_tilt, hs, |c| {
+        // 远耳(立在颅顶后侧)
+        ear(
+            c,
+            (-9.0 + look * 1.2, -21.0),
+            -0.26 - look * 0.04,
+            p.ear * 0.30,
+            p.alert,
+            true,
+        );
 
-    c.at_scaled((hx, hy), body_rot * 0.65 + yaw + p.head_tilt, 1.0, |c| {
-        // 远耳：向头顶中心收，避免“耳朵长在脸两边”。
-        ear(c, (-9.0 + look * 1.2, -18.5), -0.10 - look * 0.04, p.ear * 0.30, p.alert, true);
+        // 颅骨: 用**体积球**填 —— 球心在头中偏左上(受光), 右下自然压暗。
+        c.ball_at(&c.b.ball, (4.5 * hs, -6.5 * hs), 32.0 * hs, 27.5 * hs, |c| {
+            c.place(
+                &c.shapes.head,
+                (0.0, 0.0),
+                0.0,
+                1.0,
+                1.0,
+                Some(&c.b.ball),
+                2.0,
+            );
+        });
+        // 里白: 下半张脸(颊/下颚)。**这里不能用体积球**: 球刷最外圈是暗色, 画在另一块白上
+        // 就留下一道弧形的"接缝"(看着像脸上贴了张白方框)。用**共用同一条线性渐变**,
+        // 同一个局部点的颜色完全一致, 两块白之间自然无缝。
+        c.oval((10.0, 7.5), 15.5, 10.5, &c.b.urajiro_grad);
+        // 额前一道奶油色(参考图两眼里那道浅色, 让大额头不空)
+        c.oval((-3.0, -7.5), 7.0, 10.0, &c.b.urajiro_grad);
 
-        // 头本体。x/y 分开缩放，保持大头但不把脸拉成长椭圆。
-        c.place(&c.shapes.head, (0.0, 0.0), 0.0, head_sx, head_sy, Some(&c.b.fur_grad), 1.9);
-
-        // V4：里白改成更“蝴蝶结/心形”的包子脸结构。
-        // 中央白面负责正脸识别，两侧脸颊负责 Q 版圆润感。
-        c.oval((13.0 + look * 1.5, 5.0), 15.0, 10.5, &c.b.urajiro);
-        c.oval((3.0 + look * 0.5, -4.0), 8.0, 11.5, &c.b.urajiro);
-        c.oval((-7.5, 1.0), 7.8, 7.2, &c.b.urajiro);
-        c.oval((8.5, 1.0), 8.3, 7.5, &c.b.urajiro);
-
-        // 柴犬眉斑：稍微靠内，正面看更对称。
-        c.oval((-6.0 + look * 0.4, -13.0), 3.7, 2.8, &c.b.urajiro);
-        c.oval((6.5 + look * 0.6, -13.2), 3.7, 2.8, &c.b.urajiro);
-
-        // 眼睛：V4 采用“近眼略大、远眼略小”的三分之四错觉。
-        let k = (1.0 - p.blink).max(0.07);
-        let eh = 5.9 * k;
-        let near_scale = 1.0 + look.abs() * 0.08;
-        let far_scale = 1.0 - look.abs() * 0.10;
-        let eyes = [
-            ((-4.8 + look * 1.15, -9.0), -0.08f32, far_scale),
-            ((8.4 + look * 1.25, -10.0), -0.08f32, near_scale),
-        ];
-        for (e, tilt, es) in eyes {
-            c.rot_at(tilt, e, |c| {
-                c.oval(e, 4.7 * es, eh + 0.55, &c.b.outline);
-                c.oval(e, 3.85 * es, eh * 0.9, &c.b.eye);
-            });
-            c.disc((e.0 - 0.9, e.1 - 1.6 * k), 1.9 * k * es, &c.b.eye_hi);
-            c.disc((e.0 + 1.25, e.1 + 1.15 * k), 0.95 * k * es, &c.b.eye_hi);
-        }
-
-        // 鼻子往脸中心收，形成“柴犬正脸”的圆鼻，而不是狐狸尖鼻。
-        // ②吻部/鼻子比 V4 再放大一点(表里的鼻子很显眼), 嘴也多给一点
-        let nose_x = 24.0 + look * 3.2;
-        let nose_y = 1.0 + look.abs() * 0.5;
-        c.oval((nose_x, nose_y), 5.4, 4.4, &c.b.outline);
-        c.oval((nose_x, nose_y), 4.2, 3.3, &c.b.nose);
-        c.disc((nose_x - 1.1, nose_y - 1.0), 0.85, &c.b.eye_hi);
-
-        // 嘴：短短的倒Y型，配一点小舌头，避免 V3 的“长嘴线”。
-        // 打哈欠(yawn)时把嘴和舌头摊大、舌头伸下来
+        // 吻部 + 鼻 + 嘴
+        // **不描轮廓**(见 `build_bridge`), 只填里白; 与脸颊共用同一条渐变 => 无缝
+        c.place(
+            &c.shapes.muzzle,
+            (0.0, 0.0),
+            0.0,
+            1.0,
+            1.0,
+            Some(&c.b.urajiro_grad),
+            0.0,
+        );
+        // 鼻梁线(停部 → 鼻根)
+        let _ = c
+            .rt
+            .DrawGeometry(&c.shapes.bridge, &c.b.outline, 1.9, None);
+        // 嘴: 张开的笑口(月牙) + 舌头。**先嘴后鼻** —— 鼻子压在嘴上沿, 嘴才不会盖住鼻头。
         let yz = p.yawn.clamp(0.0, 1.0);
-        c.line_w((nose_x, nose_y + 2.4), (nose_x - 1.5, nose_y + 5.8), 1.8, &c.b.mouth);
-        c.line_w((nose_x - 1.5, nose_y + 5.8), (nose_x - 5.0, nose_y + 5.2), 1.7, &c.b.mouth);
-        c.line_w((nose_x - 1.5, nose_y + 5.8), (nose_x + 2.0, nose_y + 5.1), 1.7, &c.b.mouth);
-        c.oval(
-            (nose_x - 0.5, nose_y + 7.2 + yz * 1.4),
-            2.6 + yz * 2.4,
-            2.0 + yz * 2.6,
-            &c.b.outline,
+        c.place(
+            &c.shapes.mouth,
+            (0.0, 0.0),
+            0.0,
+            1.0 + yz * 0.08,
+            1.0 + yz * 0.55,
+            Some(&c.b.mouth),
+            1.6,
         );
         c.oval(
-            (nose_x - 0.5, nose_y + 7.8 + yz * 2.6),
-            2.0 + yz * 1.8,
-            1.5 + yz * 3.0,
+            (21.0, 7.0 + yz * 2.0),
+            2.7 + yz * 1.5,
+            1.3 + yz * 2.1,
             &c.b.tongue,
         );
+        // 鼻(圆头黑鼻 + 高光): 尺寸/位置要**收在吻部轮廓里**, 否则黑鼻头会戳出吻部边缘
+        c.oval((28.5, 0.5), 4.5, 3.7, &c.b.outline);
+        c.oval((28.5, 0.5), 3.5, 2.8, &c.b.nose);
+        c.disc((27.3, -0.7), 0.9, &c.b.eye_hi);
 
-        // 近侧耳：更靠中、更短、更厚，贴着圆头生长。
-        ear(c, (0.5 + look * 0.9, -22.0), 0.19 + look * 0.05, -p.ear * 0.34, p.alert, false);
+        // 眼: 近大远小(三分之四), **都落在颅骨中部、吻根上方** —— 之前两只眼一高一低挤在
+        // 吻部上沿, 远侧那只被读成"单片眼镜"。眼白高光两粒是一大一小。
+        let k = (1.0 - p.blink).max(0.07);
+        for (e, r, tilt) in [
+            ((-4.5 + look * 2.0, -12.5), 4.2f32, -0.12f32),
+            ((7.0 + look * 2.0, -11.5), 4.8f32, -0.16f32),
+        ] {
+            let eh = r * k;
+            c.rot_at(tilt, e, |c| {
+                c.oval(e, r + 0.7, eh + 0.55, &c.b.outline);
+                c.oval(e, r, eh, &c.b.eye);
+            });
+            c.disc(
+                (e.0 - r * 0.30, e.1 - r * 0.32 * k),
+                r * 0.44 * k,
+                &c.b.eye_hi,
+            );
+            c.disc(
+                (e.0 + r * 0.34, e.1 + r * 0.30 * k),
+                r * 0.21 * k,
+                &c.b.eye_hi,
+            );
+        }
+
+        // 近耳(立在颅顶前侧)
+        ear(
+            c,
+            (5.0 + look * 0.9, -21.5),
+            0.22 + look * 0.05,
+            -p.ear * 0.34,
+            p.alert,
+            false,
+        );
     });
 
     let _ = c.rt.SetTransform(&Matrix3x2::identity());

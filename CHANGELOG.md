@@ -1,5 +1,47 @@
 ---
 
+## 2026-09-25 (第九十轮补三: wgpet 零件形状改用 SVG 当"绘制源" —— 不引渲染器, 零新依赖)
+
+**来由**: 用户问"关于 wgpet, 是否使用 SVG 来做会更简单更好呢?"。先查环境再答: 本机 crate 缓存里
+**没有** `resvg`/`usvg`/`tiny-skia`(构建走 `--offline`, 加依赖得先联网), 而 **Inkscape 装了**
+(`C:\Program Files\Inkscape\bin\inkscape.com`) —— 于是分两件事回答:
+
+- **SVG 当运行时渲染器(resvg 进 DLL)= 不划算**: ①`resvg` 会把 CPU 光栅器 + 字体栈(fontdb/rustybuzz)
+  整棵树搬进来(现在 `Cargo.lock` 才 20 个包、DLL 1.7 MB), 而我们面板的中文走 DirectWrite, 等于两套字体;
+  ②渲染模型不匹配 —— 它光栅到 RGBA 位图, 我们的管线是 D2D → 32bpp DIB → `UpdateLayeredWindow` 逐像素 alpha,
+  每帧重新光栅(120fps)太贵、预渲染又等于退回**精灵图集**, 而腿是 2 骨 IK、尾巴/耳朵/眨眼/张口全是
+  **参数化连续形变**(当初特意不要图集就是这个); ③狗只是画面一部分(篮筐/球/抛物线/工具面板/中文/命中测试
+  都在同一个 DIB 上), 混两个渲染器还要处理它们之间的 alpha 合成; ④SVG 本身没有骨骼, 想动还得自己写场景图驱动。
+- **SVG 当绘制源 = 划算**: D2D 的几何接口跟 SVG 几乎一一对应(`M/L/H/V→AddLine`、`C/S→AddBezier`、
+  `A→AddArc`、`Z→EndFigure(CLOSED)`、`fill-rule→FILL_MODE`、渐变→对应笔刷), 所以"把 d 串变成
+  `ID2D1PathGeometry`"这一件事完全可以自己做, 不必请一个渲染器进来。
+
+**改法**(`wgpet-rs`):
+1. `src/svgpath.rs`(522 行, 纯手写、**零新依赖**): 极简 XML 取值(只认 `id` / `d` / `fill` / `style` /
+   `fill-rule`, 先剥注释) + `d` 串词法(相对/绝对命令、`.5`/`1.`/`1.5.5`/指数都认) + 建几何。
+   `Q/T` 自己转三次贝塞尔、`A` 走端点参数化 → 每段 ≤90° 的三次贝塞尔 —— **不碰 D2D 1.1 的
+   `AddQuadraticBezier`**(DC 渲染目标是 1.0 接口); `fill="none"` → HOLLOW + OPEN(否则 D2D 把开口当闭合填充)。
+2. `art/dog.svg`: 6 个零件的**真身**(head / ear / body / muzzle / mouth / bridge), 从原来的
+   `build_*` **逐字符转录**; 文件头写清坐标约定(y 向下、每件在自己的局部坐标系里)与"颜色只作预览提示"。
+3. `src/art.rs`: `const ART_SVG: &str = include_str!("../art/dog.svg")`(编译期嵌进 DLL, 单文件交付不变);
+   `Shapes::new` **优先用 SVG**, 逐件失败才退回 `build_*`(所以那六个函数**不许删** —— 它们是兜底);
+   每次启动比一遍"SVG 几何 vs 内置几何"的包围盒, 把结果写进初始化日志。
+
+**验证**(客观判据, 不靠肉眼):
+- `verify-overlay.py` **21/21**, 且初始化日志出现 `art: svg 用了 6/6 个零件 [body bridge ear head mouth muzzle],
+  与内置路径的包围盒差: 0(逐件一致)` —— 逐字符转录正确的硬证据; `wg-court.py` 7/7、`wg-rustpanel` 16/16、
+  `pet-dll-plugin-test.py` 22/22。
+- **扰动静默测试**(证明确实吃的是 SVG, 不是悄悄退回内置): 把头的两个控制点抬高 8 单位 → 重编译 →
+  渲染出来的头顶**明显变高**, 日志同步变成 `head 差5.99`。改回 → 日志回 `0(逐件一致)`。
+- DLL 1,728,177 → **1,786,221 B**(+58 KB), `Cargo.lock` 依赖数**不变**(20)。
+
+**已知限制**(都写在 `dog.svg` 文件头): ①零件各自在自己的局部坐标系里 —— 在 Inkscape 里它们会**叠在原点**,
+摆放是 pose 的事(要"装配预览图"得另生成一张纸样, 还没做); ②颜色/描边宽度仍由 `art.rs` 决定(SVG 里的
+只作提示); ③`A` 弧线转三次(切 ≤90°), 与原生圆弧有极小差异, 我们的零件都是贝塞尔所以用不上。
+
+**文档**: AGENTS §5 新增规则 54(零件真身在 SVG; 别把 SVG 当渲染器; 支持的命令; 怎么看自检日志);
+AGENTS-DETAIL 新增 §D55(含 resvg 取舍的完整推理与实测数字)。
+
 ## 2026-09-24 (第九十轮补二: 桌宠老回归被 DLL 顶掉 —— 加 `WGIME_PET_PY` 强制钩子 + 补齐 package 连锁)
 
 **来由**: 用户说"追踪一下 github 的更新"。`git fetch` 拉到 **5 个本机没有的提交**(第八十八轮 AGENTS 瘦身 /
