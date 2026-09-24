@@ -1,5 +1,42 @@
 ---
 
+## 2026-09-24 (第九十轮补二: 桌宠老回归被 DLL 顶掉 —— 加 `WGIME_PET_PY` 强制钩子 + 补齐 package 连锁)
+
+**来由**: 用户说"追踪一下 github 的更新"。`git fetch` 拉到 **5 个本机没有的提交**(第八十八轮 AGENTS 瘦身 /
+第八十九轮 PyShot 接插件 + 单文件双模包装 / 第九十轮 `start` 动词 + 相对路径与 `%WGIME_DIR%`),
+已 `merge --ff-only` 到 `d4a4da2`(本地无冲突: 改动都在 `wgpet-rs\` 那一侧)。
+
+**顺带补齐的连锁动作**: `main.py`/`plugins.py`/`deps.py`/`dist` 都改了(§30/§31: "改这些后须重建 dist+package"),
+但 `package\` 还是 **9/23 8:11** 的旧构建、里面**没有 `PyShot.py`** ⇒ 真机跑的 `pythonw .\wgime-py.py`
+(pid 12148, 9/23 20:23 起) 既没有 PyShot 也没有 `start` 动词。已跑 `build-package.ps1`:
+dist 1,190.9 KB / package 59.8 MB / `package\plugins\PyShot.py` 到位 / 构建产生的 `dist` 时间戳噪声已 `git checkout` 退掉
+(**要重启 WgIme 才吃得上**)。
+
+**发现(真 bug, 第八十七轮埋的)**: 跑全量回归时 `tests\pet-overlay-test.py` 的真机段**直接崩**
+(`subprocess.TimeoutExpired`, L 段"浮层起来了(能读到状态)"FAIL、stdout 只有 `STANDALONE-OK`)。
+根因: 加了 `plugins\wgpet.dll` 之后 `_window_main()` **一律先走 DLL**, 而 **DLL 模式不写 live dump**
+(它只喂工具 + 看门, 见 `_window_main_dll`), 于是 L/L2/L3/L4 段(真起窗/穿透/残影/三场景)全读不到状态 ——
+**该测试自 DLL 落地起就再没真跑过**(无桌面时只跑 S 段, 谁也没发现)。
+
+**改法**:
+1. `plugins\wgpet.py::_load_pet_dll()` 增测试钩子 **`WGIME_PET_PY=1`**(置位即跳过 DLL、强制 Python 实现),
+   与 `WGIME_PET_FAKE_MOUSE`/`WGIME_PET_SHOT` 同一族。Python 实现不是死代码(DLL 缺失/ABI 不对时它就是兜底),
+   老浮层的窗口/穿透/线程回归必须留一条**强制入口**。
+2. `tests\pet-overlay-test.py` 的两处 spawn(`part_l` 里的 env 与 `_spawn()`)都带上 `WGIME_PET_PY=1`。
+
+**回归**: `pet-overlay-test.py` 从"崩在 L 段"变成 **72/74**(真机段全跑起来了);
+`pet-dll-plugin-test.py` **22/22**(强制钩子不碰 DLL 路)。
+剩 2 条**不是**本次改动引入的: `屏幕中部像素没被糊住` 与 `走过不留残影 0/3` 都是"读真实屏幕像素"的断言,
+实测同一坐标**连读三次得到三组完全不同的颜色**(桌面本身在变), 属**环境干扰假红**(§50 那条规矩的又一例), 已记 §D54。
+
+**顺带发现(未改, 属第八十九轮那份测试)**: `tests\pyshot-plugin-test.py` 在本机(未装 PySide6)
+**打了 41 条 OK 之后**在 `drive(probed,'real')` → `_app_main()` 里崩(`ModuleNotFoundError: No module named 'PySide6'`)——
+`--check-deps` 那一段有"没装就 SKIP"的兜底, 但**在进程内驱动 `_app_main()` 的 A/B 段没有**, 于是整份测试变成
+"traceback + rc=1"而不是"干净 SKIP"。要么给这段加 PySide6 可用性门, 要么本机装 PySide6(§12 说 Qt 不内嵌)。
+
+**文档**: AGENTS §4 的 `pet-overlay-test.py` 行注明"测的是 Python 那套浮层, 故自带 `WGIME_PET_PY=1`";
+§5 规则 52 加 ⑬; AGENTS-DETAIL 新增 §D54。
+
 ## 2026-09-24 (第九十轮补: 相对路径按 wgime 目录解析 + `%WGIME_DIR%` 两侧对齐)
 
 **来由**: 用户问"能用相对路径的吧?"。先测再答 —— 结论是"只在进程 cwd 恰好是 wgime 目录时才算对",

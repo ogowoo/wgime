@@ -2671,5 +2671,48 @@ bat 工作区又变混合行尾 ⇒ 再归一成 CRLF；`build-package.ps1`（di
 `pure-state-harness` 全绿 / `deps-test` 51/51 / `example-plugin-test` 24/24 / `standalone-plugin-test` 8/8 /
 `pet-dll-plugin-test` 22/22 / `pyshot-plugin-test` 70/70 / `update-test` 36/36 / `embedded-isolation-test` 14/14。
 
+## §D54 桌宠老回归被 DLL"顶掉"（第九十轮补二）
+第八十七轮把 `wgpet.dll` 放进 `wgime-py-pure\plugins\` 之后，`tests\pet-overlay-test.py` 的**真机段就再没跑过**。
+症状（第九十轮补二抓到的现场）：
+
+```
+--- L. 真起浮层(客观判据) ---
+  浮层起来了(能读到状态)      FAIL live dump 没出现
+    stdout=b'STANDALONE-OK\r\n' stderr=b''
+--- L2. 场景 1: 篮球 ---
+subprocess.TimeoutExpired: ... wgpet.py  timed out after 5 seconds
+```
+
+根因链（三环，缺一不可）：
+1. `_window_main()` 是 **DLL 优先**：`lib = _load_pet_dll(); if lib is not None: return _window_main_dll(...)`。
+2. `_window_main_dll()` **不写 live dump** —— 它只 `_feed_tools()` + 注册 `_TOOLCALLBACK` + 看门
+   （窗口没了就退），`WGIME_PET_DUMP_LIVE` 是 **Python `PetWindow` 的**东西（`dump()` 里那些
+   `hoop_x`/`ball`/`dog_x`/`edge`/`hide` 字段只有它有）。
+3. 于是 `part_l()` / `part_scene1()` / `part_scene3()` / `part_smear()` 全在 `wait_dump()` 上等 15s 空转；
+   L2/L3 那句"等不到就 `proc.communicate(timeout=5)` 收尸"更是直接**抛异常崩掉整份测试**
+   （`WGIME_PET_SELFTEST_MS=25000`，进程 25s 内根本不会退）。
+   为什么以前没人发现：**无桌面时只跑 S 段**（`part_l` 等开头 `tk.Tk()` 失败即 SKIP），
+   而 S 段（结构/契约/宿主 API）在 DLL 模式下照样绿 —— 假绿。
+
+**改法**：`_load_pet_dll()` 开头加测试钩子 `WGIME_PET_PY`（`''`/`'0'` 之外的真值即跳过 DLL），
+`pet-overlay-test.py` 的两处 env（`part_l` 的内联 dict 与 `_spawn()`）都带 `'WGIME_PET_PY': '1'`。
+`pet-dll-plugin-test.py` **不设**它，继续测 DLL 路（22/22 未受影响）。
+
+**结果**：`pet-overlay-test.py` 72/74。剩两条是**读真实屏幕像素**的断言，不是本次改动引入的：
+- `屏幕中部像素没被糊住(键色真透明)`：`aeb6b1 -> aeb7ad`（差 1~6 个色阶）。
+- `走过不留残影(走过的点上像素回到基线 0/3)`：`(1728,2010) 11212f->100c03 (1344,2010) 12191a->110b02 (1075,2010) 151b1d->110b02`。
+
+判为**环境干扰**的依据：跑完立刻用 `GetPixel` 复读同一批坐标，得到 (176,162,141)/(155,143,128)/(38,66,84)，
+与"基线"和"实测"**三组各不相同** ⇒ 屏幕那块内容本身在变（屏幕前的人/别的窗口在动）。
+这正是 §50 那条规矩的又一例：**读屏幕像素的断言要么先冻住并自证环境干净，要么写成"本窗不是前台"这类与现场无关的判据**。
+
+**顺带（属第八十九轮那份测试，未改）**：`tests\pyshot-plugin-test.py` 在**没装 PySide6**的机器上
+打完 41 条 OK 后在 `drive(probed,'real')` → `_app_main()` 里 `ModuleNotFoundError: No module named 'PySide6'`
+**带 traceback 崩掉（rc=1）**，而不是干净 SKIP —— `--check-deps` 那一段有兜底（`STANDALONE-SKIP-DEPS`），
+但**在进程内驱动 `_app_main()` 的 A/B 段没有门**。要么给这段加 PySide6 可用性门，要么本机装 PySide6。
+本机现状：`python -c "import PySide6"` 失败，三个私有依赖目录（`%LOCALAPPDATA%\wgime-py\site\pip` 等）**都不存在**
+⇒ 用户机器上 PyShot 目前**起不来**（插件会按 §53 ④ 弹"缺依赖"气泡）。
+
+
 
 

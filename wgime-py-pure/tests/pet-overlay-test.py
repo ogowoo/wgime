@@ -277,7 +277,11 @@ def part_l(md):
     env = dict(os.environ)
     env.update({'WGIME_PET_SELFTEST_MS': '9000', 'WGIME_PET_DUMP_LIVE': live,
                 'WGIME_PET_DUMP': final, 'WGIME_PET_NO_LAUNCH': '1',
-                'LOCALAPPDATA': tmp, 'PYTHONIOENCODING': 'utf-8'})
+                'LOCALAPPDATA': tmp, 'PYTHONIOENCODING': 'utf-8',
+                # 本文件测的是**Python 那套浮层**(live dump 只有它有): 插件旁边放着
+                # wgpet.dll 时, 必须先钉住"走 Python 实现", 否则整段读到的是 DLL 模式,
+                # L 段直接假红、后面 communicate(timeout=5) 还会超时崩掉。
+                'WGIME_PET_PY': '1'})
     proc = subprocess.Popen([sys.executable, '-X', 'utf8', PET], env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     before_center = pixel(1920, 700)              # 屏幕中部(宠物只在下缘活动)
@@ -409,6 +413,7 @@ def _spawn(tmp, scene, live, final, extra=None, secs='9000'):
     env.update({'WGIME_PET_SELFTEST_MS': secs, 'WGIME_PET_DUMP_LIVE': live,
                 'WGIME_PET_DUMP': final, 'WGIME_PET_NO_LAUNCH': '1',
                 'WGIME_PET_SCENE': str(scene), 'LOCALAPPDATA': tmp,
+                'WGIME_PET_PY': '1',           # 见 part_l: 本文件测 Python 那套浮层
                 'PYTHONIOENCODING': 'utf-8'})
     env.update(extra or {})
     return subprocess.Popen([sys.executable, '-X', 'utf8', PET], env=env,

@@ -491,6 +491,14 @@ def _load_pet_dll():
     """
     if sys.platform != 'win32':
         return None
+    # 测试钩子: `WGIME_PET_PY=1` 强制走 Python 实现。
+    # 为什么必须有它: 有 wgpet.dll 躺在插件旁边时 `_window_main` 一律先走 DLL, 而 DLL 那套
+    # **不写 live dump**(它只喂工具 + 看门), 于是 `tests\pet-overlay-test.py` 的 L/L2/L3/L4
+    # 段(浮层真起窗/穿透/残影/三场景)全都读不到状态 —— 那是**假红**, 却也**测不到** Python 版。
+    # Python 版不是死代码: DLL 缺失/ABI 不对时它就是兜底, 所以老浮层的回归必须留一条强制入口。
+    if (os.environ.get('WGIME_PET_PY') or '') not in ('', '0'):
+        vlog('pet: WGIME_PET_PY 置位, 强制用 Python 实现')
+        return None
     p = _dll_path()
     if not p:
         vlog('pet: 没找到 %s, 用 Python 实现' % DLL_NAME)
