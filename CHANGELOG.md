@@ -1,5 +1,45 @@
 ---
 
+## 2026-09-24 (第九十轮补: 相对路径按 wgime 目录解析 + `%WGIME_DIR%` 两侧对齐)
+
+**来由**: 用户问"能用相对路径的吧?"。先测再答 —— 结论是"只在进程 cwd 恰好是 wgime 目录时才算对",
+而且**参数里的相对路径**失败了还是**静默**的: 真进程 A/B 实测, 相对**程序**名 `start "sub\cmd.exe"` 在
+cwd=`C:\Windows\System32`(计划任务/自启常见)下 r=1; 相对**参数** `start python.exe child.py` 在同样的 cwd 下
+**步骤 r=0 报成功、子进程的标记文件根本没出现**(参数由子进程按继承的 cwd 解析, `start` 是 fire-and-forget,
+无从知道)。两侧改前都只做"去引号 + 展开 `%VAR%`"(python `_tool_path` / C# `ToolPath`), 没有任何兜底。
+
+**发现**: `WGIME_DIR` **早就是既有约定** —— bat `set "WGIME_DIR=%~dp0"`、ps1 `$env:WGIME_DIR = $PSScriptRoot + '\'`,
+并作为参数传给 `WordBoard::RunApp(..., dir, ...)`(C# 存进 `BatDir`)。所以这轮不是发明新变量, 而是**把 python 侧对齐**。
+
+**改法(两侧同名同义)**:
+1. **导出**: python `main.py` 紧跟 `APP_DIR` 之后 `os.environ['WGIME_DIR'] = APP_DIR + os.sep`(带尾部分隔符,
+   与引导层一致 ⇒ `%WGIME_DIR%tools.txt` 这种不加分隔符的写法成立); C# `RunApp` 里
+   `Environment.SetEnvironmentVariable("WGIME_DIR", BatDir)`(保证从任何入口进来都有值)。
+2. **解析**: python `plugins.app_dir()`(先读 `WGIME_DIR`, 退回 `__file__` 所在目录 —— dist 里内嵌模块的 `__file__`
+   被设成 `<发行目录>\plugins.py`, 源码布局也正好是应用根) + `_resolve_path()`; C# 同名同义 `ResolveRel()`。
+   挂在 `_tool_path`/`ToolPath`(`open`/`file-del`/`mkdir`)与 `run`/`start` 的**程序名**上。
+3. **规则**(三处一致): 绝对路径 / `C:x` 盘符相对 / 空 → 不动; 相对路径 `<wgime 目录>\<p>` **存在** → 用它;
+   不存在但**带 `\`/`/` 且父目录存在**(通配符 `logs\*.log`、待建 `out\x`)→ 也用它; 其余原样(沿用旧的 cwd 行为)。
+   **纯名字且 wgime 目录里没有 ⇒ 一律不动** —— 否则会挡掉 `run notepad`/`start pythonw.exe`/`open https://…`
+   这些"交给 PATH / ShellExecute"的用法。`[shell]`/`[powershell]` 块由 cmd/PowerShell 自己解析, 不套这套(已写进文档)。
+
+**回归**: `tests\dsl-verbs-test.py` 29 → **43 项**(新增第 7 节): `app_dir()` 认带尾部分隔符的 `WGIME_DIR`、
+五条解析规则逐条断言(含"纯名字不动")、真进程"cwd 设在 System32 时相对程序名照样起得来"、`%WGIME_DIR%`
+在步骤文本里直接用、两处都没有的相对名照样记失败、C# 侧 `ResolveRel` 存在且 `ToolPath`/`run`/`start` 三处都套上、
+C# `RunApp` 导出 `WGIME_DIR`、`main.py` 也导出。
+
+**C# 连锁动作**: `rebuild-wgime-bat-payload.ps1`(瘦 DLL 560 KB) → `build-wgime-ps1.ps1`(WgIme.ps1 39,427,705 B,
+同步 release) → `Copy-Item wgime.bat release\wgime.bat` → `wgime-ps1.tests.ps1` **15/15**; bat 工作区混合行尾已归一成 CRLF;
+`build-package.ps1` 重建 dist(1,188.2 → 1,219,507 B)与 package, `dist-sync-check` `mismatches=0`。
+
+**文档**: `docs\WGIME_插件规范.md` §3 增"路径怎么解析"整节(含三条例外与 `[shell]` 块注意);
+`docs\WGIME_使用说明.md`(工具箱一节)/`docs\WGIME_技术文档.md` 同步; AGENTS §5 规则 32 加 ⑥; §4 测试表 43 项;
+AGENTS-DETAIL §D53 续(含"第一版探针是错的"留档: 只测相对**参数**会假绿)。
+
+**验证**: `dsl-verbs-test` 43/43 / `wgime-ps1.tests.ps1` 15/15 / `undefined-globals` RESULT: OK /
+`tests\pure-state-harness.py` 全绿 / `deps-test` 51/51 / `example-plugin-test` 24/24 / `standalone-plugin-test` 8/8 /
+`pet-dll-plugin-test` 22/22 / `pyshot-plugin-test` 70/70 / `update-test` 36/36 / `embedded-isolation-test` 14/14。
+
 ## 2026-09-24 (第九十轮: 步骤 DSL 新增 `start` 动词 —— 终于能"启动一个常驻程序"了)
 
 **来由**: 用户问"是不是用 dsl 的方式还简单呢？"(指 PyShot 能不能直接写成 `plugins\pyshot.txt`)。查完

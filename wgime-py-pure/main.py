@@ -107,6 +107,17 @@ DICT_DIR = _find_dict_dir()
 # 开发版 = DICT_DIR 本身(仓库根, 码表与 config/tools/plugins 平级)。
 APP_DIR = os.path.dirname(DICT_DIR) if os.path.basename(DICT_DIR).lower() == 'dicts' else DICT_DIR
 
+# 第九十轮补: 把应用根导成 `%WGIME_DIR%` —— 与 bat/ps1 引导层**同名同义**(`set "WGIME_DIR=%~dp0"` /
+# `$env:WGIME_DIR = $PSScriptRoot + '\'`), 于是 tools.txt/插件的步骤里可以写
+# `run %WGIME_DIR%tools.txt`、`start pythonw.exe -X utf8 "%WGIME_DIR%\plugins\PyShot.py"`;
+# 子进程(cmd/PowerShell/插件自己拉的进程)继承环境, 也都拿得到。
+# 带尾部分隔符(与引导层一致): cmd 里 `%WGIME_DIR%tools.txt` 这种"不加分隔符"的写法才成立;
+# 需要拼接的内部代码一律先 strip 再 join(见 plugins.py app_dir()/_resolve_path())。
+try:
+    os.environ['WGIME_DIR'] = APP_DIR + os.sep
+except Exception:
+    pass
+
 
 # ======================================================================
 # 宿主 API (第八十六轮): 给**别的进程 / 插件**一个正式入口, 而不是让它们自己瞎猜

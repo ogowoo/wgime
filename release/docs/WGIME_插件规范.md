@@ -58,6 +58,23 @@ desc = 一句话说明        ; 可选（目前仅作文档）
 
 参数支持 `"引号"` 和 `%环境变量%`。
 
+**路径怎么解析**（第九十轮补，python 与 C# 两侧一致）：
+
+- **绝对路径**（`C:\…`）原样用；**盘符相对**（`C:foo`）也只有 Windows 懂，不插手。
+- **相对路径**先按 **wgime 目录**（`%WGIME_DIR%`，= 发行文件/bat 所在目录）找：
+  - `<wgime 目录>\<路径>` **存在** → 用它；
+  - 不存在、但**父目录存在** → 也用它（通配符 `logs\*.log`、待建的 `out\x.txt` 都算）；
+  - 两处都不成立 → 原样交给系统（沿用旧的"按进程当前工作目录解析"）。
+- **纯名字**（没有 `\` `/`）且 wgime 目录里也没有 → **一律不动** —— 这是为了不挡 `run notepad`、
+  `start pythonw.exe`、`open https://…` 这类"交给 PATH / ShellExecute 解析"的用法。
+- 于是可以有把握地写：`start pythonw.exe -X utf8 "%WGIME_DIR%\plugins\PyShot.py"`、
+  `open plugins\readme.txt`、`file-del logs\*.log`、`mkdir out\dump`。
+- `%WGIME_DIR%` 与 bat/ps1 引导层**同一个变量**（含尾部分隔符），所以 `%WGIME_DIR%tools.txt`（不加分隔符）
+  也成立；它和子进程继承的环境是一致的。
+- **注意**：`[shell]`/`[powershell]` 块里是 cmd/PowerShell 自己解析路径，**不套**上面这套规则（要稳妥就在块里用
+  `%WGIME_DIR%`）。另外 `start` 是"拉起就不管"，**参数**里的相对路径由子进程按继承的 cwd 解析 —— 想让子进程
+  一定找得到，参数也写成绝对路径或 `%WGIME_DIR%…`。
+
 ## 4. C# 代码插件（[csharp] 块）
 
 插件不只限于步骤 DSL——`[csharp] ... [/csharp]` 块里可以直接写 **C# 源码**（含 WinForms 窗体），加载时 CodeDom 内存编译，选中即运行：

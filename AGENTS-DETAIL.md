@@ -2622,4 +2622,54 @@ wgime.bat 3.31 MB —— 脚本报的 "was 2.6 MB" 是它自己记的旧基线�
 `pet-dll-plugin-test` 22/22 / `pyshot-plugin-test` 70/70 / `update-test` 36/36（真 dist 自洽）/
 `embedded-isolation-test` 14/14。
 
+### §D53 续：相对路径与 `%WGIME_DIR%`（第九十轮补）
+
+**来由**：用户问"能用相对路径的吧？"—— **先测再答**，而且第一版探针是错的（见下），重测后结论：
+相对路径**只在进程 cwd 恰好是 wgime 目录时**才对，且**参数里的相对路径**失败了是**静默**的。
+
+**两侧现状（改前）**：python `_tool_path`（`plugins.py:398`）= 去引号 + `expandvars`；C# `ToolPath`
+（`wgime.bat:2184`）= 同样三件事 —— **都没有**"相对 wgime 目录"的兜底；宿主也**不 chdir**（全树只有
+`chat-interop-test.py` 自己 chdir）。实测 A/B（真进程）：
+- 相对**程序**名 `start "sub\cmd.exe" /c exit`：cwd=安装目录 → r=0；cwd=`C:\Windows\System32`（计划任务/自启常见）
+  → **r=1** `start 失败: sub\cmd.exe: [WinError 2] …`。
+- 相对**参数** `start python.exe child.py`（子进程写标记文件）：cwd=安装目录 → 标记出现；cwd=别处 →
+  **步骤 r=0 报成功、标记文件根本没出现** —— 参数是**子进程**按继承的 cwd 自己解析的，`start` 是 fire-and-forget，
+  无从知道成没成。这个静默坑比第一个更需要防。
+> **探针踩坑留档**：第一版探针只测了"相对**参数**"，看到 `r=0` 就以为相对路径没问题 —— 实际是
+> `python.exe` 在 PATH 里找到了、子进程失败与否 `Popen` 不关心。写这种 A/B 必须**用相对的程序名**，
+> 或者让子进程留下"我真的跑了"的痕迹（这里用标记文件）。
+
+**发现**：`WGIME_DIR` **早就是既有约定** —— bat `set "WGIME_DIR=%~dp0"`（`wgime.bat:44`）、
+ps1 `$env:WGIME_DIR = $PSScriptRoot + '\'`（`WgIme.ps1:10`），并作为参数传给 `WordBoard::RunApp(..., dir, ...)`
+（C# 存进静态字段 `BatDir`）。所以这一轮不是发明新变量，而是**把 python 侧也对齐**。
+
+**改法（两侧同名同义）**：
+- 导出：python `main.py` 紧跟 `APP_DIR` 之后 `os.environ['WGIME_DIR'] = APP_DIR + os.sep`（**带尾部分隔符**，
+  与引导层一致 ⇒ `%WGIME_DIR%tools.txt` 这种不加分隔符的写法才成立）；C# 在 `RunApp` 里
+  `Environment.SetEnvironmentVariable("WGIME_DIR", BatDir)`（引导层本来就设了，这里只是保证"从任何入口进来都有值"）。
+- 解析：python `plugins.app_dir()`（先读 `WGIME_DIR`，退回 `__file__` 所在目录 —— dist 里内嵌模块的 `__file__` 被
+  `build-wgime-pure.py` 设成 `<发行目录>\plugins.py`，两种布局都正好是应用根）+ `_resolve_path()`；
+  C# 同名同义的 `ResolveRel()`。两者都挂在：`_tool_path`/`ToolPath`（`open`/`file-del`/`mkdir`）以及
+  `run`/`start` 的**程序名**上（`ResolveRel(Environment.ExpandEnvironmentVariables(tk[1]))`）。
+- 规则（三处一致，且**纯名字不动**这条是关键）：绝对路径 / `C:x` 盘符相对 / 空 → 不动；相对路径
+  `<wgime 目录>\<p>` **存在** → 用它；不存在但**带 `\`/`/` 且父目录存在**（通配符 `logs\*.log`、待建 `out\x`）
+  → 也用它；其余原样（沿用旧的 cwd 行为）。**纯名字且 wgime 目录里没有 ⇒ 一律不动**，否则会挡掉
+  `run notepad`、`start pythonw.exe`、`open https://…` 这些"交给 PATH / ShellExecute"的用法。
+  `[shell]`/`[powershell]` 块由 cmd/PowerShell 自己解析路径，**不套**这套（文档里写明）。
+
+**回归**（`tests\dsl-verbs-test.py` 29 → **43 项**，新增第 7 节）：`app_dir()` 认带尾部分隔符的 `WGIME_DIR`、
+五条解析规则逐条断言（含"纯名字不动"）、真进程"cwd 设在 `System32` 时相对程序名照样起得来"、
+`%WGIME_DIR%` 在步骤文本里可直接用、两处都没有的相对名照样记失败、C# 侧 `ResolveRel` 存在且
+`ToolPath`/`run`/`start` 三处都套上了（`bat.count('ResolveRel(Environment.ExpandEnvironmentVariables(tk[1]))') == 2`）、
+C# `RunApp` 导出 `WGIME_DIR`、`main.py` 也导出。
+
+**重建链**：C# 又改了一次 ⇒ `rebuild-wgime-bat-payload.ps1`（瘦 DLL 560 KB）→ `build-wgime-ps1.ps1`
+（WgIme.ps1 39,427,705 B）→ `Copy-Item wgime.bat release\wgime.bat` → `wgime-ps1.tests.ps1` **15/15**；
+bat 工作区又变混合行尾 ⇒ 再归一成 CRLF；`build-package.ps1`（dist 1,188.2 → 1,219,507 B）→ dist-sync `mismatches=0`。
+
+**验证**：`dsl-verbs-test` 43/43 / `wgime-ps1.tests.ps1` 15/15 / `undefined-globals` RESULT: OK /
+`pure-state-harness` 全绿 / `deps-test` 51/51 / `example-plugin-test` 24/24 / `standalone-plugin-test` 8/8 /
+`pet-dll-plugin-test` 22/22 / `pyshot-plugin-test` 70/70 / `update-test` 36/36 / `embedded-isolation-test` 14/14。
+
+
 

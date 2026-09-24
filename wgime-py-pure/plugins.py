@@ -269,6 +269,51 @@ def count_steps(body):
     return n
 
 
+def app_dir():
+    """wgime 目录(plugins/、tools.txt、config.txt 所在)。
+
+    优先读宿主导出的 `WGIME_DIR`(与 bat/ps1 引导层同一个变量, 值**带尾部分隔符**);
+    没有就退回本文件所在目录 —— dist 里内嵌模块的 `__file__` 被设成 `<发行目录>\\plugins.py`,
+    源码布局里就是 `wgime-py-pure\\plugins.py`, 两种都正好是应用根。取不到返回 ''(调用方原样不动)。
+    """
+    d = (os.environ.get('WGIME_DIR') or '').rstrip('\\/')
+    if d and os.path.isdir(d):
+        return d
+    try:
+        d = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return ''
+    return d if os.path.isdir(d) else ''
+
+
+def _resolve_path(p):
+    """相对路径 -> 先按 wgime 目录找; 找不到/不该动就原样返回(保持老的 cwd 行为)。
+
+    规则(第九十轮补, 两侧一致):
+      · 绝对路径 / 盘符相对(`C:x`) / 空 -> 不动;
+      · **纯名字**(没有 `\\` `/`)**且**在 wgime 目录里也不存在 -> 不动 —— 不能挡了 `run notepad`、
+        `start pythonw.exe`、`open https://…` 这类"交给 PATH / ShellExecute 去解析"的用法;
+      · 其余相对路径: `<wgime 目录>\\<p>` **存在**就用它; 不存在但**父目录存在**(通配符 `logs\\*.log`、
+        待建的 `out\\x`)也用它; 两者都不成立才原样返回。
+    """
+    if not p or os.path.isabs(p):
+        return p
+    drive, _rest = os.path.splitdrive(p)
+    if drive:                       # `C:foo` 盘符相对: 语义只有 Windows 懂, 别插手
+        return p
+    base = app_dir()
+    if not base:
+        return p
+    cand = os.path.join(base, p)
+    if os.path.exists(cand):
+        return cand
+    if ('\\' in p or '/' in p):
+        parent = os.path.dirname(cand)
+        if parent and os.path.isdir(parent):
+            return cand
+    return p
+
+
 def tokenize(s):
     """空白切分 + 双引号分组, 不做 %env% 展开 (对齐 C# ToolToks; 展开只在各动词里按 C# 规则做).
     注意: C# 用 char.IsWhiteSpace, 所以 tab 也算分隔符; 未闭合的引号吃到行尾."""
@@ -399,7 +444,7 @@ def _tool_path(rest):
     s = rest.strip()
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         s = s[1:-1]
-    return os.path.expandvars(s)
+    return _resolve_path(os.path.expandvars(s))     # 第九十轮补: 相对路径先按 wgime 目录找
 
 
 def _confirm_args(arg, confirm, msgbox):
@@ -456,7 +501,7 @@ def _run_verb(verb, arg, log, msgbox, confirm):
         parts = tokenize(arg)
         if not parts:
             raise RuntimeError('run 缺少程序名')      # C# tk[1] 越界 -> 记一步失败 (不能静默成功)
-        parts[0] = os.path.expandvars(parts[0])  # C# 只展开程序名 (tk[1]), 参数原样
+        parts[0] = _resolve_path(os.path.expandvars(parts[0]))  # 只展开程序名 (tk[1]), 参数原样; 相对路径按 wgime 目录找
         return _run_hidden(parts, log)
     elif verb == 'shell':
         return _run_hidden('cmd /c ' + arg, log)     # cmd 自己展开 %env%, 对齐 C# (不预先展开)
@@ -468,7 +513,7 @@ def _run_verb(verb, arg, log, msgbox, confirm):
         parts = tokenize(arg)
         if not parts:
             raise RuntimeError('start 缺少程序名')      # 同 run: 缺参记一步失败, 不能静默成功
-        parts[0] = os.path.expandvars(parts[0])      # C# 只展开程序名(tk[1]), 参数原样
+        parts[0] = _resolve_path(os.path.expandvars(parts[0]))   # 只展开程序名(tk[1]), 参数原样; 相对路径按 wgime 目录找
         # 不继承我们的标准流(pythonw 下 sys.stdout/stderr 是 None, 子进程拿到的是无效句柄), 也不接管道
         # (管道没人读, 常驻程序写满了会自己卡住); 控制台窗口用 CREATE_NO_WINDOW 藏掉。
         kw = {}

@@ -12,6 +12,7 @@ r"""步骤 DSL 动词回归 (第八十九轮补: 新增 `start` = 拉起**常驻
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,11 +87,17 @@ def body(tmp):
                 'with open(sys.argv[2], "w", encoding="utf-8") as fh:\n'
                 '    fh.write("|".join(sys.argv[3:]))\n')
 
-    def step(text):
+    def step(text, cwd=None):
         del logs[:]
-        t0 = time.perf_counter()
-        r = plug.run_steps(text, log, msgbox, confirm)
-        return r, (time.perf_counter() - t0), list(logs)
+        old = os.getcwd()
+        if cwd:
+            os.chdir(cwd)
+        try:
+            t0 = time.perf_counter()
+            r = plug.run_steps(text, log, msgbox, confirm)
+            return r, (time.perf_counter() - t0), list(logs)
+        finally:
+            os.chdir(old)
 
     py = sys.executable
 
@@ -187,10 +194,50 @@ def body(tmp):
     check('C# start 缺参也记失败(不静默成功)', 'missing program name' in sbody)
     check('C# start 报错带程序名(与 python 侧一致)', 'spi.FileName' in sbody)
 
-    # ---------------- 7) 文档跟上 ----------------
+    # ---------------- 7) 相对路径 + %WGIME_DIR%(第九十轮补) ----------------
+    appdir = os.path.join(tmp, 'app')
+    os.makedirs(os.path.join(appdir, 'sub'), exist_ok=True)
+    os.makedirs(os.path.join(appdir, 'logs'), exist_ok=True)
+    with open(os.path.join(appdir, 'a.txt'), 'w', encoding='utf-8') as f:
+        f.write('a')
+    os.environ['WGIME_DIR'] = appdir + os.sep          # 与 bat/ps1 引导层一致: 值**带**尾部分隔符
+    check('app_dir() 读 WGIME_DIR(带尾部\\也认)', plug.app_dir() == appdir, repr(plug.app_dir()))
+    check('相对路径(目标就在 wgime 目录里)解析成绝对路径',
+          plug._resolve_path('a.txt') == os.path.join(appdir, 'a.txt'), repr(plug._resolve_path('a.txt')))
+    check('相对路径(带分隔符 + 父目录存在)也解析 —— 通配符/待建目录',
+          plug._resolve_path(r'logs\*.log') == os.path.join(appdir, 'logs', '*.log'),
+          repr(plug._resolve_path(r'logs\*.log')))
+    check('绝对路径不动', plug._resolve_path(r'C:\Windows\notepad.exe') == r'C:\Windows\notepad.exe')
+    check('盘符相对(C:x)不动', plug._resolve_path('C:tmp') == 'C:tmp', repr(plug._resolve_path('C:tmp')))
+    check('纯名字且 wgime 目录里没有 -> 不动(不能挡 run notepad/start pythonw.exe 的 PATH 解析)',
+          plug._resolve_path('notepad') == 'notepad', repr(plug._resolve_path('notepad')))
+    check('相对路径两处都不存在 -> 不动(保持老的 cwd 行为)',
+          plug._resolve_path(r'nope\x.exe') == r'nope\x.exe', repr(plug._resolve_path(r'nope\x.exe')))
+    sysroot = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32')
+    shutil.copyfile(os.path.join(sysroot, 'cmd.exe'), os.path.join(appdir, 'sub', 'cmd.exe'))
+    r6, _, lg6 = step('start "sub\\cmd.exe" /c exit', cwd=sysroot)
+    check('真进程: cwd 在别处(模拟计划任务/自启)时, 相对程序名靠 wgime 目录解析也能起来',
+          r6 == 0 and any('started pid' in x for x in lg6), 'r=%s log=%r' % (r6, lg6))
+    r7, _, lg7 = step('start "%WGIME_DIR%sub\\cmd.exe" /c exit', cwd=sysroot)
+    check('真进程: 步骤里可以直接写 %WGIME_DIR%', r7 == 0, 'r=%s log=%r' % (r7, lg7))
+    r8, _, lg8 = step('start "nosuch\\cmd.exe" /c exit', cwd=sysroot)
+    check('真进程: 两处都没有的相对程序名照样记失败', r8 == 1, 'r=%s log=%r' % (r8, lg8))
+    check('C# 侧有同名同义的 ResolveRel, 且 ToolPath/run/start 都套上了',
+          'static string ResolveRel(' in bat
+          and 'ResolveRel(Environment.ExpandEnvironmentVariables(s))' in bat
+          and bat.count('ResolveRel(Environment.ExpandEnvironmentVariables(tk[1]))') == 2,
+          'count=%d' % bat.count('ResolveRel(Environment.ExpandEnvironmentVariables(tk[1]))'))
+    check('C# RunApp 里导出 WGIME_DIR(= BatDir)', 'SetEnvironmentVariable("WGIME_DIR", BatDir)' in bat)
+    check('python 宿主 main.py 也导出 WGIME_DIR(带尾部分隔符, 与引导层同义)',
+          "os.environ['WGIME_DIR'] = APP_DIR + os.sep" in open(os.path.join(PURE, 'main.py'),
+                                                             encoding='utf-8').read())
+
+    # ---------------- 8) 文档跟上 ----------------
     spec_txt = open(SPEC, encoding='utf-8', errors='replace').read()
     check('规范文档里有 start 动词(含"不等"的说明)',
           re.search(r'`start`', spec_txt) is not None and '不等' in spec_txt)
+    check('规范文档写清了相对路径规则 + %WGIME_DIR%',
+          '%WGIME_DIR%' in spec_txt and '相对路径' in spec_txt)
 
     print('')
     if fails:
