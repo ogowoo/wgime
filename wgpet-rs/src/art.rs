@@ -500,13 +500,62 @@ fn build_body(f: &ID2D1Factory) -> Result<ID2D1PathGeometry> {
     }
 }
 
+/// 运行时"美术覆盖"(改完重启宠物即生效, **不用重编 Rust**):
+/// ①环境变量 `WGIME_PET_ART`(完整路径) > ②`wgpet.dll` 旁边的 `wgpet-art.svg` > ③编译期内置。
+/// 发行版照常走内置; 这里只对开发/调试有意义。读文件要稳妥: 读不到 / 太大 / 空 一律退回内置。
+fn art_source() -> (std::borrow::Cow<'static, str>, &'static str) {
+    let capped = |p: &std::path::Path| -> Option<String> {
+        let meta = std::fs::metadata(p).ok()?;
+        if meta.len() > 512 * 1024 {
+            return None;
+        }
+        std::fs::read_to_string(p).ok().filter(|s| !s.trim().is_empty())
+    };
+    if let Some(p) = std::env::var_os("WGIME_PET_ART").map(std::path::PathBuf::from) {
+        if let Some(s) = capped(&p) {
+            return (s.into(), "WGIME_PET_ART");
+        }
+    }
+    if let Some(dir) = self_dir() {
+        let p = dir.join("wgpet-art.svg");
+        if let Some(s) = capped(&p) {
+            return (s.into(), "DLL 旁边的 wgpet-art.svg");
+        }
+    }
+    (ART_SVG.into(), "内置")
+}
+
+/// 本 DLL 自己的所在目录 —— `GetModuleHandleExW(FROM_ADDRESS)` 从"本函数的一个地址"倒推
+/// 模块句柄(不能拿 `GetModuleHandleW(None)`: 那是**宿主进程**(pythonw.exe)的模块)。
+fn self_dir() -> Option<std::path::PathBuf> {
+    use windows::Win32::System::LibraryLoader::*;
+    unsafe {
+        let mut h = windows::Win32::Foundation::HMODULE::default();
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            windows::core::PCWSTR((self_dir as *const () as usize) as *const u16),
+            &mut h,
+        )
+        .ok()?;
+        let mut buf = [0u16; 520];
+        let n = GetModuleFileNameW(windows::Win32::Foundation::HINSTANCE(h.0), &mut buf);
+        if n == 0 {
+            return None;
+        }
+        let s = String::from_utf16_lossy(&buf[..n as usize]);
+        Some(std::path::PathBuf::from(s).parent()?.to_path_buf())
+    }
+}
+
 impl Shapes {
     pub fn new(f: &ID2D1Factory) -> Result<Self> {
         // 零件形状的**真身**在 `art/dog.svg`(编译期嵌进 DLL); 下面这些 `build_*` 是**兜底**:
         // SVG 缺 id / d 解析不动 / D2D 报错时才用它们 —— 所以它们不能删(改了 SVG 也别删)。
         // 每次启动都比一次两边的包围盒, 把差值写进初始化日志: 它抓不出"改丑了"(那是你的自由),
         // 但能立刻抓出"解析失败、悄悄退回内置路径、看着像没生效"。
-        let svg = crate::svgpath::SvgPaths::parse(ART_SVG);
+        let (src, from) = art_source();
+        crate::dbg(format!("art: 美术源 = {} ({} B)", from, src.len()));
+        let svg = crate::svgpath::SvgPaths::parse(&src);
         let mut used = 0usize;
         let mut notes: Vec<String> = Vec::new();
         let mut pick =

@@ -2642,6 +2642,46 @@ bootstrap.py  tools/  tk_version/  tests/  README.md  CHANGELOG.md  demo.png
 所以这条"自检"仍然有效）/ `wg-court` 7/7 / `wg-rustpanel` 16/16 / `pet-dll-plugin-test` 22/22；
 DLL 1,786,221 → 1,787,749 B；`plugins\` 与 `package\plugins\` 都已换成新 DLL。
 
+### §D55 续二：运行时美术覆盖 + 真实导出件的 SVG（第九十轮补六）
+**来由**：用户提议"SVG 模板渲染"（`resvg + tiny-skia`，把 SVG 当字符串模板、给 `<g id>` 埋占位符、
+`include_str!` → `usvg::Tree::from_str` → `tiny_skia::Pixmap` → 拿 RGBA 贴窗）。
+
+**为什么不照做**（实测 + 推断）：
+1. **本机加不了依赖**：`static.crates.io` 直连超时（`Invoke-WebRequest -Method Head` 实测），
+   本地 crate 缓存里也没有 `resvg`/`usvg`/`tiny-skia` —— `cargo build --offline` 必然失败。
+2. **渲染模型不匹配**：`tiny-skia` 是 **CPU 光栅到 `Pixmap`(预乘 RGBA)**，我们要的恰好也是**预乘 RGBA 的 DIB**
+   —— 但 `Pixmap::data()` 是 **RGBA** 而 `UpdateLayeredWindow` 要 **BGRA**，所以那份样板代码里
+   `Some(pixmap.data().to_vec())` 直接贴出来**颜色是反的**（R/B 通道互换），还差一步 swizzle。
+3. **字符串模板撑不起我们的动画**：抬头/转头的 `translate({hx},{hy}) rotate({h_rot})` 占位符是容易的，
+   但我们的**腿是 2 骨 IK**（脚的落点由步态相位 + IK 求解**算出来**）、尾巴是沿螺旋采样的脊柱
+   —— 这些**坐标在编译期不存在**，模板里写死 `d` 就没法动；要写就得在 Rust 里**生成 `d` 字符串**，
+   那跟现在调 `AddBezier` 是同一件事，只是中间多了一层字符串 + 每帧解析。
+4. **文字/面板不在 SVG 里**：工具面板的**中文**走 DirectWrite，全 SVG 化要再引一套字体栈（fontdb+rustybuzz）。
+5. **我们的热路径**：缓存的 `ID2D1PathGeometry` 建一次，之后每帧只 `SetTransform` + `FillGeometry`；
+   换 tiny-skia 要每帧光栅 300×280 ≈ 8 万像素 —— 能跑，但**没有任何收益**。
+
+**但那个方案的核心诉求是对的**（美术归美术 / 逻辑归逻辑 / 改完不重编），我们直接用现有管线实现：
+1. **运行时美术覆盖**（`art.rs::art_source()`）：①`WGIME_PET_ART`(完整路径) > ②`wgpet.dll` 旁边的
+   `wgpet-art.svg` > ③编译期内置。读不到/太大/空一律退回内置。日志打 `art: 美术源 = ...`。
+   拿 DLL 自己目录的坑：`GetModuleHandleW(None)` 是**宿主进程**(pythonw.exe)的模块，必须用
+   `GetModuleHandleExW(FROM_ADDRESS|UNCHANGED_REFCOUNT, <本函数地址>, &mut h)` 倒推我们自己的句柄
+   （`PCWSTR((self_dir as *const () as usize) as *const u16)`）。
+2. **真实导出件支持**（`svgpath.rs`）：`<g transform>` 嵌套进栈 + 元素自己的 `transform`；
+   `<rect>`(含圆角)/`<circle>`/`<ellipse>`/`<line>`/`<polygon>`/`<polyline>` 转等价 d 串；
+   `<defs>/<style>/<metadata>/<title>/<desc>` 整段跳过。所以 Inkscape/Figma/Illustrator 导出的平铺版直接用。
+   **变换在落点处统一映射**（仿射变换保中点/反射 ⇒ 相对命令与 S/T 反射先在局部空间算好再映射，结果等价）。
+
+**验证**（三条一次全验）：把 `ear` 包进 `<g transform="translate(3,2) scale(1.5)">` 再加一个
+`<circle id="cheek_dot">`，落到 DLL 旁边 → 起宠物，日志变成
+`art: 美术源 = DLL 旁边的 wgpet-art.svg (4539 B)` + `svg 用了 6/7 个零件 [body bridge cheek_dot ear head mask mouth] (有偏差), ... ear 差9.27`
+⇒ 覆盖生效、`circle` 被认下、`<g transform>` 被应用。删掉那个文件就退回内置。
+回归 21/21 / 7/7 / 16/16 / 22/22 全绿，DLL 1,787,749 → **1,794,741 B**。
+
+**坑**：PowerShell 里 `[IO.File]::ReadAllText('art\dog.svg')` 这种**相对路径按的是进程 cwd，
+不是 `cd` 后的 PowerShell 位置** —— 我在 `cd C:\Tools\WgIme\wgpet-rs` 之后用它读文件，结果读到了
+`C:\Tools\WgIme\art\dog.svg`（根本不存在） ⇒ 覆盖文件没落盘，那次"验证"读的是内置版本（假绿）。
+改用绝对路径后立刻对上。规律：**PowerShell 里任何走 .NET `System.IO` 的相对路径都要给绝对路径**。
+
 ## §D53 步骤 DSL 新增 `start` 动词（第九十轮）
 **来由**：用户问"是不是用 dsl 的方式还简单呢？"—— 即 PyShot 这类常驻 Qt 程序能不能干脆写成
 `plugins\pyshot.txt`（步骤 DSL）省掉包装。查完 `_run_verb` 后结论是**不行**（DSL 每个能起程序的动词都会

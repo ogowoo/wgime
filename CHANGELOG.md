@@ -1,5 +1,35 @@
 ---
 
+## 2026-09-25 (第九十轮补六: 美术源可运行时覆盖(改完重启即生效, 不用重编) + 解析器支持真实导出的 SVG)
+
+**来由**: 用户对"是不是该用 resvg + tiny-skia 做 SVG 模板渲染"的方案提问并给了样板代码。
+结论:**不换渲染器**(理由见 §D55: 每帧光栅成本高、字体栈重复、+1.5~2MB、且本地 `cargo build --offline`
+拉不到 resvg 那套依赖 —— 刚才实测 `static.crates.io` 超时)。但我们采纳了那个方案的**核心诉求**并直接用
+现有管线实现 —— "美术归美术, 逻辑归逻辑, 改完不重编":
+
+1. **运行时美术覆盖**(`art.rs::art_source()`): ①环境变量 `WGIME_PET_ART`(完整路径, 开发用) >
+   ②`wgpet.dll` 旁边的 `wgpet-art.svg` > ③编译期内置 `art/dog.svg`。读不到/太大/空 一律退回内置,
+   初始化日志会打"美术源 = 内置 / WGIME_PET_ART / DLL 旁边的 wgpet-art.svg"。
+   (DLL 自己的所在目录用 `GetModuleHandleExW(FROM_ADDRESS)` 从**本函数的一个地址**倒推 ——
+   不能拿 `GetModuleHandleW(None)`, 那是宿主进程(pythonw.exe)的模块。)
+2. **解析器支持真实工具导出的 SVG**(`svgpath.rs`): ①`<g transform="...">` 嵌套进栈
+   (translate/scale/rotate(含绕点)/matrix/skewX/skewY, 仿射复合), 元素自己的 `transform` 也认;
+   ②`<rect>`(含圆角)/`<circle>`/`<ellipse>`/`<line>`/`<polygon>`/`<polyline>` 转成等价 d 串;
+   ③`<defs>/<style>/<metadata>` 整段跳过。这样 Inkscape/Figma/Illustrator 导出的"平铺版"直接能用。
+   变换在**落点处**统一映射(仿射变换保中点/反射, 相对命令与 S/T 反射先在局部空间算好再映射, 结果等价;
+   `A` 弧的 rx/ry/旋转不随变换 —— 我们的美术没有 A 弧做变换)。
+
+**验证**: 把 `dog.svg` 里 `ear` 包进 `<g transform="translate(3,2) scale(1.5)">` 另加一个 `<circle id="cheek_dot">`,
+落到 DLL 旁边 -> 起宠物, 初始化日志变成
+`art: 美术源 = DLL 旁边的 wgpet-art.svg (4539 B)` +
+`svg 用了 6/7 个零件 [body bridge cheek_dot ear head mask mouth] (有偏差), ... ear 差9.27` ——
+**覆盖生效、`<circle>` 被认下、`<g transform>` 被应用**, 三条一次全验。删掉那个文件就退回内置。
+回归: `verify-overlay` 21/21 / `wg-court` 7/7 / `wg-rustpanel` 16/16 / `pet-dll-plugin-test` 22/22;
+DLL 1,787,749 -> **1,794,741 B**; `plugins\wgpet.dll` 与 `package\plugins\wgpet.dll` 已同步。
+
+**文档**: AGENTS §5 规则 54 补"运行时覆盖 + 变换/基本形支持"两条; AGENTS-DETAIL §D55 续二(为什么不引 resvg
+的完整推理 + 运行时覆盖的坑 + 复合矩阵的次序)。
+
 ## 2026-09-25 (第九十轮补五: 桌宠形象按用户给的姿态图重做 —— 白脸罩 / 额前橙 V / 小黑豆眼 / 暖棕描边)
 
 **来由**: 用户"直接转我前面给的那组姿态图成为形象吧"。那张姿态图是一份**柴犬姿势表**: 站立 / 坐姿 / 趴卧 /

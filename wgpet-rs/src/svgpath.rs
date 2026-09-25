@@ -19,13 +19,15 @@ use windows::Win32::Graphics::Direct2D::*;
 
 type P = (f32, f32);
 
-/// 一个 `<path>` 的输入
+/// 一个形状元素的输入
 #[derive(Clone, Debug)]
 pub struct Part {
     pub d: String,
-    /// `fill="none"`: 只描边, 子路径按 HOLLOW + OPEN 建(否则 D2D 会把开口当闭合填充)
+    /// `fill="none"` / `<line>` / `<polyline>`: 只描边, 子路径按 HOLLOW + OPEN 建
     pub stroke_only: bool,
     pub even_odd: bool,
+    /// 累计变换(`<g transform>` 嵌套 + 元素自己的 transform, 仿射矩阵 [a b c d e f])
+    pub t: Option<[f32; 6]>,
 }
 
 /// 一份 SVG 里所有带 `id` 的 path
@@ -35,39 +37,91 @@ pub struct SvgPaths {
 }
 
 impl SvgPaths {
+    /// 解析一份 SVG: 逐个认标签, `<g transform>` 进栈、`<defs>/<style>` 整段跳过,
+    /// `<rect>/<circle>/<ellipse>/<line>/<polygon>/<polyline>` 先转成等价的 d 串。
+    /// 这就是为什么 Inkscape/Figma/Illustrator 导出的"平铺版"可以直接用 —— 它们导出的就是这套。
     pub fn parse(svg: &str) -> Self {
         let clean = strip_comments(svg);
         let b = clean.as_bytes();
         let mut parts = HashMap::new();
+        let mut gstack: Vec<[f32; 6]> = Vec::new();
+        let mut skip = 0usize;
         let mut i = 0usize;
-        while let Some(p) = find(b, i, b"<path") {
-            let Some(end) = tag_end(b, p) else { break };
-            let tag = &clean[p..end];
-            i = end;
-            let Some(id) = attr(tag, "id") else { continue };
-            let d = attr(tag, "d").unwrap_or_default();
-            if d.trim().is_empty() {
+        while let Some(lt) = find(b, i, b"<") {
+            if lt + 1 < b.len() && (b[lt + 1] == b'!' || b[lt + 1] == b'?') {
+                let Some(end) = find(b, lt + 1, b">") else { break };
+                i = end + 1;
                 continue;
             }
-            let fill = attr(tag, "fill").unwrap_or_default();
-            let style = attr(tag, "style").unwrap_or_default().to_ascii_lowercase();
-            let stroke_only = fill.trim().eq_ignore_ascii_case("none")
-                || style.split(';').any(|kv| {
-                    let mut it = kv.splitn(2, ':');
-                    it.next().map(|k| k.trim() == "fill") == Some(true)
-                        && it.next().map(|v| v.trim() == "none") == Some(true)
-                });
-            let even_odd = attr(tag, "fill-rule")
-                .map(|v| v.trim().eq_ignore_ascii_case("evenodd"))
-                .unwrap_or(false);
-            parts.insert(
-                id.trim().to_string(),
-                Part {
-                    d,
-                    stroke_only,
-                    even_odd,
-                },
-            );
+            let Some(end) = tag_end(b, lt) else { break };
+            let tag = &clean[lt + 1..end];
+            i = end + 1;
+            let closing = tag.trim_start().starts_with('/');
+            let name = tag_name(tag);
+            let selfclose = tag.trim_end().ends_with('/');
+            if skip > 0 {
+                if closing {
+                    skip = skip.saturating_sub(1);
+                }
+                continue;
+            }
+            match name {
+                "defs" | "style" | "metadata" | "title" | "desc" => {
+                    if !closing && !selfclose {
+                        skip += 1;
+                    }
+                }
+                "g" | "svg" => {
+                    if closing {
+                        let _ = gstack.pop();
+                    } else if !selfclose {
+                        let t = attr(tag, "transform").as_deref().and_then(parse_transform);
+                        gstack.push(t.unwrap_or(IDENTITY));
+                    }
+                }
+                "path" | "rect" | "circle" | "ellipse" | "line" | "polygon" | "polyline" => {
+                    let Some(id) = attr(tag, "id") else { continue };
+                    let Some(d) = elem_to_d(name, tag) else { continue };
+                    if d.trim().is_empty() {
+                        continue;
+                    }
+                    let fill = attr(tag, "fill").unwrap_or_default();
+                    let style = attr(tag, "style").unwrap_or_default().to_ascii_lowercase();
+                    let mut stroke_only = fill.trim().eq_ignore_ascii_case("none")
+                        || style.split(';').any(|kv| {
+                            let mut it = kv.splitn(2, ':');
+                            it.next().map(|k| k.trim() == "fill") == Some(true)
+                                && it.next().map(|v| v.trim() == "none") == Some(true)
+                        });
+                    if name == "line" || name == "polyline" {
+                        stroke_only = true;
+                    }
+                    let even_odd = attr(tag, "fill-rule")
+                        .map(|v| v.trim().eq_ignore_ascii_case("evenodd"))
+                        .unwrap_or(false);
+                    // 有效变换 = 元素自己的 -> 最内层 <g> -> ... -> 最外层 <g>(每步都是"先左后右")
+                    let mut t = attr(tag, "transform").as_deref().and_then(parse_transform);
+                    for g in gstack.iter().rev() {
+                        t = Some(match t {
+                            Some(x) => mul(x, *g),
+                            None => *g,
+                        });
+                    }
+                    if t == Some(IDENTITY) {
+                        t = None;
+                    }
+                    parts.insert(
+                        id.trim().to_string(),
+                        Part {
+                            d,
+                            stroke_only,
+                            even_odd,
+                            t,
+                        },
+                    );
+                }
+                _ => {}
+            }
         }
         Self { parts }
     }
@@ -88,7 +142,165 @@ impl SvgPaths {
             .parts
             .get(id)
             .ok_or_else(|| "SVG 里没有这个 id".to_string())?;
-        build_path(f, &p.d, p.stroke_only, p.even_odd)
+        build_path(f, &p.d, p.stroke_only, p.even_odd, p.t)
+    }
+}
+
+// ---------------------------------------------------------------- 变换(仿射矩阵 [a b c d e f])
+
+const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// 矩阵复合: `mul(a, b)` = 先做 a 再做 b(点 p 走 `b(a(p))`)。
+/// SVG 属性 [a b c d e f] 的约定: x' = a·x + c·y + e, y' = b·x + d·y + f。
+fn mul(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+    [
+        b[0] * a[0] + b[2] * a[1],
+        b[1] * a[0] + b[3] * a[1],
+        b[0] * a[2] + b[2] * a[3],
+        b[1] * a[2] + b[3] * a[3],
+        b[0] * a[4] + b[2] * a[5] + b[4],
+        b[1] * a[4] + b[3] * a[5] + b[5],
+    ]
+}
+
+/// `transform="..."` 属性 → 矩阵。支持 translate / scale / rotate(含绕点) / matrix / skewX / skewY。
+fn parse_transform(s: &str) -> Option<[f32; 6]> {
+    let b = s.as_bytes();
+    let mut acc = IDENTITY;
+    let mut any = false;
+    let mut i = 0usize;
+    while i < b.len() {
+        while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b',') {
+            i += 1;
+        }
+        if i >= b.len() {
+            break;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let name = &s[start..i];
+        let Some(p) = find(b, i, b"(") else { break };
+        let Some(q) = find(b, p, b")") else { break };
+        let nums: Vec<f32> = s[p + 1..q]
+            .split(|c: char| c.is_ascii_whitespace() || c == ',')
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        let n = |k: usize, d: f32| nums.get(k).copied().unwrap_or(d);
+        let m = match name {
+            "translate" => [1.0, 0.0, 0.0, 1.0, n(0, 0.0), n(1, 0.0)],
+            "scale" => [n(0, 1.0), 0.0, 0.0, n(1, n(0, 1.0)), 0.0, 0.0],
+            "matrix" if nums.len() == 6 => [nums[0], nums[1], nums[2], nums[3], nums[4], nums[5]],
+            "rotate" => {
+                let (si, co) = n(0, 0.0).to_radians().sin_cos();
+                let r = [co, si, -si, co, 0.0, 0.0];
+                if nums.len() >= 3 {
+                    // rotate(a cx cy) = translate(cx,cy) · rotate(a) · translate(-cx,-cy)
+                    mul(
+                        mul([1.0, 0.0, 0.0, 1.0, nums[1], nums[2]], r),
+                        [1.0, 0.0, 0.0, 1.0, -nums[1], -nums[2]],
+                    )
+                } else {
+                    r
+                }
+            }
+            "skewX" => [1.0, 0.0, n(0, 0.0).to_radians().tan(), 1.0, 0.0, 0.0],
+            "skewY" => [1.0, n(0, 0.0).to_radians().tan(), 0.0, 1.0, 0.0, 0.0],
+            _ => IDENTITY,
+        };
+        acc = mul(acc, m);
+        any = true;
+        i = q + 1;
+    }
+    if any {
+        Some(acc)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------- 基本形 → d 串
+
+fn tag_name(tag: &str) -> &str {
+    let t = tag.trim_start_matches('/');
+    let end = t
+        .find(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
+        .unwrap_or(t.len());
+    &t[..end]
+}
+
+fn elem_to_d(name: &str, tag: &str) -> Option<String> {
+    if name == "path" {
+        return attr(tag, "d");
+    }
+    let n = |k: &str| -> f32 {
+        attr(tag, k)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0.0)
+    };
+    match name {
+        "rect" => {
+            let (x, y, w, h) = (n("x"), n("y"), n("width"), n("height"));
+            if w <= 0.0 || h <= 0.0 {
+                return None;
+            }
+            let mut rx = n("rx");
+            let ry0 = n("ry");
+            let ry = if ry0 > 0.0 { ry0 } else { rx };
+            if ry0 > 0.0 {
+                rx = ry0;
+            }
+            if rx <= 0.0 && ry <= 0.0 {
+                Some(format!("M {x} {y} H {} V {} H {} Z", x + w, y + h, x))
+            } else {
+                let (rx, ry) = (rx.min(w / 2.0), ry.min(h / 2.0));
+                Some(format!(
+                    "M {} {} H {} A {} {} 0 0 1 {} {} V {} A {} {} 0 0 1 {} {} H {} A {} {} 0 0 1 {} {} V {} A {} {} 0 0 1 {} {} Z",
+                    x + rx, y, x + w - rx, rx, ry, x + w, y + ry, y + h - ry, rx, ry,
+                    x + w - rx, y + h, x + rx, rx, ry, x, y + h - ry, y + ry, rx, ry, x + rx, y
+                ))
+            }
+        }
+        "circle" => {
+            let (cx, cy, r) = (n("cx"), n("cy"), n("r"));
+            Some(format!(
+                "M {} {} A {} {} 0 1 0 {} {} A {} {} 0 1 0 {} {} Z",
+                cx - r, cy, r, r, cx + r, cy, r, r, cx - r, cy
+            ))
+        }
+        "ellipse" => {
+            let (cx, cy, rx, ry) = (n("cx"), n("cy"), n("rx"), n("ry"));
+            Some(format!(
+                "M {} {} A {} {} 0 1 0 {} {} A {} {} 0 1 0 {} {} Z",
+                cx - rx, cy, rx, ry, cx + rx, cy, rx, ry, cx - rx, cy
+            ))
+        }
+        "line" => Some(format!(
+            "M {} {} L {} {}",
+            n("x1"),
+            n("y1"),
+            n("x2"),
+            n("y2")
+        )),
+        "polygon" | "polyline" => {
+            let pts: Vec<f32> = attr(tag, "points")?
+                .split(|c: char| c.is_ascii_whitespace() || c == ',')
+                .filter_map(|t| t.parse().ok())
+                .collect();
+            if pts.len() < 4 {
+                return None;
+            }
+            let mut d = format!("M {} {}", pts[0], pts[1]);
+            for k in (2..pts.len()).step_by(2) {
+                d.push_str(&format!(" L {} {}", pts[k], pts[k + 1]));
+            }
+            if name == "polygon" {
+                d.push_str(" Z");
+            }
+            Some(d)
+        }
+        _ => None,
     }
 }
 
@@ -269,8 +481,17 @@ fn build_path(
     d: &str,
     stroke_only: bool,
     even_odd: bool,
+    t: Option<[f32; 6]>,
 ) -> std::result::Result<ID2D1PathGeometry, String> {
     unsafe {
+        // 变换在**落点处**统一应用(仿射变换保中点/反射, 所以相对命令与 S/T 反射先在局部空间算好再映射,
+        // 结果等价)。`A` 弧的 rx/ry/旋转不随变换(只映射终点) —— 我们的美术没有 A 弧做变换。
+        let map = |p: P| -> P {
+            match t {
+                None => p,
+                Some(m) => (m[0] * p.0 + m[2] * p.1 + m[4], m[1] * p.0 + m[3] * p.1 + m[5]),
+            }
+        };
         let g = f.CreatePathGeometry().map_err(|e| format!("CreatePathGeometry: {e}"))?;
         let sink = g.Open().map_err(|e| format!("Open: {e}"))?;
         sink.SetFillMode(if even_odd {
@@ -301,7 +522,7 @@ fn build_path(
             let rel = cmd.is_ascii_lowercase();
             if matches!(up, b'L' | b'H' | b'V' | b'C' | b'S' | b'Q' | b'T' | b'A') && !open {
                 // `Z` 之后接着画: 新子路径从闭合点开始
-                begin(&sink, cur, stroke_only);
+                begin(&sink, map(cur), stroke_only);
                 open = true;
             }
             match up {
@@ -316,7 +537,7 @@ fn build_path(
                     if open {
                         sink.EndFigure(D2D1_FIGURE_END_OPEN);
                     }
-                    begin(&sink, (x, y), stroke_only);
+                    begin(&sink, map((x, y)), stroke_only);
                     open = true;
                     cur = (x, y);
                     sub = (x, y);
@@ -330,7 +551,7 @@ fn build_path(
                         x += cur.0;
                         y += cur.1;
                     }
-                    line(&sink, (x, y));
+                    line(&sink, map((x, y)));
                     cur = (x, y);
                     segs += 1;
                 }
@@ -341,7 +562,7 @@ fn build_path(
                     if rel {
                         x += cur.0;
                     }
-                    line(&sink, (x, cur.1));
+                    line(&sink, map((x, cur.1)));
                     cur.0 = x;
                     segs += 1;
                 }
@@ -352,7 +573,7 @@ fn build_path(
                     if rel {
                         y += cur.1;
                     }
-                    line(&sink, (cur.0, y));
+                    line(&sink, map((cur.0, y)));
                     cur.1 = y;
                     segs += 1;
                 }
@@ -380,7 +601,7 @@ fn build_path(
                         ex += cur.0;
                         ey += cur.1;
                     }
-                    curve(&sink, a, (b1x, b1y), (ex, ey));
+                    curve(&sink, map(a), map((b1x, b1y)), map((ex, ey)));
                     c2 = (b1x, b1y);
                     cur = (ex, ey);
                     segs += 1;
@@ -410,7 +631,7 @@ fn build_path(
                         (cur.0 + 2.0 / 3.0 * (q.0 - cur.0), cur.1 + 2.0 / 3.0 * (q.1 - cur.1)),
                         (ex + 2.0 / 3.0 * (q.0 - ex), ey + 2.0 / 3.0 * (q.1 - ey)),
                     );
-                    curve(&sink, c1, c2n, (ex, ey));
+                    curve(&sink, map(c1), map(c2n), map((ex, ey)));
                     qc = q;
                     cur = (ex, ey);
                     segs += 1;
@@ -429,10 +650,10 @@ fn build_path(
                     }
                     let arcs = arc_to_cubics(cur, (rx, ry), rot, laf != 0.0, sf != 0.0, (ex, ey));
                     if arcs.is_empty() {
-                        line(&sink, (ex, ey));
+                        line(&sink, map((ex, ey)));
                     } else {
                         for (c1, c2n, p) in arcs {
-                            curve(&sink, c1, c2n, p);
+                            curve(&sink, map(c1), map(c2n), map(p));
                         }
                     }
                     cur = (ex, ey);
