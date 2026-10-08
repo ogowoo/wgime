@@ -1404,7 +1404,7 @@ def show_nettools():
     tk.Label(top, text='B', bg=ui.BG, fg=ui.SUB, font=ui.font(9)).place(x=326, y=13)
     cancel = [False]
 
-    def ping_go():
+    def ping_go(log=log):
         n = _int(cnt.get(), 4)
         sz = _int(size.get(), 32)
         h = host.get().strip()
@@ -1439,7 +1439,7 @@ def show_nettools():
 
     ui.flat_button(top, 'Ping', ping_go, primary=True, x=348, y=8, w=70, h=28)
     ui.flat_button(top, '停止', ping_stop, x=424, y=8, w=60, h=28)
-    ui.flat_button(top, '清除', lambda: log.set(''), x=514, y=8, w=52, h=28)
+    ui.flat_button(top, '清除', lambda log=log: log.set(''), x=514, y=8, w=52, h=28)
     ui.flat_button(top, '保存', log.save, x=572, y=8, w=56, h=28)
     log.line('主机 + 次数 (0=持续) + 包大小(字节); 有限次数跑完输出 丢包率/时延统计')
 
@@ -1447,7 +1447,7 @@ def show_nettools():
     p, top, log = make_page(1, 44)
     thost = ui.rounded_entry(top, x=12, y=8, w=210, h=28, initial='223.5.5.5')
 
-    def trace_go():
+    def trace_go(log=log):
         h = thost.get().strip()
         log.line(_stamp('-- tracert %s --' % h))
         def work():
@@ -1459,7 +1459,7 @@ def show_nettools():
         _bg(work)
 
     ui.flat_button(top, '开始路由跟踪', trace_go, primary=True, x=230, y=8, w=120, h=28)
-    ui.flat_button(top, '清除', lambda: log.set(''), x=514, y=8, w=52, h=28)
+    ui.flat_button(top, '清除', lambda log=log: log.set(''), x=514, y=8, w=52, h=28)
     ui.flat_button(top, '保存', log.save, x=572, y=8, w=56, h=28)
 
     # ---------- DNS ----------
@@ -1480,7 +1480,7 @@ def show_nettools():
         tchips.append(c)
     pick_type(0)
 
-    def dns_go():
+    def dns_go(log=log):
         nm, sv, tp = dname.get().strip(), dserver.get().strip(), curtype[0]
         log.line(_stamp('-- dns %s %s  @%s --' % (tp, nm, sv)))
         def work():
@@ -1492,7 +1492,7 @@ def show_nettools():
         _bg(work)
 
     ui.flat_button(top, '查询', dns_go, primary=True, x=398, y=8, w=90, h=28)
-    ui.flat_button(top, '清除', lambda: log.set(''), x=514, y=8, w=52, h=28)
+    ui.flat_button(top, '清除', lambda log=log: log.set(''), x=514, y=8, w=52, h=28)
     ui.flat_button(top, '保存', log.save, x=572, y=8, w=56, h=28)
     log.line('原始 DNS 协议查询 (UDP 53), 记录类型点选; 服务器默认阿里 223.5.5.5')
 
@@ -1500,7 +1500,7 @@ def show_nettools():
     p, top, log = make_page(3, 44)
     hurl = ui.rounded_entry(top, x=12, y=8, w=330, h=28, initial='https://www.baidu.com')
 
-    def http_go():
+    def http_go(log=log):
         u = hurl.get().strip()
         log.line(_stamp('-- http %s --' % u))
         def work():
@@ -1510,7 +1510,7 @@ def show_nettools():
 
     ui.flat_button(top, '请求', http_go, primary=True, x=350, y=8, w=90, h=28)
     hurl.bind('<Return>', lambda e: http_go())
-    ui.flat_button(top, '清除', lambda: log.set(''), x=514, y=8, w=52, h=28)
+    ui.flat_button(top, '清除', lambda log=log: log.set(''), x=514, y=8, w=52, h=28)
     ui.flat_button(top, '保存', log.save, x=572, y=8, w=56, h=28)
     log.line('状态码/Server/Content-Type/Body 大小/TTFB/总耗时; 自动跟随跳转, 无 scheme 默认 https://')
 
@@ -1519,14 +1519,14 @@ def show_nettools():
     phost = ui.rounded_entry(top, x=12, y=8, w=190, h=28, initial='223.5.5.5')
     pport = ui.rounded_entry(top, x=210, y=8, w=64, h=28, initial='443')
 
-    def port_check():
+    def port_check(log=log):
         h = phost.get().strip()
         pt = _int(pport.get(), 443)
         def work():
             log.line(_stamp('%s:%d  %s' % (h, pt, test_port(h, pt, 2000))))
         _bg(work)
 
-    def port_scan():
+    def port_scan(log=log):
         h = phost.get().strip()
         ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080]
         log.line(_stamp('-- scan %s (%d 个常用端口) --' % (h, len(ports))))
@@ -1538,7 +1538,7 @@ def show_nettools():
 
     ui.flat_button(top, '检测', port_check, primary=True, x=282, y=8, w=76, h=28)
     ui.flat_button(top, '常用端口扫描', port_scan, x=364, y=8, w=130, h=28)
-    ui.flat_button(top, '清除', lambda: log.set(''), x=514, y=8, w=52, h=28)
+    ui.flat_button(top, '清除', lambda log=log: log.set(''), x=514, y=8, w=52, h=28)
     ui.flat_button(top, '保存', log.save, x=572, y=8, w=56, h=28)
 
     # ---------- 子网 ----------
@@ -1548,7 +1548,7 @@ def show_nettools():
     tk.Label(top, text='前缀/掩码', bg=ui.BG, fg=ui.SUB, font=ui.font(9.5)).place(x=198, y=13)
     smk = ui.rounded_entry(top, x=280, y=8, w=120, h=28, initial='24')
 
-    def recompute(_=None):
+    def recompute(_=None, log=log):
         try:
             log.set('\n'.join(subnet_calc(sip.get(), smk.get())))
         except Exception as ex:
@@ -1561,7 +1561,7 @@ def show_nettools():
     scnt = ui.rounded_entry(top, x=70, y=42, w=48, h=28, initial='4')
     tk.Label(top, text='个子网', bg=ui.BG, fg=ui.SUB, font=ui.font(9.5)).place(x=124, y=47)
 
-    def do_split():
+    def do_split(log=log):
         n = _int(scnt.get(), 4)
         if n < 2:
             n = 4
@@ -1571,7 +1571,7 @@ def show_nettools():
         except Exception as ex:
             log.line('Err: %s' % ex)
 
-    def do_table():
+    def do_table(log=log):
         for ln in mask_table():
             log.line(ln)
 
@@ -1579,7 +1579,7 @@ def show_nettools():
     sip1 = ui.rounded_entry(top, x=384, y=42, w=106, h=28, initial='192.168.1.10')
     sip2 = ui.rounded_entry(top, x=496, y=42, w=106, h=28, initial='192.168.1.99')
 
-    def do_cidr():
+    def do_cidr(log=log):
         try:
             log.line('-- 范围转 CIDR --')
             for ln in range_to_cidr(sip1.get(), sip2.get()):
@@ -1595,7 +1595,7 @@ def show_nettools():
     # ---------- 本机 ----------
     p, top, log = make_page(6, 44)
 
-    def local_refresh():
+    def local_refresh(log=log):
         def work():
             try:
                 info = local_net_info()

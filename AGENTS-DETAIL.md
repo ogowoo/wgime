@@ -2878,3 +2878,36 @@ subprocess.TimeoutExpired: ... wgpet.py  timed out after 5 seconds
 
 
 
+
+## §D56 网络工具"点哪个页签都没结果"（第九十一轮）
+
+**用户原话**："wgime-py-pure 版内置网络工具操作逻辑异常，做子网查询等等完全看不到结果。"
+
+**根因**：`tools.py show_nettools()` 的 7 个页签是顺序构建的：`p, top, log = make_page(i, top_h)` 每页都
+**重复绑定同一个函数局部变量 `log`**，而每页的按钮处理函数（`ping_go`/`trace_go`/`dns_go`/`http_go`/
+`port_check`/`port_scan`/`recompute`/`do_split`/`do_table`/`do_cidr`/`local_refresh` + 5 个「清除」lambda）
+都是引用它的闭包 —— **闭包捕获的是变量不是值**，所以所有页的输出全写进最后一页（本机）的 `_NetLog`。
+开窗时初始内容正常（那是构建时写的，当时 `log` 还指着正在建的那页），之后点任何按钮都跑偏。
+自首次迁移（f2a6af0）起就在。C# 侧无此病（每页独立对象）。
+
+**修法**：每个处理函数默认参数 `log=log`（按值绑进闭包）；11 个 def + 5 个 lambda。最小修复，不动布局。
+
+**定位路径（值得复用的排障顺序）**：
+1. 纯逻辑直调正常（`subnet_calc("192.168.1.10","24")` 出全套行）→ 不是计算层。
+2. 真窗口探针：Text 里**有**内容（初始的）→ 不是布局/裁剪。
+3. 真鼠标（`SetCursorPos` + `mouse_event`）点「拆分」→ 打桩证明 `subnet_split` **被调了**，但可见页 Text 不涨
+   → 处理器跑了、输出丢了。
+4. 实例级打桩（`_NetLog.__init__` 偷梁换柱收 7 个实例）→ 拆分的 5 行进了**本机页**的缓冲 ⇒ 闭包捕获实锤。
+
+**探针坑（这次真踩的，下次别踩）**：
+- ①**别用 `root.update()` 手动泵事件**：后台线程的 `win.after(0, …)` 在 update 泵下抛
+  "main thread is not in main loop"（真 `mainloop()` 下正常 —— 探针要么主线程同步调，要么用 `after` 链驱动）。
+- ②`event_generate` 对 `place_forget` 掉的控件**不生效**（先切页 + `update()` 让它映射再点）。
+- ③测试别"先点清除再验内容" —— 清除走 `after(0)` marshal，`update_idletasks()` **不收**（那是 idle 任务，
+  不是计时器）；且后到的结果会把"已清"的证据覆盖。
+- ④「修前版本跑测试必须红」照例执行：拿修复前的 tools.py 跑 `nettools-test.py` 红 11/14，
+  红屏里本机页控制台混着别页的输出（DNS 结果/端口 open/HTTP 200），正是用户现象的镜像。
+
+**回归**：`tests\nettools-test.py`（14 项，打桩全部网络出口不联网，无桌面 SKIP）。
+核心断言：每页输出落本页 + **本机页不被污染**（那才是 bug 的镜像）。
+连带：`tools.py` 在内嵌清单 ⇒ 重建 dist + package，dist-sync `mismatches=0`。

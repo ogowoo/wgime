@@ -1,5 +1,41 @@
 ---
 
+---
+
+## 2026-10-08 (第九十一轮: 网络工具"点哪个页签都没结果" —— 一个闭包捕获 bug, 从首次迁移起就在)
+
+**来由**: 用户报 "wgime-py-pure 版内置网络工具操作逻辑异常, 做子网查询等等完全看不到结果"。
+
+**根因(经典 Python 闭包捕获)**: `tools.py show_nettools()` 里 7 个页签共用**同一个函数局部变量 `log`**,
+被 `p, top, log = make_page(...)` 重复绑定 7 次。闭包捕获的是**变量不是值** —— 所以全部页签的按钮处理函数
+(`ping_go`/`trace_go`/`dns_go`/`http_go`/`port_check`/`port_scan`/`recompute`/`do_split`/`do_table`/`do_cidr`/
+`local_refresh`)和 5 个「清除」lambda 的输出**全写进最后一页(本机)的日志缓冲**: 用户在 Ping/子网/… 页点什么,
+当前页永远不出结果。
+
+**为什么开窗第一眼看着正常**: 各页的初始内容(`recompute()`/`local_refresh()` 提示行)是在**构建时**写入的 ——
+那一刻 `log` 还指向正在构建的那页。之后的所有点击才跑偏。
+
+**定位过程(留档, 值得复用)**: 纯逻辑层(`subnet_calc`)直接调用正常 → 真窗口探针证明内容**写进了 Text** →
+真鼠标点击证明 `do_split` 跑了、`subnet_split` 被调了 → 但可见页的 Text 不涨 ⇒ 逐层加探针(`_NetLog.__init__`
+偷梁换柱收实例)发现 5 行输出去了**本机页**。中途踩的探针坑也留了档: ①用 `root.update()` 手动泵事件时,
+后台线程的 `win.after()` 会抛 "main thread is not in main loop"(真 mainloop 下没问题 —— 探针要用
+`after` 链驱动, 别 update 泵); ②`event_generate` 对 `place_forget` 掉的控件不生效; ③测试里"先点清除再验内容"
+的顺序会自己清掉证据。
+
+**修法**: 每个处理函数加默认参数 `log=log`(把当前页的日志实例按值绑进闭包); 5 个「清除」lambda 同样。
+共 11 个 def + 5 个 lambda。不重构、不动布局 —— 最小修复。
+
+**回归 `tests\nettools-test.py`(14 项, 新)**: 打桩全部网络出口(不联网) → 逐页真点击驱动 → 断言输出落在
+**本页** 且 **本机页不被污染**; 拿修复前的 `tools.py` 跑必红 **11/14**(红屏里本机页的控制台混着 DNS/端口/HTTP
+的输出 —— 正是用户看到的现象的镜像)。无桌面则 SKIP。
+
+**连带**: `tools.py` 在内嵌清单 ⇒ 重建 dist + package(`build-package.ps1`, dist 1,219,507 → 1,219,626 B),
+`wgime-dist-sync-check.py` `mismatches=0`。无需改 C#(C# 的 NetToolsForm 每页是独立对象, 没这个病)。
+
+**验证**: `nettools-test.py` 14/14 / `undefined-globals` RESULT: OK / `pure-state-harness` 全绿 /
+`deps-test` 51/51 / `example-plugin-test` 24/24 / `standalone-plugin-test` 8/8 / `pet-dll-plugin-test` 22/22 /
+`pyshot-plugin-test` 70/70 / `dsl-verbs-test` 43/43 / `update-test` 36/36 / `embedded-isolation-test` 14/14。
+
 ## 2026-09-25 (第九十轮补六: 美术源可运行时覆盖(改完重启即生效, 不用重编) + 解析器支持真实导出的 SVG)
 
 **来由**: 用户对"是不是该用 resvg + tiny-skia 做 SVG 模板渲染"的方案提问并给了样板代码。
