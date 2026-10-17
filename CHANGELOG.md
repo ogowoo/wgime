@@ -1,5 +1,28 @@
 ---
 
+## 2026-09-25 (第九十一轮补: 桌面宠物整体移除)
+
+**来由**: 用户"把桌面宠物移除了吧" —— 形象对着姿态图改了几轮(白脸罩/小黑豆眼/体积球渐变都上了)
+仍不满意, 决定砍掉。git 历史完整保留(任何一版都能翻回来)。
+
+**删了什么**:
+- 代码: `wgpet-rs\`(整个 Rust crate: src/{lib,art,palette,svgpath}.rs + art/dog.svg + Cargo.toml/lock +
+  verify-overlay.py) / `wgime-py-pure\plugins\wgpet.py` / `plugins\wgpet.dll` /
+  `tests\pet-overlay-test.py` / `tests\pet-dll-plugin-test.py`
+- 真机那份: `package\plugins\wgpet.py` + `wgpet.dll`(删文件, **没动 package 里的 config.txt** ——
+  那是用户在用的活配置, 里头的 `pet_scene = 2` 变成死配置而已, 无害)
+- 引用: `config.txt` / `release\config.txt` 的宠物小节(注释 + `pet_scene = 2`) / `build-package.ps1`
+  的 wgpet.dll 拷贝注释改成中性 / `.gitignore` 的 `/wgpet-rs/target/` / `AGENTS.md` §4 的两行测试 + 规则 49/52/54
+  (宠物的浮层/ULW/SVG 三条规则删了; **AGENTS-DETAIL §D40~§D55 的叙述保留为历史留档**, 那套 Win32/D2D 技巧通用)
+
+**保留**:`main.py` 的 `--api`(`list-plugins`/`run-plugin`) —— 它是"插件不许自己跑插件"的通用机制
+(§51), 宠物只是它的**唯一使用者**; 删宠物不动它。它的回归守卫原本在 `pet-overlay-test.py` 里,
+随测试一起没了 —— 已记在 AGENTS 规则 51(若再有插件用 `--api`, 谁用谁补守卫)。
+
+**验证**: `git grep` 全库(除 target/dist/package/testing/草稿)已无 `wgpet.*`/`pet-overlay-test`/`pet-dll-plugin-test`
+的活引用; `undefined-globals` RESULT: OK; `standalone-plugin-test` 7/7(宠物插件删了, 双模式清单少一个) / `example-plugin-test` 24/24 /
+`deps-test` 51/51 / `pure-state-harness` 全绿(宠物本来就不进 dist)。
+
 ---
 
 ## 2026-10-08 (第九十一轮: 网络工具"点哪个页签都没结果" —— 一个闭包捕获 bug, 从首次迁移起就在)
