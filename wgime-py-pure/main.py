@@ -404,6 +404,16 @@ if _EARLY_CFG.get('mode', 'ime') != 'tray':
     except Exception:
         pass
 
+# 第九十二轮 密码框检测要**尽早**开: 钩子在 +0.5s 就装上了, 而词库还要读 ~2s —— 这段时间
+# 用户在密码框里打字照样会被组字吞掉(中文进密码框)。这里按 _EARLY_CFG 先开, apply_config() 再对齐。
+try:
+    if _EARLY_CFG.get('password_en', True):
+        hook.PF_EN[0] = True
+        hook.PF_PROBE[0] = win.password_context
+        win.pf_configure(True, bool(_EARLY_CFG.get('password_uia', True)))
+except Exception:
+    pass
+
 # ---------- 词库加载与 UI 并行 (第四十轮) ----------
 # 读词库(热 ~1.0s / 冷 12-15s)原来**同步**排在 Tk/加载窗之后, 于是"能上屏"要等
 #   钩子(~0.5s) + Tk root + 加载窗(~0.5s) + 读词库(~1.0s)。
@@ -560,6 +570,13 @@ def apply_config():
     hook.configure(CFG.get('hotkeys'), CFG.get('ckeys'))   # hotkey_* / key_* -> 钩子线程 (对齐 C# LoadConfig)
     hook.VOICE_ON[0] = bool(CFG.get('voice'))              # 语音功能开着时热键/松键才吞 (第四十七轮)
     hook.VOICE_MODE[0] = (ime.mode == MODE_VOICE)
+    # 密码框检测 (第九十二轮): 开关 + 装探测函数给钩子线程 (config password_en / password_uia)
+    hook.PF_EN[0] = bool(CFG.get('password_en', True))
+    hook.PF_PROBE[0] = win.password_context
+    try:
+        win.pf_configure(hook.PF_EN[0], bool(CFG.get('password_uia', True)))
+    except Exception as e:
+        _dfn('passfield: configure failed %r' % (e,))
     # 反查码表(rev_wb)不做启动预热: 那 1.2s 纯 Python 循环会抢 GIL, 把"装钩子"这一步推迟 1.4s。
     # 改成首次真正需要时在**后台线程**里建 (engine.rev_wb_code -> warm_rev_wb), 输入路径永不阻塞。
 
@@ -619,7 +636,7 @@ def open_data_dir():
 
 VK = dict(F8=0x77, SPACE=0x20, BACK=0x08, ESC=0x1B, ENTER=0x0D, MINUS=0xBD, EQUALS=0xBB,
           LBRACKET=0xDB, RBRACKET=0xDD, TAP=0xF8, MODE=0xF9, TRAD=0xFA, MAKEWORD=0xFB, SEMI=0xBA, QUIT=0xFC,
-          PUNCT=0xFD, VOICE=0xF6, VOICE_UP=0xF7)
+          PUNCT=0xFD, VOICE=0xF6, VOICE_UP=0xF7, PF=0xF5)
 MODE_NAMES = ('混合', '拼音', '五笔', '词典', '语音')
 MODE_VOICE = 4                     # 「语音」模式: 不组字 (按键透传), 候选条显示录音/识别状态 (第四十七轮)
 
@@ -802,6 +819,8 @@ def _tray_api():
         'get_assoc': lambda: CFG.get('assoc', True),
         'togglecnpunct': lambda: toggle_cnpunct(),
         'get_cnpunct': lambda: CFG.get('cnpunct', True),
+        'togglepassword': lambda: toggle_password_en(),          # 「密码框用英文」(第九十二轮)
+        'get_password': lambda: CFG.get('password_en', True),
         'togglehideidle': lambda: toggle_hideidle(),
         'get_hideidle': lambda: CFG.get('hideidle', True),
         'toggledot': lambda: toggle_statedot(),          # 「状态提示点」(第六十九轮)
@@ -1813,6 +1832,22 @@ def toggle_cnpunct():
     _refresh_tray()
 
 
+def toggle_password_en():
+    """密码框自动英文 (第九十二轮): 焦点在密码框时不组字、按键原样给应用; 离开自动恢复。
+    config password_en 可关掉 (关掉后钩子连探测函数都不调)。"""
+    CFG['password_en'] = not CFG.get('password_en', True)
+    hook.PF_EN[0] = CFG['password_en']
+    try:
+        win.pf_configure(CFG['password_en'], bool(CFG.get('password_uia', True)))
+    except Exception as e:
+        _dfn('passfield: configure failed %r' % (e,))
+    _dfn('password_en=%s' % CFG['password_en'])
+    _notify('密码框自动英文', '已开启: 密码框里按键原样输入, 离开即恢复' if CFG['password_en']
+            else '已关闭: 密码框里也会组字 (中文会被当密码字符输入)')
+    _save_cfg('password_en', '1' if CFG['password_en'] else '0', '密码框自动英文')
+    _refresh_tray()
+
+
 def set_theme(name):
     CFG['theme'] = name
     bar.set_theme(name)
@@ -2583,6 +2618,11 @@ def handle(vk):
     if vk == VK['PUNCT']:                            # Ctrl+. 全/半角标点切换
         toggle_cnpunct()
         return
+    if vk == VK['PF']:                               # 第九十二轮: 焦点进了密码框, 把没上屏的拼音清掉
+        if ime.buf or ime.assoc_showing or ime.sym_cat:
+            reset()
+            _dfn('passfield: cleared pending composition (buf/link/panel)')
+        return
     if not ime.active:
         return
     # 语音识别结果待确认 (第四十七轮, voice_auto=0): 空格/回车/1 上屏, Esc 丢弃
@@ -3212,6 +3252,10 @@ else:
             win.ensure_caret_bg()
     except Exception:
         pass
+    try:
+        win.pf_start()            # 第九十二轮 密码框: 起焦点监视线程 (开关关着时是空操作)
+    except Exception as e:
+        _dfn('passfield: start failed %r' % (e,))
     if CFG.get('voice'):
         try:
             # 本地 whisper (voice_engine=whisper) 的常驻助手: 启动后台把模型载进来, 免得

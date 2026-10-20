@@ -1,5 +1,53 @@
 ---
 
+## 2026-10-21 (第九十二轮: 密码框自动英文 —— 焦点在密码框时不组字, 离开即恢复)
+
+**来由**: 用户"考虑一下怎么把输入在密码输入框的时候自动临时切换成英文"。
+
+**思路**: **不改模式, 只是不改吞键** —— 焦点在密码框时钩子把按键**原样透传**(字母/数字/标点/空格/退格都不吞,
+不全角标点、不选候选), 离开这个框自动恢复。所以"临时"和"恢复"都是 0 行状态机: 没有需要还原的东西
+(对比"临时切成英文模式再切回来": 一旦切窗口/崩溃就会留下错误的模式)。
+
+**两层检测**(主进程绝不初始化 COM/UIA, 守 §17):
+- **Win32 层(主进程内, 每个吞键判定一次, 带缓存)**: `GetGUIThreadInfo` 拿焦点控件 -> 类名是原生文本框
+  (`Edit`/`RichEdit*`/`WindowsForms10.*.EDIT`/`TEdit`…) 则看 `GWL_STYLE & ES_PASSWORD`, 再看
+  `EM_GETPASSWORDCHAR`(`SendMessageTimeoutW` + `SMTO_ABORTIFHUNG` + 40ms, 跨进程发消息绝不卡钩子线程)。
+  覆盖 Windows 登录/UAC、Outlook、KeePass、各种安装程序/客户端(绝大多数都是标准 EDIT)。
+- **UIA 层(独立子进程, `_EMBEDDED_PF_HELPER`)**: 浏览器/Electron/Qt 的密码框**不是独立 HWND**
+  (焦点落在 `Chrome_WidgetWin_1` 上), Win32 一点线索都没有 -> 让助手问 UIA 的焦点元素。
+  异步: 一个 120ms 的监视线程在焦点变化时发请求, 结论按 hwnd 缓存(明确的 30s / "看不出来" 6s),
+  打字路径**只读缓存、绝不等待**。
+
+**实测(这条最关键, 别再重复排查)**: 用 `Edge --app` 打开一个本地 `<input type=password>` 页面, 亲手问 UIA:
+- `GetFocusedElement` -> `ControlType=50004`(Edit), **`ClassName='password'`**(Chromium 把 input 的 **type**
+  放在 ClassName 里; 普通框是 `'text'`/`'email'`);
+- **`IsPassword`(30050) 一律 `VT_ERROR` —— Chromium 根本没实现这个属性**(不支持的属性和"不是密码框"
+  长得一模一样, 只看 IsPassword 会永远判"不是");
+- `ElementFromHandle(前台窗口)` 只给 `Pane(50033)`, 问它 IsPassword 毫无意义 ⇒ **必须用焦点元素**;
+- **第一次查询是凉的**: 助手刚起来那一下只回 `Pane`(22ms), 400ms 后再问才是 `Edit/password`(3ms)
+  ⇒ 助手内部没结论时就**就地重试 3 次(120ms 间隔)**, 别把"看不出来"甩给宿主再等 6s。
+
+**规则**(改动前先读):
+- 判定链 `verdict()`: ①UIA 给了 IsPassword 布尔值 -> 用它; ②否则 `ControlType==Edit 且 ClassName=='password'`
+  (Chromium 那条实测线索) -> True; ③Edit 但别的类名 -> False; ④根本不是 Edit -> None(看不出来)。
+- 宿主侧对"看不出来的类"返回 **None**, 不能返回 False —— 否则浏览器永远没机会走到 UIA 层(回归里钉着这条)。
+- 钩子线程只调 `win.password_context()`(**只读缓存**); 起助手/发请求一律在监视线程, 否则每键卡上百毫秒。
+- 探测函数抛异常一律当"不是"(检测失败绝不连累打字); 开关 `password_en` 关掉时**连探测函数都不调**。
+- 进密码框时若还有没上屏的拼音, 钩子塞一个合成码 `VK_PF(0xF5)` 给 main -> `reset()`, 免得残留候选
+  在离开密码框后被确认上屏。
+- IME 级热键(F8 开关、Ctrl+` 模式、Ctrl+Alt+Q)在密码框里**照旧生效** —— 它们不产生字符。
+- 配置: `password_en`(默认 1) / `password_uia`(默认 1, 置 0 就只认原生文本框、一个子进程都不起);
+  托盘「选项 → 密码框用英文」同一个开关。**python 版独有**, 已登记 §27(C# 版没有)。
+
+**验证**: 新回归 `wgime-py-pure\tests\passfield-test.py` **56 项全绿**(S 配置语义 10 / W 真建 Win32 控件 19 /
+H 钩子矩阵 11 / P 假助手走真 JSONL 路由 7 / V 判定规则 7 / R 真助手回 ready 3);
+**变异验证**: 把钩子那句 `if PF_EN[0] and _passfield():` 改成 `if False and …`, H1~H5 立刻全红(证明不是空转)。
+真机探针: `%TEMP%\wg-r92-passfield-probe.py`(离屏窗口 + `SetFocus`, 真焦点 -> 真 `ES_PASSWORD` 判 True)、
+`%TEMP%\wg-r92-uia-diag2.py`(Chromium 密码/文本/邮箱三种 input 的 UIA 属性)、`%TEMP%\wg-r92-d4.py`(连问 8 次看冷热)。
+另: 测试里加了一条硬断言 —— W 段建的窗口必须 `IsWindowVisible()==False`(测试绝不许在用户屏幕上弹窗)。
+
+---
+
 ## 2026-10-08 (第九十一轮补二: 同步远端"桌宠整体移除" + 修 `nettools-test` 的假红)
 
 **同步**: 远端 3 个提交(`3c7c811..238b753`)快进合入 —— 桌宠整体移除(`wgpet-rs/` 整个 Rust crate、

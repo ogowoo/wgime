@@ -2934,3 +2934,88 @@ subprocess.TimeoutExpired: ... wgpet.py  timed out after 5 seconds
    三路只有一路红，红的那路就是测试自己的驱动方式。
 3. 顺带：宠物删除后 `standalone-plugin-test` 从 8 项变 7 项（少一个双模式插件），AGENTS §4 的计数一并改了；
    `package\plugins\` 里的 `wgpet.dll`/`wgpet.py` 也删了（`package` 不入库，但用户跑的是那份）。
+
+## §D57 密码框自动英文（第九十二轮）
+
+**需求**：用户「考虑一下怎么把输入在密码输入框的时候自动临时切换成英文」。
+
+**设计取舍**：不走「临时切成英文模式再切回来」那条路 —— 那需要一个状态机去还原（切窗口/崩溃/用户手动
+按 F8 都会让它留下错误的模式）。改成**只改吞键**: 焦点在密码框时钩子把按键**原样透传**（字母/数字/标点/
+空格/退格都不吞，不全角标点、不选候选、不把空格当首候选），离开这个框自然恢复。零状态、零可见变化。
+唯一要额外做的：进框那一刻若还有没上屏的拼音，钩子塞合成码 `VK_PF(0xF5)` 给 main 的 `handle()` → `reset()`
+（否则那串残留候选会在回到普通输入框时被空格确认上屏）。
+
+**两层检测**（主进程绝不初始化 COM/UIA，守 §17）：
+
+1. **Win32 层（主进程内，钩子线程每键一次，带 2s 缓存）** —— `win.password_verdict(hwnd)`:
+   `focus_hwnd()` = `GetForegroundWindow` + `GetWindowThreadProcessId` + `GetGUIThreadInfo(hwndFocus)`;
+   类名（`win_class`）是原生文本框（`Edit` / `RichEdit*` / `WindowsForms10.*.EDIT` / `*Edit`）才继续:
+   ① `GWL_STYLE & ES_PASSWORD(0x20)`；② 否则 `EM_GETPASSWORDCHAR(0x00D2) != 0`
+   （很多程序只 `EM_SETPASSWORDCHAR` 不置样式位，实测两类都要看）。
+   **跨进程 `SendMessage` 必须带超时**: 用 `SendMessageTimeoutW(..., SMTO_ABORTIFHUNG, 40ms)` ——
+   钩子线程里一次无超时的 `SendMessage` 遇到不回话的目标就是**整个输入法停摆**（键盘钩子超 5s 被系统摘掉）。
+   超时/失败一律当"不是"（只有拿到非零字符才算命中，所以失败不会造成误判）。
+   **非原生类一律返回 `None`（看不出来）而不是 `False`** —— 否则浏览器/Qt 永远走不到 UIA 层。
+2. **UIA 层（独立子进程 `_EMBEDDED_PF_HELPER`）** —— 浏览器/Electron/Qt 的密码框**不是独立 HWND**
+   （焦点落在 `Chrome_WidgetWin_1` 这类宿主窗口上），Win32 一点线索都没有。
+   一个 120ms 的监视线程（`_pf_watch`，`pf_configure`/`pf_start` 起）在焦点变化时发一次 JSONL 请求，
+   助手回 `is_password` + `why`，宿主按 hwnd 缓存（明确结论 30s / "看不出来" 6s，都由
+   `password_context()` 读）。**打字路径只读缓存, 绝不等待**；起助手/发请求只在监视线程里做
+   （Popen 一个 python 子进程要 ~100ms，放钩子线程就是每键卡一下）。去抖 2s/控件，问不出结论后
+   退避到 10s（`_PF_TRIES`）。`password_uia=0` 时一个子进程都不起。
+
+**Chromium 实测（本轮最有价值的一条，别再重复排查）**：探针 `%TEMP%\wg-r92-uia-diag2.py` 用
+`Edge --app=<本地 html>`（独立 `--user-data-dir`，用完 `post_close` 关掉）+ 直接问 UIA：
+
+| input type | ControlType | ClassName | IsPassword(30050) |
+|---|---|---|---|
+| `password` | **50004**(Edit) | **`'password'`** | **VT_ERROR(5)** |
+| `text` | 50004 | `'text'` | VT_ERROR |
+| `email` | 50004 | `'email'` | VT_ERROR |
+
+- **Chromium 没实现 `UIA_IsPasswordPropertyId`** —— 它返回 `VT_ERROR`（"不支持"），和"不是密码框"长得
+  一模一样。只看 IsPassword 会**永远**判"不是"。真正能用的是 **`ClassName == 'password'`**：
+  Chromium 把 HTML input 的 `type` 放进了 UIA ClassName（`Name` 是 `id`）。
+- `ElementFromHandle(前台窗口)` 只给 `Pane(50033)`/`Document`，问它 IsPassword 毫无意义 ⇒ **必须
+  `GetFocusedElement`（vtable slot 8）**，`ElementFromHandle`（slot 6）只能当兜底。
+- **第一次查询是凉的**：助手刚起来那一下 `GetFocusedElement` 只回 `Pane`（22ms），400ms 后再问才是
+  `Edit/password`（3ms 起）。所以助手内部 `probe()` 没结论就**就地重试 3 次（120ms 间隔）**，
+  而不是把"看不出来"甩给宿主再等 6s（实测那样用户已经打了 4~5 个键，中文进密码框了）。
+- 判定规则（`verdict()`，回归 V 段钉着）：①UIA 给了布尔 IsPassword -> 用它；②否则
+  `ControlType==50004 且 ClassName=='password'` -> True；③Edit 但别的类名 -> False（明确不是）；
+  ④不是 Edit -> None。
+
+**宿主侧细节**：
+- 回包校验照 §17 那套：请求里带 `fg`，回包时 `GetForegroundWindow()` 变了就**丢**（结论属于旧窗口）；
+  `is_password: null` 时清掉去抖计时允许重问，并缓存成 6s 的弱结论。
+- `password_context()` 顺序：开关关 -> False；`password_verdict()` 有确定结论就用；否则查 UIA 缓存
+  （`[fg, 值, 时刻, ttl]`，`fg` 对不上不认）；再没有就 False（**绝不在钩子线程里探测**）。
+- 钩子侧：`hook.PF_EN[0]` + `hook.PF_PROBE[0]`（main 装 `win.password_context`）。探测函数抛异常一律当
+  "不是"（检测坏了不许连累打字）；`PF_EN=0` 时**连探测函数都不调**（回归 H10 钉着）。
+  位置在 `if ACTIVE[0]:` 的"Ctrl/Alt/Win 透传"之后、"候选键/标点/字母"之前 —— 所以 F8 / Ctrl+` /
+  Ctrl+Alt+Q 这些 **IME 级热键在密码框里照旧生效**（它们不产生字符），而一切会进候选的键全透传。
+- 配置 `password_en` / `password_uia`（都默认 1，白名单语义，非法值判关 —— 与 `keyfix`/`showcode` 一致；
+  注意值**大小写敏感**，`ON` 不算，这是既有约定，回归 S8b 钉着）；托盘「选项 → 密码框用英文」同一个开关
+  （`toggle_password_en()` 写 config + 气泡）。python 独有，已登记 AGENTS §27。
+
+**回归** `wgime-py-pure\tests\passfield-test.py` **56 项**：
+S 配置语义 10（含大小写约定）/ W 真建 Win32 控件 19（`ES_PASSWORD`、只设密码字符、Button→None、类名表、
+`password_context` 的焦点打桩 7 条、`IsWindowVisible()==False`）/ H 钩子矩阵 11（字母/数字/标点/空格/退格透传、
+F8 仍生效、探测抛异常、开关关掉零调用）/ P 假助手走真 JSONL 路由 7（真起子进程、缓存、fg 对不上不认、
+`password_uia=0` 不发请求）/ V 判定规则 7 / R 真助手回 `ready` 3。
+**变异验证**: 把钩子那句 `if PF_EN[0] and _passfield():` 改成 `if False and …` → H1~H5 立刻全红。
+
+**探针（都在 `%TEMP%`）**：
+- `wg-r92-passfield-probe.py` —— A 段不动焦点（真实前台 `focus_hwnd()` 与前台同线程）；B 段用**离屏**窗口
+  `SetFocus`（`AttachThreadInput` 绕前台锁）验证真 `ES_PASSWORD` → `password_context()` True、
+  普通 Edit → False、Button → False。
+- `wg-r92-uia-diag.py` / `wg-r92-uia-diag2.py` —— 直接把焦点元素的 ControlType/ClassName/IsPassword 打出来
+  （就是上表）。前者还走了 `ControlViewWalker` 5 层祖先（L0 是 input，L1 是 RootWebArea，L2+ 全是 Pane）。
+- `wg-r92-d4.py` —— 同一控件连问 8 次，看"第一次凉、之后热"。
+- ⚠ **这些探针会真的在屏幕上弹窗口**（Edge `--app` 页 + 离屏 `WS_POPUP|WS_VISIBLE` 窗口），用户当场抱怨过
+  「你这测试窗口出来时会有弹窗的」。所以**常驻回归里不许弹窗**：`passfield-test.py` 建的一律是没有
+  `WS_VISIBLE` 的窗口，并有一条硬断言 `IsWindowVisible()==False`（W0b）。要再跑浏览器探针前先问用户。
+
+**数字**：Win32 判定一次 `GetWindowThreadProcessId`+`GetGUIThreadInfo`+`GetClassNameW`+`GetWindowLongPtrW`
+≈ 几十微秒（2s 缓存挡住 `SendMessageTimeout`）；助手查询热态 3~5ms、冷态 22ms（重试后仍 <300ms）；
+监视线程 120ms 一拍、每拍只 3 个 user32 调用。

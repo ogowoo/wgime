@@ -28,6 +28,7 @@ VK_VOICE = 0xF6         # 合成: Ctrl+Alt+V 按下 (可配 hotkey_voice; 第四
 VK_VOICE_UP = 0xF7      # 合成: Ctrl+Alt+V 松开 (按住说话用)
 VK_QUIT = 0xFC          # 合成: Ctrl+Alt+Q 退出 (python 额外)
 VK_PUNCT = 0xFD         # 合成: Ctrl+. 全/半角标点切换 (python 额外)
+VK_PF = 0xF5            # 合成: 焦点进了密码框 —— 让 main 把没上屏的拼音/联想清掉 (第九十二轮)
 
 # ---------- 可配置快捷键 / 候选操作键 (对齐 C# KeyBordHook: hotkey_* / key_* ) ----------
 SHIFT_TAP = -1          # 哨兵: Shift 轻拍 (对齐 C# ModToggle = 0x80000000)
@@ -148,6 +149,10 @@ def _rebuild_swallow():
 
 _swallow = [set()]
 _swallow_pick = [set()]
+# 第九十二轮 密码框: 焦点在密码框时**一律透传**(不组字/不全角标点/不吞数字选候选),
+# 等于"临时切成英文"; 离开这个框自然恢复 —— 没改模式, 所以不需要还原。
+PF_EN = [False]          # 总开关 (main.apply_config 同步; 关 = 连探测函数都不调)
+PF_PROBE = [None]        # 探测函数 (main 装 win.password_context); None = 不做检测
 
 ACTIVE = [False]        # 输入法是否启用 (主线程写入, 钩子线程判定)
 COMPOSING = [False]     # 是否有拼音缓冲/联想 (主线程写入; 空缓冲时空格/退格/回车透传)
@@ -194,6 +199,18 @@ def _match_mods(mods):
 
 
 _hook = [None]
+
+
+def _passfield():
+    """现在这个焦点是不是密码框。探测函数由 main 装上(win.password_context), 抛异常一律当"不是"
+    —— 检测失败绝不能连累打字。"""
+    f = PF_PROBE[0]
+    if f is None:
+        return False
+    try:
+        return bool(f())
+    except Exception:
+        return False
 
 
 def _proc(nCode, wParam, lParam):
@@ -267,6 +284,12 @@ def _proc(nCode, wParam, lParam):
                             return 1
                         winkey = _key_state(0x5B) or _key_state(0x5C)
                         if ctrl or alt or winkey:              # 带 Ctrl/Alt/Win 的快捷键: 透传
+                            return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                        # 密码框 (第九十二轮): 一个字都不组, 全部原样给应用 —— 包括数字(否则会被当候
+                        # 选键吞掉)、标点(否则会变全角)、空格/退格。顺手让 main 清掉进框前的残留拼音。
+                        if PF_EN[0] and _passfield():
+                            if COMPOSING[0]:
+                                EVENTS.put(VK_PF)
                             return user32.CallNextHookEx(None, nCode, wParam, lParam)
                         # --- 组字/联想/符号面板中的候选操作键 (对齐 C# 的判定次序: 数字 -> 退格/取消/回车/首候选/翻页
                         #     -> 以词定字)。注意这些分支在 C# 里只要求 bare, **Shift 按着也照吞** (只有 a-z 与以词定字

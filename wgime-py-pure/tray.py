@@ -436,6 +436,10 @@ class Tray:
                                  pystray.MenuItem(L('全角标点  (Ctrl+.)', 'CN punctuation  (Ctrl+.)'),
                                                   self._on(self.api['togglecnpunct']),
                                                   checked=lambda _it: self.api['get_cnpunct']()),
+                                 # 第九十二轮: 密码框里不组字(等于临时英文), 离开自动恢复
+                                 pystray.MenuItem(L('密码框用英文', 'English in password fields'),
+                                                  self._on(self.api['togglepassword']),
+                                                  checked=lambda _it: self.api['get_password']()),
                                  pystray.MenuItem(L('空闲隐藏', 'Hide when idle'),
                                                   self._on(self.api['togglehideidle']),
                                                   checked=lambda _it: self.api['get_hideidle']()),

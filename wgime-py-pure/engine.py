@@ -216,6 +216,12 @@ def load_config(path):
                # (托盘「选项→状态提示点」或 `statedot = 1`)。
                statedot=False,
                trans=True,                     # 「译文」: 候选挂离线词典译文 + 无候选时补词典查询 (第四十四轮)
+               # 密码框自动英文 (第九十二轮): 焦点在密码框时钩子一律透传(不组字/不全角标点),
+               # 离开即恢复 —— 临时切换, 不改模式。
+               #   password_en:  总开关 (默认开)
+               #   password_uia: 浏览器/Electron/Qt 的密码框不是独立 HWND, Win32 看不出来,
+               #                 打开后由**子进程**问 UIA 的 IsPassword (默认开; 关掉就只认原生文本框)
+               password_en=True, password_uia=True,
                voice=False,                    # 语音输入 (第四十七轮): 默认关, 托盘「选项→语音输入」打开
                voice_engine='system',          # system / http / whisper / sherpa / cmd  (后两个是本地离线)
         voice_fallback='',              # 第二引擎: 与主引擎**同时开跑, 谁先成功用谁** (第六十六轮); 空=不用
@@ -339,6 +345,12 @@ def load_config(path):
                 cfg['paste'] = {'on': 1, 'always': 1, 'off': 2, 'key': 3, 'unicode': 3}.get(v, 0)
             elif k == 'keyfix':
                 cfg['keyfix'] = v in ('1', 'on', 'true')
+            # 密码框自动英文 (第九十二轮, python 独有): 白名单语义 —— 非法值判"关"(保守: 宁可
+            # 不检测, 也不要在用户没预期时改变打字行为), 缺省值在 cfg 的 dict 里。
+            elif k == 'password_en':
+                cfg['password_en'] = v in ('1', 'on', 'true')
+            elif k == 'password_uia':
+                cfg['password_uia'] = v in ('1', 'on', 'true')
             elif k == 'learnk':
                 try:
                     cfg['learnk'] = max(0, int(v))

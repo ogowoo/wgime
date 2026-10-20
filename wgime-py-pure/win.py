@@ -612,6 +612,461 @@ def get_ipc_caret():
         return _uia_el[0]
     return None
 
+
+# ---------------- 密码框检测 (第九十二轮) ----------------
+# 目的: 焦点在密码输入框时, 让钩子**原样透传**按键(不组字、不全角标点), 等于"临时切成英文";
+# 离开这个框立刻恢复 —— 不需要任何还原动作, 因为从头到尾**没改过模式**, 只是不吞键。
+# 为什么两层(主进程绝不初始化 COM/UIA, AGENTS §17):
+#   ① 主进程内纯 Win32: GetGUIThreadInfo -> 聚焦控件 -> 类名 + ES_PASSWORD + EM_GETPASSWORDCHAR。
+#      覆盖标准 Win32/WinForms/MFC/Delphi 文本框(Windows 登录/UAC、Outlook、KeePass、各种安装程序/客户端)。
+#   ② 浏览器/Electron/Qt 的密码框**不是独立 HWND**(焦点落在 Chrome_RenderWidgetHostHWND、Qt5xxQWindowIcon
+#      这类宿主窗口上), Win32 一点线索都没有 -> 让**子进程**问 UIA 的 IsPassword(30050)。
+#      全程异步: 监视线程在焦点变化时发一次请求, 结论按 hwnd 缓存; 打字路径只读缓存, 绝不等待、绝不弹窗。
+ES_PASSWORD = 0x0020
+EM_GETPASSWORDCHAR = 0x00D2
+UIA_IS_PASSWORD = 30050
+_PF_EN = [False]               # 总开关 (main.apply_config 同步; 关 = 一条相关 API 都不调)
+_PF_UIA = [True]               # 允许起 UIA 探测助手 (config password_uia=0 -> 只用 Win32 层)
+_PF_CACHE = {}                 # hwnd -> [cls, verdict(True/False/None), monotonic]
+_PF_UIA_CACHE = {}             # hwnd -> [fg, is_password, monotonic]
+_PF_REQ = {}                   # hwnd -> 上次发起探测的时刻 (去抖)
+_PF_TRIES = {}                 # hwnd -> 已问过几次 (问不出结论就退避, 别每 2s 白问一辈子)
+_PF_REQ_FG = {}                # hwnd -> 发起探测时的前台窗口 (回包校验)
+_PF_STARTED = [False]
+_PF_PROC = [None]; _PF_ID = [0]; _PF_LOCK = threading.Lock()
+_PF_T0 = [0.0]; _PF_LAST_START = [0.0]; _PF_FAIL = [0]
+PF_HELPER_SRC = [None]         # 测试钩子: 置成假助手源码即可验证 IPC 路由, 不必真跑 UIA
+
+user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+user32.SendMessageTimeoutW.argtypes = [ctypes.c_void_p, w.UINT, ctypes.c_size_t, ctypes.c_ssize_t,
+                                       w.UINT, w.UINT, ctypes.POINTER(ctypes.c_size_t)]
+user32.GetClassNameW.restype = ctypes.c_int
+user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+
+_GetWindowLongX = [None]
+
+
+def _gwl(hwnd, idx=-16):
+    """GetWindowLongPtrW (取 GWL_STYLE=-16 之类). 失败返回 -1."""
+    try:
+        f = _GetWindowLongX[0]
+        if f is None:
+            f = getattr(user32, 'GetWindowLongPtrW', None) or user32.GetWindowLongW
+            f.restype = ctypes.c_ssize_t
+            f.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            _GetWindowLongX[0] = f
+        return int(f(ctypes.c_void_p(hwnd), idx))
+    except Exception:
+        return -1
+
+
+def win_class(hwnd):
+    """控件类名 (GetClassNameW); 失败返回 ''。"""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        n = int(user32.GetClassNameW(ctypes.c_void_p(hwnd), buf, 256))
+        return buf.value if n else ''
+    except Exception:
+        return ''
+
+
+def edit_like_class(cls):
+    """是不是"原生文本框"类 —— 只有这类才谈得上 ES_PASSWORD/EM_GETPASSWORDCHAR。
+    别的类**一律结论"看不出来"**(None) -> 交给 UIA 层, 否则浏览器/Qt 永远没机会被认出来。"""
+    c = (cls or '').lower()
+    if not c:
+        return False
+    if c == 'edit' or c.startswith('richedit') or c.endswith('edit'):
+        return True                       # Edit / RichEdit20W / RichEdit50W / TEdit / WindowsForms10.*.EDIT? 否(见下)
+    if c.startswith('windowsforms10.edit') or c.startswith('windowsforms10.richedit'):
+        return True
+    return False
+
+
+def _password_char(hwnd):
+    """EM_GETPASSWORDCHAR != 0 也算密码框(有的程序只 EM_SETPASSWORDCHAR 不置 ES_PASSWORD)。
+    跨进程 SendMessage **必须带超时**: SMTO_ABORTIFHUNG + 40ms, 目标线程不回话时绝不卡住钩子线程;
+    超时/失败一律按 0 处理 —— 只有拿到非零字符才算命中, 所以失败不会造成误判。"""
+    try:
+        out = ctypes.c_size_t(0)
+        r = user32.SendMessageTimeoutW(ctypes.c_void_p(hwnd), EM_GETPASSWORDCHAR, 0, 0,
+                                       0x0002, 40, ctypes.byref(out))
+        return int(out.value) if r else 0
+    except Exception:
+        return 0
+
+
+def password_verdict(hwnd):
+    """单个控件的判定: True=密码框 / False=确定不是 / None=看不出来(该问 UIA)。
+    纯 Win32、进程内、无 COM。带 2s 缓存: 挡住"每个键一次 SendMessage", 也让"显示密码"的
+    勾选状态变化最多 2s 后生效。"""
+    now = _time.monotonic()
+    e = _PF_CACHE.get(hwnd)
+    if e is not None and now - e[2] < 2.0:
+        return e[1]
+    cls = win_class(hwnd)
+    if not edit_like_class(cls):
+        v = None
+    elif _gwl(hwnd) & ES_PASSWORD:
+        v = True
+    else:
+        v = bool(_password_char(hwnd))
+    if len(_PF_CACHE) > 300:
+        _PF_CACHE.clear()
+    _PF_CACHE[hwnd] = [cls, v, now]
+    return v
+
+
+def focus_hwnd():
+    """(前台窗口, 焦点控件)。焦点控件只能用 GetGUIThreadInfo 跨进程拿 (GetFocus 拿的是本线程的)。"""
+    try:
+        fg = int(user32.GetForegroundWindow())
+        if not fg:
+            return 0, 0
+        tid = int(user32.GetWindowThreadProcessId(ctypes.c_void_p(fg), None))
+        g = GUITHREADINFO()
+        g.cbSize = ctypes.sizeof(GUITHREADINFO)
+        if tid and user32.GetGUIThreadInfo(tid, ctypes.byref(g)) and g.hwndFocus:
+            return fg, int(g.hwndFocus)
+        return fg, fg
+    except Exception:
+        return 0, 0
+
+
+def password_context():
+    """**钩子线程每键调用** —— 现在这个焦点是不是密码框。绝不阻塞 (唯一可能等的地方是
+    EM_GETPASSWORDCHAR 的 40ms 超时, 且被 2s 缓存挡到最多每 2s 一次)。看不出来时顺手发一次
+    异步探测, 结论赶不上这次的按键就用"不是" —— 绝不让打字等 UIA。"""
+    if not _PF_EN[0]:
+        return False
+    fg, hw = focus_hwnd()
+    if not hw:
+        return False
+    v = password_verdict(hw)
+    if v is not None:
+        return v
+    c = _PF_UIA_CACHE.get(hw)
+    if c is not None and c[0] == fg:
+        ttl = c[3] if len(c) > 3 else 30.0
+        if _time.monotonic() - c[2] < ttl:
+            return bool(c[1])
+    # 不在这里发探测: 它是钩子线程(每键), 而起助手/发请求可能花上百毫秒。探测统一由
+    # _pf_watch 监视线程做 —— 它是常驻的, 焦点一变就先问, 结论通常在第一次按键之前就到。
+    return False
+
+
+_PF_SRC_ENV = 'WGIME_PF_HELPER_SRC'
+_PF_BOOTSTRAP = ("import os,sys\n"
+                 "sys.path[:]=[p for p in sys.path if p not in ('','.',os.getcwd())]\n"
+                 "exec(compile(os.environ.pop('%s'),'<wgime-pf-helper>','exec'))\n" % _PF_SRC_ENV)
+# 探测助手源码: 只干一件事 —— 问 UIA "焦点元素 IsPassword?"。独立进程, 主进程不碰 COM。
+# 协议: 一行一个 JSON 请求 {"id":N,"op":"password","hwnd":H,"fg":F} -> 回 {"type":"result",...,"is_password":true/false/null}
+_EMBEDDED_PF_HELPER = r'''# -*- coding: utf-8 -*-
+"""WgIme password probe helper. UIA lives only in this process."""
+import ctypes, ctypes.wintypes as w, json, os, sys, time
+
+def emit(o):
+    sys.stdout.write(json.dumps(o, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+VT_BOOL, VT_I4, VT_BSTR = 11, 3, 8
+UIA_IS_PASSWORD = 30050
+
+class GUID(ctypes.Structure):
+    _fields_ = [("Data1", w.DWORD), ("Data2", w.WORD), ("Data3", w.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+class VARIANT(ctypes.Structure):   # x64 上共 24 字节; 少了会写越界
+    _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort), ("r2", ctypes.c_ushort),
+                ("r3", ctypes.c_ushort), ("v", ctypes.c_byte * 16)]
+
+def guid(s):
+    g = GUID()
+    if ctypes.windll.ole32.CLSIDFromString(s, ctypes.byref(g)) < 0:
+        raise OSError("CLSIDFromString " + s)
+    return g
+
+def pv(p):
+    try:
+        return int(p.value or 0) if hasattr(p, "value") else int(p or 0)
+    except Exception:
+        return 0
+
+def call(p, i, rt, args, *xs):
+    v = ctypes.cast(p, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    addr = pv(v[i])
+    if addr < 0x10000:
+        raise OSError("bad vtable slot %d" % i)
+    return ctypes.WINFUNCTYPE(rt, ctypes.c_void_p, *args)(addr)(p, *xs)
+
+ole32 = ctypes.OleDLL("ole32")
+CLSID_CUIA = guid("{FF48DBA4-60EF-4201-AA87-54103EEF594E}")
+IID_IUIA = guid("{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}")
+
+def prop(el, pid):
+    """读一个 UIA 属性, 返回 (vt, 值). vt 说明"不支持"(VT_ERROR=5/VT_EMPTY=0)时值为 None。"""
+    var = VARIANT()
+    hr = call(el, 10, ctypes.c_long, [ctypes.c_int, ctypes.POINTER(VARIANT)], pid, ctypes.byref(var))
+    if hr < 0:
+        return -1, None
+    raw = bytes(var.v)
+    if var.vt == VT_BOOL:
+        return var.vt, bool(ctypes.c_short.from_buffer_copy(raw[0:2]).value)
+    if var.vt == VT_I4:
+        return var.vt, ctypes.c_int.from_buffer_copy(raw[0:4]).value
+    if var.vt == VT_BSTR:
+        ptr = ctypes.c_void_p.from_buffer_copy(raw[0:8]).value
+        return var.vt, (ctypes.wstring_at(ptr) if ptr else "")
+    return var.vt, None
+
+def verdict(control_type, cls, is_pw):
+    """**判定规则**(本机实测, 见 AGENTS-DETAIL §D57):
+    ① UIA 直接给了 IsPassword 的布尔值 -> 用它 (原生控件/WinForms 之类);
+    ② 否则看 Chromium 的特征: ControlType=Edit(50004) 且 **ClassName 就是 input 的 type**
+       实测: password 框 ClassName='password', 普通框 'text'/'email', 且 IsPassword 一律 VT_ERROR
+       (Chromium 没实现这个属性) —— 所以 'password' 就是能用上的那个信号;
+    ③ Edit 却有别的 ClassName -> 明确不是密码框(False);
+    ④ 连焦点元素都不是 Edit -> 看不出来(None), 让上层当"不是"并稍后重问。"""
+    if is_pw is not None:
+        return is_pw
+    c = (cls or "").strip().lower()
+    if control_type == 50004:                 # UIA_EditControlTypeId
+        return c == "password"
+    return None
+
+def probe_once(auto, hwnd):
+    """8=GetFocusedElement(关键: 浏览器/Qt 的密码框不是独立 HWND, 只能问"当前焦点元素";
+    ElementFromHandle 拿到的只是 Pane, 问它 IsPassword 永远没有意义)。拿不到焦点才退 6。"""
+    el = ctypes.c_void_p()
+    try:
+        hr = call(auto, 8, ctypes.c_long, [ctypes.POINTER(ctypes.c_void_p)], ctypes.byref(el))
+        if (hr < 0 or not el.value) and hwnd:
+            call(auto, 6, ctypes.c_long, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)],
+                 ctypes.c_void_p(int(hwnd)), ctypes.byref(el))
+        if not el.value:
+            return None, "no-element"
+        ct = prop(el, 30003)[1]
+        cls = prop(el, 30005)[1]
+        vt, ispw = prop(el, UIA_IS_PASSWORD)
+        v = verdict(ct, cls, ispw)
+        why = ("ispassword" if vt == VT_BOOL else "classname") + ":ct=%s,cls=%r" % (ct, cls)
+        return v, why
+    finally:
+        if el.value:
+            try:
+                call(el, 2, w.ULONG, [])
+            except Exception:
+                pass
+
+def probe(auto, hwnd, tries=3):
+    """**第一次查询往往是凉的**: 实测(§D57) 助手刚起来那一下, GetFocusedElement 只回一个
+    Pane(ct=50033, 22ms); 400ms 后再问就是 ct=50004/ClassName='password'(3ms)。所以没结论时
+    就地重试(120ms 间隔), 不是把"看不出来"甩给宿主 —— 宿主那边再等 6s 去重问就太晚了。"""
+    last = (None, "no-element")
+    for i in range(tries):
+        try:
+            v, why = probe_once(auto, hwnd)
+        except Exception as e:
+            return None, "exc:%r" % (e,)
+        if v is not None:
+            return v, why + ("" if i == 0 else " retry%d" % i)
+        last = (v, why)
+        if i + 1 < tries:
+            time.sleep(0.12)
+    return last
+
+def main():
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, w.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoCreateInstance.argtypes = [ctypes.POINTER(GUID), ctypes.c_void_p, w.DWORD,
+                                       ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+    ole32.CoCreateInstance.restype = ctypes.c_long
+    ole32.CoInitializeEx(None, 0)
+    auto = ctypes.c_void_p()
+    hr = ole32.CoCreateInstance(ctypes.byref(CLSID_CUIA), None, 1, ctypes.byref(IID_IUIA), ctypes.byref(auto))
+    if hr < 0 or not auto.value:
+        emit({"type": "error", "stage": "CoCreateInstance", "hr": hr})
+        return 2
+    emit({"type": "ready", "pid": os.getpid()})
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            q = json.loads(line)
+            t0 = time.perf_counter()
+            hwnd = int(q.get("hwnd", 0) or 0)
+            v, why = probe(auto, hwnd)
+            emit({"type": "result", "id": int(q.get("id", 0) or 0), "op": "password", "hwnd": hwnd,
+                  "fg": int(q.get("fg", 0) or 0), "is_password": v, "why": why,
+                  "ms": round((time.perf_counter() - t0) * 1000, 2)})
+        except Exception as e:
+            emit({"type": "result", "op": "password", "ok": False, "error": repr(e)})
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def _pf_reader(proc):
+    """助手回包线程: 只认 {"op":"password"}; hwnd/前台窗口对不上就丢 (= 焦点已经换了, 结论作废)。"""
+    try:
+        for line in proc.stdout:
+            try:
+                o = _json.loads(line)
+                if o.get('type') != 'result' or o.get('op') != 'password':
+                    continue
+                hw = int(o.get('hwnd', 0) or 0)
+                if not hw:
+                    continue
+                want = _PF_REQ_FG.pop(hw, None)
+                cur = int(user32.GetForegroundWindow())
+                if want is not None and want != cur:
+                    _dlog('pf stale reject hwnd=%s want=%s cur=%s' % (hw, want, cur))
+                    continue
+                v = o.get('is_password')
+                # 结论缓存: [前台窗口, 结论, 时刻, 有效期]. "看不出来"(None)只压 6s(快了再接再厉),
+                # 明确结论压 30s —— 否则在浏览器普通输入框里打字会每 2s 白问一次 UIA。
+                if v is None:
+                    _PF_UIA_CACHE[hw] = [cur, False, _time.monotonic(), 6.0]
+                    _PF_REQ.pop(hw, None)
+                else:
+                    _PF_UIA_CACHE[hw] = [cur, bool(v), _time.monotonic(), 30.0]
+                if len(_PF_UIA_CACHE) > 300:
+                    _PF_UIA_CACHE.clear()
+                _dlog('pf verdict hwnd=%s is_password=%r why=%r ms=%s'
+                      % (hw, v, o.get('why'), o.get('ms')))
+            except Exception as e:
+                _dlog('pf IPC parse error ' + repr(e))
+    finally:
+        alive = _time.monotonic() - _PF_T0[0]
+        if alive < 3.0:
+            _PF_FAIL[0] += 1
+            _dlog('pf helper died after %.2fs (fail #%d/3)' % (alive, _PF_FAIL[0]))
+        else:
+            _PF_FAIL[0] = 0
+        _dlog('pf helper exited rc=%r' % (proc.poll(),))
+        if _PF_PROC[0] is proc:
+            _PF_PROC[0] = None
+
+
+def _pf_start():
+    if _PF_PROC[0] is not None and _PF_PROC[0].poll() is None:
+        return True
+    if _PF_FAIL[0] >= 3:
+        return False
+    now = _time.monotonic()
+    if now - _PF_LAST_START[0] < 1.0:
+        return False
+    _PF_LAST_START[0] = now
+    try:
+        flags = getattr(_sp, 'CREATE_NO_WINDOW', 0)
+        env = dict(os.environ)
+        env[_PF_SRC_ENV] = PF_HELPER_SRC[0] or _EMBEDDED_PF_HELPER
+        p = _sp.Popen([_sys.executable, '-u', '-c', _PF_BOOTSTRAP], stdin=_sp.PIPE, stdout=_sp.PIPE,
+                      stderr=_sp.DEVNULL, text=True, encoding='utf-8', bufsize=1,
+                      creationflags=flags, env=env)
+        _PF_PROC[0] = p
+        _PF_T0[0] = now
+        _th.Thread(target=_pf_reader, args=(p,), name='WgImePassFieldIPC', daemon=True).start()
+        _dlog('pf helper started pid=%d' % (p.pid,))
+        return True
+    except Exception as e:
+        _dlog('pf start failed ' + repr(e))
+        return False
+
+
+def request_password_probe(hwnd, fg=0):
+    """异步问一次助手(去抖 2s/控件). **绝不阻塞**: 管道满/助手没起来都只是这次没有结论。"""
+    if not (_PF_EN[0] and _PF_UIA[0]) or not hwnd:
+        return 0
+    now = _time.monotonic()
+    tries = _PF_TRIES.get(hwnd, 0)
+    gap = 2.0 if tries < 3 else 10.0          # 问不出来就退避 (仍在同一控件上则不无限逼近)
+    if now - _PF_REQ.get(hwnd, 0.0) < gap:
+        return 0
+    if not _pf_start():
+        return 0
+    with _PF_LOCK:
+        p = _PF_PROC[0]
+        if p is None:
+            return 0
+        _PF_ID[0] += 1
+        rid = _PF_ID[0]
+        try:
+            fg = fg or int(user32.GetForegroundWindow())
+            data = (_json.dumps({'id': rid, 'op': 'password', 'hwnd': int(hwnd), 'fg': int(fg)},
+                                separators=(',', ':')) + '\n').encode('utf-8')
+            _PF_REQ[hwnd] = now
+            _PF_REQ_FG[hwnd] = int(fg)
+            _PF_TRIES[hwnd] = tries + 1
+            if len(_PF_TRIES) > 300:
+                _PF_TRIES.clear()
+            fd = p.stdin.fileno()
+            try:
+                os.set_blocking(fd, False)
+            except Exception:
+                pass
+            os.write(fd, data)
+        except Exception as e:
+            _dlog('pf send failed ' + repr(e))
+            _PF_REQ.pop(hwnd, None)
+            _PF_REQ_FG.pop(hwnd, None)
+            return 0
+        return rid
+
+
+def _pf_watch():
+    """监视线程: 焦点一变就(在"看不出来"的类上)先问一次 UIA —— 用户点进框到开始打字之间
+    通常有几百毫秒, 等真按键时结论往往已经到了。**不做任何阻塞/绘图**, 只是个 120ms 的轮询。
+    同一控件上结论会过期(30s/6s), 过期后这里负责补问 —— 否则在密码框里待久了会"变回中文"。
+    去抖/退避都在 request_password_probe 里, 所以这里可以放心每拍都调。"""
+    last = (0, 0)
+    while True:
+        try:
+            if not (_PF_EN[0] and _PF_UIA[0]):
+                # 只用 Win32 层时这个线程没有任何事可做: 别白跑 8 次/秒的 GetGUIThreadInfo
+                # (UIA 层关掉后浏览器那一路本来就不问了), 慢速看一眼开关是否被改。
+                _time.sleep(0.5)
+                continue
+            if _PF_EN[0]:
+                fg, hw = focus_hwnd()
+                if hw:
+                    last = (fg, hw)
+                    if password_verdict(hw) is None:
+                        c = _PF_UIA_CACHE.get(hw)
+                        ttl = (c[3] if len(c) > 3 else 30.0) if c else 0.0
+                        if c is None or c[0] != fg or _time.monotonic() - c[2] >= ttl:
+                            request_password_probe(hw, fg)
+        except Exception:
+            pass
+        _time.sleep(0.12)
+
+
+def pf_configure(enabled, uia=True):
+    """开关 (main.apply_config / 托盘). 关掉时顺手干掉助手进程, 不留孤儿。"""
+    _PF_EN[0] = bool(enabled)
+    _PF_UIA[0] = bool(uia)
+    if not _PF_EN[0] and _PF_PROC[0] is not None:
+        try:
+            _PF_PROC[0].kill()
+        except Exception:
+            pass
+        _PF_PROC[0] = None
+    if _PF_EN[0]:
+        pf_start()
+
+
+def pf_start():
+    """起监视线程 (幂等; 开关关着就什么都不做, 零开销)。"""
+    if not _PF_EN[0] or _PF_STARTED[0]:
+        return False
+    _PF_STARTED[0] = True
+    _th.Thread(target=_pf_watch, name='WgImePassField', daemon=True).start()
+    _dlog('passfield watch started (uia=%s)' % (_PF_UIA[0],))
+    return True
+
+
 def get_caret_pos():
     # Recovery v2 keeps keyboard/input path simple and deterministic.
     """光标屏幕坐标(主线程, 绝不阻塞). 顺序: UIA缓存(首选,后台刷新) -> GetGUIThreadInfo ->

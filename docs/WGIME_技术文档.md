@@ -485,6 +485,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild.ps1
 `build-wgime-pure.py` 的 `MODULES`（单文件内嵌 12 个项目模块），回归里有一条断言 dist 的 `MODULES` 行含
 `'deps'` —— 免得"加了模块忘了重建 dist"。
 
+### 12.5 密码框自动英文（第九十二轮，Python 独有）
+
+**行为**：焦点在密码输入框时钩子**不吞键**——字母/数字/标点/空格/退格全部原样交给程序（不全角标点、
+不选候选），离开即恢复。**不改模式**，所以没有需要还原的状态；进框时若还有没上屏的拼音，钩子发合成码
+`VK_PF(0xF5)` 让主线程 `reset()`。
+
+**两层检测**（主进程绝不初始化 COM/UIA，守 §17 那条）：
+
+| 层 | 在哪 | 覆盖 | 代价 |
+|---|---|---|---|
+| Win32 | 主进程（钩子线程每键一次，2s 缓存） | 标准 Win32/WinForms/MFC/Delphi 文本框：Windows 登录/UAC、Outlook、KeePass、安装程序 | 几个 user32 调用，几十 µs |
+| UIA | 独立子进程 `_EMBEDDED_PF_HELPER`（JSONL，源码走环境变量） | 浏览器 / Electron / Qt（密码框不是独立 HWND，Win32 看不出来） | 120ms 监视线程发一次请求，热态 3~5ms；**结论缓存**，打字路径只读缓存 |
+
+- Win32 判据：`GetGUIThreadInfo` 拿焦点控件 → 类名是原生文本框才看 `GWL_STYLE & ES_PASSWORD` 与
+  `EM_GETPASSWORDCHAR`（后者走 `SendMessageTimeoutW`+`SMTO_ABORTIFHUNG`+40ms，跨进程绝不无超时 `SendMessage`）。
+- **触类必须返回"看不出来"**（`None`）而不是 `False`，否则浏览器永远走不到 UIA 层。
+- **实测（Chromium）**：UIA 的 `IsPassword`(30050) 返回 `VT_ERROR`（没实现），真正能用的是
+  `ControlType==50004 且 ClassName=='password'`（Chromium 把 input 的 `type` 放进 ClassName）；
+  `ElementFromHandle` 只给 `Pane`，必须用 `GetFocusedElement`；**第一次查询是凉的**（只回 Pane）⇒ 助手内部重试。
+- 配置 `password_en` / `password_uia`（都默认 1）。细节与实测数字见 AGENTS §56 / §D57，
+  回归 `tests\passfield-test.py`（56 项）。
+
+
 **实测（2026-09-21 开发机）**：present = `pypdf`/`psutil`/`cryptography`/`sherpa_onnx`；
 missing = `argostranslate`（可一键装）、`faster_whisper`（只报告）。
 
