@@ -2915,3 +2915,22 @@ subprocess.TimeoutExpired: ... wgpet.py  timed out after 5 seconds
 **回归**：`tests\nettools-test.py`（14 项，打桩全部网络出口不联网，无桌面 SKIP）。
 核心断言：每页输出落本页 + **本机页不被污染**（那才是 bug 的镜像）。
 连带：`tools.py` 在内嵌清单 ⇒ 重建 dist + package，dist-sync `mismatches=0`。
+### §D56 续：`nettools-test` 的假红 —— `event_generate` 需要一次绘制（第九十一轮补）
+
+同步远端（宠物整体移除）后 `nettools-test` 从"偶尔过"变成"稳定 4/14 红"（失败集合还每次不一样），
+一度以为修复被回退了。实测排除：`tools.py` 里 `def do_split(log=log)` 等绑定都在，真鼠标点击（`SetCursorPos`
++ `mouse_event`）一切正常，**单独探针用 `win.update()` 泵事件也一切正常** ⇒ 产品没问题，是**测试驱动**的问题。
+
+**根因**：测试用 `event_generate` 点按钮。切页后页面是刚 `place()` 出来的，**若 Tk 还没经过一次绘制**，
+`event_generate` 的事件会被丢掉（Tk 只把事件投给 viewable 的窗口）。真鼠标点击没有这个问题 ——
+用户不可能在页面还没画出来时点到按钮。所以这是纯测试假红。
+
+**修法**：每次动作点击前先 `win.update()`（让 Tk 画一轮），等条件的循环里也加 `win.update()`。
+改完连跑 3 次全绿（14/14）。
+
+**教训**：
+1. 测试用 `event_generate` 点"刚显示出来的控件"时，**必须先 `update()` 一次**；否则会得到与产品无关的假红。
+2. 判"是产品 bug 还是测试 bug"的最快判别法：**真鼠标 vs `event_generate` vs 直接调处理器**三路对照 ——
+   三路只有一路红，红的那路就是测试自己的驱动方式。
+3. 顺带：宠物删除后 `standalone-plugin-test` 从 8 项变 7 项（少一个双模式插件），AGENTS §4 的计数一并改了；
+   `package\plugins\` 里的 `wgpet.dll`/`wgpet.py` 也删了（`package` 不入库，但用户跑的是那份）。

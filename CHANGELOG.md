@@ -1,5 +1,28 @@
 ---
 
+## 2026-10-08 (第九十一轮补二: 同步远端"桌宠整体移除" + 修 `nettools-test` 的假红)
+
+**同步**: 远端 3 个提交(`3c7c811..238b753`)快进合入 —— 桌宠整体移除(`wgpet-rs/` 整个 Rust crate、
+`plugins/wgpet.py`+`wgpet.dll`、两个宠物回归、`config.txt` 里的 `pet_scene`)、`build-package.ps1` 的附件复制注释改为通用说法。
+本地补了两件远端带不走的事: ①`package\plugins\` 里还留着 `wgpet.dll`/`wgpet.py`(`package` 不入库, 但用户跑的就是那份) ⇒ 删掉;
+②`AGENTS.md` §4 的 `standalone-plugin-test` 计数 8 → 7(少一个双模式插件)。
+
+**假红排查(值得留档)**: 同步后 `nettools-test` 稳定 4/14 红, 且失败集合每次不同 —— 但 `tools.py` 的
+`def do_split(log=log)` 等修复都还在, 真鼠标点击(`SetCursorPos`+`mouse_event`)和 `win.update()` 泵的独立探针
+全都正常 ⇒ **产品没问题, 是测试驱动的问题**。
+
+**根因**: 测试用 `event_generate` 点按钮; 切页后页面是刚 `place()` 出来的, **Tk 还没经过一次绘制**时
+`event_generate` 的事件会被丢掉(Tk 只把事件投给 viewable 窗口)。真鼠标点击不受影响(用户不可能在页面
+画出来之前点到按钮)。
+
+**修法**: 每次动作点击前先 `win.update()` 让 Tk 画一轮, 等条件的循环里也加 `win.update()`。连跑 3 次 14/14 全绿。
+并把"三路对照法"(真鼠标 / `event_generate` / 直接调处理器 —— 只有一路红说明是测试驱动问题)写进 AGENTS-DETAIL §D56 续。
+
+**验证**: `undefined-globals` RESULT: OK / `tests\pure-state-harness.py` 全绿 / `deps-test` 51/51 /
+`example-plugin-test` 24/24 / `standalone-plugin-test` 7/7(宠物删了少一个) / `pyshot-plugin-test` 70/70 /
+`dsl-verbs-test` 43/43 / `nettools-test` 14/14(连跑 3 次) / `update-test` 36/36 / `embedded-isolation-test` 14/14;
+`wgime-dist-sync-check` `mismatches=0`(本轮无内嵌模块改动, dist/package 不需重建)。
+
 ## 2026-09-25 (第九十一轮补: 桌面宠物整体移除)
 
 **来由**: 用户"把桌面宠物移除了吧" —— 形象对着姿态图改了几轮(白脸罩/小黑豆眼/体积球渐变都上了)

@@ -6,8 +6,10 @@ r"""网络工具窗体回归 (第九十一轮): 每个页签的输出必须落�
 所以**所有页签的按钮输出全写进最后一页(本机)的日志**: 用户在 Ping/子网/… 页点按钮, 永远看不到结果
 (用户原话: "做子网查询等等完全看不到结果")。修法: 每个处理函数默认参数绑定 `log=log`。
 
-本测试: 打桩所有网络出口(不联网), 逐页真点击(或事件)驱动, 断言输出落在**本页**且**本机页不被污染**。
-无桌面(SKIP 整体)。
+本测试: 打桩所有网络出口(不联网), 逐页**真点击**驱动, 断言输出落在**本页**且**本机页不被污染**。
+驱动方式是"等条件"而不是"等固定毫秒": 点页签后等该页 Text 变成 mapped 再点按钮、点完等该页 Text
+出现预期内容 —— 否则切页尚未映射时 `event_generate` 会丢事件(第九十一轮补真踩过这个 flaky)。
+全程留在 `mainloop()` 里(后台线程的 `win.after` 只有在真 mainloop 下才合法)。
 
 跑法: python wgime-py-pure\tests\nettools-test.py
 """
@@ -87,48 +89,73 @@ def main():
     def text(i):
         return built[i].tb.get('1.0', 'end')
 
-    steps = []
+    def visible(i):
+        def c():
+            try:
+                return bool(built[i].tb.winfo_ismapped())
+            except Exception:
+                return False
+        return c
 
-    def step(ms, name, fn):
-        steps.append((ms, name, fn))
+    def got(i, needle):
+        def c():
+            try:
+                return needle in text(i)
+            except Exception:
+                return False
+        return c
 
-    # 子网页: 同步处理器
-    step(200, '子网 chip', lambda: click(chip('子网')))
-    step(150, '子网 拆分', lambda: click(chip('拆分')))
-    step(150, '子网 速查表', lambda: click(chip('速查表')))
-    step(150, '子网 ▶', lambda: click(chip('▶')))
-    # Ping 页: 次数改成 1 再点(省时间)
-    def ping_page():
-        click(chip('Ping', 0))
+    jobs = []
 
-    def ping_set_cnt():
-        cnt = [w for w in chips]  # noqa
-        pass
+    def job(desc, fn, cond, timeout=3.0):
+        jobs.append((desc, fn, cond, timeout))
 
-    def ping_click():
-        click(chip('Ping', 1))
+    def run_next():
+        if not jobs:
+            report()
+            return
+        desc, fn, cond, timeout = jobs.pop(0)
+        try:
+            # 关键: 先让 Tk 画一轮再点。刚 place 出来的页(切页后)若还没经过一次绘制,
+            # `event_generate` 的事件会被丢掉(真鼠标点击不受影响 —— 这只是测试驱动的问题)。
+            # 第九十一轮补实测: 少了这句, 第 2~5 个页签的按钮点击全丢(稳定 4/14 红)。
+            win.update()
+            fn()
+        except Exception as ex:
+            check('步骤 %s 不抛异常' % desc, False, repr(ex))
+        t0 = time.time()
 
-    step(150, 'Ping chip', ping_page)
-    step(150, 'Ping 按钮', ping_click)
-    step(2500, '等 ping', lambda: None)
-    # Tracert
-    step(100, 'Tracert chip', lambda: click(chip('Tracert')))
-    step(100, 'Tracert 开始', lambda: click(chip('开始路由跟踪')))
-    step(900, '等 tracert', lambda: None)
-    # DNS
-    step(100, 'DNS chip', lambda: click(chip('DNS')))
-    step(100, 'DNS 查询', lambda: click(chip('查询')))
-    step(700, '等 dns', lambda: None)
-    # 端口
-    step(100, '端口 chip', lambda: click(chip('端口')))
-    step(100, '端口 检测', lambda: click(chip('检测')))
-    step(700, '等端口', lambda: None)
-    # HTTP
-    step(100, 'HTTP chip', lambda: click(chip('HTTP')))
-    step(100, 'HTTP 请求', lambda: click(chip('请求')))
-    step(700, '等 http', lambda: None)
-    # 本机
-    step(100, '本机 chip', lambda: click(chip('本机')))
+        def wait():
+            win.update()            # 同上: 等条件期间也让它继续画
+            if cond() or time.time() - t0 > timeout:
+                run_next()
+            else:
+                win.after(30, wait)
+
+        win.after(30, wait)
+
+    # --- 子网(全同步) ---
+    job('切子网', lambda: click(chip('子网', 0)), visible(5), 2.0)
+    job('点拆分', lambda: click(chip('拆分')), got(5, '192.168.1.64/26'))
+    job('点速查表', lambda: click(chip('速查表')), got(5, '/32'))
+    job('点范围转CIDR', lambda: click(chip('▶')), got(5, '-- 范围转 CIDR --'))
+    # --- Ping ---
+    job('切Ping', lambda: click(chip('Ping', 0)), visible(0), 2.0)
+    job('点Ping按钮', lambda: click(chip('Ping', 1)), got(0, '统计:'), 8.0)
+    # --- Tracert ---
+    job('切Tracert', lambda: click(chip('Tracert')), visible(1), 2.0)
+    job('点开始路由跟踪', lambda: click(chip('开始路由跟踪')), got(1, 'ttl=3'))
+    # --- DNS ---
+    job('切DNS', lambda: click(chip('DNS')), visible(2), 2.0)
+    job('点查询', lambda: click(chip('查询')), got(2, 'A www.baidu.com = 1.2.3.4'))
+    # --- 端口 ---
+    job('切端口', lambda: click(chip('端口')), visible(4), 2.0)
+    job('点检测', lambda: click(chip('检测')), got(4, 'open'))
+    # --- HTTP ---
+    job('切HTTP', lambda: click(chip('HTTP')), visible(3), 2.0)
+    job('点请求', lambda: click(chip('请求')), got(3, '200 OK'))
+    # --- 本机 ---
+    job('切本机', lambda: click(chip('本机')), visible(6), 2.0)
 
     def report():
         ben = text(6)
@@ -142,7 +169,9 @@ def main():
               repr(ping_txt[-120:]))
         click(chip('Ping', 0))      # 切回 Ping 页再点清除
         win.update()
-        click([c for c in chips if str(c.cget('text')) == '清除' and c.winfo_ismapped()][0])
+        clears = [c for c in chips if str(c.cget('text')) == '清除' and c.winfo_ismapped()]
+        if clears:
+            click(clears[0])
         win.update()                # 清除走 after(0) marshal: update() 才会收(update_idletasks 不收)
         win.update()
         check('Ping: 清除清的是本页', len(text(0).strip()) <= 1, repr(text(0)[:60]))
@@ -155,24 +184,9 @@ def main():
               '/26' not in ben and 'reply' not in ben and 'ttl=' not in ben
               and '200 OK' not in ben and '1.2.3.4 = ' not in ben,
               repr(ben[-120:]))
-        # 换页后缓冲还在 (独立缓冲)
         check('缓冲独立: 子网页内容切走切回不丢', '192.168.1.64/26' in text(5))
         win.destroy()
         root.quit()
-
-    def run_next():
-        if not steps:
-            report()
-            return
-        ms, _name, fn = steps.pop(0)
-        try:
-            fn()
-        except Exception as ex:
-            check('步骤 %s 不抛异常' % _name, False, repr(ex))
-        if steps:
-            win.after(ms, run_next)
-        else:
-            win.after(ms, report)
 
     win.after(300, run_next)
     root.mainloop()
