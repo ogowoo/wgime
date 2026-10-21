@@ -171,6 +171,11 @@ python wgime-py-pure\tests\passfield-test.py         # 密码框自动英文: �
   3. 发完**回验**：线上 python zip 的 SHA256 与 stage 相同、内层 `wgime-py.py` 与 dist 逐字符一致、body 无 `?`、tag=本地 HEAD。
 - **中文坑**：release body 用 `HttpWebRequest` 显式 UTF-8 字节发（脚本已内置）；**别用 `Invoke-RestMethod`+`ConvertTo-Json`**（PS 5.1 把中文变 `?`）。
 - **Token**：脚本依次 `-Token`→`GITHUB_TOKEN`→`GH_TOKEN`→凭据管理器→`git credential fill`（放最后，GCM 可能弹 UI 卡死）；本机 WinINET 代理常年失效，脚本已置 `DefaultWebProxy=$null`。
+- **本机推送(第九十二轮实测可行, 别再跟 GCM 死磕)**：`GITHUB_TOKEN`(`ghp_…`, 带 push 权限)在**机器级**环境变量里, 但 harness 会话可能拿不到(进程启动早于该变量/未继承) ⇒ 显式从注册表读: `$env:GITHUB_TOKEN = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN','Machine')`, 然后
+  `git -c credential.helper= -c credential.helper='!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f' push origin master`
+  (PowerShell 里 **必须用单引号** — helper 里的 `$GITHUB_TOKEN` 要留给 sh 展开; 用完查 `[Environment]` 里的值, 不要把 token 打进日志/提交)。
+  仓库内 `http.proxy = http://127.0.0.1:10808` 那条**已于第九十二轮删除**(本机代理已不需要, 留着只会 `schannel: failed to receive handshake`); 先 `ghp_` 只出现在凭据里, 别 `git grep` 到。
+  另有 `gh` CLI 未安装 ⇒ 只能走 token helper, 不要指望 `gh auth git-credential`。
 - **暂存纪律**：**别用 `git add -A -- wgime-py-pure`** —— 会把 `wgime-py-pure\testing\`（**永不入库**的草稿目录）一起暂存进去；提交前 `git diff --cached --name-only` 过一眼，并查密钥：`git grep -I -l --cached 'ghp_'`（注意 `--cached` 必须写在**模式之前**，否则 git 直接报错、那条错误会被 `Measure-Object` 当成"命中 1"，白紧张一场）。
 - 版本 tag：`v1.0.0` ~ `v1.2.15`（后续版本递增）。插件更新不单独发 release。
   **发版前必跑**（第七十六轮新增）：`python tests\release-assets-check.py --version X --assets <stage>` ——

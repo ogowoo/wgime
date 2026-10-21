@@ -3012,9 +3012,10 @@ F8 仍生效、探测抛异常、开关关掉零调用）/ P 假助手走真 JSO
 - `wg-r92-uia-diag.py` / `wg-r92-uia-diag2.py` —— 直接把焦点元素的 ControlType/ClassName/IsPassword 打出来
   （就是上表）。前者还走了 `ControlViewWalker` 5 层祖先（L0 是 input，L1 是 RootWebArea，L2+ 全是 Pane）。
 - `wg-r92-d4.py` —— 同一控件连问 8 次，看"第一次凉、之后热"。
-- ⚠ **这些探针会真的在屏幕上弹窗口**（Edge `--app` 页 + 离屏 `WS_POPUP|WS_VISIBLE` 窗口），用户当场抱怨过
-  「你这测试窗口出来时会有弹窗的」。所以**常驻回归里不许弹窗**：`passfield-test.py` 建的一律是没有
-  `WS_VISIBLE` 的窗口，并有一条硬断言 `IsWindowVisible()==False`（W0b）。要再跑浏览器探针前先问用户。
+- ⚠ **这些探针会真的在屏幕上弹窗口**（Edge `--app` 页 + 离屏 `WS_POPUP|WS_VISIBLE` 窗口），用户提醒过
+  「你这测试窗口出来时会有弹窗的」（用户后来说自己没看到；不管怎样这条规矩要留）。所以**常驻回归里不许弹窗**：
+  `passfield-test.py` 建的一律是没有 `WS_VISIBLE` 的窗口，并有一条硬断言 `IsWindowVisible()==False`（W0b）。
+  要再跑浏览器探针前先问用户。
 
 **数字**：Win32 判定一次 `GetWindowThreadProcessId`+`GetGUIThreadInfo`+`GetClassNameW`+`GetWindowLongPtrW`
 ≈ 几十微秒（2s 缓存挡住 `SendMessageTimeout`）；助手查询热态 3~5ms、冷态 22ms（重试后仍 <300ms）；
