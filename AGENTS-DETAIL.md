@@ -1479,6 +1479,18 @@ tag 仍 `56f7ffe`）= 三个 zip 的 SHA256 与 stage 全同、body 无 `?` 且�
 逐字节同；这条正是 §D35 那个"单文件自称旧版本"bug 的**反向证明**（修之前这里必被 `verify_source` 拒绝）。
 探针 `%TEMP%\wg-r85c-verify.py`（20 项全过）。
 
+**v1.2.16（id 445997412，tag = 本地 HEAD `e474319`，2026-11-15）**：攒了 40 个提交（第 86~92 轮）后的第一版。
+预检 `release-assets-check.py --version 1.2.16` **28/28**（含"单文件 VERSION == 发布版本"那条）。
+回验脚本 `%TEMP%\wg-r93-verify.ps1`（**16/16**）：release id 445997412、tag ref type = **commit**（非 annotated，
+所以 `/git/ref/tags/<tag>` 直接给 commit sha，不用再解一层）、三个线上资产 SHA256 与 `.release-stage-v1216\` 全同、
+python 包内层 `wgime-py.py` 与 dist 逐字符同且自称 `1.2.16-py`、**raw 通道**
+（`raw.githubusercontent.com/ogowoo/wgime/v1.2.16/wgime-py-pure/dist/wgime-py.py`）与 dist 逐字节同、body 无 `?`
+且含资产表 sha256。**这次两处新增动作值得记住**: ①发版前必须**备份 `package\config.txt`**（`build-package.ps1`
+会清空 package 并用仓库模板覆盖 —— 那是用户在用的活配置），发完再还原；②回验脚本**只能写 ASCII**
+（PS 5.1 按 ANSI 读 .ps1，含中文 + UTF-8 无 BOM 会当场 ParserError）。
+顺带: `Set-Content -Encoding UTF8` 在 PS 5.1 写 BOM ⇒ 提交信息开头会多一个零宽字符，用 `git commit --amend -F <无 BOM 文件>` 修。
+
+
 ## §D29 第八十一轮：把普通单文件 Python 应用改造成插件（规范 §8.8 + 可跑模板 + 回归）
 
 ### 1) 这一轮补的是什么

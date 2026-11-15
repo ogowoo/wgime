@@ -1,5 +1,44 @@
 ---
 
+## 2026-11-15 (发布 v1.2.16 —— 把第 86~92 轮攒的活发出去：密码框自动英文 / 网络工具修复 / PyShot 插件化)
+
+**发布**: tag `v1.2.16` = 本地 HEAD `e474319`；release id **445997412**；三个资产与 `.release-stage-v1216\`
+SHA256 全同；发布前 `release-assets-check.py --version 1.2.16` **28/28**。
+
+**为什么这版不能省**: 线上 v1.2.15 是 9-21 发的，之后攒了 **40 个提交**（第 86~92 轮），用户一个都拿不到
+（自动更新只认 Releases）。这版把这些发出去，用户能感知的有：
+- **密码框自动英文**（第九十二轮，Python 独有）：焦点在密码框时**不组字**、按键原样交给程序，离开即恢复；
+  Win32 层看 `ES_PASSWORD`/`EM_GETPASSWORDCHAR`，浏览器/Electron/Qt 由探测助手问 UIA（Chromium 的
+  `IsPassword` 是 `VT_ERROR`，真信号是 `ClassName=='password'`）。
+- **网络工具"点哪个页签都没结果"**（第九十一轮）：7 个页签共用同一个 `log` 变量的闭包 bug，自首次迁移起就在。
+- **PyShot 截图标注接成插件**（第八十九轮）+ 随包同步到上游 **2.18.1**（第九十轮补四）：单文件双模。
+- **步骤 DSL `start` 动词** + 路径默认按 wgime 目录解析 + 导出 `%WGIME_DIR%`（第九十轮）。
+- **插件宿主 API `--api`**（第八十六轮）：修"点工具没反应"的真因。
+- **桌宠整体移除**（第九十一轮补）：第 86~90 轮的试验代码/插件/配置/回归全部清掉。
+
+**发版动作（含两条这次才定下的纪律）**:
+1. `main.VERSION` → `1.2.16-py`（`WGIME_VERSION` 由构建期从它抠出来写在 dist 头部）；
+2. **先备份 `package\config.txt`** → `build-package.ps1` 重建 dist + package（**它会清空 package 并用仓库模板
+   覆盖 config.txt，而那是用户在用的活配置**）→ 发完版把备份还原回去。备份 `%TEMP%\wg-r93-live-config-backup.txt`
+   （13884 B，无 `sk-`、无启用中的 `stt_*`）。
+3. `tests\build-release-assets.ps1 -Version 1.2.16` → 三个 zip（bat 1.65 MB / ps1 25.99 MB / python 24.99 MB）；
+4. 预检 **28/28** → 提交推送（`e474319`）→ `publish-release.ps1`（body 里带资产表 sha256，供自动更新的
+   asset 通道核对）。
+
+**回验（真 GitHub，`%TEMP%\wg-r93-verify.ps1`，16/16 全绿）**: release id 445997412、tag `v1.2.16` 的
+ref type = **commit**（轻量标签，不用再解一层）、三个线上资产 SHA256 与 stage **全同**、python 包内层
+`wgime-py.py` 与 `dist\wgime-py.py` **逐字符同**且自称 `1.2.16-py`、**raw 通道**
+（`raw.githubusercontent.com/ogowoo/wgime/v1.2.16/wgime-py-pure/dist/wgime-py.py`，自动更新的首选路径）
+与 dist 逐字节同、body 无 `?` 且资产表里三条 SHA256 齐全。
+
+**这次踩到/新记的两条**:
+- `Set-Content -Encoding UTF8` 在 PS 5.1 **写 BOM** ⇒ 那次提交信息开头多了个零宽字符；用无 BOM 文件 +
+  `git commit --amend -F` 修掉再 `--force-with-lease` 重推（`ba60469` 被改写成 `778858e`）。
+- 回验脚本**必须纯 ASCII**：PS 5.1 按 ANSI 读 `.ps1`，含中文 + UTF-8 无 BOM 会当场 `ParserError`（与 §5 规则 2 同因）。
+  第一版就是因为这个直接跑不起来。
+
+---
+
 ## 2026-10-21 (第九十二轮: 密码框自动英文 —— 焦点在密码框时不组字, 离开即恢复)
 
 **来由**: 用户"考虑一下怎么把输入在密码输入框的时候自动临时切换成英文"。
