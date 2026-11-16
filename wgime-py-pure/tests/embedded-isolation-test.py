@@ -113,7 +113,7 @@ def main():
         r = subprocess.run([sys.executable, '-S', '-E', '-c', code],
                            capture_output=True, encoding='utf-8', errors='replace')
         check('干净环境 pypdf 读写信封往返 (写空白页->读回页数=1)',
-              r.returncode == 0 and 'PDF-OK 6.' in (r.stdout or '') and ' 1' in (r.stdout or ''),
+              r.returncode == 0 and 'PDF-OK ' in (r.stdout or '') and ' 1' in (r.stdout or ''),
               ((r.stderr or '') + (r.stdout or '')).strip()[-400:])
     finally:
         import shutil

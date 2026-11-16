@@ -385,9 +385,11 @@ if _EARLY_CFG.get('mode', 'ime') != 'tray':
         _dfn('early hook configure err %r' % e)
     try:
         _EARLY_HOOK_OK = bool(hook.start())
-        hook.set_active(bool(_EARLY_CFG.get('starton', True)))
-        _dfn('early hook ok=%s (installed before Tk/dict load; ACTIVE=%s)'
-             % (_EARLY_HOOK_OK, bool(_EARLY_CFG.get('starton', True))))
+        # 引擎未就绪时保持透明放行，避免先吞下按键再积压 2-3 秒后集中上屏。
+        # Engine 就绪后立即恢复配置中的启动状态。
+        hook.set_active(False)
+        _dfn('early hook ok=%s (installed before Tk/dict load; ACTIVE deferred until engine ready)'
+             % (_EARLY_HOOK_OK,))
     except Exception as e:
         _EARLY_HOOK_OK = False
         _dfn('early hook start err %r' % e)
@@ -530,6 +532,9 @@ if _engine_err:
 engine = _engine_box.get('engine')
 if engine is None:                         # 线程没起起来 (极端环境): 老实同步读一次
     engine = Engine(DICT_DIR, DATA_DIR)
+# 词库可用后才开始截获输入；启动加载期间的按键一直由前台应用直接处理，不再进入等待队列。
+if _EARLY_HOOK_OK:
+    hook.set_active(bool(_EARLY_CFG.get('starton', True)))
 _dfn('startup: engine load=%.0fms (对齐 C# 的启动计时日志)' % engine.load_ms)
 if _splash is not None:
     try:
@@ -1642,8 +1647,13 @@ def effective_keyfix():
 
 
 def inject(text):
+    # 第一笔上屏分段计时：区分繁简转换、模式判断、固定 keyup 等待和 Win32 注入耗时。
+    first_inject = not getattr(inject, '_first_logged', False)
+    t0 = time.perf_counter() if first_inject else 0.0
     text = engine.to_trad(text, ime.trad)
+    t1 = time.perf_counter() if first_inject else 0.0
     m = effective_paste_mode()
+    t2 = time.perf_counter() if first_inject else 0.0
     if m == 1:                                       # 剪贴板粘贴 (提权/UIPI 回退)
         win.paste_text(text)
         _dfn('paste %r' % text)
@@ -1664,6 +1674,12 @@ def inject(text):
     else:
         n = win.send_unicode(text)
     _dfn('inject %r sent=%s' % (text, n))
+    if first_inject:
+        inject._first_logged = True
+        t3 = time.perf_counter()
+        _dfn_always('perf: first inject total=%.1fms trad=%.1fms mode=%.1fms wait+send=%.1fms mode=%s fix=%s sent=%s'
+                    % ((t3 - t0) * 1000, (t1 - t0) * 1000, (t2 - t1) * 1000,
+                       (t3 - t2) * 1000, m, fix, n))
 
 
 # ---------- 状态机 ----------
@@ -3173,6 +3189,10 @@ def _maybe_admin_hint():
 
 
 def poll():
+    # 首次进入主循环时留下明确时间点，用于区分“启动初始化慢”和“按键处理/上屏慢”。
+    if not getattr(poll, '_first_logged', False):
+        poll._first_logged = True
+        _dfn_always('perf: first poll entered; keyboard queue=%s' % hook.EVENTS.qsize())
     try:
         # 语音: VAD 自动停 / 识别结果 (后台线程入队, 此处主线程执行) —— 第四十七轮
         try:
@@ -3203,7 +3223,8 @@ def poll():
                     a()
         except Exception:
             pass
-        for _ in range(64):
+        # 限制单轮主线程处理预算，避免输入突发时长时间阻塞 tkinter 重绘；积压事件由后续 8ms tick 继续消费。
+        for _ in range(24):
             try:
                 vk = hook.EVENTS.get_nowait()
             except Exception:

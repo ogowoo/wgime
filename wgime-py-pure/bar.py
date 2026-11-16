@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """bar.py — tkinter 无边框置顶候选条 (真透明圆角 transparentcolor, 跟随光标, 分页指示, 双主题, 无边框)."""
 import os
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -72,6 +73,22 @@ class CandBar:
         self._anchor = None
         self._ipc_place_token = 0
         self._window_anchor = {}      # hwnd -> stable fallback anchor
+        self._canvas_warmed = False
+        # Tk/Canvas/字体的首次 Tcl 调用可能集中卡在第一键；主循环空闲时提前完成冷启动。
+        self.root.after_idle(self._warm_canvas)
+
+    def _warm_canvas(self):
+        """在候选条仍隐藏时预热 Canvas 与两套字体，避免第一键承担 Tk 冷启动成本。"""
+        if self._canvas_warmed:
+            return
+        try:
+            self._measure(self._fc, 'WgIme abc 0123')
+            self._measure(self._fd, '1.候选文字')
+            item = self.canvas.create_text(-1000, -1000, text='预热', font=self._fd)
+            self.canvas.delete(item)
+            self._canvas_warmed = True
+        except Exception:
+            pass
 
     def set_theme(self, name):
         if name in THEMES:
@@ -119,8 +136,15 @@ class CandBar:
             pass
 
     def show(self, header, code, cands, sel, page=0, total=1, follow=True, fixed=None):
+        _show_t0 = time.perf_counter()
+        _request_ms = 0.0
+        _layout_ms = 0.0
+        _position_ms = 0.0
+        _caret_source = 'none'
         if follow and cands:
+            _request_t0 = time.perf_counter()
             win.request_caret_refresh('bar.show code=%s cands=%d' % (code, len(cands)))
+            _request_ms = (time.perf_counter() - _request_t0) * 1000.0
         # 进入时窗口是否已映射(未隐藏): 用于"刚显示(从隐藏恢复)则直接贴目标, 不做从旧位置的平滑滑动".
         was_visible = False
         try:
@@ -134,14 +158,10 @@ class CandBar:
                 self._hide_after = None
         except Exception:
             pass
-        # 先唤醒窗口(即使后续因位置滞回提前 return, 窗口也已显示; 否则 withdrawn 态永远显示不出).
-        try:
-            self.top.deiconify()
-        except Exception:
-            pass
+        # 不在绘制前唤醒窗口；尺寸、内容和位置全部提交后再一次性显示，
+        # 避免 Windows 合成旧画布、透明尾部或尚未完成圆角的中间帧。
         t = THEMES[self.theme]
         c = self.canvas
-        c.delete('all')
         # 候选显示截断: 超长词(整句/长词)截断 + 省略号, 避免候选条无限宽
         wa = win.screen_workarea()
         # 候选条最大宽度: 不铺满屏, 封顶 min(屏幕宽-24, 880px); ≥240
@@ -180,9 +200,10 @@ class CandBar:
             last = parts
             for n in range(24, 3, -2):        # 第五十一轮: 截断下限 8 -> 4 字 (原来 8 字仍可能远超 max_w,
                 last = [(w if len(w) <= n else w[:n] + '…') + h for (w, h) in parts]   # 窗口被硬钳后
-                line2 = self._pad                                                      # 尾部候选直接被裁掉)
-                for i2, cnd in enumerate(last):
-                    line2 += self._measure(self._fd, '%d.%s' % (i2 + 1, cnd)) + 16
+                # 宽度规划只跨 Tcl 边界测量一次整行；原实现每轮逐候选 measure，
+                # 冷缓存时最多触发 4 tier * 11 长度 * N 候选次同步 Tcl 调用。
+                probe = '  '.join('%d.%s' % (i2 + 1, cnd) for i2, cnd in enumerate(last))
+                line2 = self._pad + self._measure(self._fd, probe) + max(0, len(last) - 1) * 8
                 if line2 <= max_w or n <= 4:
                     break
             clipped = last
@@ -192,6 +213,13 @@ class CandBar:
         w = max(line1 + ind_w + 18, line2 + self._pad, 120)
         w = min(w, max_w)                              # 钳制到候选条最大宽度, 不再无限长
         h = 54
+        _layout_ms = (time.perf_counter() - _show_t0) * 1000.0
+        # Canvas 重绘和 Toplevel.geometry 是独立提交；高频联想刷新时先隐藏旧帧，
+        # 显式同步 Canvas 尺寸，并在全部绘制和定位完成后一次性提交。
+        if was_visible:
+            self.top.withdraw()
+        c.configure(width=w, height=h)
+        c.delete('all')
         # 圆角底 (fill=主题底; 四角透明由 transparentcolor 提供)
         self._round_rect(c, 0, 0, w - 1, h - 1, 10, fill=t['bg'])
         # header + code (行1)
@@ -228,6 +256,7 @@ class CandBar:
             fg=win.user32.GetForegroundWindow()
             pos=win.get_ipc_caret()
             if pos:
+                _caret_source = 'helper-cache'
                 cx,cy=pos
                 ra=win.workarea_at(cx,cy)
                 x,y=cx,cy+6
@@ -235,12 +264,15 @@ class CandBar:
                 # No fresh helper result yet. Keep current visible position, or use deterministic fallback once.
                 same_window = (self._anchor is not None and self._anchor[2] == fg)
                 if was_visible and same_window:
+                    _caret_source = 'visible-anchor'
                     x,y=self.top.winfo_x(),self.top.winfo_y()
                     ra=win.workarea_at(x,y)
                 elif fg in self._window_anchor:
+                    _caret_source = 'window-anchor'
                     x,y=self._window_anchor[fg]
                     ra=win.workarea_at(x,y)
                 else:
+                    _caret_source = 'sync-fallback'
                     base=win.get_caret_pos()
                     cx,cy=base if base else (100,100)
                     ra=win.workarea_at(cx,cy)
@@ -256,8 +288,8 @@ class CandBar:
             # Consume the helper result after it arrives. Later keystrokes invalidate older callbacks.
             self._ipc_place_token += 1
             tok=self._ipc_place_token
-            self.top.after(35, lambda: self._ipc_reposition(w,h,tok))
-            self.top.after(80, lambda: self._ipc_reposition(w,h,tok))
+            # 单次延迟复位已足够消费 helper 结果；取消第二次重复定位，避免每次按键额外触发布局。
+            self.top.after(50, lambda: self._ipc_reposition(w,h,tok))
         elif _shell:
             # 开始菜单/搜索类 UI: 固定屏幕右下角并贴着任务栏上方(避开浮窗, 不遮挡中央)
             ra = win.screen_workarea()
@@ -289,6 +321,7 @@ class CandBar:
             if cy < ra.top:
                 cy = ra.top
             self.top.geometry('%dx%d+%d+%d' % (w, h, cx, cy))
+        _position_ms = (time.perf_counter() - _show_t0) * 1000.0 - _layout_ms
         # 记录实际几何位置供低通平滑使用(之前 _last_geom 从未赋值 -> 平滑没生效).
         # 只在窗口已映射且坐标合理时记录, 避免首次/隐藏时读到 0/0 污染平滑起始点.
         try:
@@ -296,9 +329,16 @@ class CandBar:
                 self._last_geom = (self.top.winfo_x(), self.top.winfo_y())
         except Exception:
             pass
+        # 隐藏状态下先处理 Canvas 尺寸、geometry 和绘制队列，再一次性显示完整帧。
+        self.top.update_idletasks()
         self.top.deiconify()
         # 第六十九轮: 必须写**顶层外框**(GA_ROOT) —— winfo_id() 是 TkChild 子窗口, 写它等于没生效
         win.set_topmost(win.top_level_hwnd(self.top.winfo_id()))   # 强制 topmost 最顶(Win11 开始菜单不压候选框)
+        _total_ms = (time.perf_counter() - _show_t0) * 1000.0
+        try:
+            win._dlog('bar.show: request=%.2fms layout=%.2fms position=%.2fms present=%.2fms total=%.2fms caret=%s visible=%s' % (_request_ms, _layout_ms, _position_ms, max(0.0, _total_ms - _layout_ms - _position_ms), _total_ms, _caret_source, was_visible))
+        except Exception:
+            pass
 
     def _load_pos(self):
         """读上次拖到/粘到的位置 (C# `LoadPos`: DataDir\\pos.txt = "x,y"). 读不出就返回 None."""

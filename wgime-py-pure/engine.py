@@ -1459,30 +1459,30 @@ class Engine:
     #  改一处漏一处的风险比省几行大)
 
     def save_freq(self):
-        # 锁内做快照(防 UI 线程 learn/learn_assoc 并发写被打断), 锁外写盘(写盘不阻塞学习)
+        # 锁内仅复制可变数据，排序和写盘移到锁外，避免学习线程因大字典排序长时间等待。
         try:
             with self._save_lock:
-                snaps = []
-                lasts = []
-                for m in range(3):
-                    snaps.append(sorted(self.freq_m[m].items(), key=lambda kv: -kv[1])[:20000])
-                    lasts.append(list(self.lastpick_m[m].items())[:20000])
-                assoc_snap = sorted(self.assoc.items(), key=lambda kv: -sum(kv[1].values()))[:20000]
+                freq_items = [list(self.freq_m[m].items()) for m in range(3)]
+                last_items = [list(self.lastpick_m[m].items()) for m in range(3)]
+                assoc_items = [(k, dict(v)) for k, v in self.assoc.items()]
         except (OSError, RuntimeError, ValueError):
             return
         try:
-            for m in range(3):
-                with open(os.path.join(self.data_dir, 'userdict_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
-                    for k, v in snaps[m]:
-                        f.write('%s %d\n' % (k, v))
-                with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % MODE_SUFFIX[m]), 'w', encoding='utf-8') as f:
-                    for k, v in lasts[m]:
-                        f.write('%s %s\n' % (k, v))
+            snaps = [sorted(items, key=lambda kv: -kv[1])[:20000] for items in freq_items]
+            lasts = [items[:20000] for items in last_items]
+            assoc_snap = sorted(assoc_items, key=lambda kv: -sum(kv[1].values()))[:20000]
+            for freq_rows, last_rows, suffix in zip(snaps, lasts, MODE_SUFFIX):
+                with open(os.path.join(self.data_dir, 'userdict_%s.txt' % suffix), 'w', encoding='utf-8') as f:
+                    for k, v in freq_rows:
+                        print('%s %d' % (k, v), file=f)
+                with open(os.path.join(self.data_dir, 'lastpick_%s.txt' % suffix), 'w', encoding='utf-8') as f:
+                    for k, v in last_rows:
+                        print('%s %s' % (k, v), file=f)
             with open(os.path.join(self.data_dir, 'assoc.txt'), 'w', encoding='utf-8') as f:
                 for k, m in assoc_snap:
                     tops = sorted(m.items(), key=lambda kv: -kv[1])[:8]
-                    f.write('%s\t%s\n' % (k, ' '.join('%s:%d' % (w, c) for w, c in tops)))
-        except OSError:
+                    print('%s	%s' % (k, ' '.join('%s:%d' % (w, c) for w, c in tops)), file=f)
+        except (OSError, RuntimeError, ValueError):
             pass
 
     # ---------- candidate assembly (对齐 ShowCharatar) ----------
