@@ -1,5 +1,41 @@
 ---
 
+## 2026-11-16 (第九十三轮: 同步远端"输入卡顿 + 候选条性能"提交, 并补上它的测试入口)
+
+**同步**: 远端 1 个提交 `fe0dd39 fix(python): prevent input freezes and speed candidate bar`(作者 OgOwoo),
+快进合入(本地当时 = `6b97e42`, 无冲突)。
+
+**远端改了什么（逐条）**:
+1. **启动期间不再吞键**: 钩子早装时 `hook.set_active(False)`, 等 `Engine` 读完词库才 `set_active(starton)`
+   （原来启动那 1~2 秒里按键被吞进队列、随后集中上屏，手感是"卡一下然后突然蹦出一串字"）。
+2. **`poll()` 单轮事件预算 64 → 24**: 输入突发时不再长时间占着主线程（剩下的下一拍 8ms 继续消费），
+   Tk 重绘不会被饿死。
+3. **`Engine.save_freq()` 锁内只做快照**: 原来在锁内排序三个模式各 20000 条 + 联想表，学习线程得干等；
+   现在排序与写盘全在锁外。
+4. **候选条"一次提交"**: 可见刷新时先 `withdraw()` → `canvas.configure(width,height)` → `delete('all')` →
+   绘制 → `geometry()` → `update_idletasks()` → `deiconify()`；宽度规划改成**整行拼一次 `_measure`**
+   （原来逐候选 measure，冷缓存时一次 show 能触发上千次同步 Tcl 调用）；`_ipc_reposition` 只排一次（50ms）。
+   另加 `after_idle(_warm_canvas)` 在主循环空闲时预热 Canvas/字体 —— 第一键不再扛 Tk 冷启动。
+5. **caret helper 的失败冷却 8.0s → 0.8s**（跟随重试更积极）。
+6. 两条 always-on 诊断: `perf: first poll entered`（键盘队列长度）与
+   `perf: first inject total=..ms trad=..ms mode=..ms wait+send=..ms` —— 以后"第一次上屏慢"先看这两行。
+
+**本地补的**:
+- 新回归 `wgime-py-pure/tests/test_bar_render.py` **只有 unittest 入口** —— 直接 `python test_bar_render.py`
+  会**一行不跑、rc=0**（= 一个不会失败的测试）。补了 `if __name__ == "__main__": sys.exit(main())`，
+  直接跑现在 **14/14** 项（7 条 AST 结构断言 + 3 组真建 `CandBar` 的 Canvas/Toplevel 尺寸一致 + bbox 不越界
+  + 四角未被全窗口矩形覆盖）；unittest 入口照旧（`python -m unittest discover -s wgime-py-pure\tests -p "test_bar_render.py"`）。
+- `package\wgime-py.py` 刷新到新 dist（用户在用那份；**`package\config.txt` 是活配置，一个字节没动**）。
+- dist 一致性自检: 13 个内嵌模块与磁盘逐字节一致、main.py 新记号在、`dist == package`。
+
+**验证**: `test_bar_render` 14/14 / `undefined-globals` 0（26 文件）/ `pure-state-harness` 全绿 /
+`passfield-test` 56/56 / `embedded-isolation-test` 14/14。
+
+**注意**: 版本号仍是 `1.2.16-py` ⇒ **线上 v1.2.16 的资产里没有这批修复**（只进了仓库与 `package\`）。
+要让用户拿到，得再发一个 **v1.2.17**。
+
+---
+
 ## 2026-11-15 (发布 v1.2.16 —— 把第 86~92 轮攒的活发出去：密码框自动英文 / 网络工具修复 / PyShot 插件化)
 
 **发布**: tag `v1.2.16` = 本地 HEAD `e474319`；release id **445997412**；三个资产与 `.release-stage-v1216\`

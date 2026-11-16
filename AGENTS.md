@@ -26,11 +26,9 @@ WgIme = 免安装单文件悬浮输入法（拼音/五笔/混合/英汉词典）
 | `release\` | 纯成品目录 | 成品 + 码表 txt + config/tools + docs + plugins，不放 build/test |
 | `AGENTS-DETAIL.md` | **本文件的细节附录**（实测数字/探针清单/历史轮次来龙去脉） | 本文件有 64KB 注入上限；正文只留规则，动手前按指针去读对应章节（§D2 性能、§D3 状态速览） |
 
-> **运行模式（ime/tray）**：wgtray 已于 2026-09 退役并收敛为 wgime 的运行模式——每个分发
-> 文件(bat/ps/py)都由 `config.txt mode = ime|tray` 决定形态(缺省 ime)。C# 侧在 WordBoard 内
-> 用 `TrayMode` 静态标志(读自 config)控制: tray 时 `OnLoad` 跳过 `Hook.Start()`、候选条窗体隐藏、
-> 托盘菜单切工具风格、`RestartInMode()` 写 config+重启; python 侧 `main.is_tray_mode()`/`switch_mode()`
-> 同样处理。托盘菜单「运行模式」切换。原 wgtray 构建脚本/文件已删(git 历史保留)。
+> **运行模式（ime/tray）**：wgtray 已于 2026-09 退役，收敛为 wgime 的运行模式 —— 每个分发文件(bat/ps/py)
+> 都由 `config.txt mode = ime|tray` 决定形态(缺省 ime)。C# 用 `TrayMode` 静态标志: tray 时跳过 `Hook.Start()`、
+> 候选条隐藏、托盘菜单切工具风格、`RestartInMode()` 写 config+重启; python 侧同理由 `main.is_tray_mode()`/`switch_mode()` 处理。
 
 ## 3. 改动后必做的连锁动作
 
@@ -72,6 +70,7 @@ python wgime-py-pure\tests\pyshot-plugin-test.py    # PyShot 插件: 单文件�
 python wgime-py-pure\tests\dsl-verbs-test.py        # 步骤 DSL 动词: start(拉起常驻程序且不等退出)/run 对照/相对路径与 %WGIME_DIR%/两侧动词表不许漂移(43 项，§32)
 python wgime-py-pure\tests\nettools-test.py         # 网络工具窗体: 每页输出落本页 + 本机页不被污染(14 项，无桌面 SKIP，§55)
 python wgime-py-pure\tests\passfield-test.py         # 密码框自动英文: 真建 Win32 控件 + 钩子透传矩阵 + 假助手 JSONL + 真助手 ready(56 项，§56/§D57)
+python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结构断言(一次提交/单次 measure) + 真建 CandBar 验尺寸与 bbox(14 项; 直接跑或 `python -m unittest discover -s wgime-py-pure\tests -p "test_bar_render.py"`, §57)
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -143,6 +142,8 @@ python wgime-py-pure\tests\passfield-test.py         # 密码框自动英文: �
 
 56. 密码框自动英文(python 独有, 第九十二轮,§D57)|焦点在密码框时钩子**原样透传**(不组字/不全角标点/不吞数字候选), 离开即恢复 —— **不改模式**, 所以没有"切回来"这件事(0 行状态机, 界面上看不出任何切换). 两层检测: ①主进程 Win32 层(每键一次, 带 2s 缓存): `GetGUIThreadInfo` 拿焦点控件 -> 类名是原生文本框(`Edit`/`RichEdit*`/`WindowsForms10.*.EDIT`/`*Edit`)才看 `GWL_STYLE & ES_PASSWORD` 与 `EM_GETPASSWORDCHAR`(**必须** `SendMessageTimeoutW`+`SMTO_ABORTIFHUNG`+40ms: 跨进程 SendMessage 卡住钩子线程 = 打字停摆); ②UIA 层走**独立子进程** `_EMBEDDED_PF_HELPER`(主进程绝不初始化 COM/UIA, §17), 只对"看不出来的类"由 120ms 监视线程异步问一次, 结论按 hwnd 缓存(明确 30s / 看不出来 6s), 钩子线程的 `win.password_context()` **只读缓存**. 实测铁律(§D57): Chromium 的 `IsPassword`(30050) 是 **VT_ERROR**(没实现), 真正能用的是 **`ClassName=='password'`**(Chromium 把 input 的 type 放进 ClassName, 普通框是 text/email); `ElementFromHandle` 只给 `Pane(50033)` ⇒ **必须用 `GetFocusedElement`**; **第一次查询是凉的**(只回 Pane, 22ms vs 热了 3ms)⇒ 助手内部自己重试 3 次, 别把"看不出来"甩给宿主. `password_context()` 对"看不出来的类"必须返 **None** 而不是 False(否则浏览器永远走不到 UIA 层); 探测函数抛异常=当"不是"; `password_en=0` 时连探测函数都不调; 进框时钩子发合成码 `VK_PF(0xF5)` 让 main `reset()` 清掉残留拼音; IME 级热键(F8/Ctrl+`/Ctrl+Alt+Q)在密码框里照旧生效. 配置 `password_en`/`password_uia`(默认都 1; uia=0 就一个子进程都不起) + 托盘「选项→密码框用英文」. 回归 `wgime-py-pure\tests\passfield-test.py`(56 项; 含"测试窗口必须 IsWindowVisible=False, 不许在用户屏幕上弹窗"这条硬断言).
 
+57. "启动/上屏卡一下"(第九十三轮, 远端 `fe0dd39`, **细节与数字全在 §D58**)|①**启动期间不吞键**: 钩子早装只能 `set_active(False)`, **`Engine` join 完才** `set_active(starton)`(否则先吞进队列、1~2 秒后集中上屏); ②`poll()` 单轮预算 **24**(原 64), 余下下一拍; ③`save_freq()` 锁内只复制快照、锁外排序+写盘; ④`bar.show()` **一次提交**(withdraw→configure→delete→绘制→geometry→update_idletasks→deiconify) + 宽度**整行拼一次 `_measure`**; ⑤新测试**必须两种入口都能跑** —— `test_bar_render.py` 原本只有 unittest 入口, 直接跑=一行不跑 rc=0(已补 `__main__`, 现 14 项).
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 > 实测数字/探针清单/历史轮次来龙去脉都在 `AGENTS-DETAIL.md`（需要时 read，别凭记忆猜）。
@@ -152,6 +153,9 @@ python wgime-py-pure\tests\passfield-test.py         # 密码框自动英文: �
   `tk.Tk()`+加载窗 → join 词库线程 → 配置/候选条 → `root.after(8, poll)` → `root.after(30/150/600, 插件/托盘/tools 收尾)`
   → `mainloop`。要点：**Tk/加载窗与读词库并行**、**收尾三段必须在 poll 之后**、**未激活时按键照常透传**、
   已激活按键进 `hook.EVENTS` 等 `poll()` 顺序处理。实测：钩子 **+498/+416ms**、主循环 **+1954/+1877ms**（warm）。
+  **第九十三轮起**：钩子早装之后先 `hook.set_active(False)`，**`Engine` join 完才** `set_active(starton)`
+  —— 启动加载期间按键一律透传给前台程序（别回到"先吞进队列、1~2 秒后集中上屏"）；`poll()` 每轮最多处理
+  **24** 个事件（原来 64），剩下的下一拍 8ms 继续（§57）。
 - **别再回退的几件事**：dist 只 eager exec `win`/`hook`/`engine`（其余 PEP 562 懒加载）；
   **反查表 rev_wb 不同步建**、**词库缓存分两段读**（`CACHE_VER=5`）、
   **派生表 `char_wb`/`wb_by_len`/`word_freq` 进缓存第一段**；`pywfreq.txt`/`en-freq.txt` 在 `CACHE_FILES` 里；

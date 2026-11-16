@@ -177,3 +177,9 @@ class CandBarRenderTests(unittest.TestCase):
         with mock.patch("builtins.print"):
             self.assertEqual(main(), 0)
 
+
+# 直接 `python test_bar_render.py` 也要真跑并返回退出码 —— 原来只有 unittest 入口,
+# 直接运行时**一行不跑、rc=0**(一个不会失败的测试等于没写)。
+if __name__ == "__main__":
+    sys.exit(main())
+

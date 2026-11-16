@@ -3032,3 +3032,67 @@ F8 仍生效、探测抛异常、开关关掉零调用）/ P 假助手走真 JSO
 **数字**：Win32 判定一次 `GetWindowThreadProcessId`+`GetGUIThreadInfo`+`GetClassNameW`+`GetWindowLongPtrW`
 ≈ 几十微秒（2s 缓存挡住 `SendMessageTimeout`）；助手查询热态 3~5ms、冷态 22ms（重试后仍 <300ms）；
 监视线程 120ms 一拍、每拍只 3 个 user32 调用。
+
+## §D58 同步远端"输入卡顿 + 候选条性能"提交（第九十三轮）
+
+**来由**：用户「同步一下github上的更新」。远端那时比本地多 1 个提交（作者 OgOwoo）：
+`fe0dd39 fix(python): prevent input freezes and speed candidate bar` —— 7 个文件、**+276/−36**（含一个新回归
+`tests/test_bar_render.py` 179 行）。本地当时 = `6b97e42`（刚发完 v1.2.16），无本地改动 ⇒ `--ff-only` 直接合入，无冲突。
+
+**它改了什么（按"用户能感觉到"排序）**：
+
+1. **启动期间不再吞键**（`main.py`）：钩子在 +0.5s 就装上了，而 `Engine` 要读 ~1.5s 词库。原来的写法
+   `hook.set_active(starton)` 在装钩子那一刻就生效 ⇒ 这 1~2 秒里用户打的键全被吞进 `hook.EVENTS`，
+   词库就绪后 `poll()` 一口气上屏 —— 手感就是"先卡一下、然后突然蹦出一串字"。
+   现在：早装之后 `hook.set_active(False)`，**`Engine` join 完**才 `set_active(_EARLY_CFG['starton'])`。
+   代价是这 1~2 秒里按 F8/Shift 轻拍**不生效**（钩子还在，只是 ACTIVE 假）—— 可接受，反正也打不出字。
+2. **`poll()` 单轮事件预算 64 → 24**：一轮最多处理 24 个键，剩下的下一拍（8ms）继续。
+   原来 64 个键的一次突发会让主线程连续处理很久（每键含候选计算+`bar.show`），Tk 重绘被饿死。
+3. **`Engine.save_freq()` 锁内只复制**：原来在 `self._save_lock` 里做 3 个模式各 20000 条的 `sorted()`
+   + 联想表排序，学习线程（`learn()` 也要拿这把锁）得干等；现在锁内只 `list(...)` 快照，排序/写盘在锁外。
+   写文件也从 `f.write('%s %d\n' % ...)` 换成 `print(..., file=f)`（等价、少一次格式化）。
+   异常面从 `except OSError` 扩到 `(OSError, RuntimeError, ValueError)`（`dict changed size during iteration`
+   是多线程下的真实可能，不能让保存线程崩掉）。
+4. **候选条"一次提交"**（`bar.py`）：这是"候选条慢"的主因。原来的 `show()`：
+   `deiconify()` → `canvas.delete('all')` → 绘制 → 宽度规划里**逐候选 `_measure()`** → `geometry()`。
+   - **宽度规划改成整行拼一次**：`probe = '  '.join('%d.%s' ...)` 然后一次 `_measure`，再按
+     `+ (len-1)*8` 补间隔。原来 4 档截断 × 最多 11 个候选 = 每档 11 次同步 Tcl 调用；冷缓存下
+     一次 show 能触发**上千次** Tcl 往返。
+   - **可见刷新时先 `withdraw()`**，然后 `canvas.configure(width, height)`（显式同步 Canvas 尺寸）→
+     `delete('all')` → 绘制 → `geometry()` → `update_idletasks()` → **最后一次 `deiconify()`** ——
+     避免 Windows 合成旧画布/透明尾部/圆角没画完的中间帧（用户看到的"闪一下/残影"）。
+   - `_ipc_reposition` 的两次延迟（35ms + 80ms）合并成**一次 50ms**（第一次已经能消费到 helper 结果）。
+   - `after_idle(self._warm_canvas)`：候选条还隐藏时先 `_measure` 两套字体 + `create_text`/`delete`
+     跑一遍，把 Tk/Canvas/字体的首次 Tcl 冷启动成本从"第一键"挪到"主循环空闲"。
+   - `show()` 里加的 `_show_t0/_request_ms/_layout_ms/_position_ms/_caret_source` 只喂 `win._dlog`，
+     一行 `bar.show: request=..ms layout=..ms position=..ms present=..ms total=..ms caret=..` —— 排查"候选条慢"直接看它。
+   **注意**：`show()` 里现在没有 `return`，所以"先 withdraw 后 deiconify"不会出现"隐藏了却没再显示"。
+   以后往 `show()` 里加提前 `return` 的路径，必须自己补 `deiconify`，否则候选条会永久隐身。
+5. **caret helper 的失败冷却 `FAIL_COOLDOWN_S` 8.0 → 0.8**（`win.py` 内嵌 helper 源码那一行）：
+   跟随取不到 caret 时不再一停 8 秒。⚠ 这一行在 `_EMBEDDED_CARET_HELPER` 那个**超长单行字符串**里，
+   改的时候别顺手格式化 —— 它必须保持单行 repr，否则 dist 里的 helper 源码会变。
+6. **两条 always-on 诊断**（`main.py`）：`perf: first poll entered; keyboard queue=%s`（进主循环那一刻的
+   键盘队列长度）与 `perf: first inject total=..ms trad=..ms mode=..ms wait+send=..ms mode=.. fix=.. sent=..`。
+   以后"第一次上屏慢"先看这两行：队列长度 >0 说明启动期积压，`trad/mode` 大说明是纯 Python 计算，
+   `wait+send` 大说明是 `inject()` 的固定 30ms sleep 或 Win32 注入本身。
+
+**本地补的（远端没有的）**：
+
+- **`test_bar_render.py` 原来只有 unittest 入口**（`class CandBarRenderTests` + `mock.patch('builtins.print')`），
+  直接 `python test_bar_render.py` **一行不跑、rc=0** —— 又是一个"不会失败的测试"。已补
+  `if __name__ == "__main__": sys.exit(main())`，直接跑现在打印 **14/14**
+  （7 条 AST 结构断言 + 3 组真建 `CandBar` 的"Canvas 与 Toplevel 尺寸一致 / 图元 bbox 不越界" + 四角未被全窗口矩形覆盖）。
+  unittest 入口照旧（`python -m unittest discover -s wgime-py-pure\tests -p "test_bar_render.py"`）。
+  顺带把它加进 AGENTS §4 清单。
+- **`package\wgime-py.py` 刷成新 dist**（用户在跑的那份）；`package\config.txt` 是活配置，一个字节没动。
+- **dist 一致性自检**（`%TEMP%\wgime-dist-sync-check.py`）：13 个内嵌模块与磁盘逐字节一致、main.py 新记号在、
+  `dist == package`。远端提交里 dist 已经跟着重建过（3 行变化 = bar/engine/main 的 repr 行 + 版本行），
+  但**不重建就不能信**，所以按 §30 又验了一遍。
+
+**回归（本地实测）**：`test_bar_render` **14/14**（直接跑）/ `undefined-globals` **0**（26 文件）/
+`pure-state-harness` **全绿** / `passfield-test` **56/56** / `embedded-isolation-test` **14/14**
+（它这轮把 pypdf 版本断言从 `'PDF-OK 6.'` 放宽成 `'PDF-OK '` —— 换 pypdf 版本不再假红）。
+
+**版本状态**：`main.VERSION` 仍是 `1.2.16-py` ⇒ **线上 v1.2.16 的资产里没有这批修复**（只进了仓库与 `package\`）。
+要让用户拿到得发 **v1.2.17**；发版流程见 §7（**记得先备份 `package\config.txt`** 再跑 `build-package.ps1`）。
+
