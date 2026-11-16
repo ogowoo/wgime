@@ -1,5 +1,32 @@
 ---
 
+## 2026-11-16 (发布 v1.2.17 —— 把"打第一下卡一下 / 候选条慢"那批手感修复发给用户)
+
+**发布**: tag `v1.2.17` = 本地 HEAD `99f38ea`；release id **446977674**；三个资产与 `.release-stage-v1217\`
+SHA256 全同；预检 `release-assets-check.py --version 1.2.17` **28/28**。
+
+**为什么发这一版**: 昨天发的 v1.2.16 里没有今天同步进来的 `fe0dd39`（启动不吞键 / poll 预算 24 /
+`save_freq` 锁外排序 / 候选条一次提交 + 整行一次 measure / helper 冷却 0.8s / perf 诊断），
+而它的资产 SHA256 已经固定 —— 只能再发一版。**C# 版没动**，所以 bat/ps1 两个 zip 的 SHA256
+与 v1.2.16 **完全相同**（预检也确认过），只有 python 包变了。
+
+**发版动作（按 §7 那条新纪律走，没碰用户数据）**:
+1. `main.VERSION` → `1.2.17-py`；
+2. **先备份 `package\config.txt`**（13884 B）→ `build-package.ps1` 重建 dist+package
+   （它清空 package 并用仓库模板覆盖 config.txt）→ **发完版把备份还原**（校验哈希一致）；
+3. `build-release-assets.ps1 -Version 1.2.17` → 三个 zip（bat 1.65 / ps1 25.99 / python 25 MB）；
+4. 预检 **28/28** → 提交推送（`99f38ea`）→ `publish-release.ps1`（body 里带资产表 sha256）。
+
+**回验（真 GitHub，`%TEMP%\wg-r94-verify.ps1`，16/16 全绿）**: release id 446977674、tag `v1.2.17` 的
+ref type = commit、三个线上资产 SHA256 与 stage 全同、python 包内层 `wgime-py.py` 与 `dist` **逐字符同**
+且自称 `1.2.17-py`、raw 通道（`raw.githubusercontent.com/ogowoo/wgime/v1.2.17/wgime-py-pure/dist/wgime-py.py`）
+与 dist 逐字节同、body 无 `?` 且资产表 sha256 齐全。
+
+**dist/package 一致性**: 13 个内嵌模块与磁盘逐字节一致、`dist == package`（`%TEMP%\wgime-dist-sync-check.py`
+`mismatches=0`）。
+
+---
+
 ## 2026-11-16 (第九十三轮: 同步远端"输入卡顿 + 候选条性能"提交, 并补上它的测试入口)
 
 **同步**: 远端 1 个提交 `fe0dd39 fix(python): prevent input freezes and speed candidate bar`(作者 OgOwoo),

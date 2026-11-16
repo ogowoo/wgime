@@ -1490,6 +1490,15 @@ python 包内层 `wgime-py.py` 与 dist 逐字符同且自称 `1.2.16-py`、**ra
 （PS 5.1 按 ANSI 读 .ps1，含中文 + UTF-8 无 BOM 会当场 ParserError）。
 顺带: `Set-Content -Encoding UTF8` 在 PS 5.1 写 BOM ⇒ 提交信息开头会多一个零宽字符，用 `git commit --amend -F <无 BOM 文件>` 修。
 
+**v1.2.17（id 446977674，tag = 本地 HEAD `99f38ea`，2026-11-16，当晚第二版）**：发它的唯一原因是
+**v1.2.16 的资产里没有当天同步进来的 `fe0dd39`**（启动不吞键 / poll 预算 24 / `save_freq` 锁外排序 /
+候选条一次提交 / helper 冷却 0.8s / perf 诊断）—— 资产 SHA256 一旦发布就固定，只能再发一版。
+预检 28/28、回验 `%TEMP%\wg-r94-verify.ps1` **16/16**（这次脚本参数化了 `-Ver/-Stage/-ReleaseId`，直接复用）。
+**一个可以预期的现象**：C# 版没动 ⇒ `bat`/`ps1` 两个 zip 的 SHA256 与 v1.2.16 **完全相同**
+（`47CF5A93…` / `AF7DE2C0…`），只有 python 包变了（`2C215984…`）。预检照旧 28/28 通过，不算问题。
+流程上把上一条纪律完整跑了一遍：备份 `package\config.txt`（13884 B）→ `build-package.ps1` →
+打包+预检 → 提交推送 `99f38ea` → publish（target = `99f38ea`）→ 回验 → **还原** config（哈希与备份一致）。
+
 
 ## §D29 第八十一轮：把普通单文件 Python 应用改造成插件（规范 §8.8 + 可跑模板 + 回归）
 

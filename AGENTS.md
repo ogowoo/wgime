@@ -181,7 +181,7 @@ python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结�
   仓库内 `http.proxy = http://127.0.0.1:10808` 那条**已于第九十二轮删除**(本机代理已不需要, 留着只会 `schannel: failed to receive handshake`); 先 `ghp_` 只出现在凭据里, 别 `git grep` 到。
   另有 `gh` CLI 未安装 ⇒ 只能走 token helper, 不要指望 `gh auth git-credential`。
 - **暂存纪律**：**别用 `git add -A -- wgime-py-pure`** —— 会把 `wgime-py-pure\testing\`（**永不入库**的草稿目录）一起暂存进去；提交前 `git diff --cached --name-only` 过一眼，并查密钥：`git grep -I -l --cached 'ghp_'`（注意 `--cached` 必须写在**模式之前**，否则 git 直接报错、那条错误会被 `Measure-Object` 当成"命中 1"，白紧张一场）。
-- 版本 tag：`v1.0.0` ~ `v1.2.16`（后续版本递增）。插件更新不单独发 release。
+- 版本 tag：`v1.0.0` ~ `v1.2.17`（后续版本递增）。插件更新不单独发 release。
 - **发版会碰到用户数据**: `wgime-py-pure\build-package.ps1` 会**清空 `package\`** 并用仓库模板覆盖 `package\config.txt` —— 那是用户在用的活配置 ⇒ 发版前先 `Copy-Item package\config.txt %TEMP%\...` 备份, 打完包/发完版再还原(第九十二轮踩过, 见 §D28 v1.2.16)。
   **发版前必跑**（第七十六轮新增）：`python tests\release-assets-check.py --version X --assets <stage>` ——
   断言三个 zip 的 `config.txt` 与仓库模板**逐字节一致**、不含 `sk-` 私钥 / `C:\Users\` 私用路径 / 启用的 `stt_*` 行。
