@@ -84,7 +84,8 @@ def static_checks():
     check("show 前段没有提前 deiconify",
           len(deicons) == 1 and deicons[0] > midpoint,
           "deiconify lines=%r" % deicons)
-    check("可见刷新路径包含 top.withdraw", bool(withdraws), "withdraw missing")
+    check("可见刷新路径不再调用 top.withdraw", not withdraws,
+          "withdraw lines=%r" % withdraws)
     check("canvas.configure(width=w,height=h) 位于 delete('all') 前",
           bool(configs and deletes and min(configs) < min(deletes)),
           "configure=%r delete=%r" % (configs, deletes))

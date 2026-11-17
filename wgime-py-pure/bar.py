@@ -75,6 +75,7 @@ class CandBar:
         self._anchor = None
         self._ipc_place_token = 0
         self._window_anchor = {}      # hwnd -> stable fallback anchor
+        self._shell_windows = {}      # hwnd -> shell process verdict; avoid process lookup on every key
         self._canvas_warmed = False
         # Tk/Canvas/字体的首次 Tcl 调用可能集中卡在第一键；主循环空闲时提前完成冷启动。
         self.root.after_idle(self._warm_canvas)
@@ -232,10 +233,7 @@ class CandBar:
         w = min(w, max_w)                              # 钳制到候选条最大宽度, 不再无限长
         h = 54
         _layout_ms = (time.perf_counter() - _show_t0) * 1000.0
-        # Canvas 重绘和 Toplevel.geometry 是独立提交；高频联想刷新时先隐藏旧帧，
-        # 显式同步 Canvas 尺寸，并在全部绘制和定位完成后一次性提交。
-        if was_visible:
-            self.top.withdraw()
+        # 可见窗口直接原位重绘，避免每次按键 withdraw/deiconify 造成闪烁。
         c.configure(width=w, height=h)
         c.delete('all')
         # 圆角底 (fill=主题底; 四角透明由 transparentcolor 提供)
@@ -261,7 +259,12 @@ class CandBar:
                 c.create_text(x + 2, y + 13, anchor='w', text=text, fill=t['text'], font=self._fd)
             x += tw + 16
         # 定位: 固定位置(fixed) > 跟随光标(多屏钳制) > 开始菜单/搜索 Shell 固定右下角 > 拖动保持
-        _shell = win.foreground_process_name() in ('startmenuexperiencehost', 'searchhost', 'shellexperiencehost')
+        # 进程名查询偶发阻塞；按前台窗口缓存，避免每次输入重复进入系统调用。
+        _fg_now = int(win.user32.GetForegroundWindow())
+        if _fg_now not in self._shell_windows:
+            self._shell_windows[_fg_now] = win.foreground_process_name() in (
+                'startmenuexperiencehost', 'searchhost', 'shellexperiencehost')
+        _shell = self._shell_windows[_fg_now]
         if isinstance(fixed, (tuple, list)):
             self.top.geometry('%dx%d+%d+%d' % (w, h, fixed[0], fixed[1]))
         elif fixed == 'bottom-right':
@@ -271,7 +274,7 @@ class CandBar:
             ra = win.screen_workarea()
             self.top.geometry('%dx%d+%d+%d' % (w, h, ra.left + (ra.right - ra.left - w) // 2, ra.bottom - h - 8))
         elif follow and not _shell:
-            fg=win.user32.GetForegroundWindow()
+            fg=_fg_now
             pos=win.get_ipc_caret()
             if pos:
                 _caret_source = 'helper-cache'
