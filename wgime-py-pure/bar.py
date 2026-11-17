@@ -2,6 +2,7 @@
 """bar.py — tkinter 无边框置顶候选条 (真透明圆角 transparentcolor, 跟随光标, 分页指示, 双主题, 无边框)."""
 import os
 import time
+import unicodedata
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -65,9 +66,10 @@ class CandBar:
         self._pad = 10
         self._fc = tkfont.Font(family='Microsoft YaHei UI', size=9)
         self._fd = tkfont.Font(family='Microsoft YaHei UI', size=11)
-        # measure 走 Tcl 很慢(~0.6ms/次), 一次 show 要测 ~20 串 -> 15ms. 按 (font,text) 缓存,
-        # 同串不重复测; 打字时相邻键候选大量重复, 命中率高. 清缓存: 换主题/字体时.
+        # Font.measure 会同步进入 Tcl；日志已捕获普通候选单次阻塞 2.18 秒。
+        # 主输入路径改用纯 Python 字符宽度估算，缓存仅保留结果，避免 Tk 偶发停顿拖死输入队列。
         self._measure_cache = {}           # (id(font), text) -> px
+        self._font_px = {id(self._fc): 7.0, id(self._fd): 8.5}
         self._last_geom = None   # 低通平滑的上一次窗口位置 (x, y)
         self._hide_after = None  # 防抖隐藏的 after 句柄
         self._anchor = None
@@ -96,14 +98,30 @@ class CandBar:
             self.top.attributes('-alpha', THEMES[name]['alpha'])
 
     def _measure(self, font, text):
-        """带缓存的 Font.measure (Tcl measure 每次 ~0.6ms, 一次 show 测几十串 -> 10ms+)."""
+        """纯 Python 宽度估算；候选热路径不得同步调用 Tcl 的 Font.measure。"""
         key = (id(font), text)
         v = self._measure_cache.get(key)
-        if v is None:
-            v = font.measure(text)
-            self._measure_cache[key] = v
-            if len(self._measure_cache) > 20000:   # 防无限增长: 超出即清(下一键重建, 代价可忽略)
-                self._measure_cache.clear()
+        if v is not None:
+            return v
+        unit = self._font_px.get(id(font), 8.0)
+        cells = 0.0
+        for ch in str(text):
+            if ch == '	':
+                cells += 4.0
+            elif unicodedata.east_asian_width(ch) in ('W', 'F'):
+                cells += 2.0
+            elif ch.isspace():
+                cells += 0.55
+            elif ch in "ilI.,'!:;|":
+                cells += 0.55
+            elif ch in 'mwMW@#%&':
+                cells += 1.35
+            else:
+                cells += 1.0
+        v = int(cells * unit + 0.5)
+        self._measure_cache[key] = v
+        if len(self._measure_cache) > 20000:
+            self._measure_cache.clear()
         return v
 
     def _round_rect(self, c, x1, y1, x2, y2, r, **kw):
