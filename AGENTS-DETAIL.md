@@ -1499,6 +1499,15 @@ python 包内层 `wgime-py.py` 与 dist 逐字符同且自称 `1.2.16-py`、**ra
 流程上把上一条纪律完整跑了一遍：备份 `package\config.txt`（13884 B）→ `build-package.ps1` →
 打包+预检 → 提交推送 `99f38ea` → publish（target = `99f38ea`）→ 回验 → **还原** config（哈希与备份一致）。
 
+**v1.2.20（id 452194545，tag = 本地 HEAD `8a612ba`，2026-11-20）**：内容 = 第九十四轮同步进来的 v1.2.18/v1.2.19
+（`_measure` 纯 Python 字宽估算 + 去掉 withdraw 闪烁 + 进程名按 hwnd 缓存）**加上**第九十五轮的位置记忆修复。
+预检 28/28、回验 `%TEMP%\wg-r94-verify.ps1 -Ver 1.2.20 -Stage .release-stage-v1220 -ReleaseId 452194545` **17/17**
+（比 v1.2.17 那次多一条：`body has asset names + python sha256` 这次改成**按 stage 现算**哈希，不再写死，
+v1.2.17 时它写死 `2C215984` 导致换版本就假红）。
+asset SHA256：bat `47CF5A93…`（与 1.2.16/17 同，C# 未变）、ps1 `AF7DE2C0…`（同）、python `52AEA61C…`（新，
+1252012 B 的 dist —— 注意它比 1.2.19 的 1140873 B **大**，因为本机 build 把完整第三方 zip 打回去了）。
+顺带把 v1.2.18/19 缺的**资产表 sha256** 补进了 body（`update.sha256_from_body` 因此恢复校验能力）。
+
 
 ## §D29 第八十一轮：把普通单文件 Python 应用改造成插件（规范 §8.8 + 可跑模板 + 回归）
 
@@ -3192,5 +3201,78 @@ _shell = self._shell_windows[_fg_now]
   （458556 vs 567904 base64 字符）—— 那是压缩/版本差异，不是少了模块，`embedded-isolation-test` 14/14 可证。
 - 回归：`test_bar_render` 14/14 / `embedded-isolation` 14/14 / `undefined-globals` 0 / `pure-state-harness` 全绿 /
   `passfield-test` 56/56。
+
+## §D59 第九十五轮：候选条位置记不住（pos.txt / 退出前落盘）
+
+**用户报**：「我好像重启输入法后候选 bar 的位置不会使用退出前的位置」。
+
+### 1. 先把现场摸清楚（证据优先，别急着改代码）
+
+- 位置文件在 **`%USERPROFILE%\wgime-py\pos.txt`**，不是 `%LOCALAPPDATA%\wgime-py\pos.txt`
+  （`%LOCALAPPDATA%\wgime-py` **是空的**）—— 因为本机是 **Store 版 Python**，`main.py` 的启动探针判定到
+  AppContainer 重定向后把 `DATA_DIR` 切成了 `~\wgime-py`（§13）。所以"找不到 pos.txt"不能说明没存。
+- 当时的 `pos.txt` = `1264,2058`，mtime = **11/20 10:17:23**（用户发消息前 30 秒，说明**刚拖过**）。
+- 更重要的是：**输入法进程 pid 31476 的创建时间是 11/17 21:36:25**，`debug.log` 最后一行也是 11/17 21:36
+  ⇒ **今天根本没有重启过**（那天 21:36 是 1.2.19 自动更新引起的重启）。用户说的"重启"很可能是对那次的记忆，
+  或者是被自动更新换过文件的那种"以为重启了"。
+- 显示器只有一块（`EnumDisplayMonitors` = `0,0,3840,2160`，workarea 到 `y=2112`），所以**不是多屏钳制**的问题。
+
+### 2. 四个探针（`%TEMP%\wg-r95-pos-probe{,2,3,4}.py`）
+
+| 探针 | 问的问题 | 结果 |
+|---|---|---|
+| probe1 | 未映射窗口上 `_save_pos()` 会写什么？ | **写出 `'0,0'`**（真缺陷）；且 `_saved_pos` 的内存值也被改成 `(0,0)` |
+| probe2 | 真实执行 `update_idletasks` 后，saved pos 会被用上吗？ | 会：show#1/#2/#3 都是 `+1264+2058` |
+| probe3 | Tk 的 `winfo_x/y` 在 `withdraw()` 后还准吗？ | 准（隐藏/重新 geometry/再映射全程 `1264,2058`） |
+| probe4 | 完整"显示→拖动→落盘→自动隐藏→再显示→新实例"链路 | 全对：落盘 `600,700`、隐藏后再显示 `600,700`、新实例首屏 `600,700` |
+
+**结论**：常见组合在当前代码里是通的 —— 所以不能只靠"再跑一遍看起来没问题"打发用户。
+把代码逐行读下来，抓到三处真问题（前两条已在新回归里能红）：
+
+### 3. 三处真缺陷
+
+1. **`_save_pos()` 没有"窗口是否显示过"的守卫**。未映射的 `Toplevel` 的 `winfo_x/y` 是 `0,0`
+   （probe3 最后两行：`fresh top → 1x1+0+0`），只要有任何一次落盘发生在首次 `show()` 之前/隐藏之后，
+   `pos.txt` 就被写成 `0,0` ⇒ **下次启动候选条跑到屏幕左上角**。而且 `_saved_pos` 也会被就地改成 `(0,0)`，
+   当次会话直接受害（probe1 的 B2 就是这个形状）。
+   修：`if not self._pos_file or not self._shown_once: return`，`_shown_once` 在 `show()` 末尾（`deiconify()` 之后）置真。
+2. **位置只在"首屏"用一次**：原逻辑 `if self._saved_pos is not None and not self._pos_applied:`，之后就只读实时
+   `winfo_x/y`。任何一次"窗口被别的路径挪动"（包括 `snap_to_edge` 把贴边前的坐标换成贴边后的坐标）都会把
+   用户的摆放位置带走，而且再也回不去。修：**`_user_moved`**（`_drag_move`/`_drag_end` 置真）——
+   未拖动时每次 `show()` 都回到会话位置；拖过才跟随实时位置。
+3. **只在鼠标松手时落盘**：用户说的是"**退出前**的位置"。自定义关窗、托盘退出、Ctrl+Alt+Q 都走 `main.quit_app()`，
+   那条路径原来不落盘（万一最后一次拖动的松手事件没到就白搭）。修：`CandBar.save_pos()` 公开入口 +
+   `quit_app()` 里 `globals().get('bar')` 调它（`bar` 在 tray 模式下也可能没建，必须 `.get`）。
+
+另外加了一行 always-on 诊断（首屏一次）：
+`bar pos: saved=(x,y) now=(x,y) user_moved=.. snap=(h,v) workarea=(l,t,r,b)` —— 下次有人说"位置不对"，
+先让 ta 看 `debug.log` 这一行，比猜快得多。
+
+### 4. 回归 `tests/bar-pos-test.py`（13 项，**对修前代码 9 红**）
+
+- **S 段（AST，不需要桌面）**：`quit_app` 里有 `save_pos` 调用；`CandBar` 有公开 `save_pos`；`_save_pos` 正文引用
+  `_shown_once`；`show` 正文引用 `_user_moved`；拖动两处之一置 `_user_moved`；`_drag_end` 仍调 `_save_pos`。
+- **B 段（真建 Tk 窗口，**不显示**：只把 `top.deiconify` 换成 no-op，geometry 照样生效）**：
+  B0 新实例读到 `600,700`；B1 没 show 过 `_save_pos` **不覆写**；B2 未拖动时每次 show 都回 `600,700`（窗口被挪到
+  `+1000+1000` 也一样）；B3 拖动后 `pos.txt` = 实时位置；B3b 拖动后 show 跟随实时；B4 新实例首屏用 pos.txt；
+  B5 `save_pos()` 落实时位置。
+- **修前实测**：S1~S5 + B1 + B2 + B3b + 一次 AttributeError（`save_pos` 不存在）= **9 项失败 / 13 项**；
+- **修后**：13/13 全绿。写法上有一处坑：`ast.FunctionDef()` 空构造在 3.12 只是 DeprecationWarning，3.15 会报错，
+  改成就地判 `'_drag_end' in methods`。
+
+### 5. 一个亲手踩的坑（PS 5.1 会把 `.py` 的中文按 ANSI 读坏）
+
+给 `main.py` 改版本号时我图快用了：
+
+```powershell
+(Get-Content wgime-py-pure\main.py -Raw) -replace "VERSION = '1\.2\.19-py'", "VERSION = '1.2.20-py'" |
+    Set-Content wgime-py-pure\main.py -NoNewline -Encoding utf8
+```
+
+`Get-Content` 在 PS 5.1 **默认按 ANSI(codepage)解码** ⇒ 整个文件的中文变乱码写回，`git diff --stat` 瞬间
+709/703 行"全改"；而且 `-Encoding utf8` 又写了 BOM（`EF BB BF`）。**正确做法**：用编辑工具改，或
+`[IO.File]::ReadAllText($p, [Text.UTF8Encoding]::new($false))` / `WriteAllText(...)` 显式 UTF-8 无 BOM。
+当时立刻 `git checkout -- wgime-py-pure/main.py` 回滚、重做，才没把乱码提交进去 —— 教训与 §D20/§D22 同源。
+
 
 

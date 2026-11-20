@@ -1,5 +1,40 @@
 ---
 
+## 2026-11-20 (第九十五轮: 修"候选条位置记不住" + 发布 v1.2.20)
+
+**用户报**："重启输入法后候选 bar 的位置不会使用退出前的位置"。查证过程与结论见 §D59；抓到**两个真缺陷**：
+
+1. **`_save_pos()` 会把位置写成 `0,0`**：窗口还没显示出来时 `winfo_x/winfo_y` 就是 `0,0`，任何一次多余的落盘
+   （`_drag_end` 在未映射状态下被调）都会把 `pos.txt` 覆写成 `0,0` —— 下次启动候选条就跑到**屏幕左上角**。
+   实测：旧代码 `_save_pos()` 在没 show 过时写出 `'0,0'`（新回归 `bar-pos-test.py` 的 B1 就是这个用例）。
+   修：`if not self._pos_file or not self._shown_once: return`，`_shown_once` 在 `show()` 末尾置真。
+2. **位置只在首屏用一次**（一次性 `_pos_applied`），之后一律读实时 `winfo`，**任何外部位移**都会把它带走（含
+   `snap_to_edge` 把"贴边前的坐标"换成贴边后的坐标）。修：改成 **`_user_moved`**（拖动/松手才置真）——
+   没拖过就一直用会话位置，拖过才跟随实时位置。
+3. 补齐语义：`main.quit_app()` 现在调 **`bar.save_pos()`** —— 用户要的是"**退出前**的位置"，不能只靠鼠标松手那一次
+   （自定义关窗、编辑器外关机、托盘退出都走这条）。另外首屏写一行 always-on 诊断
+   `bar pos: saved=.. now=.. user_moved=.. snap=.. workarea=..`，下次位置不对直接看 `debug.log`。
+
+**新回归 `wgime-py-pure\tests\bar-pos-test.py`（13 项）**：S 段 6 条 AST 结构断言（`quit_app` 调 `save_pos`、
+`CandBar.save_pos` 存在、`_save_pos` 有 `_shown_once` 守卫、`show` 看 `_user_moved`、拖动置位、drag_end 仍落盘）
++ B 段 7 条真建窗口行为断言（没 show 过不覆写 / 未拖动回会话位置 / 拖动落盘 / 拖动后跟随实时 / 新实例首屏用 pos.txt /
+`save_pos()` 落盘实时位置）。**对修前代码跑 9/13 红**（这才是"能失败的测试"）。
+
+**发布 v1.2.20**（把本轮修复 + 上一轮同步进来的 v1.2.18/19 一起发给用户）：
+- 预检 `release-assets-check.py --version 1.2.20` = **28/28**；
+- tag `v1.2.20` = 本地 HEAD `8a612ba`，release id **452194545**；
+- 回验 `%TEMP%\wg-r94-verify.ps1 -Ver 1.2.20`（参数化后复用）= **17/17**：线上三个资产 SHA256 与 stage 同、
+  python 包内层 `wgime-py.py` 与 dist **逐字符同**且自称 `1.2.20-py`、raw 通道同、body 带**完整资产表 sha256**
+  （这正是 v1.2.18/19 缺的那张表）、tag 指本地 HEAD；
+- 发完把 `package\config.txt` 还原成用户的活配置（13884 B，哈希与备份一致）。
+
+**踩坑（重要，写进规则 30 的教训）**：我用 `Get-Content -Raw | Set-Content -Encoding utf8` 改 `main.py` 的版本号，
+PS 5.1 的 `Get-Content` **按 ANSI 解码** ⇒ 整个文件的中文变成乱码、`git diff` 显示 709/703 行全改。
+**改 `.py` 的内容只能用编辑工具或显式 `[IO.File]::ReadAllText/WriteAllText(UTF8)`**，且 `Set-Content -Encoding utf8`
+在 PS 5.1 还会写 BOM。当时靠 `git checkout -- wgime-py-pure/main.py` 回滚重做才没出事。
+
+---
+
 ## 2026-11-20 (第九十四轮: 同步远端"候选条测量停顿/闪烁"两版(v1.2.18/v1.2.19); 抽查发现发布资产与 dist 不一致)
 
 **同步**: 远端 2 个提交(作者 OgOwoo)快进合入(本地 `a202a1d` → `5f070fc`,无冲突),本地版本随之到 `1.2.19-py`;

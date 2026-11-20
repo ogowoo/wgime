@@ -71,6 +71,7 @@ python wgime-py-pure\tests\dsl-verbs-test.py        # 步骤 DSL 动词: start(�
 python wgime-py-pure\tests\nettools-test.py         # 网络工具窗体: 每页输出落本页 + 本机页不被污染(14 项，无桌面 SKIP，§55)
 python wgime-py-pure\tests\passfield-test.py         # 密码框自动英文: 真建 Win32 控件 + 钩子透传矩阵 + 假助手 JSONL + 真助手 ready(56 项，§56/§D57)
 python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结构断言(一次提交/单次 measure) + 真建 CandBar 验尺寸与 bbox(14 项; 直接跑或 `python -m unittest discover -s wgime-py-pure\tests -p "test_bar_render.py"`, §57)
+python wgime-py-pure\tests\bar-pos-test.py          # 候选条位置记忆: 13 项(结构 6 + 真建窗口 7; 旧代码 9 红, §58/§D59)
 ```
 
 - **`tests\pure-state-harness.py`（纯 Python 版状态机回归）**：真跑 `wgime-py-pure\main.py` 的**前缀**（截止到 `# ---------- 主循环: 轮询钩子事件 ----------`，真 engine + 真状态机），只把副作用出口打桩（注入/托盘/词频落盘/插件执行/启动器）；进程内把 `LOCALAPPDATA` 指到临时目录（用完删）、`WGIME_DICT_DIR` 默认 `wgime-py-pure\package\dicts`（无则仓库根），**用户真实的 `%LOCALAPPDATA%\wgime-py` 绝不读写**（脚本会断言 `DATA_DIR` 在临时目录内，否则退出码 2）。改上屏路径/状态机（`commit`/`record_commit`/`handle`/`handle_punct`/`refresh`）后跑它。首跑会打印一条 `[wgime] dict-cache load failed`（隔离目录无缓存）属正常。
@@ -144,6 +145,8 @@ python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结�
 
 57. "启动/上屏卡一下"(第九十三~九十四轮, **细节 §D58续**)|①**启动期间不吞键**: 钩子早装只能 `set_active(False)`, **`Engine` join 完才** `set_active(starton)`; ②`poll()` 单轮预算 **24**(原 64), 余下下一拍; ③`save_freq()` 锁内只复制快照、锁外排序+写盘; ④**候选条热路径不许同步调 Tcl**: `_measure` 改纯 Python 字宽估算(实测 `Font.measure` 单次曾阻塞 **2.18 秒**), 可见刷新**不要 withdraw**(会闪) —— `canvas.configure` → `delete('all')` → 原位重绘 → `geometry` → `update_idletasks` → 末尾**一次** `deiconify`; `foreground_process_name()` 按前台 hwnd 缓存; ⑤新测试**两种入口都要能跑**。
 
+58. 候选条位置记忆(第九十五轮, §D59)|data 目录 `pos.txt`(`x,y`): ①`_save_pos()` **没 `_shown_once` 不许写**(未映射窗口 `winfo_x/y`=0,0, 多余落盘就把位置清成左上角 —— 旧代码实测写出 `'0,0'`); ②固定分支按 **`_user_moved`**(拖动才置真)决定用会话位置还是实时位置, 别退回一次性 `_pos_applied`; ③`main.quit_app()` 调 `bar.save_pos()` = 退出前落盘. 首屏写一行 `bar pos: saved=.. now=.. user_moved=.. workarea=..`. 回归 `tests\bar-pos-test.py`(13 项, 旧代码 9 红).
+
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
 > 实测数字/探针清单/历史轮次来龙去脉都在 `AGENTS-DETAIL.md`（需要时 read，别凭记忆猜）。
@@ -180,18 +183,12 @@ python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结�
   仓库内 `http.proxy = http://127.0.0.1:10808` 那条**已于第九十二轮删除**(本机代理已不需要, 留着只会 `schannel: failed to receive handshake`); 先 `ghp_` 只出现在凭据里, 别 `git grep` 到。
   另有 `gh` CLI 未安装 ⇒ 只能走 token helper, 不要指望 `gh auth git-credential`。
 - **暂存纪律**：**别用 `git add -A -- wgime-py-pure`** —— 会把 `wgime-py-pure\testing\`（**永不入库**的草稿目录）一起暂存进去；提交前 `git diff --cached --name-only` 过一眼，并查密钥：`git grep -I -l --cached 'ghp_'`（注意 `--cached` 必须写在**模式之前**，否则 git 直接报错、那条错误会被 `Measure-Object` 当成"命中 1"，白紧张一场）。
-- 版本 tag：`v1.0.0` ~ `v1.2.19`。**v1.2.18/19 是另一会话发的**：body 无资产表、线上 python 包内层与 dist 不一致（见 §D58 续）。
+- 版本 tag：`v1.0.0` ~ `v1.2.20`。v1.2.18/19 曾是另一会话发的(body 无资产表、线上包内层与 dist 不一致,见 §D58 续); v1.2.20 起恢复本套流程。
 - **发版会碰到用户数据**: `wgime-py-pure\build-package.ps1` 会**清空 `package\`** 并用仓库模板覆盖 `package\config.txt` —— 那是用户在用的活配置 ⇒ 发版前先 `Copy-Item package\config.txt %TEMP%\...` 备份, 打完包/发完版再还原(第九十二轮踩过, 见 §D28 v1.2.16)。
   **发版前必跑**（第七十六轮新增）：`python tests\release-assets-check.py --version X --assets <stage>` ——
   断言三个 zip 的 `config.txt` 与仓库模板**逐字节一致**、不含 `sk-` 私钥 / `C:\Users\` 私用路径 / 启用的 `stt_*` 行。
-  来由：**v1.2.13 的 python 包带着开发机私用 config（含一把 API key + 本机路径）发了出去**，根因是
-  `build-release-assets.ps1` 逐字节打包 `package\`，而那里的 `config.txt` 常常是"本机在用的活配置"。
-  自检：拿那份泄漏包跑它必红。
-  第八十五轮**又加一条**：单文件里的 `VERSION` 必须**等于** `--version`（自动更新拿它比对；v1.2.14 时代里面还写着
-  1.2.12，真机验收时被 `update.verify_source` 拒绝过）—— 自检：拿 1.2.15 的名字跑 → `VERSION='1.2.14-py' vs --version 1.2.15` 红。
-  **抠版本一律先认顶层明文 `WGIME_VERSION`**（第八十五轮补起由 `build-wgime-pure.py` 写在 dist 头部）：v1.2.15 发布时
-  预检真抓到过"正则被 update.py 自己文档里的版本示例抢先命中 ⇒ 单文件自称旧版本 ⇒ 自动更新永远装不上"，
-  详见 §5 规则 47 与 §D35。
+  来由：v1.2.13 的 python 包曾把开发机私用 config(含 API key + 本机路径)发出去；这条检查就是那次教训的守卫(详见 §D28)。
+  另一条（第八十五轮）：单文件 `VERSION` 必须**等于** `--version`，抠版本先认顶层 `WGIME_VERSION`（来由见 §5 规则 47 与 §D35）。
   **publish 后必回验**：线上 zip 的 SHA256 与 stage 同、内层 `wgime-py.py` 与 dist 逐字符同、body 无 `?`、
   tag 指向本地 HEAD；本机 `git ls-remote` 到 github 常年连不上，**tag 要用 GitHub API**
   `/repos/<repo>/git/ref/tags/<tag>`，别把空结果当"tag 没建"；资产下载偶 `Unable to connect`，重试即可。
