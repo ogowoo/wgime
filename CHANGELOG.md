@@ -1,5 +1,40 @@
 ---
 
+## 2026-11-20 (第九十四轮: 同步远端"候选条测量停顿/闪烁"两版(v1.2.18/v1.2.19); 抽查发现发布资产与 dist 不一致)
+
+**同步**: 远端 2 个提交(作者 OgOwoo)快进合入(本地 `a202a1d` → `5f070fc`,无冲突),本地版本随之到 `1.2.19-py`;
+远端已由另一会话发布 **v1.2.18**(`d5b683a`)/**v1.2.19**(`5f070fc`)两个 release。
+
+**这两个提交改了什么**:
+1. **`_measure` 不再调用 Tcl** —— 日志抓到 `Font.measure` **单次阻塞 2.18 秒**,所以候选条宽度改成
+   **纯 Python 字宽估算**(全角 2 格 / 窄字符 0.55 / `mwMW@#%&` 1.35,乘每字体基准 px 7.0/8.5),缓存照旧
+   20k 上限。这是"候选条偶尔整条卡住"的根因;代价是宽度是估算值(回归用"图元 bbox 不越界"兜住)。
+2. **去掉可见刷新时的 `withdraw()`** —— 上一版(第九十三轮)为了"一次提交"先隐藏再显示,结果**每次按键都闪一下**;
+   现在改成**原位重绘**(`canvas.configure` → `delete('all')` → 绘制 → `geometry` → `update_idletasks` →
+   末尾仍保留一次 `deiconify`),`test_bar_render.py` 的断言也从"必须 withdraw"改成"**不许** withdraw"(A/B 对着改)。
+3. **`foreground_process_name()` 按前台 hwnd 缓存**(`_shell_windows`)—— 进程名查询偶发阻塞,不该每次输入都进系统调用。
+
+**本地补的**: `package\wgime-py.py` 已是 1.2.19(11/17 21:36 由**自动更新**换上去的,`package\` 里躺着
+`wgime-py.py.bak-1.2.15-py` 与 `.bak-1.2.17-py` 两个备份可证),`package\config.txt` 仍是用户的活配置(13884 B,未动);
+dist 一致性自检 `mismatches=0`。
+
+**回归(本地实测)**: `test_bar_render` **14/14** / `embedded-isolation-test` **14/14**(内嵌 pypdf+pystray+six,
+335.9 KB) / `undefined-globals` **0** / `pure-state-harness` 全绿 / `passfield-test` **56/56**。
+
+**⚠ 抽查远端 v1.2.19 发布物发现两个问题(不是代码问题,是发布卫生)**:
+- **release body 里没有资产表 SHA256** —— 只有三个文件名。于是自动更新的 **asset 通道**拿不到校验值
+  (`update.sha256_from_body` 返空 ⇒ 跳过 sha256 校验),只有 raw 通道还有四道校验兜着。
+- **线上 python 包内层 `wgime-py.py` 与仓库 `dist` 不一致**:线上 `1EC6084B…` vs 仓库(及 tag 内容)
+  `D1E00300…` —— 说明发布时用的是**另一份本地构建**(非可复现: 内嵌 zip/时间戳/第三方包版本都可能不同),
+  而不是仓库里那个验过的 dist。`release-assets-check.py` 的"内层单文件 == dist 逐字节"这条**在发布流程里被绕过了**。
+- 处置: 见下面「待办」——要么重传 python 资产(用仓库 dist 重打包)并把 SHA256 表补进 body,要么保持现状并明确
+  "以 raw 通道为准"。**这一轮只同步,没有动 release**。
+
+**待办(等用户拍板)**: ①重发 v1.2.19 的 python 资产 + 补 body 资产表; ②或直接按本地 1.2.19 的状态发 v1.2.20
+(把这两个提交 + 修正后的发布流程走一遍)。
+
+---
+
 ## 2026-11-16 (发布 v1.2.17 —— 把"打第一下卡一下 / 候选条慢"那批手感修复发给用户)
 
 **发布**: tag `v1.2.17` = 本地 HEAD `99f38ea`；release id **446977674**；三个资产与 `.release-stage-v1217\`

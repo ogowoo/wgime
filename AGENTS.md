@@ -142,7 +142,7 @@ python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结�
 
 56. 密码框自动英文(python 独有, 第九十二轮,§D57)|焦点在密码框时钩子**原样透传**(不组字/不全角标点/不吞数字候选), 离开即恢复 —— **不改模式**, 所以没有"切回来"这件事(0 行状态机, 界面上看不出任何切换). 两层检测: ①主进程 Win32 层(每键一次, 带 2s 缓存): `GetGUIThreadInfo` 拿焦点控件 -> 类名是原生文本框(`Edit`/`RichEdit*`/`WindowsForms10.*.EDIT`/`*Edit`)才看 `GWL_STYLE & ES_PASSWORD` 与 `EM_GETPASSWORDCHAR`(**必须** `SendMessageTimeoutW`+`SMTO_ABORTIFHUNG`+40ms: 跨进程 SendMessage 卡住钩子线程 = 打字停摆); ②UIA 层走**独立子进程** `_EMBEDDED_PF_HELPER`(主进程绝不初始化 COM/UIA, §17), 只对"看不出来的类"由 120ms 监视线程异步问一次, 结论按 hwnd 缓存(明确 30s / 看不出来 6s), 钩子线程的 `win.password_context()` **只读缓存**. 实测铁律(§D57): Chromium 的 `IsPassword`(30050) 是 **VT_ERROR**(没实现), 真正能用的是 **`ClassName=='password'`**(Chromium 把 input 的 type 放进 ClassName, 普通框是 text/email); `ElementFromHandle` 只给 `Pane(50033)` ⇒ **必须用 `GetFocusedElement`**; **第一次查询是凉的**(只回 Pane, 22ms vs 热了 3ms)⇒ 助手内部自己重试 3 次, 别把"看不出来"甩给宿主. `password_context()` 对"看不出来的类"必须返 **None** 而不是 False(否则浏览器永远走不到 UIA 层); 探测函数抛异常=当"不是"; `password_en=0` 时连探测函数都不调; 进框时钩子发合成码 `VK_PF(0xF5)` 让 main `reset()` 清掉残留拼音; IME 级热键(F8/Ctrl+`/Ctrl+Alt+Q)在密码框里照旧生效. 配置 `password_en`/`password_uia`(默认都 1; uia=0 就一个子进程都不起) + 托盘「选项→密码框用英文」. 回归 `wgime-py-pure\tests\passfield-test.py`(56 项; 含"测试窗口必须 IsWindowVisible=False, 不许在用户屏幕上弹窗"这条硬断言).
 
-57. "启动/上屏卡一下"(第九十三轮, 远端 `fe0dd39`, **细节与数字全在 §D58**)|①**启动期间不吞键**: 钩子早装只能 `set_active(False)`, **`Engine` join 完才** `set_active(starton)`(否则先吞进队列、1~2 秒后集中上屏); ②`poll()` 单轮预算 **24**(原 64), 余下下一拍; ③`save_freq()` 锁内只复制快照、锁外排序+写盘; ④`bar.show()` **一次提交**(withdraw→configure→delete→绘制→geometry→update_idletasks→deiconify) + 宽度**整行拼一次 `_measure`**; ⑤新测试**必须两种入口都能跑** —— `test_bar_render.py` 原本只有 unittest 入口, 直接跑=一行不跑 rc=0(已补 `__main__`, 现 14 项).
+57. "启动/上屏卡一下"(第九十三~九十四轮, **细节 §D58续**)|①**启动期间不吞键**: 钩子早装只能 `set_active(False)`, **`Engine` join 完才** `set_active(starton)`; ②`poll()` 单轮预算 **24**(原 64), 余下下一拍; ③`save_freq()` 锁内只复制快照、锁外排序+写盘; ④**候选条热路径不许同步调 Tcl**: `_measure` 改纯 Python 字宽估算(实测 `Font.measure` 单次曾阻塞 **2.18 秒**), 可见刷新**不要 withdraw**(会闪) —— `canvas.configure` → `delete('all')` → 原位重绘 → `geometry` → `update_idletasks` → 末尾**一次** `deiconify`; `foreground_process_name()` 按前台 hwnd 缓存; ⑤新测试**两种入口都要能跑**。
 
 ## 6. 加载与性能（已做的优化，改动时别回退）
 
@@ -153,9 +153,8 @@ python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结�
   `tk.Tk()`+加载窗 → join 词库线程 → 配置/候选条 → `root.after(8, poll)` → `root.after(30/150/600, 插件/托盘/tools 收尾)`
   → `mainloop`。要点：**Tk/加载窗与读词库并行**、**收尾三段必须在 poll 之后**、**未激活时按键照常透传**、
   已激活按键进 `hook.EVENTS` 等 `poll()` 顺序处理。实测：钩子 **+498/+416ms**、主循环 **+1954/+1877ms**（warm）。
-  **第九十三轮起**：钩子早装之后先 `hook.set_active(False)`，**`Engine` join 完才** `set_active(starton)`
-  —— 启动加载期间按键一律透传给前台程序（别回到"先吞进队列、1~2 秒后集中上屏"）；`poll()` 每轮最多处理
-  **24** 个事件（原来 64），剩下的下一拍 8ms 继续（§57）。
+  **第九十三轮起**：钩子早装先 `set_active(False)`，**`Engine` join 完才** `set_active(starton)`（启动期按键透传）；
+  `poll()` 每轮 ≤ **24** 事件（原 64），余下下一拍（§57）。
 - **别再回退的几件事**：dist 只 eager exec `win`/`hook`/`engine`（其余 PEP 562 懒加载）；
   **反查表 rev_wb 不同步建**、**词库缓存分两段读**（`CACHE_VER=5`）、
   **派生表 `char_wb`/`wb_by_len`/`word_freq` 进缓存第一段**；`pywfreq.txt`/`en-freq.txt` 在 `CACHE_FILES` 里；
@@ -181,7 +180,7 @@ python wgime-py-pure\tests\test_bar_render.py        # 候选条渲染: AST 结�
   仓库内 `http.proxy = http://127.0.0.1:10808` 那条**已于第九十二轮删除**(本机代理已不需要, 留着只会 `schannel: failed to receive handshake`); 先 `ghp_` 只出现在凭据里, 别 `git grep` 到。
   另有 `gh` CLI 未安装 ⇒ 只能走 token helper, 不要指望 `gh auth git-credential`。
 - **暂存纪律**：**别用 `git add -A -- wgime-py-pure`** —— 会把 `wgime-py-pure\testing\`（**永不入库**的草稿目录）一起暂存进去；提交前 `git diff --cached --name-only` 过一眼，并查密钥：`git grep -I -l --cached 'ghp_'`（注意 `--cached` 必须写在**模式之前**，否则 git 直接报错、那条错误会被 `Measure-Object` 当成"命中 1"，白紧张一场）。
-- 版本 tag：`v1.0.0` ~ `v1.2.17`（后续版本递增）。插件更新不单独发 release。
+- 版本 tag：`v1.0.0` ~ `v1.2.19`。**v1.2.18/19 是另一会话发的**：body 无资产表、线上 python 包内层与 dist 不一致（见 §D58 续）。
 - **发版会碰到用户数据**: `wgime-py-pure\build-package.ps1` 会**清空 `package\`** 并用仓库模板覆盖 `package\config.txt` —— 那是用户在用的活配置 ⇒ 发版前先 `Copy-Item package\config.txt %TEMP%\...` 备份, 打完包/发完版再还原(第九十二轮踩过, 见 §D28 v1.2.16)。
   **发版前必跑**（第七十六轮新增）：`python tests\release-assets-check.py --version X --assets <stage>` ——
   断言三个 zip 的 `config.txt` 与仓库模板**逐字节一致**、不含 `sk-` 私钥 / `C:\Users\` 私用路径 / 启用的 `stt_*` 行。

@@ -3105,3 +3105,92 @@ F8 仍生效、探测抛异常、开关关掉零调用）/ P 假助手走真 JSO
 **版本状态**：`main.VERSION` 仍是 `1.2.16-py` ⇒ **线上 v1.2.16 的资产里没有这批修复**（只进了仓库与 `package\`）。
 要让用户拿到得发 **v1.2.17**；发版流程见 §7（**记得先备份 `package\config.txt`** 再跑 `build-package.ps1`）。
 
+## §D58 续 远端"候选条测量停顿 / 闪烁"两版（第九十四轮，v1.2.18 + v1.2.19）
+
+**来由**：2026-11-20「拿一下更新」。远端又多了 2 个提交（作者 OgOwoo，同一天内）并把它们分别发成了
+**v1.2.18**（`d5b683a`）与 **v1.2.19**（`5f070fc`）—— 注意这两个 release 是**另一个会话**发的，
+不是本文这套流程（后果见下面第 4 节）。本地 `a202a1d` 无改动 ⇒ `--ff-only` 合入，`main.VERSION` 自动到 `1.2.19-py`。
+
+### 1. `_measure` 不再进 Tcl（v1.2.18）
+
+上一轮（§D58）把宽度规划优化成"整行拼一次 `_measure`"，但**每次 show 仍有 1~N 次 `Font.measure`**。
+他们的日志抓到 **单次 `Font.measure` 阻塞 2.18 秒**（Tcl 侧偶发停顿），主线程一卡，输入队列就跟着停摆。
+于是整个改成**纯 Python 字宽估算**：
+
+```python
+unit = self._font_px.get(id(font), 8.0)   # _fc(9pt)=7.0, _fd(11pt)=8.5
+for ch in text:
+    全角/宽(W,F) -> 2.0 格;  tab -> 4.0;  空白 -> 0.55;  "ilI.,'!:;|" -> 0.55
+    "mwMW@#%&" -> 1.35;   其余 -> 1.0
+v = int(cells * unit + 0.5)
+```
+缓存仍是 `(id(font), text) -> px`，20k 上限清理照旧。
+
+**代价与守卫**：宽度现在是**估算值**（可能偏宽/偏窄几 px）。所以 `test_bar_render.py` 那三条真建 `CandBar`
+的断言（"Canvas 与 Toplevel 尺寸一致"、"所有图元 bbox 不越界"、"四角未被全窗口矩形覆盖"）是承重的 ——
+**估宽公式别随手改数字，改完必须让这三条过**。`_warm_canvas()` 还在（它仍会 `create_text`/`delete` 预热 Tk/Canvas），
+但"预热字体测量"这层意义已经没了。
+
+### 2. 可见刷新**不许** `withdraw`（v1.2.19）
+
+§D58 里那个"先 `withdraw()` → 画好 → `deiconify()` 一次提交"的做法，实测在**联想/高频刷新**下会
+**每次按键闪一下**。v1.2.19 直接删掉 `withdraw`，改成**原位重绘**：
+
+```
+canvas.configure(width=w, height=h) -> delete('all') -> 画圆角/文字 -> geometry() -> update_idletasks() -> deiconify()
+```
+末尾那次 `deiconify()` 留着（对已可见窗口无副作用；对首次显示仍需要它）。
+`test_bar_render.py` 的断言**跟着反过来**了：`check("可见刷新路径不再调用 top.withdraw", not withdraws, ...)` ——
+A/B 都是对的，**别看到"以前要求必须 withdraw"就去把它加回来**。历史沿革：93 轮加 → 94 轮删（原因是闪烁，不是性能）。
+
+### 3. `foreground_process_name()` 按前台 hwnd 缓存（v1.2.19）
+
+`show()` 里要为"开始菜单/搜索"决定固定右下角，原来每次 show 都调 `win.foreground_process_name()`
+（OpenProcess + QueryFullProcessImageName，偶发阻塞）。现在：
+
+```python
+_fg_now = int(win.user32.GetForegroundWindow())
+if _fg_now not in self._shell_windows:
+    self._shell_windows[_fg_now] = win.foreground_process_name() in ('startmenuexperiencehost',
+                                                                    'searchhost', 'shellexperiencehost')
+_shell = self._shell_windows[_fg_now]
+```
+`follow` 分支原来那句 `fg = win.user32.GetForegroundWindow()` 也直接复用 `_fg_now`（少一次调用）。
+**已知无害的小账**：`_shell_windows` 按 hwnd 只增不清（每个前台窗口一条，int→bool），长跑也只是几 KB；
+真要收可以按 LRU 截断，但这属于锦上添花，别为它引入新 bug。
+
+### 4. ⚠ 抽查两个远端 release 发现的问题（**不是代码问题**）
+
+用 `%TEMP%\wg-r94c-check-release.ps1 -Tag v1.2.19` 对线上发布物做了实测（不是看仓库，是真下载资产）：
+
+| 检查 | 结果 |
+|---|---|
+| release id / target_commitish | **448106066** / `5f070fc` ✅ |
+| body 无 `?` | ✅ |
+| 三个资产大小与线上一致 | ✅ |
+| **body 里有没有资产表 SHA256** | ❌ **没有表**，只有三个文件名 |
+| **线上 python 包内层 `wgime-py.py` == 仓库 dist** | ❌ 线上 `1EC6084B…` vs 仓库 `D1E00300…`（两者都是 1140xxx B 量级，但**字节不同**） |
+
+影响与判断：
+- **body 没有 sha256 表** ⇒ 自动更新的 **asset 通道** `update.sha256_from_body()` 返空 ⇒ 那条 `if info.get('sha256')`
+  直接跳过校验（不会失败，只是**失去完整性校验**）。raw 通道（优先）仍有"三标记 + compile + 版本"那几道。
+- **内层文件与 dist 不同** ⇒ 发布时用的是**发布者本地自己 build 的一份**（`build-package.ps1` 非可复现：
+  内嵌 zip 带时间戳、第三方包版本也可能不同），而不是仓库里那个跑过回归的 dist。
+  也就是说 **zip 装出来的和自动更新装出来的不是同一份字节**（功能应当一致，但可复现性/可验证性都没了）。
+- 这也是 AGENTS §7 那条"publish 后必回验：内层 `wgime-py.py` 与 dist 逐字符一致"**必须由发布者自己跑**的原因 ——
+  `release-assets-check.py` 只在**打包机上**验 stage，管不到"上传的是不是 stage"。
+- 处置选项（等用户拍板）：①按仓库 dist 重打 python 资产并覆盖上传 + 把真实 SHA256 表 PATCH 进 body；
+  ②直接发 v1.2.20 把流程重走一遍（更干净）；③保持现状，明确"以 raw 通道为准"。
+
+### 5. 这一轮的本地状态
+
+- `package\wgime-py.py` = **1.2.19**（11/17 21:36 由**自动更新**换上去的；`package\` 里有
+  `wgime-py.py.bak-1.2.15-py` / `.bak-1.2.17-py` 两个备份，正是 `update` 替换前的备份命名法）。
+  `package\config.txt` 仍是活配置（13884 B，未动）。
+- dist 一致性 `%TEMP%\wgime-dist-sync-check.py` → `mismatches=0`，`dist == package`。
+- 内嵌第三方仍是 `{pystray, six, pypdf}`（335.9 KB）；注意 1.2.19 的 `THIRD_ZIP_B64` **比 1.2.17 短**
+  （458556 vs 567904 base64 字符）—— 那是压缩/版本差异，不是少了模块，`embedded-isolation-test` 14/14 可证。
+- 回归：`test_bar_render` 14/14 / `embedded-isolation` 14/14 / `undefined-globals` 0 / `pure-state-harness` 全绿 /
+  `passfield-test` 56/56。
+
+
