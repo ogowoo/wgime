@@ -77,6 +77,11 @@ class CandBar:
         self._window_anchor = {}      # hwnd -> stable fallback anchor
         self._shell_windows = {}      # hwnd -> shell process verdict; avoid process lookup on every key
         self._canvas_warmed = False
+        # 位置记忆: 没显示过的窗口 winfo_x/y 是 0,0(写进 pos.txt 会把"上次位置"清成左上角);
+        # 本次会话用户拖过之后才跟随实时位置, 否则每次 show 都回到会话位置(用户放哪儿就一直在哪儿)。
+        self._shown_once = False
+        self._user_moved = False
+        self._pos_logged = False
         # Tk/Canvas/字体的首次 Tcl 调用可能集中卡在第一键；主循环空闲时提前完成冷启动。
         self.root.after_idle(self._warm_canvas)
 
@@ -325,7 +330,9 @@ class CandBar:
                 ra = win.workarea_at(cx + w // 2, cy + h // 2) or win.screen_workarea()
             except Exception:
                 ra = win.screen_workarea()
-            if self._saved_pos is not None and not self._pos_applied:
+            if self._user_moved:
+                pass          # 本次会话拖过 -> 跟随用户拖到的实时位置
+            elif self._saved_pos is not None:
                 # 上次拖到/粘到的位置 (重启后仍在原处); 顺带按当前尺寸重新推断该贴哪条边
                 cx, cy = self._saved_pos
                 _x, _y, self._snap_h, self._snap_v = snap_to_edge(cx, cy, w, h, ra)
@@ -353,6 +360,17 @@ class CandBar:
         # 隐藏状态下先处理 Canvas 尺寸、geometry 和绘制队列，再一次性显示完整帧。
         self.top.update_idletasks()
         self.top.deiconify()
+        self._shown_once = True
+        if not self._pos_logged:
+            self._pos_logged = True
+            try:
+                ra = win.workarea_at(w // 2, h // 2) or win.screen_workarea()
+                win._dlog('bar pos: saved=%r now=(%d,%d) user_moved=%s snap=(%s,%s) workarea=(%d,%d,%d,%d)'
+                          % (self._saved_pos, self.top.winfo_x(), self.top.winfo_y(),
+                             self._user_moved, self._snap_h, self._snap_v,
+                             ra.left, ra.top, ra.right, ra.bottom))
+            except Exception:
+                pass
         # 第六十九轮: 必须写**顶层外框**(GA_ROOT) —— winfo_id() 是 TkChild 子窗口, 写它等于没生效
         win.set_topmost(win.top_level_hwnd(self.top.winfo_id()))   # 强制 topmost 最顶(Win11 开始菜单不压候选框)
         _total_ms = (time.perf_counter() - _show_t0) * 1000.0
@@ -380,8 +398,12 @@ class CandBar:
         return None
 
     def _save_pos(self):
-        """落盘当前位置 (C# `SavePos`). 写失败不影响使用 (位置本来就只是体验)."""
-        if not self._pos_file:
+        """落盘当前位置 (C# `SavePos`). 写失败不影响使用 (位置本来就只是体验).
+
+        没显示过(winfo 还是 0,0)时**绝不写**: 否则一次多余的落盘就把"上次位置"清成左上角,
+        下次启动候选条就跑到屏幕角落 —— 用户报的"重启后位置不对"就是这条路径。
+        """
+        if not self._pos_file or not self._shown_once:
             return
         try:
             x, y = self.top.winfo_x(), self.top.winfo_y()
@@ -390,6 +412,10 @@ class CandBar:
             self._saved_pos = (x, y)
         except Exception:
             pass
+
+    def save_pos(self):
+        """外部落盘入口 (main 退出前调用): 位置是"退出前的位置", 不能只靠鼠标松手那一次."""
+        self._save_pos()
 
     def _drag_start(self, e):
         self._drag['x'] = e.x_root - self.top.winfo_x()
@@ -402,12 +428,14 @@ class CandBar:
         h = max(1, self.top.winfo_height())
         x, y, self._snap_h, self._snap_v = snap_to_edge(x, y, w, h, win.workarea_at(x + w // 2, y + h // 2))
         self.top.geometry('+%d+%d' % (x, y))
+        self._user_moved = True
         fg=win.user32.GetForegroundWindow()
         self._anchor = (x, y, fg)
         self._window_anchor[fg] = (x, y)
 
     def _drag_end(self, _e=None):
         """拖动结束 -> 记住位置 (对齐 C# `lbl.MouseUp -> SavePos()`)."""
+        self._user_moved = True
         self._save_pos()
 
     def _apply_edge_snap(self, x, y, w, h, ra):
